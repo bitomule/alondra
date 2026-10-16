@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 rust_library(
     name = "agent_application",
@@ -14,9 +14,16 @@ rust_library(
 rust_test(
     name = "remote_worker_test",
     crate_root = "tests/remote_worker.rs",
-    srcs = ["tests/remote_worker.rs", "//crates:test_support.rs"],
+    srcs = ["tests/remote_worker.rs", "tests/support/controller.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
     edition = "2024",
     env = {"HOME": "."},
     deps = [":agent_application", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
+)
+
+exports_files(["tests/support/controller.rs"], visibility = ["//crates/provider-claude:__pkg__"])
+
+rust_doc_test(
+    name = "staging_api_test",
+    crate = ":agent_application",
 )

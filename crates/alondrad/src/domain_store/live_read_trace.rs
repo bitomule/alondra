@@ -7,6 +7,7 @@ pub(crate) struct LiveStoreRead {
     pub thread: String,
     pub statement_attempts: usize,
     pub rows: usize,
+    pub vm_steps: Option<i32>,
     pub failed: bool,
     pub elapsed_ms: f64,
 }
@@ -21,10 +22,11 @@ pub(super) struct Read {
 
 impl Read {
     pub(super) fn new(sink: Sink, getter: &'static str) -> Self {
-        Self { sink, event: LiveStoreRead { getter, thread: format!("{:?}", std::thread::current().id()), statement_attempts: 0, rows: 0, failed: true, elapsed_ms: 0.0 }, started: Instant::now() }
+        Self { sink, event: LiveStoreRead { getter, thread: format!("{:?}", std::thread::current().id()), statement_attempts: 0, rows: 0, vm_steps: None, failed: true, elapsed_ms: 0.0 }, started: Instant::now() }
     }
     pub(super) fn statement(&mut self) { self.event.statement_attempts += 1; }
     pub(super) fn row(&mut self) { self.event.rows += 1; }
+    pub(super) fn vm_steps(&mut self, steps: i32) { self.event.vm_steps = Some(steps); }
     pub(super) fn complete(&mut self) { self.event.failed = false; }
 }
 

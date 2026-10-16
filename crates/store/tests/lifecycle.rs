@@ -1670,3 +1670,595 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
         b"native session reference"
     );
 }
+
+
+fn owned_claim(fixture: &mut Fixture) -> (DispatchAttempt, OwnerGrant) {
+    fixture.create("task");
+    let permit = fixture.launch("task");
+    let stamp = permit.execution().clone();
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 0).unwrap();
+    let owner = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.claim(permit).unwrap();
+    let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+    (attempt, owner)
+}
+#[test]
+fn command_commit_value_preserves_exact_claim_and_bytes_only_after_real_commit() {
+    let mut fixture = Fixture::new();
+    let (attempt, owner) = owned_claim(&mut fixture);
+    let independent = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_owned_command(
+        attempt,
+        owner.generation(),
+        CommandEvidence::new(b"exact framed command".to_vec()).unwrap(),
+    )
+    .unwrap();
+    let visible: i64 = independent
+        .query_row("SELECT count(*) FROM provider_commands", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(visible, 0, "the independent reader cannot see staged bytes");
+    let mut committed = tx.commit().unwrap();
+    assert_eq!(committed.commands.len(), 1);
+    let command = committed.commands.pop().unwrap();
+    assert_eq!(command.bytes(), b"exact framed command");
+    assert_eq!(command.attempt().input().text(), payload("initial").text());
+    assert_eq!(command.attempt().execution(), owner.execution());
+    assert_eq!(command.owner_generation(), owner.generation());
+    let visible: i64 = independent
+        .query_row("SELECT count(*) FROM provider_commands", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        visible, 1,
+        "committed bytes are visible before the value can be submitted"
+    );
+    let mut tx = fixture.transaction();
+    tx.fence_committed_command(&command).unwrap();
+    tx.record_committed_receipt(command, DispatchReceipt::Handed)
+        .unwrap();
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
+    assert_eq!(
+        tx.load(&"task".into()).unwrap().pending_inputs(),
+        vec![&id("initial")],
+        "a technical receipt does not consume input"
+    );
+}
+#[test]
+fn deferred_command_commit_failure_releases_no_value_and_rolls_back_bytes() {
+    let mut fixture = Fixture::new();
+    let (attempt, owner) = owned_claim(&mut fixture);
+    let raw =
+        Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    raw.execute(
+        "UPDATE tasks SET final_presentation='missing' WHERE id='task'",
+        [],
+    )
+    .unwrap();
+    let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+    tx.record_owned_command(
+        attempt,
+        owner.generation(),
+        CommandEvidence::new(b"retained intent".to_vec()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        matches!(tx.commit(), Err(Error::Database(_))),
+        "a deferred FK refusal must not release a command value"
+    );
+    let count: i64 = fixture
+        .connection
+        .query_row("SELECT count(*) FROM provider_commands", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    let tx = fixture.transaction();
+    assert_eq!(
+        tx.unresolved(&"task".into()).unwrap().len(),
+        1,
+        "the earlier committed claim stays uncertain, never reissued"
+    );
+}
+#[test]
+fn observation_commit_value_requires_exact_raw_and_normalization_checkpoint() {
+    let mut fixture = Fixture::new();
+    let (_attempt, owner) = owned_claim(&mut fixture);
+    let mut tx = fixture.transaction();
+    tx.accept_owned_observation(
+        owner.execution(),
+        owner.generation(),
+        1,
+        CommandEvidence::new(b"observed raw".to_vec()).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(tx.commit(), Err(Error::CheckpointConflict)));
+    let count: i64 = fixture
+        .connection
+        .query_row("SELECT count(*) FROM provider_observations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "missing causal checkpoint rolls back the raw cursor too"
+    );
+    let mut tx = fixture.transaction();
+    tx.accept_owned_observation(
+        owner.execution(),
+        owner.generation(),
+        1,
+        CommandEvidence::new(b"observed raw".to_vec()).unwrap(),
+    )
+    .unwrap();
+    tx.put_normalization_checkpoint(owner.execution(), 1, None, b"causal checkpoint".to_vec())
+        .unwrap();
+    let mut committed = tx.commit().unwrap();
+    assert_eq!(committed.observations.len(), 1);
+    let value = committed.observations.pop().unwrap();
+    assert!(value.matches_evidence(b"observed raw"));
+    assert!(!value.matches_evidence(b"substituted raw"));
+    assert_eq!(value.scope(), &scope());
+    assert_eq!(value.execution(), owner.execution());
+    assert_eq!(value.binding(), owner.binding());
+    assert_eq!(value.owner_generation(), owner.generation());
+    assert_eq!(value.cursor(), 1);
+    let mut tx = fixture.transaction();
+    assert_eq!(
+        tx.accept_owned_observation(
+            owner.execution(),
+            owner.generation(),
+            1,
+            CommandEvidence::new(b"observed raw".to_vec()).unwrap()
+        )
+        .unwrap(),
+        ObservationAcceptance::Duplicate
+    );
+    assert_eq!(
+        tx.commit().unwrap().observations.len(),
+        1,
+        "a durable exact replay can yield only SQL acknowledgement evidence"
+    );
+}
+#[test]
+fn caught_stale_owner_admission_cannot_emit_observation_commit_value() {
+    let mut fixture = Fixture::new();
+    let (_attempt, owner) = owned_claim(&mut fixture);
+    let mut tx = fixture.transaction();
+    assert!(matches!(
+        tx.accept_owned_observation(
+            owner.execution(),
+            owner.generation() + 1,
+            1,
+            CommandEvidence::new(b"raw".to_vec()).unwrap()
+        ),
+        Err(Error::StaleOwner)
+    ));
+    assert!(tx.commit().unwrap().observations.is_empty());
+    let count: i64 = fixture
+        .connection
+        .query_row("SELECT count(*) FROM provider_observations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+#[test]
+fn command_commit_rechecks_revoked_binding_before_releasing_value() {
+    let mut fixture = Fixture::new();
+    let (attempt, owner) = owned_claim(&mut fixture);
+    let mut tx = fixture.transaction();
+    tx.record_owned_command(
+        attempt,
+        owner.generation(),
+        CommandEvidence::new(b"command".to_vec()).unwrap(),
+    )
+    .unwrap();
+    tx.revoke_provider(owner.binding()).unwrap();
+    assert!(matches!(tx.commit(), Err(Error::BindingRevoked)));
+    let count: i64 = fixture
+        .connection
+        .query_row("SELECT count(*) FROM provider_commands", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission() {
+    for stale_owner in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.create("task");
+        let permit = fixture.launch("task");
+        let stamp = permit.execution().clone();
+        drop(permit);
+        let mut tx = fixture.transaction();
+        tx.reserve_owner(&stamp, 0).unwrap();
+        let owner = tx.commit().unwrap().owners.pop().unwrap();
+        fixture.runtime("task", RuntimeFact::ResourceAvailable);
+        fixture.runtime(
+            "task",
+            RuntimeFact::TurnStarted {
+                turn: TurnId::new("turn").unwrap(),
+                trigger: Trigger::Input(id("initial")),
+            },
+        );
+        let cleanup = OperationId::new("cleanup").unwrap();
+        let mut tx = fixture.transaction();
+        let revision = tx.load(&"task".into()).unwrap().revision();
+        tx.apply(
+            &"task".into(),
+            revision,
+            "cancel",
+            Event::Finish {
+                intent: FinishIntent::Cancel,
+                cleanup: cleanup.clone(),
+                post_merge: None,
+            },
+        )
+        .unwrap();
+        tx.apply(
+            &"task".into(),
+            revision + 1,
+            "cleanup-ended",
+            Event::DrainObserved {
+                obligation: DrainObligation::Cleanup(cleanup),
+            },
+        )
+        .unwrap();
+        let before_retirement_revision = revision + 2;
+        let aggregate = tx.load(&"task".into()).unwrap();
+        let remaining = DrainObligation::Execution(stamp.instance().clone());
+        assert_eq!(aggregate.phase(), TaskPhase::Finishing);
+        assert_eq!(aggregate.drain().collect::<Vec<_>>(), vec![&remaining]);
+        tx.commit().unwrap();
+        let mut tx = fixture.transaction();
+        assert!(tx.unresolved(&"task".into()).unwrap().is_empty());
+        assert!(tx.load(&"task".into()).unwrap().pending_inputs().is_empty());
+        tx.accept_owned_observation(
+            &stamp,
+            owner.generation(),
+            1,
+            CommandEvidence::new(b"retirement observation".to_vec()).unwrap(),
+        )
+        .unwrap();
+        tx.put_normalization_checkpoint(&stamp, 1, None, b"normalized retirement".to_vec())
+            .unwrap();
+        tx.apply(
+            &"task".into(),
+            before_retirement_revision,
+            "execution-drained",
+            Event::DrainObserved {
+                obligation: DrainObligation::Execution(stamp.instance().clone()),
+            },
+        )
+        .unwrap();
+        if stale_owner {
+            let changed = tx.connection.execute(
+                "UPDATE provider_execution_owners SET owner_generation=owner_generation+1 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND owner_generation=?4",
+                params![stamp.task().0, i64::try_from(stamp.generation()).unwrap(), owner.binding().id(), i64::try_from(owner.generation()).unwrap()],
+            ).unwrap();
+            assert_eq!(
+                changed, 1,
+                "the current durable owner fence really advances"
+            );
+        }
+        let result = tx.commit();
+        let observation = if stale_owner {
+            assert!(
+                matches!(result, Err(Error::StaleOwner)),
+                "retirement must not bypass the current durable owner generation"
+            );
+            None
+        } else {
+            assert!(
+                result.is_ok(),
+                "accepted raw/checkpoint must commit with final cancellation drain: {result:?}"
+            );
+            let mut committed = result.unwrap();
+            assert_eq!(committed.observations.len(), 1);
+            assert!(committed.commands.is_empty());
+            assert!(committed.attempts.is_empty());
+            assert!(committed.permits.is_empty());
+            Some(committed.observations.pop().unwrap())
+        };
+        let database = fixture.directory.join("domain.db");
+        drop(fixture.connection);
+        let reopened = Connection::open(database).unwrap();
+        reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let rows: i64 = reopened
+            .query_row("SELECT count(*) FROM provider_observations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let checkpoints: i64 = reopened
+            .query_row(
+                "SELECT count(*) FROM provider_normalization_checkpoints",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let durable_owner: i64 = reopened
+            .query_row(
+                "SELECT owner_generation FROM provider_execution_owners WHERE task_id='task'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            durable_owner,
+            i64::try_from(owner.generation()).unwrap(),
+            "failed owner CAS is rolled back too"
+        );
+        let raw = Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+        let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+        let aggregate = tx.load(&"task".into()).unwrap();
+        if stale_owner {
+            assert_eq!(rows, 0);
+            assert_eq!(checkpoints, 0);
+            assert_eq!(aggregate.execution(), Some(&stamp));
+            assert_eq!(aggregate.revision(), before_retirement_revision);
+            tx.fence_owner(&owner).unwrap();
+            assert!(tx.normalization_checkpoint(&stamp).unwrap().is_none());
+            assert_eq!(aggregate.phase(), TaskPhase::Finishing);
+        } else {
+            assert_eq!(rows, 1);
+            assert_eq!(checkpoints, 1);
+            assert!(aggregate.execution().is_none());
+            assert_eq!(aggregate.phase(), TaskPhase::Cancelled);
+            assert!(aggregate.drain().next().is_none());
+            let value = observation.unwrap();
+            assert_eq!(value.scope(), &scope());
+            assert_eq!(value.execution(), &stamp);
+            assert_eq!(value.binding(), owner.binding());
+            assert_eq!(value.owner_generation(), owner.generation());
+            assert_eq!(value.cursor(), 1);
+            assert!(value.matches_evidence(b"retirement observation"));
+            assert!(!value.matches_evidence(b"different bytes"));
+            assert!(
+                matches!(
+                    tx.accept_owned_observation(
+                        &stamp,
+                        owner.generation(),
+                        2,
+                        CommandEvidence::new(b"new late evidence".to_vec()).unwrap()
+                    ),
+                    Err(Error::StalePermit)
+                ),
+                "new observation admission still requires the current execution"
+            );
+            assert!(
+                matches!(tx.normalization_checkpoint(&stamp), Err(Error::StalePermit)),
+                "the public metadata read does not become a historical admission API"
+            );
+            assert!(
+                matches!(
+                    tx.put_normalization_checkpoint(
+                        &stamp,
+                        1,
+                        Some(1),
+                        b"normalized retirement".to_vec()
+                    ),
+                    Err(Error::StalePermit)
+                ),
+                "a later transaction has no pending owned observation for a historical checkpoint"
+            );
+        }
+        assert!(tx.commit().unwrap().observations.is_empty());
+        drop(reopened);
+    }
+}
+
+#[test]
+fn owned_observation_commit_can_retire_released_execution_with_card_settlement() {
+    for stale_owner in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.create("task");
+        let permit = fixture.launch("task");
+        let stamp = permit.execution().clone();
+        drop(permit);
+        let mut tx = fixture.transaction();
+        tx.reserve_owner(&stamp, 0).unwrap();
+        let owner = tx.commit().unwrap().owners.pop().unwrap();
+        fixture.runtime("task", RuntimeFact::ResourceAvailable);
+        fixture.runtime(
+            "task",
+            RuntimeFact::TurnStarted {
+                turn: TurnId::new("turn").unwrap(),
+                trigger: Trigger::Input(id("initial")),
+            },
+        );
+        fixture.card("task", "recovery");
+        fixture.runtime(
+            "task",
+            RuntimeFact::ResourceReleased {
+                problem_card: "recovery".into(),
+            },
+        );
+        let before_retirement_revision = fixture
+            .transaction()
+            .load(&"task".into())
+            .unwrap()
+            .revision();
+        let mut tx = fixture.transaction();
+        assert!(tx.unresolved(&"task".into()).unwrap().is_empty());
+        assert!(tx.load(&"task".into()).unwrap().pending_inputs().is_empty());
+        tx.accept_owned_observation(
+            &stamp,
+            owner.generation(),
+            1,
+            CommandEvidence::new(b"retirement observation".to_vec()).unwrap(),
+        )
+        .unwrap();
+        tx.put_input(&"task".into(), payload("continuation"))
+            .unwrap();
+        tx.apply(
+            &"task".into(),
+            before_retirement_revision,
+            "retire-released",
+            Event::RetireReleasedExecution {
+                problem_card: "recovery".into(),
+                input: id("continuation"),
+            },
+        )
+        .unwrap();
+        tx.settle_card(&"task".into(), &"recovery".into(), CardSettlement::Withdraw)
+            .unwrap();
+        assert!(
+            matches!(
+                tx.put_normalization_checkpoint(&stamp, 2, None, b"wrong cursor".to_vec()),
+                Err(Error::StalePermit)
+            ),
+            "retirement cannot authorize a checkpoint for an unaccepted cursor"
+        );
+        let checkpoint =
+            tx.put_normalization_checkpoint(&stamp, 1, None, b"normalized retirement".to_vec());
+        assert!(
+            checkpoint.is_ok(),
+            "same-transaction accepted raw must permit checkpoint after retirement: {checkpoint:?}"
+        );
+        if stale_owner {
+            let changed = tx.connection.execute(
+                "UPDATE provider_execution_owners SET owner_generation=owner_generation+1 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND owner_generation=?4",
+                params![stamp.task().0, i64::try_from(stamp.generation()).unwrap(), owner.binding().id(), i64::try_from(owner.generation()).unwrap()],
+            ).unwrap();
+            assert_eq!(
+                changed, 1,
+                "the current durable owner fence really advances"
+            );
+        }
+        let result = tx.commit();
+        let observation = if stale_owner {
+            assert!(
+                matches!(result, Err(Error::StaleOwner)),
+                "retirement must not bypass the current durable owner generation"
+            );
+            None
+        } else {
+            assert!(
+                result.is_ok(),
+                "accepted raw/checkpoint must commit with released execution retirement and card settlement: {result:?}"
+            );
+            let mut committed = result.unwrap();
+            assert_eq!(committed.observations.len(), 1);
+            assert!(committed.commands.is_empty());
+            assert!(committed.attempts.is_empty());
+            assert!(committed.permits.is_empty());
+            Some(committed.observations.pop().unwrap())
+        };
+        let database = fixture.directory.join("domain.db");
+        drop(fixture.connection);
+        let reopened = Connection::open(database).unwrap();
+        reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let rows: i64 = reopened
+            .query_row("SELECT count(*) FROM provider_observations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let checkpoints: i64 = reopened
+            .query_row(
+                "SELECT count(*) FROM provider_normalization_checkpoints",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let durable_owner: i64 = reopened
+            .query_row(
+                "SELECT owner_generation FROM provider_execution_owners WHERE task_id='task'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            durable_owner,
+            i64::try_from(owner.generation()).unwrap(),
+            "failed owner CAS is rolled back too"
+        );
+        let raw = Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+        let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+        let aggregate = tx.load(&"task".into()).unwrap();
+        if stale_owner {
+            assert_eq!(rows, 0);
+            assert_eq!(checkpoints, 0);
+            assert_eq!(aggregate.execution(), Some(&stamp));
+            assert_eq!(aggregate.revision(), before_retirement_revision);
+            tx.fence_owner(&owner).unwrap();
+            assert!(tx.normalization_checkpoint(&stamp).unwrap().is_none());
+            assert_eq!(aggregate.resource(), Some(ResourceEvidence::Released));
+            let withdrawn: i64 = reopened
+                .query_row(
+                    "SELECT withdrawn FROM interactions WHERE id='recovery'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                withdrawn, 0,
+                "owner failure rolls back recovery card settlement"
+            );
+            assert_eq!(aggregate.cards().len(), 1);
+        } else {
+            assert_eq!(rows, 1);
+            assert_eq!(checkpoints, 1);
+            assert!(aggregate.execution().is_none());
+            assert_eq!(aggregate.pending_inputs(), vec![&id("continuation")]);
+            assert!(aggregate.cards().is_empty());
+            let withdrawn: i64 = reopened
+                .query_row(
+                    "SELECT withdrawn FROM interactions WHERE id='recovery'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                withdrawn, 1,
+                "the exact recovery card settles in the same commit"
+            );
+            let value = observation.unwrap();
+            assert_eq!(value.scope(), &scope());
+            assert_eq!(value.execution(), &stamp);
+            assert_eq!(value.binding(), owner.binding());
+            assert_eq!(value.owner_generation(), owner.generation());
+            assert_eq!(value.cursor(), 1);
+            assert!(value.matches_evidence(b"retirement observation"));
+            assert!(!value.matches_evidence(b"different bytes"));
+            assert!(
+                matches!(
+                    tx.accept_owned_observation(
+                        &stamp,
+                        owner.generation(),
+                        2,
+                        CommandEvidence::new(b"new late evidence".to_vec()).unwrap()
+                    ),
+                    Err(Error::StalePermit)
+                ),
+                "new observation admission still requires the current execution"
+            );
+            assert!(
+                matches!(tx.normalization_checkpoint(&stamp), Err(Error::StalePermit)),
+                "the public metadata read does not become a historical admission API"
+            );
+            assert!(
+                matches!(
+                    tx.put_normalization_checkpoint(
+                        &stamp,
+                        1,
+                        Some(1),
+                        b"normalized retirement".to_vec()
+                    ),
+                    Err(Error::StalePermit)
+                ),
+                "a later transaction has no pending owned observation for a historical checkpoint"
+            );
+        }
+        assert!(tx.commit().unwrap().observations.is_empty());
+        drop(reopened);
+    }
+}

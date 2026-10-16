@@ -1,21 +1,24 @@
 #![forbid(unsafe_code)]
-//! Worker technical controller over an existing Task and the durable journal.
+//! Scoped technical staging over a transaction borrowed from the application database owner.
 //!
 //! Production binding requires daemon-owned domain commands and commit operations.
 //! Observations needing that application boundary remain unacknowledged.
-use alondra_domain::{Event, RuntimeFact, TaskLifecycle, Trigger};
-use alondra_foundation::{ExecutionStamp, InputId, TaskId};
+//! ```
+//! use alondra_agent_application::InputMetadata;
+//! let _ = InputMetadata::for_execution;
+//! ```
+//! ```compile_fail,E0432
+//! use alondra_agent_application::WorkerController;
+//! ```
+use alondra_domain::{Event, RuntimeFact, Trigger};
+use alondra_foundation::{ExecutionStamp, InputId};
 use alondra_provider_contract::{
-    Adapter, AdapterError, Handoff, Invocation, Observation, Operation, OrderedObservation,
-    Placement,
+    Adapter, AdapterError, Invocation, Observation, Operation, OrderedObservation,
 };
 use alondra_store::{
-    AdapterInputMetadata, AdapterState, AuthorityScope, CommandEvidence, DispatchAttempt,
-    DispatchKind, DispatchPermit, DispatchReceipt, InputPayload, LifecycleTransaction,
-    ObservationAcceptance, OwnerGrant,
+    AdapterInputMetadata, AdapterState, CommandEvidence, DispatchAttempt, DispatchKind,
+    LifecycleTransaction, ObservationAcceptance, OwnerGrant,
 };
-use rusqlite::{Connection, TransactionBehavior};
-use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub enum Error {
@@ -44,7 +47,38 @@ pub struct InputMetadata<'borrow, 'connection> {
     execution: &'borrow ExecutionStamp,
     input: &'borrow InputId,
 }
-impl InputMetadata<'_, '_> {
+impl<'borrow, 'connection> InputMetadata<'borrow, 'connection> {
+    pub fn for_execution(
+        transaction: &'borrow mut LifecycleTransaction<'connection>,
+        execution: &'borrow ExecutionStamp,
+        input: &'borrow InputId,
+    ) -> Result<Self> {
+        let aggregate = transaction.load(execution.task())?;
+        if aggregate.execution() != Some(execution) || !aggregate.pending_inputs().contains(&input)
+        {
+            return Err(Error::BindingMismatch);
+        }
+        transaction.execution_binding(execution)?;
+        Ok(Self {
+            transaction,
+            execution,
+            input,
+        })
+    }
+    pub fn for_attempt(
+        transaction: &'borrow mut LifecycleTransaction<'connection>,
+        attempt: &'borrow DispatchAttempt,
+    ) -> Result<Self> {
+        transaction.fence_attempt(attempt)?;
+        Self::for_execution(transaction, attempt.execution(), attempt.input().id())
+    }
+
+    pub fn scope(&self) -> &alondra_store::AuthorityScope {
+        self.transaction.scope()
+    }
+    pub fn binding(&self) -> alondra_store::Result<alondra_provider_contract::ProviderBinding> {
+        self.transaction.execution_binding(self.execution)
+    }
     pub fn execution(&self) -> &ExecutionStamp {
         self.execution
     }
@@ -146,238 +180,7 @@ pub trait DurableAdapter: Adapter {
     ) -> std::result::Result<(), AdapterError>;
 }
 
-/// Owns the submitting adapter and serializes its command/observation lane with mutable access.
-/// The adapter must fence its external effect against its committed owner grant as well.
-pub struct WorkerController<A: DurableAdapter> {
-    connection: Connection,
-    scope: AuthorityScope,
-    adapter: A,
-    pending: Option<OrderedObservation>,
-    permits: VecDeque<DispatchPermit>,
-    task: Option<TaskId>,
-}
-impl<A: DurableAdapter> WorkerController<A> {
-    pub fn open(mut connection: Connection, scope: AuthorityScope, adapter: A) -> Result<Self> {
-        let mut transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        LifecycleTransaction::install(&mut transaction)?;
-        transaction.commit().map_err(alondra_store::Error::from)?;
-        Ok(Self {
-            connection,
-            scope,
-            adapter,
-            pending: None,
-            permits: VecDeque::new(),
-            task: None,
-        })
-    }
-    /// The core Task must already exist; this does not create a pre-Task orchestrator owner.
-    pub fn launch(
-        &mut self,
-        task: &TaskId,
-        input: InputPayload,
-        admission: Event,
-        placement: Placement,
-    ) -> Result<()> {
-        if self.task.is_some() || !matches!(admission, Event::Admit { .. }) {
-            return Err(Error::BindingMismatch);
-        }
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        let input_id = input.id().clone();
-        transaction.create(task, input)?;
-        transaction.apply(task, 0, "worker-admission", admission)?;
-        transaction.bind_provider(task, self.adapter.binding())?;
-        let execution = transaction
-            .load(task)?
-            .execution()
-            .cloned()
-            .ok_or(alondra_store::Error::MissingIntent)?;
-        self.adapter.stage_input(InputMetadata {
-            transaction: &mut transaction,
-            execution: &execution,
-            input: &input_id,
-        })?;
-        transaction.stage_launch(task, &placement, self.adapter.binding())?;
-        transaction.reserve_owner(&execution, 0)?;
-        let mut committed = transaction.commit()?;
-        let owner = committed
-            .owners
-            .pop()
-            .ok_or(alondra_store::Error::StaleOwner)?;
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        let state = transaction.adapter_state(&owner)?;
-        transaction.commit()?;
-        self.task = Some(task.clone());
-        self.adapter.install_owner(owner, state)?;
-        self.permits.extend(committed.permits);
-        Ok(())
-    }
-    pub fn next_permit(&mut self) -> Option<DispatchPermit> {
-        self.permits.pop_front()
-    }
-    pub fn claim(&mut self, permit: DispatchPermit) -> Result<DispatchAttempt> {
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        transaction.claim(permit)?;
-        transaction
-            .commit()?
-            .attempts
-            .pop()
-            .ok_or(alondra_store::Error::MissingIntent.into())
-    }
-    pub fn dispatch(&mut self, attempt: DispatchAttempt) -> Result<Handoff> {
-        if attempt.binding() != self.adapter.binding() {
-            return Err(Error::BindingMismatch);
-        }
-        let owner_generation = self.adapter.owner_generation()?;
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        transaction.fence_attempt(&attempt)?;
-        transaction.fence_observation_owner(attempt.execution(), owner_generation)?;
-        let native = self.adapter.load_input(InputMetadata {
-            transaction: &mut transaction,
-            execution: attempt.execution(),
-            input: attempt.input().id(),
-        })?;
-        let command = self.adapter.prepare(invocation(&attempt), native)?;
-        transaction.record_command(&attempt, CommandEvidence::new(command.bytes().to_vec())?)?;
-        transaction.commit()?;
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        transaction.fence_attempt(&attempt)?;
-        transaction.fence_observation_owner(attempt.execution(), owner_generation)?;
-        transaction.commit()?;
-        // SQLite is no longer held while the adapter waits on external I/O.
-        let handoff = self
-            .adapter
-            .submit(invocation(&attempt), &command)
-            .unwrap_or(Handoff::Uncertain);
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        transaction.record_receipt(
-            attempt,
-            match handoff {
-                Handoff::Offered => DispatchReceipt::Handed,
-                Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
-                Handoff::Uncertain => DispatchReceipt::Uncertain,
-            },
-        )?;
-        self.permits.extend(transaction.commit()?.permits);
-        Ok(handoff)
-    }
-    /// Accepted evidence and normalized aggregate facts commit before the host cursor is ACKed.
-    pub fn observe(&mut self) -> Result<bool> {
-        if self.pending.is_none() {
-            self.pending = self.adapter.next()?;
-        }
-        let Some(batch) = self.pending.as_ref() else {
-            return Ok(false);
-        };
-        if batch.evidence.is_empty() || batch.evidence.len() > 1_048_576 {
-            return Err(Error::ObservationCapacity);
-        }
-        if self.adapter.owner_generation()? != batch.owner_generation {
-            return Err(alondra_store::Error::StaleOwner.into());
-        }
-        let raw = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(alondra_store::Error::from)?;
-        let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        if transaction.execution_binding(&batch.execution)? != *self.adapter.binding() {
-            return Err(Error::BindingMismatch);
-        }
-        transaction.fence_observation_owner(&batch.execution, batch.owner_generation)?;
-        let acceptance = transaction.accept_observation(
-            &batch.execution,
-            batch.cursor,
-            CommandEvidence::new(batch.evidence.clone())?,
-        )?;
-        if acceptance == ObservationAcceptance::Accepted {
-            let metadata = ObservationMetadata {
-                transaction: &transaction,
-                execution: &batch.execution,
-                cursor: batch.cursor,
-            };
-            let previous = metadata.checkpoint()?.map(|checkpoint| checkpoint.cursor());
-            let normalized = self.adapter.normalizer().normalize(batch, &metadata)?;
-            for (index, fact) in normalized
-                .facts
-                .iter()
-                .map(domain_fact)
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .enumerate()
-            {
-                let aggregate = transaction.load(batch.execution.task())?;
-                let cursor = aggregate
-                    .cursor()
-                    .and_then(|cursor| cursor.checked_add(1))
-                    .ok_or(alondra_store::Error::InvalidInput)?;
-                transaction.apply(
-                    batch.execution.task(),
-                    aggregate.revision(),
-                    &format!(
-                        "adapter-{}-{}-{index}",
-                        batch.execution.generation(),
-                        batch.cursor
-                    ),
-                    Event::Runtime {
-                        stamp: batch.execution.clone(),
-                        cursor,
-                        fact,
-                    },
-                )?;
-            }
-            transaction.put_normalization_checkpoint(
-                &batch.execution,
-                batch.cursor,
-                previous,
-                normalized.checkpoint,
-            )?;
-        }
-        if transaction
-            .normalization_checkpoint(&batch.execution)?
-            .is_none_or(|checkpoint| checkpoint.cursor() < batch.cursor)
-        {
-            return Err(alondra_store::Error::CheckpointConflict.into());
-        }
-        self.permits.extend(transaction.commit()?.permits);
-        self.adapter.acknowledge(&batch.execution, batch.cursor)?;
-        self.pending = None;
-        Ok(true)
-    }
-    pub fn load(&mut self, task: &TaskId) -> Result<TaskLifecycle> {
-        let raw = self
-            .connection
-            .transaction()
-            .map_err(alondra_store::Error::from)?;
-        let transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        Ok(transaction.load(task)?)
-    }
-}
-fn invocation(attempt: &DispatchAttempt) -> Invocation<'_> {
+pub fn invocation(attempt: &DispatchAttempt) -> Invocation<'_> {
     Invocation {
         binding: attempt.binding(),
         execution: attempt.execution(),
@@ -413,4 +216,79 @@ fn domain_fact(fact: &Observation) -> Result<RuntimeFact> {
         | Observation::TransportLost
         | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
     })
+}
+
+/// Stages only technical facts. The real database owner commits and later decides when to ACK.
+/// Terminal observations return RequiresDomainCommand before any acknowledgement can be issued.
+/// The owner must abort the whole transaction on error; this helper stages no independent commit.
+pub fn stage_observation<N: ObservationNormalizer>(
+    transaction: &mut LifecycleTransaction<'_>,
+    binding: &alondra_provider_contract::ProviderBinding,
+    owner_generation: u64,
+    batch: &OrderedObservation,
+    normalizer: &N,
+) -> Result<ObservationAcceptance> {
+    if batch.evidence.is_empty() || batch.evidence.len() > 1_048_576 {
+        return Err(Error::ObservationCapacity);
+    }
+    if owner_generation != batch.owner_generation {
+        return Err(alondra_store::Error::StaleOwner.into());
+    }
+    if transaction.execution_binding(&batch.execution)? != *binding {
+        return Err(Error::BindingMismatch);
+    }
+    let acceptance = transaction.accept_owned_observation(
+        &batch.execution,
+        batch.owner_generation,
+        batch.cursor,
+        CommandEvidence::new(batch.evidence.clone())?,
+    )?;
+    if acceptance == ObservationAcceptance::Accepted {
+        let metadata = ObservationMetadata {
+            transaction,
+            execution: &batch.execution,
+            cursor: batch.cursor,
+        };
+        let previous = metadata.checkpoint()?.map(|checkpoint| checkpoint.cursor());
+        let normalized = normalizer.normalize(batch, &metadata)?;
+        let facts = normalized
+            .facts
+            .iter()
+            .map(domain_fact)
+            .collect::<Result<Vec<_>>>()?;
+        for (index, fact) in facts.into_iter().enumerate() {
+            let aggregate = transaction.load(batch.execution.task())?;
+            let cursor = aggregate
+                .cursor()
+                .and_then(|cursor| cursor.checked_add(1))
+                .ok_or(alondra_store::Error::InvalidInput)?;
+            transaction.apply(
+                batch.execution.task(),
+                aggregate.revision(),
+                &format!(
+                    "adapter-{}-{}-{index}",
+                    batch.execution.generation(),
+                    batch.cursor
+                ),
+                Event::Runtime {
+                    stamp: batch.execution.clone(),
+                    cursor,
+                    fact,
+                },
+            )?;
+        }
+        transaction.put_normalization_checkpoint(
+            &batch.execution,
+            batch.cursor,
+            previous,
+            normalized.checkpoint,
+        )?;
+    }
+    if transaction
+        .normalization_checkpoint(&batch.execution)?
+        .is_none_or(|checkpoint| checkpoint.cursor() < batch.cursor)
+    {
+        return Err(alondra_store::Error::CheckpointConflict.into());
+    }
+    Ok(acceptance)
 }

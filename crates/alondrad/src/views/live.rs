@@ -911,13 +911,20 @@ mod cache_tests {
         let first = gather(&client, &state, Lang::En, &home, true, false).await;
         assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
         assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
-        let mut reused = std::time::Duration::MAX;
+        let getter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = getter_calls.clone();
+        domain.store.lock().unwrap().on_live_read(move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let before = (gathered(&client), keyed(&client));
+        domain.store.lock().unwrap().begin_live_read_trace();
         for _ in 0..3 {
-            let at = std::time::Instant::now();
-            gather(&client, &state, Lang::En, &home, true, false).await;
-            reused = reused.min(at.elapsed());
+            assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
         }
-        assert!(reused < std::time::Duration::from_millis(2), "reusing a snapshot took {reused:?}");
+        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        assert_eq!(getter_calls.load(std::sync::atomic::Ordering::Relaxed), 0, "warm snapshots must not call instrumented live getters");
+        assert!(trace.is_empty(), "warm snapshots must not execute instrumented live getters: {trace:?}");
+        assert_eq!((gathered(&client), keyed(&client)), before, "warm snapshots reuse shared and keyed data");
         gather(&client, &state, Lang::Es, &home, true, false).await;
         assert_eq!(gathered(&client), 2, "each language has its own snapshot");
         let task = ["task:room".to_owned()];
@@ -987,18 +994,48 @@ mod cache_tests {
     }
 
     #[tokio::test]
-    async fn live_gather_takes_a_few_milliseconds_on_a_long_task_history() {
-        let (_home, domain, client) = wait_fixture();
-        domain.store.lock().unwrap().add_task_history(314, 20);
-        let state = domain.state().unwrap();
-        let home = ["home".to_owned()];
-        let mut fastest = std::time::Duration::MAX;
-        for _ in 0..3 {
-            let at = std::time::Instant::now();
-            gather_at(&client, &state, Lang::En, &home, true, false, alondra_core::now_millis()).await;
-            fastest = fastest.min(at.elapsed());
+    async fn live_gather_bounds_sqlite_work_on_a_long_task_history() {
+        let mut measured = Vec::new();
+        for steps in [2, 20] {
+            let (home, domain, client) = wait_fixture();
+            domain.store.lock().unwrap().add_task_history(314, steps);
+            let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+            let tasks: i64 = connection.query_row("SELECT count(*) FROM tasks", [], |row| row.get(0)).unwrap();
+            let tasks = u64::try_from(tasks).unwrap();
+            let history: i64 = connection.query_row("SELECT count(*) FROM task_history", [], |row| row.get(0)).unwrap();
+            let history = u64::try_from(history).unwrap();
+            let latest: i64 = connection.query_row("SELECT a.at FROM task_history h JOIN command_audit a ON a.revision=h.revision WHERE h.task_id='room' ORDER BY h.revision DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+            assert_eq!(tasks, 320, "both fixtures retain the same Task population");
+            assert!(history >= tasks * steps as u64, "the real SQL history must be populated");
+            let state = domain.state().unwrap();
+            domain.store.lock().unwrap().begin_live_read_trace();
+            let live = gather_at(&client, &state, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
+            let trace = domain.store.lock().unwrap().end_live_read_trace();
+            assert_eq!(live.task_since.len(), 6, "finished archived Tasks stay out of the visible snapshot");
+            assert_eq!(live.task_since["room"], timestamp(latest), "the actual latest history value reaches the snapshot");
+            let mut getters = BTreeMap::new();
+            for read in &trace {
+                *getters.entry(read.getter).or_insert(0) += 1;
+                assert!(!read.failed, "live getter must complete: {read:?}");
+                assert!(read.statement_attempts <= 1, "one statement per live getter: {read:?}");
+            }
+            assert_eq!(getters, BTreeMap::from([
+                ("request_launch_summaries", 1), ("launch_refusals", 1), ("start_retries", 1),
+                ("task_was_launched", 6), ("revision_times", 1), ("request_times", 1),
+                ("task_state_times", 1), ("cancel_reasons", 1),
+            ]), "a cold home snapshot has a bounded set of real live getter calls");
+            let read = trace.iter().find(|read| read.getter == "task_state_times").unwrap();
+            assert_eq!(read.statement_attempts, 1);
+            assert_eq!(read.rows as u64, tasks, "the latest-state query returns one row per Task, not per history entry");
+            let work = u64::try_from(read.vm_steps.expect("the executed latest-state statement must report VM steps")).unwrap();
+            assert!(work > 0, "the work budget must measure the actual SQLite statement");
+            // SQLite opcodes cover the grouped scan and per-Task join, with room for fixed
+            // setup/sort overhead. This bounds this statement, not all work of a snapshot.
+            assert!(work <= 64 * (history + tasks), "latest Task state read exceeded linear SQLite work budget: {work} VM steps for {history} history rows and {tasks} Tasks");
+            measured.push((history, work));
         }
-        assert!(fastest < std::time::Duration::from_millis(5), "gathering live data over 6,400 history rows of 320 Tasks took {fastest:?}");
+        assert!(measured[1].0 > 9 * measured[0].0, "the second fixture contains approximately ten times the SQL history");
+        assert!(measured[1].1 <= 10 * measured[0].1, "latest-state SQLite work grows at most with the history increase: {measured:?}");
     }
 
     #[tokio::test]

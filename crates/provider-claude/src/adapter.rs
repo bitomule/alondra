@@ -1,15 +1,17 @@
 use crate::normalizer::Normalizer;
 use crate::records::{InputRecord, SessionRecord};
 use crate::wire::{Connection, ControlIdentity, execution, fence};
-use alondra_agent_application::{DurableAdapter, InputMetadata, WorkerController};
+use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_agent_protocol::{Action, Body, Command, SDK_VERSION};
 use alondra_agent_runtime::owned_host::{LaunchIdentity, OwnedHost, VerifiedArtifact};
-use alondra_foundation::{ExecutionStamp, MessageUuid, TaskId};
+use alondra_foundation::{ExecutionStamp, MessageUuid};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
     PreparedCommand, ProviderBinding,
 };
-use alondra_store::{AdapterState, AuthorityScope, InputPayload, OwnerGrant};
+use alondra_store::{
+    AdapterState, CommittedCommand, CommittedObservation, DispatchAttempt, OwnerGrant,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,47 +30,193 @@ pub struct ClaudeConfiguration {
     pub io_timeout: Duration,
 }
 
-/// The submitting implementation and its control credentials never escape this wrapper.
+/// Opaque technical worker. The application owns SQL, policy and publication.
+/// Configuration alone creates no host, SDK query or native process.
+/// ```
+/// use alondra_provider_claude::ClaudeWorker;
+/// let _ = ClaudeWorker::configured;
+/// ```
+/// The technical facade has no connection-owning constructor:
+/// ```compile_fail,E0599
+/// use alondra_provider_claude::ClaudeWorker;
+/// let _ = ClaudeWorker::open;
+/// ```
+/// Submission requires actual SQL commit evidence:
+/// ```
+/// use alondra_provider_claude::ClaudeWorker;
+/// use alondra_store::CommittedCommand;
+/// fn submit(worker: &mut ClaudeWorker, value: &CommittedCommand) { let _ = worker.submit(value); }
+/// ```
 pub struct ClaudeWorker {
-    controller: WorkerController<ClaudeAdapter>,
+    adapter: ClaudeAdapter,
+    prepared: Option<PreparedDispatch>,
+    pending: Option<OrderedObservation>,
+}
+struct PreparedDispatch {
+    command: PreparedCommand,
+    intent: i64,
+    revision: u64,
+    execution: ExecutionStamp,
+    binding: ProviderBinding,
+    owner_generation: u64,
+    input: alondra_foundation::InputId,
+    text: String,
+    kind: alondra_store::DispatchKind,
+    placement: Option<Placement>,
+}
+impl PreparedDispatch {
+    fn new(attempt: &DispatchAttempt, owner_generation: u64, command: PreparedCommand) -> Self {
+        Self {
+            command,
+            intent: attempt.intent_id(),
+            revision: attempt.revision(),
+            execution: attempt.execution().clone(),
+            binding: attempt.binding().clone(),
+            owner_generation,
+            input: attempt.input().id().clone(),
+            text: attempt.input().text().into(),
+            kind: attempt.kind(),
+            placement: attempt.placement().cloned(),
+        }
+    }
+    fn validate(&self, committed: &CommittedCommand) -> Result<(), AdapterError> {
+        let attempt = committed.attempt();
+        if committed.bytes() != self.command.bytes()
+            || committed.owner_generation() != self.owner_generation
+            || attempt.intent_id() != self.intent
+            || attempt.revision() != self.revision
+            || attempt.execution() != &self.execution
+            || attempt.binding() != &self.binding
+            || attempt.input().id() != &self.input
+            || attempt.input().text() != self.text
+            || attempt.kind() != self.kind
+            || attempt.placement() != self.placement.as_ref()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        Ok(())
+    }
 }
 impl ClaudeWorker {
-    pub fn open(
-        connection: rusqlite::Connection,
-        scope: AuthorityScope,
+    pub fn configured(
         binding: ProviderBinding,
         configuration: ClaudeConfiguration,
-    ) -> Result<Self, alondra_agent_application::Error> {
-        let adapter = ClaudeAdapter::new(binding, configuration)?;
+    ) -> Result<Self, AdapterError> {
         Ok(Self {
-            controller: WorkerController::open(connection, scope, adapter)?,
+            adapter: ClaudeAdapter::new(binding, configuration)?,
+            prepared: None,
+            pending: None,
         })
     }
-    pub fn launch(
+    pub fn binding(&self) -> &ProviderBinding {
+        self.adapter.binding()
+    }
+    pub fn owner_generation(&self) -> Result<u64, AdapterError> {
+        self.adapter.owner_generation()
+    }
+    pub fn install_owner(
         &mut self,
-        task: &TaskId,
-        input: InputPayload,
-        admission: alondra_domain::Event,
-        placement: Placement,
-    ) -> Result<(), alondra_agent_application::Error> {
-        self.controller.launch(task, input, admission, placement)
+        grant: OwnerGrant,
+        state: AdapterState,
+    ) -> Result<(), AdapterError> {
+        self.adapter.install_owner(grant, state)
     }
-    pub fn dispatch_next(&mut self) -> Result<Option<Handoff>, alondra_agent_application::Error> {
-        let Some(permit) = self.controller.next_permit() else {
-            return Ok(None);
-        };
-        let attempt = self.controller.claim(permit)?;
-        self.controller.dispatch(attempt).map(Some)
+    pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
+        if metadata.binding().map_err(storage)? != *self.binding() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        self.adapter.stage_input(metadata)
     }
-    pub fn observe(&mut self) -> Result<bool, alondra_agent_application::Error> {
-        self.controller.observe()
-    }
-    pub fn load(
+    pub fn prepare(
         &mut self,
-        task: &TaskId,
-    ) -> Result<alondra_domain::TaskLifecycle, alondra_agent_application::Error> {
-        self.controller.load(task)
+        attempt: &DispatchAttempt,
+        metadata: InputMetadata<'_, '_>,
+    ) -> Result<PreparedCommand, AdapterError> {
+        if self.prepared.is_some()
+            || metadata.scope() != attempt.scope()
+            || metadata.binding().map_err(storage)? != *attempt.binding()
+            || metadata.execution() != attempt.execution()
+            || metadata.input_id() != attempt.input().id()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let owner = self.adapter.host()?.owner();
+        if attempt.scope() != owner.scope()
+            || attempt.binding() != owner.binding()
+            || attempt.execution() != owner.execution()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let owner_generation = owner.generation();
+        let native = self.adapter.load_input(metadata)?;
+        let command = self.adapter.prepare(invocation(attempt), native)?;
+        let output = PreparedCommand::new(command.bytes().to_vec())?;
+        self.prepared = Some(PreparedDispatch::new(attempt, owner_generation, command));
+        Ok(output)
     }
+    /// Requires the exact preparation persisted under this sealed attempt and owner.
+    /// The application must recheck its current SQL fence before calling; this is not a lease.
+    pub fn submit(&mut self, committed: &CommittedCommand) -> Result<Handoff, AdapterError> {
+        let prepared = self
+            .prepared
+            .as_ref()
+            .ok_or(AdapterError::InvalidObservation)?;
+        prepared.validate(committed)?;
+        let owner = self.adapter.host()?.owner();
+        if committed.owner_generation() != owner.generation()
+            || committed.attempt().scope() != owner.scope()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        // Consume the local preparation before any possible physical write; failure cannot re-offer it.
+        let prepared = self
+            .prepared
+            .take()
+            .ok_or(AdapterError::InvalidObservation)?;
+        self.adapter
+            .submit(invocation(committed.attempt()), &prepared.command)
+    }
+    pub fn poll(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
+        if let Some(pending) = &self.pending {
+            return Ok(Some(pending.clone()));
+        }
+        let received = self.adapter.next()?;
+        self.pending = received.clone();
+        Ok(received)
+    }
+    pub fn normalizer(&self) -> &impl ObservationNormalizer {
+        self.adapter.normalizer()
+    }
+    /// SQL evidence only; only the owning daemon decides when its real operation is published.
+    pub fn acknowledge(&mut self, committed: &CommittedObservation) -> Result<(), AdapterError> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or(AdapterError::InvalidObservation)?;
+        validate_ack(self.adapter.host()?.owner(), pending, committed)?;
+        self.adapter
+            .acknowledge(committed.execution(), committed.cursor())?;
+        self.pending = None;
+        Ok(())
+    }
+}
+fn validate_ack(
+    owner: &OwnerGrant,
+    pending: &OrderedObservation,
+    committed: &CommittedObservation,
+) -> Result<(), AdapterError> {
+    if committed.scope() != owner.scope()
+        || committed.execution() != owner.execution()
+        || committed.binding() != owner.binding()
+        || committed.owner_generation() != owner.generation()
+        || pending.execution != *committed.execution()
+        || pending.owner_generation != committed.owner_generation()
+        || pending.cursor != committed.cursor()
+        || !committed.matches_evidence(&pending.evidence)
+    {
+        return Err(AdapterError::InvalidObservation);
+    }
+    Ok(())
 }
 
 struct ClaudeAdapter {
@@ -272,7 +420,7 @@ impl DurableAdapter for ClaudeAdapter {
         owner: OwnerGrant,
         state: AdapterState,
     ) -> Result<(), AdapterError> {
-        if owner.binding() != &self.binding {
+        if owner.binding() != &self.binding || state.validate_owner(&owner).is_err() {
             return Err(AdapterError::InvalidObservation);
         }
         // Historical command receipts need durable exact-byte reconstruction before reattach.
@@ -383,3 +531,7 @@ fn storage(error: alondra_store::Error) -> AdapterError {
 #[cfg(all(test, feature = "sdk_fixture"))]
 #[path = "sdk_tests.rs"]
 mod sdk_tests;
+
+#[cfg(test)]
+#[path = "facade_tests.rs"]
+mod facade_tests;

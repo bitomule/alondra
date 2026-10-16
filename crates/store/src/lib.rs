@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Transactional TaskLifecycle journal port. No production daemon binding is installed here.
 mod codec;
+mod commit_seals;
+pub use commit_seals::{CommittedCommand, CommittedObservation};
 mod journal_format;
 mod persistence;
 mod provider_binding;
@@ -282,6 +284,8 @@ pub struct Committed {
     pub permits: Vec<DispatchPermit>,
     pub attempts: Vec<DispatchAttempt>,
     pub owners: Vec<OwnerGrant>,
+    pub commands: Vec<CommittedCommand>,
+    pub observations: Vec<CommittedObservation>,
 }
 /// Committed lane ownership; correlation data alone cannot create or renew a grant.
 ///
@@ -362,6 +366,8 @@ pub struct LifecycleTransaction<'connection> {
     claimed: Vec<DispatchAttempt>,
     owners: Vec<OwnerGrant>,
     cleared_cards: BTreeSet<(TaskId, alondra_foundation::InteractionId)>,
+    commands: Vec<CommittedCommand>,
+    observations: Vec<CommittedObservation>,
 }
 impl<'connection> LifecycleTransaction<'connection> {
     pub fn install(transaction: &mut Transaction<'_>) -> Result<()> {
@@ -382,7 +388,12 @@ impl<'connection> LifecycleTransaction<'connection> {
             claimed: vec![],
             owners: vec![],
             cleared_cards: BTreeSet::new(),
+            commands: vec![],
+            observations: vec![],
         })
+    }
+    pub fn scope(&self) -> &AuthorityScope {
+        &self.scope
     }
     pub fn load(&self, task: &TaskId) -> Result<TaskLifecycle> {
         persistence::load(&self.transaction, &self.scope, task)
@@ -561,6 +572,14 @@ impl<'connection> LifecycleTransaction<'connection> {
         owner_generation: u64,
     ) -> Result<()> {
         let binding = self.execution_binding(stamp)?;
+        self.fence_retained_observation_owner(stamp, &binding, owner_generation)
+    }
+    fn fence_retained_observation_owner(
+        &self,
+        stamp: &ExecutionStamp,
+        binding: &ProviderBinding,
+        owner_generation: u64,
+    ) -> Result<()> {
         let current:Option<u64>=self.transaction.query_row("SELECT owner_generation FROM provider_execution_owners WHERE task_id=?1 AND generation=?2 AND binding_id=?3",params![stamp.task().0,sql_number(stamp.generation())?,binding.id()],|row|read_number(row,0)).optional()?;
         if current != Some(owner_generation) || owner_generation == 0 {
             return Err(Error::StaleOwner);
@@ -792,6 +811,10 @@ impl<'connection> LifecycleTransaction<'connection> {
         let stamp = grant.execution();
         let conversation = self.adapter_conversation(stamp)?;
         Ok(AdapterState {
+            scope: grant.scope().clone(),
+            execution: grant.execution().clone(),
+            binding: grant.binding().clone(),
+            owner_generation: grant.generation(),
             conversation,
             checkpoint: self.normalization_checkpoint(stamp)?,
         })
@@ -832,6 +855,13 @@ impl<'connection> LifecycleTransaction<'connection> {
         stamp: &ExecutionStamp,
     ) -> Result<Option<NormalizationCheckpoint>> {
         let binding = self.execution_binding(stamp)?;
+        self.retained_normalization_checkpoint(stamp, &binding)
+    }
+    fn retained_normalization_checkpoint(
+        &self,
+        stamp: &ExecutionStamp,
+        binding: &ProviderBinding,
+    ) -> Result<Option<NormalizationCheckpoint>> {
         let row:Option<(u64,Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT cursor,bytes,digest FROM provider_normalization_checkpoints WHERE task_id=?1 AND generation=?2 AND binding_id=?3",params![stamp.task().0,sql_number(stamp.generation())?,binding.id()],|row|Ok((read_number(row,0)?,row.get(1)?,row.get(2)?))).optional()?;
         row.map(|(cursor,bytes,digest)| {
             if bytes.is_empty() || bytes.len()>65536 || evidence_digest(&bytes)!=digest {return Err(Error::CorruptJournal);}
@@ -850,8 +880,14 @@ impl<'connection> LifecycleTransaction<'connection> {
         if cursor == 0 || bytes.is_empty() || bytes.len() > 65536 {
             return Err(Error::MetadataCapacity);
         }
-        let binding = self.execution_binding(stamp)?;
-        let previous = self.normalization_checkpoint(stamp)?;
+        let binding = match self.execution_binding(stamp) {
+            Ok(binding) => binding,
+            Err(Error::StalePermit) => {
+                self.checkpoint_binding_for_accepted_observation(stamp, cursor)?
+            }
+            Err(error) => return Err(error),
+        };
+        let previous = self.retained_normalization_checkpoint(stamp, &binding)?;
         if let Some(previous) = &previous {
             if previous.cursor == cursor {
                 return if previous.bytes == bytes {
@@ -1002,6 +1038,12 @@ impl<'connection> LifecycleTransaction<'connection> {
         for owner in &self.owners {
             self.fence_owner(owner)?;
         }
+        for command in &self.commands {
+            self.fence_committed_command(command)?;
+        }
+        for observation in &self.observations {
+            self.verify_observation_commit(observation)?;
+        }
         for (task, card) in &self.cleared_cards {
             let aggregate = self.load(task)?;
             if aggregate
@@ -1053,6 +1095,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             permits,
             attempts: self.claimed,
             owners: self.owners,
+            commands: self.commands,
+            observations: self.observations,
         })
     }
 }
@@ -1192,10 +1236,25 @@ impl AdapterInputMetadata {
 }
 #[derive(Debug)]
 pub struct AdapterState {
+    scope: AuthorityScope,
+    execution: ExecutionStamp,
+    binding: ProviderBinding,
+    owner_generation: u64,
     conversation: AdapterInputMetadata,
     checkpoint: Option<NormalizationCheckpoint>,
 }
 impl AdapterState {
+    /// Checks snapshot provenance only; current SQL ownership still requires a transaction fence.
+    pub fn validate_owner(&self, grant: &OwnerGrant) -> Result<()> {
+        if self.scope != *grant.scope()
+            || self.execution != *grant.execution()
+            || self.binding != *grant.binding()
+            || self.owner_generation != grant.generation()
+        {
+            return Err(Error::StaleOwner);
+        }
+        Ok(())
+    }
     pub fn conversation(&self) -> &[u8] {
         self.conversation.bytes()
     }

@@ -1,6 +1,8 @@
+#[path = "support/controller.rs"]
+mod fixture_controller;
+use fixture_controller::WorkerController;
 use alondra_agent_application::{
     DurableAdapter, InputMetadata, Normalization, ObservationMetadata, ObservationNormalizer,
-    WorkerController,
 };
 use alondra_domain::{ActivityView, Event};
 use alondra_foundation::{ConversationId, HostId, InputId, InstanceId, TaskId, TurnId, WorkId};

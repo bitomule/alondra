@@ -1,6 +1,10 @@
 //! Actual SDK child-process fixture. The wrapper observes/delegates; it creates no facts.
+#[path = "../../agent-application/tests/support/controller.rs"]
+mod fixture_controller;
+use fixture_controller::WorkerController;
 use super::*;
 use alondra_agent_application::Error as ControllerError;
+use alondra_store::{AuthorityScope, InputPayload};
 use alondra_agent_protocol::{FramedReader, ReceivedFrame};
 use alondra_domain::ActivityView;
 use alondra_foundation::{ConversationId, HostId, InputId, InstanceId};
@@ -474,4 +478,671 @@ fn actual_sdk_root_assistant_commits_first_input_consumption_before_owned_stop()
 #[test]
 fn actual_sdk_result_only_consumption_preserves_unacknowledged_terminal_application_gap() {
     scenario("normal-result-only", true);
+}
+
+
+struct FacadeFixture {
+    worker: ClaudeWorker,
+    connection: rusqlite::Connection,
+    capture: PathBuf,
+    scope: AuthorityScope,
+    cleanup: Option<Cleanup>,
+    _directory: test_support::Directory,
+}
+impl FacadeFixture {
+    fn staged_owner(
+        epoch: &str,
+        instance: &str,
+    ) -> (
+        Self,
+        OwnerGrant,
+        AdapterState,
+        alondra_store::DispatchPermit,
+    ) {
+        Self::staged_runtime(epoch, instance, binding(), "workspace")
+    }
+    fn staged_runtime(
+        epoch: &str,
+        instance: &str,
+        provider: ProviderBinding,
+        native_workspace: &str,
+    ) -> (
+        Self,
+        OwnerGrant,
+        AdapterState,
+        alondra_store::DispatchPermit,
+    ) {
+        let directory = test_support::Directory::for_unix_socket();
+        private_directory(&directory);
+        let state = directory.join("host");
+        let home = directory.join("home");
+        let cwd = directory.join("workspace");
+        for path in [&state, &home, &cwd] {
+            private_directory(path);
+        }
+        let native_cwd = directory.join(native_workspace);
+        if native_cwd != cwd {
+            private_directory(&native_cwd);
+        }
+        let node = runfile("FIXTURE_NODE");
+        let bundle = runfile("FIXTURE_HOST");
+        let native = directory.join("native");
+        fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o700)).unwrap();
+        let capture = directory.join("native-capture.json");
+        let environment = BTreeMap::from([
+            ("HOME".into(), home.to_str().unwrap().into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ]);
+        let mut native_environment = environment.clone();
+        native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
+        let configuration = ClaudeConfiguration {
+            artifact: VerifiedArtifact::verify(&node, &bundle, &hash(&node), &hash(&bundle))
+                .unwrap(),
+            state_directory: state,
+            host_environment: environment,
+            native_executable: native,
+            native_directory: native_cwd,
+            native_environment,
+            profile_id: "sdk-profile".into(),
+            account_id: "sdk-account".into(),
+            host_release: "sdk-facade-fixture".into(),
+            io_timeout: Duration::from_secs(30),
+        };
+        let connection = database(&directory.join("domain.db"), &cwd);
+        connection
+            .execute("UPDATE domain_meta SET data_epoch=?1", [epoch])
+            .unwrap();
+        let worker = ClaudeWorker::configured(provider, configuration).unwrap();
+        let mut fixture = Self {
+            worker,
+            connection,
+            capture,
+            scope: AuthorityScope::new(epoch.into()).unwrap(),
+            cleanup: None,
+            _directory: directory,
+        };
+        assert!(
+            !fixture
+                .capture
+                .with_file_name("native-capture.json.starts")
+                .exists(),
+            "configuration is inert"
+        );
+        let mut raw = rusqlite::Transaction::new_unchecked(
+            &fixture.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        alondra_store::LifecycleTransaction::install(&mut raw).unwrap();
+        raw.commit().unwrap();
+        let raw = rusqlite::Transaction::new_unchecked(
+            &fixture.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        let mut tx =
+            alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+        let input = InputId::new("sdk-initial").unwrap();
+        tx.create(
+            &"sdk-task".into(),
+            InputPayload::new(input.clone(), "consume-and-hold").unwrap(),
+        )
+        .unwrap();
+        tx.apply(
+            &"sdk-task".into(),
+            0,
+            "facade-admit",
+            alondra_domain::Event::Admit {
+                node: "sdk-node".into(),
+                conversation: ConversationId::new("sdk-conversation").unwrap(),
+                instance: InstanceId::new(instance).unwrap(),
+                host: HostId::new("sdk-host").unwrap(),
+            },
+        )
+        .unwrap();
+        tx.bind_provider(&"sdk-task".into(), fixture.worker.binding())
+            .unwrap();
+        let stamp = tx
+            .load(&"sdk-task".into())
+            .unwrap()
+            .execution()
+            .unwrap()
+            .clone();
+        fixture
+            .worker
+            .stage_input(InputMetadata::for_execution(&mut tx, &stamp, &input).unwrap())
+            .unwrap();
+        tx.stage_launch(
+            &"sdk-task".into(),
+            &Placement::LocalDirectory(cwd.to_str().unwrap().into()),
+            fixture.worker.binding(),
+        )
+        .unwrap();
+        tx.reserve_owner(&stamp, 0).unwrap();
+        let mut committed = tx.commit().unwrap();
+        let owner = committed.owners.pop().unwrap();
+        let permit = committed.permits.pop().unwrap();
+        let raw = rusqlite::Transaction::new_unchecked(
+            &fixture.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        let tx = alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+        let state = tx.adapter_state(&owner).unwrap();
+        tx.commit().unwrap();
+        (fixture, owner, state, permit)
+    }
+    fn new() -> (Self, alondra_store::DispatchAttempt) {
+        let (mut fixture, owner, state, permit) = Self::staged_owner("sdk-epoch", "sdk-execution");
+        fixture.worker.install_owner(owner, state).unwrap();
+        assert!(
+            !fixture
+                .capture
+                .with_file_name("native-capture.json.starts")
+                .exists(),
+            "committed control owner starts an inert host, not a native query"
+        );
+        let raw = rusqlite::Transaction::new_unchecked(
+            &fixture.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        let mut tx =
+            alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+        tx.claim(permit).unwrap();
+        let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+        (fixture, attempt)
+    }
+    fn prepare(&mut self, attempt: &alondra_store::DispatchAttempt) -> PreparedCommand {
+        let raw = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        let mut tx = alondra_store::LifecycleTransaction::attach(raw, self.scope.clone()).unwrap();
+        let command = self
+            .worker
+            .prepare(
+                attempt,
+                InputMetadata::for_attempt(&mut tx, attempt).unwrap(),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        command
+    }
+    fn commit_command(
+        &mut self,
+        attempt: alondra_store::DispatchAttempt,
+        bytes: Vec<u8>,
+    ) -> alondra_store::CommittedCommand {
+        let raw = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .unwrap();
+        let mut tx = alondra_store::LifecycleTransaction::attach(raw, self.scope.clone()).unwrap();
+        tx.record_owned_command(
+            attempt,
+            self.worker.owner_generation().unwrap(),
+            alondra_store::CommandEvidence::new(bytes).unwrap(),
+        )
+        .unwrap();
+        tx.commit().unwrap().commands.pop().unwrap()
+    }
+    fn assert_no_host_effects(&self) {
+        assert!(self.worker.adapter.host.is_none(), "rejected provenance must not install a host");
+        assert_eq!(
+            fs::read_dir(&self.worker.adapter.configuration.state_directory).unwrap().count(),
+            0,
+            "rejected provenance must not create any host lock, socket or journal"
+        );
+        assert!(!self.capture.with_file_name("native-capture.json.starts").exists());
+    }
+    fn stop(&mut self) -> Result<(), String> {
+        self.finish_cleanup(false)
+    }
+    fn finish_cleanup(&mut self, report_stop_error: bool) -> Result<(), String> {
+        if self.cleanup.is_none() {
+            let Some(host) = self.worker.adapter.host.as_mut() else {
+                return Ok(());
+            };
+            let stop = host.request_stop().map_err(|error| error.to_string());
+            let stop = if report_stop_error {
+                stop.and_then(|()| {
+                    Err("fixture-reported error after actual stop request".to_owned())
+                })
+            } else {
+                stop
+            };
+            // Actual exit is attempted independently, even when requesting stop reports an error.
+            let exit = host.wait().map_err(|error| error.to_string());
+            self.cleanup = Some(Cleanup { stop, exit });
+        }
+        let cleanup = self.cleanup.as_ref().expect("cleanup result was retained");
+        let mut failures = Vec::new();
+        if let Err(error) = &cleanup.stop {
+            failures.push(format!("stop request: {error}"));
+        }
+        match &cleanup.exit {
+            Ok(status) if status.success() => {}
+            Ok(status) => failures.push(format!("actual host exit: {status}")),
+            Err(error) => failures.push(format!("exit observation failed: {error}")),
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+}
+impl Drop for FacadeFixture {
+    fn drop(&mut self) {
+        // Explicit cleanup callers already receive both outcomes; unwind cleanup preserves the primary panic.
+        if self.cleanup.is_none()
+            && let Err(error) = self.stop()
+        {
+            if std::thread::panicking() {
+                eprintln!("Fixture cleanup also failed: {error}");
+            } else {
+                panic!("Fixture cleanup failed: {error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn actual_facade_refuses_committed_close_for_its_privately_prepared_launch() {
+    let (mut fixture, attempt) = FacadeFixture::new();
+    let prepared = fixture.prepare(&attempt);
+    let mut frame = FramedReader::new(Cursor::new(prepared.bytes().to_vec()))
+        .read()
+        .unwrap()
+        .unwrap();
+    let Body::Command(command) = &mut frame.body else {
+        panic!("prepared command frame required")
+    };
+    assert!(matches!(command.action, Action::Start { .. }));
+    command.action = Action::Close;
+    let substituted = alondra_agent_protocol::encode(&frame).unwrap();
+    let committed = fixture.commit_command(attempt, substituted);
+    assert!(
+        matches!(
+            fixture.worker.submit(&committed),
+            Err(AdapterError::InvalidObservation)
+        ),
+        "the actual facade must reject persisted bytes that differ from its preparation"
+    );
+    assert!(
+        !fixture
+            .capture
+            .with_file_name("native-capture.json.starts")
+            .exists(),
+        "a rejected technical command cannot launch the native SDK child"
+    );
+    fixture.stop().unwrap();
+}
+fn facade_ack_scenario(substitute_raw: bool) {
+    let (mut fixture, attempt) = FacadeFixture::new();
+    let prepared = fixture.prepare(&attempt);
+    let committed = fixture.commit_command(attempt, prepared.bytes().to_vec());
+    assert_eq!(fixture.worker.submit(&committed).unwrap(), Handoff::Offered);
+    let raw = rusqlite::Transaction::new_unchecked(
+        &fixture.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(
+        raw,
+        AuthorityScope::new("sdk-epoch".into()).unwrap(),
+    )
+    .unwrap();
+    tx.record_committed_receipt(committed, alondra_store::DispatchReceipt::Handed)
+        .unwrap();
+    tx.commit().unwrap();
+    let received = fixture.worker.poll().unwrap().unwrap();
+    assert!(!received.evidence.is_empty());
+    let raw = rusqlite::Transaction::new_unchecked(
+        &fixture.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(
+        raw,
+        AuthorityScope::new("sdk-epoch".into()).unwrap(),
+    )
+    .unwrap();
+    if substitute_raw {
+        tx.accept_owned_observation(
+            &received.execution,
+            received.owner_generation,
+            received.cursor,
+            alondra_store::CommandEvidence::new(b"substituted raw at same cursor".to_vec())
+                .unwrap(),
+        )
+        .unwrap();
+        tx.put_normalization_checkpoint(
+            &received.execution,
+            received.cursor,
+            None,
+            b"SQL-only checkpoint".to_vec(),
+        )
+        .unwrap();
+    } else {
+        alondra_agent_application::stage_observation(
+            &mut tx,
+            fixture.worker.binding(),
+            fixture.worker.owner_generation().unwrap(),
+            &received,
+            fixture.worker.normalizer(),
+        )
+        .unwrap();
+    }
+    let committed = tx.commit().unwrap().observations.pop().unwrap();
+    if substitute_raw {
+        assert!(
+            matches!(
+                fixture.worker.acknowledge(&committed),
+                Err(AdapterError::InvalidObservation)
+            ),
+            "SQL evidence for different bytes cannot ACK this received cursor"
+        );
+        assert!(
+            fixture.worker.pending.is_some(),
+            "rejected ACK retains the exact received evidence"
+        );
+    } else {
+        fixture.worker.acknowledge(&committed).unwrap();
+        assert!(
+            fixture.worker.pending.is_none(),
+            "only successful exact ACK clears the retained receipt"
+        );
+    }
+    fixture.stop().unwrap();
+}
+#[test]
+fn actual_facade_refuses_committed_substitution_for_received_raw_cursor() {
+    facade_ack_scenario(true);
+}
+#[test]
+fn actual_facade_accepts_exact_committed_raw_checkpoint_ack() {
+    facade_ack_scenario(false);
+}
+
+#[test]
+fn actual_facade_rejects_adapter_state_from_another_execution() {
+    let (mut first, owner, own_state, _permit) =
+        FacadeFixture::staged_owner("sdk-epoch", "sdk-execution");
+    let (mut second, second_owner, foreign_state, _permit) =
+        FacadeFixture::staged_owner("sdk-epoch", "another-execution");
+    assert_eq!(owner.scope(), second_owner.scope());
+    assert_eq!(owner.binding(), second_owner.binding());
+    assert_ne!(
+        owner.execution(),
+        second_owner.execution(),
+        "both states are genuine but their executions differ"
+    );
+    assert!(own_state.checkpoint().is_none());
+    assert!(
+        foreign_state.checkpoint().is_none(),
+        "the existing checkpoint refusal must not mask state correlation"
+    );
+    let result = first.worker.install_owner(owner, foreign_state);
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "owner installation must reject genuine AdapterState from another execution before launching a host"
+    );
+    assert!(first.worker.adapter.host.is_none());
+    assert!(
+        !first
+            .worker
+            .adapter
+            .configuration
+            .state_directory
+            .join("host.lock")
+            .exists()
+    );
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+#[test]
+fn actual_facade_rejects_foreign_epoch_input_metadata_with_equal_execution_and_input() {
+    let (mut first, attempt) = FacadeFixture::new();
+    let (mut second, second_owner, _state, _permit) =
+        FacadeFixture::staged_owner("foreign-sdk-epoch", "sdk-execution");
+    assert_eq!(
+        attempt.execution(),
+        second_owner.execution(),
+        "execution correlation alone must not mask the data epoch mismatch"
+    );
+    assert_eq!(attempt.binding(), second_owner.binding());
+    assert_ne!(attempt.scope(), second_owner.scope());
+    let raw = rusqlite::Transaction::new_unchecked(
+        &second.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(raw, second.scope.clone()).unwrap();
+    let metadata =
+        InputMetadata::for_execution(&mut tx, attempt.execution(), attempt.input().id()).unwrap();
+    assert_eq!(metadata.execution(), attempt.execution());
+    assert_eq!(metadata.input_id(), attempt.input().id());
+    let result = first.worker.prepare(&attempt, metadata);
+    tx.commit().unwrap();
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "preparation must reject same-stamp metadata loaded from another genuine data epoch"
+    );
+    assert!(first.worker.prepared.is_none());
+    assert!(
+        !first
+            .capture
+            .with_file_name("native-capture.json.starts")
+            .exists()
+    );
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+
+#[test]
+fn facade_fixture_reported_stop_error_still_observes_actual_exit_before_directory_drop() {
+    let (mut fixture, _attempt) = FacadeFixture::new();
+    let root = fixture._directory.to_path_buf();
+    assert!(root.exists());
+    let error = fixture.finish_cleanup(true).unwrap_err();
+    assert!(error.contains("fixture-reported error after actual stop request"));
+    let cleanup = fixture.cleanup.as_ref().unwrap();
+    assert!(cleanup.stop.is_err());
+    assert!(
+        cleanup.exit.as_ref().unwrap().success(),
+        "a reported stop error must not skip the real wait barrier"
+    );
+    assert!(
+        root.exists(),
+        "the Directory guard remains owned through observed actual exit"
+    );
+    drop(fixture);
+    assert!(
+        !root.exists(),
+        "only the structured owner drop cleans the closed fixture root"
+    );
+}
+
+fn revised_configuration_binding() -> ProviderBinding {
+    let original = binding();
+    ProviderBinding::new(
+        original.id().into(),
+        original.driver().into(),
+        original.instance().into(),
+        original.configuration().into(),
+        original.configuration_revision() + 1,
+        original.capability_revision(),
+        original.capabilities().clone(),
+        original.credential().into(),
+        original.credential_generation(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn actual_facade_rejects_stale_state_generation_for_the_same_execution() {
+    let (mut fixture, first_owner, first_state, _permit) =
+        FacadeFixture::staged_owner("sdk-epoch", "sdk-execution");
+    let raw = rusqlite::Transaction::new_unchecked(
+        &fixture.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+    tx.reserve_owner(first_owner.execution(), first_owner.generation()).unwrap();
+    let second_owner = tx.commit().unwrap().owners.pop().unwrap();
+    assert_eq!(first_owner.scope(), second_owner.scope());
+    assert_eq!(first_owner.execution(), second_owner.execution());
+    assert_eq!(first_owner.binding(), second_owner.binding());
+    assert_eq!(second_owner.generation(), first_owner.generation() + 1);
+    assert!(first_state.checkpoint().is_none());
+    let result = fixture.worker.install_owner(second_owner, first_state);
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "same execution cannot install AdapterState from an earlier committed owner generation"
+    );
+    fixture.assert_no_host_effects();
+    fixture.stop().unwrap();
+}
+
+#[test]
+fn actual_facade_rejects_foreign_state_epoch_with_equal_execution_binding_and_generation() {
+    let (mut first, owner, _own_state, _permit) =
+        FacadeFixture::staged_owner("sdk-epoch", "sdk-execution");
+    let (mut second, foreign_owner, foreign_state, _permit) =
+        FacadeFixture::staged_owner("foreign-sdk-epoch", "sdk-execution");
+    assert_eq!(owner.execution(), foreign_owner.execution());
+    assert_eq!(owner.binding(), foreign_owner.binding());
+    assert_eq!(owner.generation(), foreign_owner.generation());
+    assert_ne!(owner.scope(), foreign_owner.scope());
+    assert!(foreign_state.checkpoint().is_none());
+    let result = first.worker.install_owner(owner, foreign_state);
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "equal execution and generation cannot install AdapterState from another data epoch"
+    );
+    first.assert_no_host_effects();
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+
+#[test]
+fn actual_facade_rejects_foreign_state_binding_with_equal_epoch_execution_and_generation() {
+    let (mut first, owner, _own_state, _permit) =
+        FacadeFixture::staged_owner("sdk-epoch", "sdk-execution");
+    let (mut second, foreign_owner, foreign_state, _permit) = FacadeFixture::staged_runtime(
+        "sdk-epoch",
+        "sdk-execution",
+        revised_configuration_binding(),
+        "workspace",
+    );
+    assert_eq!(owner.scope(), foreign_owner.scope());
+    assert_eq!(owner.execution(), foreign_owner.execution());
+    assert_eq!(owner.generation(), foreign_owner.generation());
+    assert_eq!(owner.binding(), first.worker.binding());
+    assert_eq!(owner.binding().id(), foreign_owner.binding().id());
+    assert_eq!(owner.binding().driver(), foreign_owner.binding().driver());
+    assert_eq!(owner.binding().instance(), foreign_owner.binding().instance());
+    assert_eq!(owner.binding().configuration(), foreign_owner.binding().configuration());
+    assert_eq!(owner.binding().capability_revision(), foreign_owner.binding().capability_revision());
+    assert_eq!(owner.binding().capabilities(), foreign_owner.binding().capabilities());
+    assert_eq!(owner.binding().credential(), foreign_owner.binding().credential());
+    assert_eq!(owner.binding().credential_generation(), foreign_owner.binding().credential_generation());
+    assert_eq!(foreign_owner.binding().configuration_revision(), owner.binding().configuration_revision() + 1);
+    assert!(foreign_state.checkpoint().is_none());
+    let result = first.worker.install_owner(owner, foreign_state);
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "matching owner identifiers cannot install state from another immutable configuration revision"
+    );
+    first.assert_no_host_effects();
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+
+#[test]
+fn actual_facade_rejects_foreign_metadata_binding_with_equal_epoch_execution_and_input() {
+    let (mut first, attempt) = FacadeFixture::new();
+    let (mut second, foreign_owner, _state, _permit) = FacadeFixture::staged_runtime(
+        "sdk-epoch",
+        "sdk-execution",
+        revised_configuration_binding(),
+        "workspace",
+    );
+    assert_eq!(attempt.scope(), foreign_owner.scope());
+    assert_eq!(attempt.execution(), foreign_owner.execution());
+    assert_eq!(attempt.binding().id(), foreign_owner.binding().id());
+    assert_ne!(attempt.binding(), foreign_owner.binding());
+    assert_eq!(attempt.binding(), first.worker.binding());
+    let raw = rusqlite::Transaction::new_unchecked(
+        &second.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(raw, second.scope.clone()).unwrap();
+    let metadata =
+        InputMetadata::for_execution(&mut tx, attempt.execution(), attempt.input().id()).unwrap();
+    assert_eq!(metadata.execution(), attempt.execution());
+    assert_eq!(metadata.input_id(), attempt.input().id());
+    assert_eq!(metadata.binding().unwrap(), *foreign_owner.binding());
+    let result = first.worker.prepare(&attempt, metadata);
+    tx.commit().unwrap();
+    assert!(
+        matches!(result, Err(AdapterError::InvalidObservation)),
+        "same epoch and input identifiers cannot prepare native metadata from another binding revision"
+    );
+    assert!(first.worker.prepared.is_none());
+    assert!(!first.capture.with_file_name("native-capture.json.starts").exists());
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+
+#[test]
+fn actual_facade_refuses_configured_workspace_different_from_the_claimed_owned_directory() {
+    let (mut fixture, owner, state, permit) = FacadeFixture::staged_runtime(
+        "sdk-epoch",
+        "sdk-execution",
+        binding(),
+        "another-workspace",
+    );
+    let configured = fixture.worker.adapter.configuration.native_directory.clone();
+    fixture.worker.install_owner(owner, state).unwrap();
+    assert!(fixture.worker.adapter.host.is_some(), "a valid control owner may launch an inert host");
+    let raw = rusqlite::Transaction::new_unchecked(
+        &fixture.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+    tx.claim(permit).unwrap();
+    let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+    assert_eq!(attempt.scope(), &fixture.scope);
+    assert_eq!(attempt.binding(), fixture.worker.binding());
+    let Some(Placement::LocalDirectory(claimed)) = attempt.placement() else {
+        panic!("a real local-directory claim is required");
+    };
+    assert_ne!(Path::new(claimed), configured.as_path());
+    assert!(Path::new(claimed).is_dir());
+    assert!(configured.is_dir());
+    let raw = rusqlite::Transaction::new_unchecked(
+        &fixture.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .unwrap();
+    let mut tx = alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
+    let metadata = InputMetadata::for_attempt(&mut tx, &attempt).unwrap();
+    let result = fixture.worker.prepare(&attempt, metadata);
+    tx.commit().unwrap();
+    assert!(
+        matches!(result, Err(AdapterError::Unsupported)),
+        "the native query must not use a configured directory different from its genuine claimed workspace"
+    );
+    assert!(fixture.worker.prepared.is_none());
+    assert!(!fixture.capture.with_file_name("native-capture.json.starts").exists());
+    fixture.stop().unwrap();
 }

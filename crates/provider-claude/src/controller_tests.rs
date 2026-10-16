@@ -1,8 +1,11 @@
 //! Local raw-evidence/controller transaction regression, not a native SDK integration test.
+#[path = "../../agent-application/tests/support/controller.rs"]
+mod fixture_controller;
+use fixture_controller::WorkerController;
 use super::normalizer::Normalizer;
 use super::records::{InputRecord, SessionRecord};
 use super::wire::{ControlIdentity, execution, fence};
-use alondra_agent_application::{DurableAdapter, InputMetadata, WorkerController};
+use alondra_agent_application::{DurableAdapter, InputMetadata};
 use alondra_agent_protocol::{
     Body, Event as WireEvent, Frame, NativeCorrelation, Observation as WireObservation,
     SdkEventKind,

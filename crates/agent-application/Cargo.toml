@@ -10,8 +10,8 @@ alondra-domain.workspace = true
 alondra-foundation.workspace = true
 alondra-provider-contract.workspace = true
 alondra-store.workspace = true
-rusqlite.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

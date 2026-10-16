@@ -822,7 +822,10 @@ impl DomainStore {
         let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
         #[cfg(test)]
-        if let Some(trace) = &mut trace { trace.complete(); }
+        if let Some(trace) = &mut trace {
+            trace.vm_steps(query.get_status(rusqlite::StatementStatus::VmStep));
+            trace.complete();
+        }
         Ok(values)
     }
     pub(crate) fn request_times(&self) -> Result<std::collections::BTreeMap<RequestId, i64>> {
