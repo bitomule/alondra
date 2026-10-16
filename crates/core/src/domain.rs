@@ -32,6 +32,8 @@ mod node_machine_tests;
 mod merged_close_tests;
 #[cfg(test)]
 mod proposed_plan_tests;
+#[cfg(test)]
+mod suggestion_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;
@@ -45,4 +47,4 @@ pub use projection::*;
 pub use read_index::*;
 pub use refusal::*;
 pub use schedule::*;
-pub use rules::{ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, post_merge_reminder, merge_failed_text, merge_failure, merged_notice};
+pub use rules::{ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, unanswered_withdrawn_notice, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, post_merge_reminder, merge_failed_text, merge_failure, merged_notice};

@@ -965,6 +965,59 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "settle_suggestion"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "decision": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "new_task" },
+                    "task_id": { "$ref": "#/$defs/TaskId" },
+                    "request_id": { "$ref": "#/$defs/RequestId" },
+                    "title": { "type": "string", "minLength": 1, "maxLength": 60 },
+                    "launch": { "type": "object" },
+                    "dependencies": { "type": "array", "items": { "$ref": "#/$defs/TaskId" } },
+                    "note": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "task_id", "request_id", "title", "launch"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "current_task" },
+                    "note": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "note"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "discard" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "reason"]
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "decision"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "create_document"
             },
             "task_id": {

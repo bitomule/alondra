@@ -94,6 +94,22 @@ mod tests {
     }
 
     #[test]
+    fn a_suggestion_that_becomes_a_task_has_its_plan_checked_like_any_new_task() {
+        let w = world();
+        let settle = |launch: LaunchPlan| Command::SettleSuggestion {
+            interaction_id: "p".into(),
+            decision: alondra_core::domain::SuggestionDecision::NewTask {
+                task_id: "readme".into(), request_id: "r-readme".into(), title: "README".into(), launch,
+                dependencies: Default::default(), note: None,
+            },
+        };
+        check_launch_plan(&w.domain, &w.home, &settle(plan(&w, json!({})))).unwrap();
+        let missing = check_launch_plan(&w.domain, &w.home, &settle(plan(&w, json!({"cwd": "/no/such/folder"})))).unwrap_err();
+        assert_eq!(missing.message, "directory /no/such/folder does not exist");
+        assert!(check_launch_shape("POST", "/interactions/p/settlement", &json!({"decision": {"launch": {"name": "x"}}})).is_err());
+    }
+
+    #[test]
     fn a_launch_plan_needs_model_and_reason_with_auto_effort_and_an_existing_folder() {
         let w = world();
         let request = alondra_core::domain::RequestId::from("r");

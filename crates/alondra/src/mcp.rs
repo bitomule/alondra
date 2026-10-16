@@ -268,7 +268,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         let scope = interaction["scope"].clone();
         tools.push(domain_tool(
             "suggest",
-            &format!("Tell the orchestrator about something you saw outside your task (an unrelated bug, an improvement) as soon as you see it, and keep working: it never blocks you, never goes to {user} and never touches your delivery. The orchestrator answers with a note: it is part of your plan (do it in this task), discarded (already covered or already turned down), a new task, or a question it takes to {user}. At most {} suggestions wait at a time per task.", alondra_core::domain::OPEN_SUGGESTIONS_MAX),
+            &format!("Tell the orchestrator about something you saw outside your task (an unrelated bug, an improvement) as soon as you see it, and keep working: it never blocks you, never goes to {user} and never touches your delivery. The orchestrator answers with one decision: it is part of your plan (do it in this task), discarded (with the reason), or a new task it created (with its id). At most {} suggestions wait at a time per task.", alondra_core::domain::OPEN_SUGGESTIONS_MAX),
             json!({"interaction_id":{"type":"string"},"scope":scope,
                 "what":{"type":"string","maxLength":90,"description":"What you saw, on one line"},
                 "where":{"type":"string","description":"Where it is: file and line, screen, PR, command"},
@@ -479,9 +479,23 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "answer_question",
-            "Answer a question addressed to the orchestrator: option_id is the option chosen (empty for an answer in your own words), and inputs.text your words, alone or with it (the note a suggestion's answer carries).",
+            "Answer a question addressed to the orchestrator: option_id is the option chosen (empty for an answer in your own words), and inputs.text your words, alone or with it. Every question a node asks you gets its answer here: an answer written only in your conversation never reaches the node. A node's suggestion is settled with settle_suggestion instead.",
             json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":interaction["attachments"]}),
             vec!["interaction_id", "option_id"],
+        ),
+        (
+            "settle_suggestion",
+            "Settle a node's suggestion with exactly one decision, which reaches the node. new_task creates the task in this same call, under a new request of its own (request_id, title of at most 60 characters, launch plan as in create_task), and the answer carries its id; current_task: the plan of the task that suggested it already covers it, and note says which step; discard: reason says which open task covers it or what the user turned down. If it is a product call, ask the user first and settle it once they answer.",
+            json!({"interaction_id":{"type":"string"},"decision":{"type":"object","required":["kind"],"properties":{
+                "kind":{"type":"string","enum":["new_task","current_task","discard"]},
+                "task_id":{"type":"string","description":"new_task: the new task's id"},
+                "request_id":{"type":"string","description":"new_task: the id of the request created for it"},
+                "title":{"type":"string","maxLength":60,"description":"new_task: the task's title, also its request's"},
+                "launch":launch_plan_schema(),
+                "dependencies":{"type":"array","items":{"type":"string"},"description":"new_task: tasks it waits for"},
+                "note":{"type":"string","description":"new_task: optional; current_task: required, the step of its plan that covers it"},
+                "reason":{"type":"string","description":"discard: required"}}}}),
+            vec!["interaction_id", "decision"],
         ),
         (
             "link_task_document",
@@ -578,6 +592,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "withdraw_question"
         | "answer_clarification"
         | "answer_question"
+        | "settle_suggestion"
         | "link_task_document"
         | "cancel_task"
         | "reopen_task"
@@ -618,6 +633,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "withdraw"
         | "withdraw_question"
         | "answer_question"
+        | "settle_suggestion"
         | "create_request"
         | "close_request"
         | "title_request"
@@ -820,6 +836,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "withdraw" | "withdraw_question" => ("POST", format!("/interactions/{}/withdrawal", id("interaction_id")?)),
         "request_clarification" => ("POST", format!("/interactions/{}/clarification", id("interaction_id")?)),
         "answer_question" => ("POST", format!("/interactions/{}/answers", id("interaction_id")?)),
+        "settle_suggestion" => ("POST", format!("/interactions/{}/settlement", id("interaction_id")?)),
         "mark_read" => ("PUT", format!("/interactions/{}/read-state", id("interaction_id")?)),
         "submit_feedback" => ("POST", format!("/interactions/{}/feedback", id("presentation_id")?)),
         "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", id("presentation_id")?)),
@@ -862,6 +879,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "raise_problem" => "raise_problem",
         "withdraw" | "withdraw_question" => "withdraw",
         "answer_question" => "answer_question",
+        "settle_suggestion" => "settle_suggestion",
         "create_request" => "create_request",
         "close_request" => "close_request",
         "title_request" => "title_request",
@@ -2349,9 +2367,27 @@ mod card_tool_tests {
         assert_eq!(built["card"]["why"], "This task only touches the CLI");
         assert_eq!(built["card"]["content"]["body"], "Where: README.md:12\n\nSeen while reading the docs");
         let ids: Vec<&str> = built["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["yours", "discarded", "new_task", "ask_user"]);
+        assert_eq!(ids, ["yours", "discarded", "new_task"]);
         let missing = domain_envelope("suggest", &with(json!({"what":"w","why_not_mine":"y"})), "epoch", "id").unwrap_err().to_string();
         assert!(missing.contains("what, where and why_not_mine are required"), "{missing}");
+    }
+
+    #[test]
+    fn the_orchestrator_settles_a_suggestion_with_one_typed_decision() {
+        assert!(tools(Role::Orchestrator, "Ana").as_array().unwrap().iter().any(|t| t["name"] == "settle_suggestion"));
+        assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "settle_suggestion"));
+        let args = json!({"interaction_id":"p-1","decision":{"kind":"new_task","task_id":"t-readme","request_id":"r-readme",
+            "title":"Update the README flag","launch":{"name":"readme","cwd":"/tmp"}}});
+        let (method, path, body) = command_request("settle_suggestion", &args, "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("POST", "/interactions/p-1/settlement"));
+        assert_eq!(body["decision"]["task_id"], "t-readme");
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(domain_envelope("settle_suggestion", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_core::domain::Command::SettleSuggestion {
+            decision: alondra_core::domain::SuggestionDecision::NewTask { .. }, .. }));
+        let words = json!({"interaction_id":"p-1","decision":{"kind":"later","text":"It goes as a separate task"}});
+        assert!(domain_envelope("settle_suggestion", &words, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"));
+        let reasonless = json!({"interaction_id":"p-1","decision":{"kind":"discard"}});
+        assert!(domain_envelope("settle_suggestion", &reasonless, "epoch", "id").is_err());
     }
 
     #[test]

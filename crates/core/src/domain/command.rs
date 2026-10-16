@@ -270,6 +270,11 @@ pub enum Command {
         #[serde(default)]
         inputs: BTreeMap<String, InputValue>,
     },
+    /// The orchestrator's answer to a node's suggestion: one of the three decisions, never words alone.
+    SettleSuggestion {
+        interaction_id: InteractionId,
+        decision: SuggestionDecision,
+    },
     CreateDocument {
         task_id: TaskId,
         document_id: DocumentId,

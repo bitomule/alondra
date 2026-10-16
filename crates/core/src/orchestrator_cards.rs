@@ -20,7 +20,18 @@ pub const UNSPLIT_CLOSE_LABEL: &str = "Close it";
 /// Alondra's reminder to the orchestrator about a request it left without tasks.
 pub const UNSPLIT_NOTICE_PREFIX: &str = "request-unsplit-";
 
+/// Alondra's reminder to the orchestrator about a node's question it left unanswered.
+pub const UNANSWERED_NOTICE_PREFIX: &str = "question-unanswered-";
+pub const UNANSWERED_PROBLEM_PREFIX: &str = "problem-unanswered-question-";
+pub const UNANSWERED_REMIND: &str = "remind_again";
+pub const UNANSWERED_REMIND_LABEL: &str = "Remind it again";
+pub const UNANSWERED_WITHDRAW: &str = "withdraw_question";
+pub const UNANSWERED_WITHDRAW_LABEL: &str = "Withdraw the question";
+/// Alondra's one reminder to the orchestrator about a node's suggestion it left unsettled.
+pub const UNSETTLED_NOTICE_PREFIX: &str = "suggestion-unsettled-";
+
 const ERROR_SHOWN: usize = 600;
+const QUESTION_SHOWN: usize = 160;
 
 /// Claude could not start the orchestrator several times in a row: new requests wait for it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -86,6 +97,36 @@ impl UnsplitProblem {
     }
 }
 
+/// A node's question Alondra handed over twice that still has no answer: its task stands still.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct UnansweredProblem {
+    pub question_id: String,
+    pub task_title: String,
+    pub question: String,
+}
+
+impl UnansweredProblem {
+    pub fn to_body(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn from_body(body: &str) -> Option<Self> {
+        serde_json::from_str(body).ok()
+    }
+
+    pub fn text(&self, lang: Lang) -> (String, String) {
+        let title: String = self.task_title.chars().take(48).collect();
+        let question: String = self.question.chars().take(QUESTION_SHOWN).collect();
+        (
+            tf!(lang, "“{title}” still has no answer", "«{title}» sigue sin respuesta", title = title),
+            tf!(lang,
+                "Alondra handed its question over twice and got no answer. It asked: {question}",
+                "Alondra pasó su pregunta dos veces y no hubo respuesta. Preguntó: {question}",
+                question = question),
+        )
+    }
+}
+
 /// The words of this module's options, by the id and English label they were built with.
 pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &'static str)> {
     match (id, label) {
@@ -96,6 +137,14 @@ pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &
         (UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL) => Some((
             t!(lang, "Try again", "Volver a intentarlo"),
             t!(lang, "Alondra works on the request again from the start", "Alondra vuelve a procesar la petición desde el principio"),
+        )),
+        (UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL) => Some((
+            t!(lang, "Remind it again", "Recordárselo otra vez"),
+            t!(lang, "Alondra hands the question over again so it gets its answer", "Alondra vuelve a pasar la pregunta para que tenga respuesta"),
+        )),
+        (UNANSWERED_WITHDRAW, UNANSWERED_WITHDRAW_LABEL) => Some((
+            t!(lang, "Withdraw the question", "Retirar la pregunta"),
+            t!(lang, "The node goes on without that answer, or asks you", "El nodo sigue sin esa respuesta, o te pregunta a ti"),
         )),
         (UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL) => Some((
             t!(lang, "Close it", "Cerrarla"),
@@ -114,8 +163,10 @@ mod tests {
     fn every_text_fits_a_card_and_names_no_orchestrator() {
         let stuck = StuckProblem { failures: 3, error: "spawn failed".into() };
         let unsplit = UnsplitProblem { request_id: "r".into(), title: "A request whose title is far longer than a card's need can hold".into() };
+        let unanswered = UnansweredProblem { question_id: "q".into(), task_title: "A task whose title is far longer than a card's need can hold".into(),
+            question: "Create one task per phase of the migration and adjust the four queued tasks so they build on them. ".repeat(4) };
         for lang in [Lang::En, Lang::Es] {
-            for (need, why) in [stuck.text(lang), unsplit.text(lang)] {
+            for (need, why) in [stuck.text(lang), unsplit.text(lang), unanswered.text(lang)] {
                 assert!(need.chars().count() <= CardSpec::NEED_MAX, "{need}");
                 assert!(why.chars().count() <= CardSpec::WHY_MAX, "{why}");
                 assert!(!format!("{need} {why}").to_lowercase().contains("orq") && !format!("{need} {why}").to_lowercase().contains("orch"), "{need} {why}");
@@ -123,6 +174,7 @@ mod tests {
         }
         assert_eq!(StuckProblem::from_body(&stuck.to_body()), Some(stuck.clone()));
         assert_eq!(UnsplitProblem::from_body(&unsplit.to_body()), Some(unsplit));
+        assert_eq!(UnansweredProblem::from_body(&unanswered.to_body()), Some(unanswered));
         assert!(stuck.detail(Lang::Es).contains("Error técnico:\n```\nspawn failed"));
     }
 
@@ -131,5 +183,7 @@ mod tests {
         assert_eq!(option_text(UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, Lang::Es).map(|(label, _)| label), Some("Cerrarla"));
         assert_eq!(option_text(STUCK_RETRY, STUCK_RETRY_LABEL, Lang::Es).map(|(label, _)| label), Some("Reintentar ahora"));
         assert_eq!(option_text(UNSPLIT_RETRY, "Something else", Lang::Es), None);
+        assert_eq!(option_text(UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, Lang::Es).map(|(label, _)| label), Some("Recordárselo otra vez"));
+        assert_eq!(option_text(UNANSWERED_WITHDRAW, UNANSWERED_WITHDRAW_LABEL, Lang::Es).map(|(label, _)| label), Some("Retirar la pregunta"));
     }
 }

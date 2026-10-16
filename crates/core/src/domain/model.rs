@@ -398,6 +398,44 @@ pub struct Answer {
     pub inputs: BTreeMap<String, InputValue>,
     pub responder: String,
     pub at_revision: Revision,
+    /// How the orchestrator settled a node's suggestion; answers written before it existed have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<SuggestionDecision>,
+}
+/// The only ways the orchestrator settles a node's suggestion. There is no answer outside them:
+/// a new task is created by the same command that records it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SuggestionDecision {
+    NewTask {
+        task_id: TaskId,
+        request_id: RequestId,
+        title: String,
+        launch: super::LaunchPlan,
+        #[serde(default)]
+        dependencies: BTreeSet<TaskId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    CurrentTask { note: String },
+    Discard { reason: String },
+}
+impl SuggestionDecision {
+    /// The Propose card's option this decision stands for.
+    pub fn option_id(&self) -> &'static str {
+        match self {
+            Self::NewTask { .. } => "new_task",
+            Self::CurrentTask { .. } => "yours",
+            Self::Discard { .. } => "discarded",
+        }
+    }
+    pub fn note(&self) -> Option<&str> {
+        match self {
+            Self::NewTask { note, .. } => note.as_deref(),
+            Self::CurrentTask { note } => Some(note),
+            Self::Discard { reason } => Some(reason),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acceptance {

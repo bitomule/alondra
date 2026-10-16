@@ -828,6 +828,11 @@ exit 1"#;
         let token = std::fs::read_to_string(dir.join("capabilities")).unwrap().trim().to_owned();
         assert_eq!(token.len(), 64);
         assert!(domain.resolve_bearer(&token).is_err(), "the execution's bearer is revoked when it ends");
+        for n in [1, 2] {
+            command(domain, Actor::Orchestrator { generation: 0 }, &format!("answer-{n}"), Command::AnswerQuestion {
+                attachments: vec![], interaction_id: format!("q{n}").into(), option_id: "here".into(), inputs: Default::default(),
+            });
+        }
         f.executor.tick(&f.ownership).await.unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1, "nothing pending, no launch");
         ask_orchestrator(domain, 3);

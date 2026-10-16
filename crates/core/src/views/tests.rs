@@ -903,7 +903,7 @@ fn settled_fixture() -> DomainState {
     let question = state.interactions.get_mut(&SETTLED_CARD.into()).unwrap();
     let InteractionPayload::Question { options, answer } = &mut question.payload else { panic!("the golden question") };
     *answer = Some(crate::domain::Answer {
-        attachments: vec![], option_id: options[0].id.clone(), inputs: Default::default(), responder: "device:2".into(), at_revision: 1,
+        attachments: vec![], option_id: options[0].id.clone(), inputs: Default::default(), responder: "device:2".into(), at_revision: 1, decision: None,
     });
     state
 }
@@ -3574,7 +3574,7 @@ fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
     assert!(held.reply.as_ref().unwrap().id.starts_with("reply:i-4@"), "words under a held question answer it too");
     state.holds.clear();
     let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-4".into()).unwrap().payload else { unreachable!() };
-    *answer = Some(crate::domain::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default() });
+    *answer = Some(crate::domain::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default(), decision: None });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     if let Some(Item::Card(answered)) = view.sections.first().and_then(|section| section.items.first()) {
         assert!(answered.reply.as_ref().is_none_or(|reply| reply.id.starts_with("msg:view@")), "an answered question is not answered twice");
@@ -4176,7 +4176,7 @@ fn merge_is_not_offered_until_the_card_that_blocks_it_is_answered() {
 
     if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&question.into()).unwrap().payload {
         *answer = Some(crate::domain::Answer {
-            attachments: vec![], option_id: "ship".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
+            attachments: vec![], option_id: "ship".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1, decision: None,
         });
     }
     let answered = render(&state, &golden_live(), Client::Ios, Lang::En, key, "");
@@ -5095,7 +5095,7 @@ fn group_state(answered: &[usize]) -> DomainState {
             QuestionOption { id: "o1".into(), label: "Second".into(), description: None },
         ];
         let answer = answered.contains(&at).then(|| crate::domain::Answer {
-            attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
+            attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1, decision: None,
         });
         one.payload = InteractionPayload::Question { options, answer };
         state.interactions.insert(one.id.clone(), one);
@@ -5490,7 +5490,7 @@ fn opt(id: &str) -> QuestionOption {
 }
 
 fn answer_to(option_id: &str) -> crate::domain::Answer {
-    crate::domain::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1 }
+    crate::domain::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1, decision: None }
 }
 
 /// What a card key renders: the card, or only why a settled one went.
@@ -6745,4 +6745,42 @@ fn a_new_cursor_alone_leaves_home_unchanged() {
     let (first, second) = (at("cursor-1"), at("cursor-2"));
     assert_eq!(first.first_cards[0].cursor, "cursor-1");
     assert_eq!(first.version, second.version, "the cursors inside the cards are not part of the version either");
+}
+
+/// 16 October: a node asked the orchestrator to create one task per phase of a migration; the
+/// orchestrator created them and never answered, and the node stood still. A node that waits for
+/// the orchestrator says so, and never puts its last words in a card for the user.
+#[test]
+fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_front_of_the_user() {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, LaunchPlan, NodeEvent, UNHEARD_PREFIX};
+    let node = || Actor::Agent { agent_id: "a-1".into() };
+    let mut state = DomainState::new("epoch");
+    execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "Node One".into(), at: 0 });
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "r-1".into(), body: "Resume the migration".into(), auto_merge: false, maintenance: false, message: false });
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        task_id: "t-1".into(), request_id: "r-1".into(), title: "Resume the migration".into(), agent_id: Some("a-1".into()),
+        review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
+    execute(&mut state, node(), Command::StartTask { task_id: "t-1".into() });
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a-1".into(), event: NodeEvent::TurnStarted, at: 1 });
+    execute(&mut state, node(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t-1".into() }, recipient: Recipient::Orchestrator,
+        body: "Create one task per phase of the migration".into(), blocking: true,
+        options: vec![QuestionOption { id: "done".into(), label: "Done".into(), description: None },
+            QuestionOption { id: "no".into(), label: "No".into(), description: None }],
+        card: CardSpec::new(CardKind::Decide, "Create the phase tasks").why("The plan needs them"),
+    });
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a-1".into(), event: NodeEvent::TurnEnded, at: 2 });
+    assert_eq!(state.node_phase(&"a-1".into()), Some(&NodePhase::WaitingUser { in_turn: false }));
+    assert!(!state.interactions.keys().any(|id| id.0.starts_with(UNHEARD_PREFIX)), "no card with the node's last words");
+    assert_eq!(crate::views::inbox_badge(&crate::domain::ReadIndex::build(&state)), 0);
+    let live = LiveSnapshot::default();
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
+    let fleet_node = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
+    assert!(fleet_node.contains("Esperando al orquestador"), "{fleet_node}");
+
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "q".into(), option_id: "done".into(), inputs: BTreeMap::new() });
+    assert!(!matches!(state.node_phase(&"a-1".into()), Some(NodePhase::WaitingUser { .. })), "the answer sends the node back to work");
+    assert_ne!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
 }

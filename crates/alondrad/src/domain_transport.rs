@@ -12,7 +12,7 @@ use crate::node_reports::Report;
 use alondra_core::delivery::State;
 use alondra_core::domain::{
     Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload, NodeEvent,
-    PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, Task, TaskId, TaskState,
+    PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, SuggestionDecision, Task, TaskId, TaskState,
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -884,6 +884,19 @@ fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain::Inte
     format!("The user answered your {} questions:\n{}", lines.len(), lines.join("\n"))
 }
 
+/// What the node that suggested something reads of the orchestrator's decision.
+fn settled_text(decision: &SuggestionDecision) -> String {
+    let note = |note: Option<&str>| note.map(|note| format!(" {}", note.trim())).unwrap_or_default();
+    match decision {
+        SuggestionDecision::NewTask { task_id, title, note: n, .. } =>
+            format!("The orchestrator settled your suggestion: it is a new task, «{title}» ({task_id}), already created.{}", note(n.as_deref())),
+        SuggestionDecision::CurrentTask { note: n } =>
+            format!("The orchestrator settled your suggestion: it is part of your plan, do it in this task.{}", note(Some(n))),
+        SuggestionDecision::Discard { reason } =>
+            format!("The orchestrator settled your suggestion: discarded.{}", note(Some(reason))),
+    }
+}
+
 /// Producer-facing delivery contains only the message written for the Agent.
 /// Delivery identity, interaction data and authorization remain in Alondra.
 pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
@@ -902,11 +915,16 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         if !labels.is_empty() {
             text.push_str(&format!("\nOptions: {}.", labels.join(", ")));
         }
-        if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) {
+        if interaction.card.kind == alondra_core::domain::CardKind::Propose {
+            text.push_str(&format!("\nSettle it with settle_suggestion(\"{}\", decision: new_task, current_task or discard).", interaction.id));
+        } else if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) {
             text.push_str(&format!("\nAnswer with answer_question(\"{}\", option: \"<option_id>\").", interaction.id));
         }
         return text;
     };
+    if let Some(decision) = &answer.decision {
+        return settled_text(decision);
+    }
     if interaction.card.group.is_some() {
         return grouped_answers(state, interaction);
     }
@@ -1294,6 +1312,52 @@ mod tests {
         let rendered = rendered_for(&domain, "q", "agent");
         assert_eq!(rendered, "The orchestrator answered: Call it Atlas");
         assert!(!rendered.contains("user"));
+    }
+
+    fn suggestion(domain: &Arc<DomainRuntime>, id: &str) {
+        command(domain, agent_actor(), &format!("suggest-{id}"), Command::AskQuestion {
+            attachments: vec![], interaction_id: id.into(), scope: task_scope(), recipient: Recipient::Orchestrator,
+            body: "README.md:12".into(), blocking: false, options: alondra_core::domain::suggestion_options(),
+            card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Propose, "The README names the old flag")
+                .why("This task only touches the CLI"),
+        });
+    }
+
+    #[test]
+    fn the_orchestrator_is_told_to_settle_a_suggestion_and_the_node_reads_the_decision() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        suggestion(&domain, "p");
+        assert!(rendered_for(&domain, "p", "orchestrator").contains("Settle it with settle_suggestion(\"p\""));
+        command(&domain, Actor::Orchestrator { generation: 0 }, "settle-p", Command::SettleSuggestion {
+            interaction_id: "p".into(),
+            decision: SuggestionDecision::NewTask {
+                task_id: "t-readme".into(), request_id: "r-readme".into(), title: "Update the README flag".into(),
+                launch: alondra_core::domain::LaunchPlan::new("readme", "/tmp"), dependencies: Default::default(), note: None,
+            },
+        });
+        assert_eq!(rendered_for(&domain, "p", "agent"),
+            "The orchestrator settled your suggestion: it is a new task, «Update the README flag» (t-readme), already created.");
+        drop(domain);
+        let reopened = fixture.open();
+        let state = reopened.state().unwrap();
+        let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"p".into()].payload else { panic!("unanswered") };
+        assert!(matches!(&answer.decision, Some(SuggestionDecision::NewTask { task_id, .. }) if task_id.0 == "t-readme"),
+            "the decision survives the store: {answer:?}");
+        assert!(state.tasks.contains_key(&"t-readme".into()));
+    }
+
+    #[test]
+    fn a_discarded_suggestion_reaches_the_node_with_its_reason() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        suggestion(&domain, "p");
+        command(&domain, Actor::Orchestrator { generation: 0 }, "settle-p", Command::SettleSuggestion {
+            interaction_id: "p".into(), decision: SuggestionDecision::Discard { reason: "Task 12 already covers it".into() },
+        });
+        assert_eq!(rendered_for(&domain, "p", "agent"), "The orchestrator settled your suggestion: discarded. Task 12 already covers it");
     }
 
     fn attempts(domain: &Arc<DomainRuntime>) -> Vec<(i64, String, Option<String>)> {

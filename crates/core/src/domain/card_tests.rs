@@ -455,11 +455,14 @@ fn suggest(id: &str) -> Command {
         options: suggestion_options(),
     }
 }
-fn settle(id: &str, option_id: &str, note: &str) -> Command {
-    Command::AnswerQuestion {
-        attachments: vec![], interaction_id: id.into(), option_id: option_id.into(),
-        inputs: BTreeMap::from([("note".to_owned(), InputValue::Text(note.into()))]),
-    }
+fn settle(id: &str, decision: SuggestionDecision) -> Command {
+    Command::SettleSuggestion { interaction_id: id.into(), decision }
+}
+fn discard(reason: &str) -> SuggestionDecision {
+    SuggestionDecision::Discard { reason: reason.into() }
+}
+fn current(note: &str) -> SuggestionDecision {
+    SuggestionDecision::CurrentTask { note: note.into() }
 }
 
 #[test]
@@ -501,7 +504,7 @@ fn a_task_keeps_at_most_five_suggestions_waiting() {
         ok(&mut s, agent(), suggest(&format!("p{at}")));
     }
     assert_eq!(refused(&mut s, agent(), suggest("p6")), ("too_many_suggestions".into(), Some("scope.task_id".into())));
-    ok(&mut s, orchestrator(), settle("p1", "discarded", "Task 12 already covers it"));
+    ok(&mut s, orchestrator(), settle("p1", discard("Task 12 already covers it")));
     ok(&mut s, agent(), suggest("p6"));
 }
 
@@ -509,12 +512,91 @@ fn a_task_keeps_at_most_five_suggestions_waiting() {
 fn the_orchestrators_answer_and_note_reach_the_node() {
     let mut s = fixture();
     ok(&mut s, agent(), suggest("p"));
-    assert_eq!(refused(&mut s, user(), settle("p", "yours", "")).0, "forbidden");
-    let out = ok(&mut s, orchestrator(), settle("p", "yours", "Step 3 of your plan covers it"));
+    assert_eq!(refused(&mut s, user(), settle("p", current("Step 3"))).0, "forbidden");
+    assert_eq!(refused(&mut s, agent(), settle("p", current("Step 3"))).0, "forbidden");
+    let out = ok(&mut s, orchestrator(), settle("p", current("Step 3 of your plan covers it")));
     assert!(out.effects.iter().any(|e| matches!(e,
         DomainEffect::NotifyAgent { agent_id, interaction_id: Some(i), .. } if agent_id.0 == "a" && i.0 == "p")), "{:?}", out.effects);
     let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&"p".into()].payload else { panic!("unanswered") };
-    assert_eq!(answer.inputs["note"], InputValue::Text("Step 3 of your plan covers it".into()));
+    assert_eq!((answer.option_id.as_str(), &answer.inputs[ANSWER_TEXT]), ("yours", &InputValue::Text("Step 3 of your plan covers it".into())));
+    assert_eq!(answer.decision, Some(current("Step 3 of your plan covers it")));
+}
+
+fn new_task(task_id: &str, request_id: &str) -> SuggestionDecision {
+    SuggestionDecision::NewTask {
+        task_id: task_id.into(), request_id: request_id.into(), title: "Update the README flag".into(),
+        launch: crate::domain::LaunchPlan::new("readme", "/tmp"), dependencies: BTreeSet::new(), note: None,
+    }
+}
+
+/// 16 October: the orchestrator answered «it goes as a separate task» and no task ever existed.
+#[test]
+fn a_suggestion_that_becomes_a_task_creates_it_in_the_same_command() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    let out = ok(&mut s, orchestrator(), settle("p", new_task("t-readme", "r-readme")));
+    let created = &s.tasks[&"t-readme".into()];
+    assert_eq!((created.request_id.0.as_str(), created.title.as_str()), ("r-readme", "Update the README flag"));
+    assert_eq!(created.revision, s.revision, "the task and the answer are one commit");
+    let request = &s.requests[&"r-readme".into()];
+    assert_eq!(request.title.as_deref(), Some("Update the README flag"));
+    assert!(request.body.contains("The README still names the old flag"), "{}", request.body);
+    let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&"p".into()].payload else { panic!("unanswered") };
+    assert_eq!((answer.option_id.as_str(), answer.decision.clone()), ("new_task", Some(new_task("t-readme", "r-readme"))));
+    assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { interaction_id: Some(i), .. } if i.0 == "p")));
+}
+
+#[test]
+fn a_suggestion_settles_once_and_never_by_words_alone() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    let words = Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "p".into(), option_id: String::new(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("It goes as a separate task".into()))]),
+    };
+    assert_eq!(refused(&mut s, orchestrator(), words), ("suggestion_needs_decision".into(), Some("interaction_id".into())));
+    for option in ["new_task", "yours", "discarded"] {
+        let picked = Command::AnswerQuestion { attachments: vec![], interaction_id: "p".into(), option_id: option.into(), inputs: BTreeMap::new() };
+        assert_eq!(refused(&mut s, orchestrator(), picked).0, "suggestion_needs_decision");
+    }
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", discard("  "))).0, "invalid_input");
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", current(""))).0, "invalid_input");
+    ok(&mut s, orchestrator(), settle("p", discard("Task 12 already covers it")));
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", new_task("t-2", "r-2"))).0, "question_already_answered");
+    assert!(!s.tasks.contains_key(&"t-2".into()));
+}
+
+#[test]
+fn a_new_task_that_cannot_be_created_leaves_the_suggestion_open() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    let taken = refused(&mut s, orchestrator(), settle("p", new_task("t", "r-new")));
+    assert_eq!(taken.0, "invalid_input", "{taken:?}");
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", new_task("t-new", "r"))).0, "invalid_input");
+    let SuggestionDecision::NewTask { task_id, request_id, launch, dependencies, note, .. } = new_task("t-new", "r-new") else { unreachable!() };
+    let long = SuggestionDecision::NewTask { task_id, request_id, title: "x".repeat(super::rules::REQUEST_TITLE_LIMIT + 1), launch, dependencies, note };
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", long)).0, "invalid_input");
+    let InteractionPayload::Question { answer, .. } = &s.interactions[&"p".into()].payload else { unreachable!() };
+    assert!(answer.is_none());
+}
+
+#[test]
+fn a_task_that_ended_cannot_take_its_suggestion_in() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    assert_eq!(refused(&mut s, orchestrator(), settle("p", current("Step 3"))).0, "task_not_active");
+    ok(&mut s, orchestrator(), settle("p", new_task("t-readme", "r-readme")));
+}
+
+#[test]
+fn only_a_suggestion_is_settled() {
+    let mut s = fixture();
+    ok(&mut s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: scope("t"), recipient: Recipient::Orchestrator,
+        body: "Which branch?".into(), blocking: true, card: decide("Pick the branch"), options: two(),
+    });
+    assert_eq!(refused(&mut s, orchestrator(), settle("q", discard("No"))).0, "invalid_action_for_kind");
 }
 
 #[test]
@@ -524,7 +606,7 @@ fn a_suggestion_holds_back_neither_the_delivery_nor_the_end_of_its_task() {
     assert!(!s.unanswered(&"t".into()));
     ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
-    ok(&mut s, orchestrator(), settle("p", "new_task", "Created as its own task"));
+    ok(&mut s, orchestrator(), settle("p", discard("Task 12 already covers it")));
 }
 
 #[test]

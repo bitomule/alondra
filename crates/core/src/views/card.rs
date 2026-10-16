@@ -862,6 +862,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {
         return crate::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX) {
+        return crate::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
     {

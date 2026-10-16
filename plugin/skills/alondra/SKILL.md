@@ -105,9 +105,9 @@ Pick the tool by what you need:
 - `suggest`: something you saw outside your task (an unrelated bug, an improvement). Send it as
   soon as you see it, with `what` you saw, `where` and `why_not_mine`, and keep working: it goes
   to the orchestrator, never to the user, and never blocks you or your delivery. Never put it in
-  your result or ask the user about it. The orchestrator answers with a note: part of your plan
-  (do it in this task), discarded, a new task, or a question it takes to the user. At most five
-  wait per task.
+  your result or ask the user about it. The orchestrator answers with one decision: part of your
+  plan (do it in this task), discarded (with the reason), or a new task it already created (with
+  its id). At most five wait per task.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
   also reach the user in Alondra, and their answer comes back as Claude's own.
 - Run a command that may need the user's approval on its own, not chained with `;`, `&&` or a

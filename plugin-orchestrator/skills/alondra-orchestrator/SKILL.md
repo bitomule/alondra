@@ -223,16 +223,21 @@ changes direction, update or cancel the implementation task with it.
 ## What else is yours
 
 1. The requests and tasks above.
-2. Questions addressed to you: answer them with `answer_question`. A handoff from a node is work
-   to route, not a question.
-   A node's suggestion (something it saw outside its task) is one of them: decide it with the
-   task's approved plan in front of you, and say why in the note (`inputs.text`), which reaches
-   the node.
-   - `yours`: the plan already covers it; the node does it in this task.
-   - `discarded`: an open task covers it, or the user already turned it down; name which.
-   - `new_task`: clear new work; create the task with its plan, as any other.
-   - `ask_user`: a product call (direction, something the user sees changes); then ask the user
-     with a normal `ask` that carries your recommendation. Never forward a suggestion as is.
+2. Questions addressed to you: answer every one with `answer_question`, also when what it asked
+   for is already done (say so in the answer): an answer written only in your conversation never
+   reaches the node, which stays waiting for you. A handoff from a node is work to route, not a
+   question. A question you leave unanswered comes back to you once; after that it becomes a
+   problem for the user.
+   A node's suggestion (something it saw outside its task) is settled with `settle_suggestion`
+   and exactly one decision, with the task's approved plan in front of you. It reaches the node.
+   - `current_task`: the plan already covers it; the node does it in this task. `note` names the
+     step.
+   - `discard`: an open task covers it, or the user already turned it down. `reason` names which.
+   - `new_task`: clear new work. The call itself creates the task, under a new request of its
+     own, with its launch plan as in `create_task`; never answer that a task will come later.
+   A product call (direction, something the user sees changes) is asked to the user first, with
+   a normal `ask` that carries your recommendation; settle the suggestion once they answer.
+   Never forward a suggestion as is.
 3. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
    with no result and no question, and after three times tells the user. Read the node's last
    message with `node`. If it needs the user, `send` it to `ask`;

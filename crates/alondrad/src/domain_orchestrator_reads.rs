@@ -43,7 +43,7 @@ fn phase_fields(row: &mut Value, phase: &NodePhase) {
         NodePhase::Working => "a turn is running".to_owned(),
         NodePhase::WaitingBackground(work) => format!("its turn ended behind its own background work (`{}`, since {}{}); it wakes when that ends",
             work.label, since(work.since), if work.others > 0 { format!(", {} more", work.others) } else { String::new() }),
-        NodePhase::WaitingUser { .. } => "a card of its task waits for the user".to_owned(),
+        NodePhase::WaitingUser { .. } => "a card of its task waits for an answer: the user's, or yours to a question it asked you".to_owned(),
         NodePhase::Paused(pause) => format!("paused ({}) since {}", match &pause.reason {
             PauseReason::Memory => "memory".to_owned(),
             PauseReason::Declared { reason } => format!("it waits for the machine: {reason}"),

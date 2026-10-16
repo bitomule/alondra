@@ -524,7 +524,7 @@ impl DomainState {
             .filter_map(|i| match &i.author { Author::Agent { agent_id } => Some(agent_id), _ => None })
             .collect();
         let (mut asked, mut carded) = (BTreeSet::new(), BTreeSet::new());
-        for i in self.interactions.values().filter(|i| i.recipient == Recipient::User
+        for i in self.interactions.values().filter(|i| (i.recipient == Recipient::User || Self::asks_the_orchestrator(i))
             && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
             && self.open(i))
         {

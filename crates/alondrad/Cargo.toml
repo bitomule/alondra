@@ -41,6 +41,7 @@ alondra-foundation.workspace = true
 alondra-provider-contract.workspace = true
 alondra-store.workspace = true
 h2 = "0.4.19"
+proptest.workspace = true
 tempfile.workspace = true
 
 [[bin]]

@@ -63,12 +63,15 @@ impl Source {
 pub const REQUEST_TITLE_LIMIT: usize = 60;
 pub const POST_MERGE_WORK_MAX: usize = 120;
 /// How the orchestrator settles a node's suggestion: the only answers a Propose card offers.
-pub const SUGGESTION_ANSWERS: [(&str, &str, &str); 4] = [
+pub const SUGGESTION_ANSWERS: [(&str, &str, &str); 3] = [
     ("yours", "It's part of your plan: do it in this task", "The node does it as part of the task it is working on."),
-    ("discarded", "Discarded", "An open task already covers it, or the user already turned it down: the note says which."),
-    ("new_task", "It becomes a new task", "The orchestrator creates a task for it, with its own plan."),
-    ("ask_user", "I'll ask the user", "It is a product call: the orchestrator asks the user, with a recommendation."),
+    ("discarded", "Discarded", "An open task already covers it, or the user already turned it down: the reason says which."),
+    ("new_task", "It becomes a new task", "The orchestrator created a task for it, with its own plan."),
 ];
+/// What a node is told when its question to the orchestrator is withdrawn because nobody answered it.
+pub fn unanswered_withdrawn_notice(need: &str) -> String {
+    format!("Your question to the orchestrator \"{need}\" got no answer and is withdrawn. Carry on without it if you can; if you cannot, ask the user with ask.")
+}
 /// A node's suggestions still waiting for the orchestrator, per task.
 pub const OPEN_SUGGESTIONS_MAX: usize = 5;
 pub fn suggestion_options() -> Vec<QuestionOption> {
@@ -655,6 +658,75 @@ impl DomainState {
                 "Task {task_id} already has {OPEN_SUGGESTIONS_MAX} suggestions waiting for the orchestrator: wait for its answers, or withdraw one you no longer need"));
         }
         Ok(())
+    }
+    /// A node's question to the orchestrator that waits for its answer; a suggestion never waits.
+    pub fn asks_the_orchestrator(i: &Interaction) -> bool {
+        matches!(i.author, Author::Agent { .. }) && i.recipient == Recipient::Orchestrator && i.card.kind != CardKind::Propose
+            && matches!(i.scope, Scope::Task { .. })
+            && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
+    }
+    /// The task's node waits for the orchestrator's answer to one of its questions.
+    pub fn waits_for_orchestrator(&self, task: &TaskId) -> bool {
+        self.interactions.values().any(|i| Self::asks_the_orchestrator(i) && self.open(i)
+            && matches!(&i.scope, Scope::Task { task_id } if task_id == task))
+    }
+    /// The orchestrator settles a node's suggestion with one decision, in one command: a new task
+    /// is created here, under a request of its own, or nothing is recorded at all.
+    fn settle_suggestion(&mut self, actor: &Actor, interaction_id: &InteractionId, decision: &SuggestionDecision,
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>) -> Result<()> {
+        self.fence(actor)?;
+        if !matches!(actor, Actor::Orchestrator { .. }) {
+            return fail("forbidden", "Only the orchestrator settles a suggestion");
+        }
+        let i = self.interaction(interaction_id)?.clone();
+        let (CardKind::Propose, Author::Agent { .. }, Scope::Task { task_id }) = (i.card.kind, &i.author, &i.scope) else {
+            return refuse("invalid_action_for_kind", "interaction_id", "Only a node's suggestion is settled: answer other questions with answer_question");
+        };
+        match &i.payload {
+            InteractionPayload::Question { answer: Some(_), .. } =>
+                return refuse("question_already_answered", "interaction_id", "This suggestion is already settled and its decision is final"),
+            InteractionPayload::Question { answer: None, .. } => {}
+            _ => return fail("invalid_action_for_kind", "This Interaction cannot be answered"),
+        }
+        if i.withdrawn {
+            return fail("withdrawn", "Its author withdrew this suggestion");
+        }
+        match decision {
+            SuggestionDecision::NewTask { task_id: new_task, request_id, title, launch, dependencies, note } => {
+                if let Some(note) = note {
+                    nonempty(note)?;
+                }
+                id(&request_id.0)?;
+                self.apply(actor, &Command::CreateRequest {
+                    request_id: request_id.clone(), body: format!("{}\n\n{}", i.card.need, i.body),
+                    auto_merge: false, maintenance: false, message: true,
+                }, effects, created)?;
+                self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created)?;
+                self.apply(actor, &Command::CreateTask {
+                    task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
+                    review_prs: false, dependencies: dependencies.clone(), stack: None, launch: Some(launch.clone()),
+                }, effects, created)?;
+            }
+            SuggestionDecision::CurrentTask { note } => {
+                nonempty(note)?;
+                if self.task(task_id)?.state.terminal() {
+                    return refuse("task_not_active", "decision.kind",
+                        "The task that suggested it has ended, so it cannot do it: create a new task or discard it");
+                }
+            }
+            SuggestionDecision::Discard { reason } => nonempty(reason)?,
+        }
+        let inputs = decision.note().map(|note| BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.to_owned()))])).unwrap_or_default();
+        let at = self.revision + 1;
+        let i = self.interactions.get_mut(interaction_id).unwrap();
+        if let InteractionPayload::Question { answer, .. } = &mut i.payload {
+            *answer = Some(Answer {
+                attachments: vec![], option_id: decision.option_id().into(), inputs,
+                responder: "alondra-orchestrator".into(), at_revision: at, decision: Some(decision.clone()),
+            });
+        }
+        i.revision = at;
+        self.notify(task_id, Some(interaction_id.clone()), "Suggestion settled", effects)
     }
     /// R1, R2, R4: who may put a card in front of someone, and on which Task.
     fn card_author(&self, actor: &Actor, scope: &Scope, source: Source) -> Result<Author> {
@@ -1821,6 +1893,7 @@ impl DomainState {
             | Command::Withdraw { interaction_id }
             | Command::RequestClarification { interaction_id, .. }
             | Command::AnswerQuestion { interaction_id, .. }
+            | Command::SettleSuggestion { interaction_id, .. }
             | Command::ReopenAnswer { interaction_id }
             | Command::LinkInteractionSubject { interaction_id, .. }
             | Command::SubmitFeedback {
@@ -2807,8 +2880,14 @@ impl DomainState {
                     (Author::Orchestrator { .. }, Actor::Orchestrator { .. }) => {}
                     (_, Actor::System) if self.holds.contains_key(interaction_id) => {}
                     (Author::System, Actor::System) => {}
+                    (Author::Agent { .. }, Actor::System) if Self::asks_the_orchestrator(i) => {}
                     _ => return refuse("forbidden", "interaction_id", "Only a card's author withdraws it: withdraw only your own cards"),
                 }
+                let unanswered = match (&i.author, &i.scope, actor) {
+                    (Author::Agent { agent_id }, Scope::Task { task_id }, Actor::System) if Self::asks_the_orchestrator(i) && !i.withdrawn =>
+                        Some((agent_id.clone(), task_id.clone(), unanswered_withdrawn_notice(&i.card.need))),
+                    _ => None,
+                };
                 if i.card.group.is_some() {
                     if self.group_complete(i) {
                         return refuse("question_already_answered", "interaction_id", "The user answered every question: they are final, act on the answers");
@@ -2840,6 +2919,9 @@ impl DomainState {
                         self.invalidate(&task);
                         self.tasks.get_mut(&task).unwrap().final_presentation = None;
                     }
+                }
+                if let Some((agent_id, task_id, message)) = unanswered {
+                    effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(task_id), interaction_id: None, message });
                 }
             }
             Command::RequestClarification { interaction_id, reason, text } => {
@@ -2942,7 +3024,11 @@ impl DomainState {
                     }
                     _ => return fail("forbidden", "Only the intended recipient can answer"),
                 };
-                if let (Scope::Task { task_id }, false) = (&i.scope, i.card.kind == CardKind::Propose)
+                if i.card.kind == CardKind::Propose {
+                    return refuse("suggestion_needs_decision", "interaction_id",
+                        "A suggestion is settled with settle_suggestion and one decision: new_task (create it now), current_task (the node does it in its task) or discard (with the reason)");
+                }
+                if let Scope::Task { task_id } = &i.scope
                     && !self.tasks.get(task_id).is_some_and(Self::winding_down)
                 {
                     self.active(task_id)?;
@@ -2971,6 +3057,7 @@ impl DomainState {
                     inputs: inputs.clone(),
                     responder,
                     at_revision: self.revision + 1,
+                    decision: None,
                 };
                 let i = self.interactions.get_mut(interaction_id).unwrap();
                 match &mut i.payload {
@@ -3001,6 +3088,9 @@ impl DomainState {
                     }),
                     _ => {}
                 }
+            }
+            Command::SettleSuggestion { interaction_id, decision } => {
+                self.settle_suggestion(actor, interaction_id, decision, effects, created)?;
             }
             Command::CreateDocument {
                 task_id,

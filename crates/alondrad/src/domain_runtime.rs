@@ -471,6 +471,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::Withdraw { interaction_id }
         | Command::RequestClarification { interaction_id, .. }
         | Command::AnswerQuestion { interaction_id, .. }
+        | Command::SettleSuggestion { interaction_id, .. }
         | Command::ReopenAnswer { interaction_id }
         | Command::LinkInteractionSubject { interaction_id, .. } => {
             interaction_task(state, interaction_id)

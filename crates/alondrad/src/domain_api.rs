@@ -76,7 +76,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"),
         ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"),
-        ("/interactions/{id}/answers", "POST"),
+        ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
         ("/interactions/{id}/feedback", "POST"), ("/interactions/{id}/acceptance", "POST"),
@@ -665,7 +665,13 @@ async fn resource_command<H: DomainHost>(
 /// with it rather than as an unknown command.
 pub(crate) fn check_launch_shape(method: &str, path: &str, body: &Value) -> Result<(), DomainError> {
     let creates_task = method == "POST" && path.starts_with("/requests/") && path.ends_with("/tasks");
-    match body.get("launch").filter(|launch| creates_task && !launch.is_null()) {
+    let settles_into_task = method == "POST" && path.starts_with("/interactions/") && path.ends_with("/settlement");
+    let launch = match (creates_task, settles_into_task) {
+        (true, _) => body.get("launch"),
+        (_, true) => body.get("decision").and_then(|decision| decision.get("launch")),
+        _ => None,
+    };
+    match launch.filter(|launch| !launch.is_null()) {
         Some(launch) => serde_json::from_value::<crate::launch_plans::LaunchPlan>(launch.clone()).map(drop)
             .map_err(|error| DomainError::new("invalid_input", format!("launch: {error}"))),
         None => Ok(()),
@@ -774,6 +780,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/post-merge-work") => ("declare_post_merge_work", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/settlement") => ("settle_suggestion", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/clarification") => ("request_clarification", Some(("interaction_id", interaction?))),
         ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/subject") => ("link_interaction_subject", Some(("interaction_id", interaction?))),
@@ -1131,7 +1138,9 @@ fn storage_error() -> Response {
 /// model and effort fit the request. A Task without a plan is refused by the domain itself.
 pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, command: &Command) -> Result<(), DomainError> {
     match command {
-        Command::CreateTask { request_id, launch: Some(plan), .. } => crate::launch_plans::validate(domain, home, request_id, plan),
+        Command::CreateTask { request_id, launch: Some(plan), .. }
+        | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
+            crate::launch_plans::validate(domain, home, request_id, plan),
         _ => Ok(()),
     }
 }

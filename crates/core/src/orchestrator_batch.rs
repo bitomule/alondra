@@ -53,6 +53,7 @@ fn call_text(tool: &str, lang: Lang) -> &'static str {
         "close_request" => t!(lang, "close a request", "cerrar una petición"),
         "title_request" | "retitle_task" => t!(lang, "rename something", "poner un título"),
         "answer_question" => t!(lang, "answer a node", "responder a un nodo"),
+        "settle_suggestion" => t!(lang, "settle a suggestion", "resolver una sugerencia"),
         "send" => t!(lang, "message a node", "escribir a un nodo"),
         "interrupt" => t!(lang, "stop a node", "parar un nodo"),
         "withdraw" => t!(lang, "withdraw a card", "retirar una tarjeta"),
