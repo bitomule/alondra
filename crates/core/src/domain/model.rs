@@ -239,6 +239,12 @@ impl Task {
     pub fn active(&self) -> bool {
         !self.state.terminal() && !self.archived
     }
+
+    /// Open, marked as started, and with no node to work on it: a state nothing can move, so no
+    /// command may put a task in it.
+    pub fn started_without_node(&self) -> bool {
+        !self.state.terminal() && self.started && self.agent_id.is_none()
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

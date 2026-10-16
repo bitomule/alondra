@@ -1600,7 +1600,7 @@ fn an_agent_works_on_one_task_until_it_ends() {
     exec(&mut s, user(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     assert_eq!(
         (s.tasks[&"t".into()].state, s.tasks[&"t".into()].agent_id.clone()),
-        (TaskState::Running, None),
+        (TaskState::NotStarted, None),
         "a reopened task whose node moved on waits for another node"
     );
     assert_eq!(s.busy_with(&"a".into(), &"t".into()).map(|t| t.id.0.as_str()), Some("t2"));
@@ -3644,6 +3644,52 @@ fn reopening_a_task_whose_node_was_closed_leaves_it_without_a_node() {
     assert!(!t.state.terminal());
     assert!(t.agent_id.is_none());
     assert!(t.wrap_up.is_default());
+}
+/// 15 October: t-fastconn-5-remove-mailbox was cancelled, its node closed, and it was reopened.
+/// It was left in progress with no node, which the fleet could never assign ("Task already has a
+/// node"). Reopened without a node, it is not started, and the fleet's assignment takes it.
+#[test]
+fn a_task_reopened_after_its_node_closed_is_not_started_and_the_fleet_can_assign_it() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }).unwrap();
+    exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
+    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "fleet".into(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
+}
+/// Reopened right after it was cancelled, before Alondra recorded how its node ended: the node's
+/// session is already closed, so the task has no node and waits for the fleet.
+#[test]
+fn a_task_reopened_after_its_node_session_closed_has_no_node_even_before_the_node_end_is_recorded() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed, at: 0 }).unwrap();
+    exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
+}
+#[test]
+fn a_task_reopened_with_its_node_alive_keeps_working_with_it() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::Running, true, Some("a".into())));
+}
+#[test]
+fn a_task_an_older_daemon_left_in_progress_with_no_node_is_released_for_the_fleet() {
+    let mut s = fixture();
+    let t = s.tasks.get_mut(&"t".into()).unwrap();
+    (t.started, t.agent_id, t.state) = (true, None, TaskState::Running);
+    exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "in progress with no node".into() }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.started), (TaskState::NotStarted, false), "the repair leaves it for the fleet");
 }
 #[test]
 fn the_orchestrator_cannot_give_a_node_a_second_task() {

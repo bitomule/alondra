@@ -1,7 +1,7 @@
 #!/bin/sh
 # Usage: journeys.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 # Starts a fresh two-Mac sandbox with the fake claude and gh, runs the pairing scenarios and then
-# the scripted journeys (JOURNEY=task-cycle|local|session, all by default), and stops it.
+# the scripted journeys (JOURNEY=task-cycle|local|session|reopen, all by default), and stops it.
 # KEEP=1 keeps the sandbox directory for a look afterwards.
 set -eu
 

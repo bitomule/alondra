@@ -14,6 +14,7 @@ use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_
 use crate::domain_runtime::DomainRuntime;
 use crate::fleet_pause::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom};
+use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{Actor, AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
@@ -109,10 +110,12 @@ struct Saved {
 }
 
 /// The pacing the gate keeps to; tests start without spacing and with the highest limit unless
-/// they set their own.
+/// they set their own. A number the user chose in options.toml still holds, so a sandbox can fill
+/// its slots.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Tuning {
     pub spacing: Millis,
+    /// The limit in place of automatic.
     pub limit: Option<Limit>,
 }
 
@@ -359,7 +362,7 @@ impl FleetGate {
     /// kept in the queue and the caller is woken through `subscribe` when its turn may have come.
     pub(crate) fn ask(&self, domain: &DomainRuntime, waiting: Waiting, now: Millis) -> Result<(), Hold> {
         let state = domain.state().map_err(|_| Hold::Spacing { until: now + SPACING })?;
-        let queued = queued_launches(domain, &state);
+        let queued = queued_launches(domain, &state, now);
         let mut inner = self.lock_with(domain);
         let key = waiting.key.clone();
         if inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
@@ -399,9 +402,14 @@ impl FleetGate {
         self.lock().asking.remove(key);
     }
 
+    /// A start the gate let through that did not start: no node comes up, so it holds no slot.
+    fn not_started(&self, key: &Key) {
+        self.lock().admitted.retain(|(admitted, _)| admitted != key);
+    }
+
     pub(crate) fn snapshot(&self, domain: &DomainRuntime, now: Millis) -> Option<Snapshot> {
         let state = domain.state().ok()?;
-        let queued = queued_launches(domain, &state);
+        let queued = queued_launches(domain, &state, now);
         let inner = self.lock_with(domain);
         Some(snapshot_locked(domain, &state, &inner, queued, now))
     }
@@ -683,9 +691,22 @@ pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
         .collect()
 }
 
-fn queued_launches(domain: &DomainRuntime, state: &DomainState) -> Vec<Waiting> {
-    let rows = domain.store.lock().expect("domain store poisoned").launch_queue().unwrap_or_default();
-    rows.into_iter().map(|row| Waiting {
+/// The queued launches whose turn may come: one whose start failed waits out its retry or the
+/// user's answer to its card where it is, keeping its place without holding back the rest.
+fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> Vec<Waiting> {
+    let store = domain.store.lock().expect("domain store poisoned");
+    let rows = store.launch_queue().unwrap_or_default();
+    if rows.is_empty() {
+        return vec![];
+    }
+    let retries = store.start_retries().unwrap_or_default();
+    let blocked: BTreeSet<TaskId> = store.auto_launches().unwrap_or_default().into_iter()
+        .filter(|row| row.state == AutoLaunchState::Blocked && row.reason != Some(AutoLaunchReason::UsageExhausted))
+        .map(|row| row.task_id).collect();
+    drop(store);
+    rows.into_iter()
+        .filter(|row| !blocked.contains(&row.task_id) && retries.get(&row.task_id).is_none_or(|(_, at)| *at <= now))
+        .map(|row| Waiting {
         priority: priority_of(state, Some(&row.task_id)),
         key: Key::Task(row.task_id),
         resuming: false,
@@ -694,14 +715,12 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState) -> Vec<Waiting> 
 }
 
 fn limit_setting(domain: &DomainRuntime, tuning: Tuning) -> Limit {
-    if let Some(limit) = tuning.limit {
-        return limit;
-    }
     let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = machine_size();
-    match file.max_working_nodes {
-        NodeLimit::Fixed(_) => Limit::Fixed(file.max_working_nodes.resolve(cores, memory)),
-        NodeLimit::Auto => Limit::Auto { max: NodeLimit::Auto.resolve(cores, memory) },
+    match (file.max_working_nodes, tuning.limit) {
+        (NodeLimit::Fixed(_), _) => Limit::Fixed(file.max_working_nodes.resolve(cores, memory)),
+        (NodeLimit::Auto, Some(limit)) => limit,
+        (NodeLimit::Auto, None) => Limit::Auto { max: NodeLimit::Auto.resolve(cores, memory) },
     }
 }
 
@@ -743,8 +762,11 @@ fn machine_size() -> (usize, u64) {
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
     let busy = working_tasks(state);
     let paused = |task: &TaskId| crate::fleet_pause::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
+    let waiting_again: BTreeSet<&Key> = queued.iter()
+        .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live.is_launching(&task.0)))
+        .map(|waiting| &waiting.key).collect();
     let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
-        .filter(|(_, at)| now - at < IN_FLIGHT)
+        .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key))
         .map(|(key, _)| task_of(state, key))
         .filter(|task| task.as_ref().is_none_or(|task| !busy.contains(task) && !paused(task)
             && state.tasks.get(task).is_none_or(|task| !task.state.terminal())))
@@ -866,7 +888,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
     }
     let gate = &domain.live.gate;
     let head = {
-        let queued = queued_launches(domain, &state);
+        let queued = queued_launches(domain, &state, now);
         let mut inner = gate.lock_with(domain);
         inner.asking.retain(|key, _| still_waits(&state, key));
         crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, now);
@@ -907,14 +929,36 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
     let Some(row) = domain.store.lock().expect("domain store poisoned").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());
     };
-    domain.store.lock().expect("domain store poisoned").dequeue_launch(&task)?;
     let body = LaunchBody::from_queue(&row.body)?;
     let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
     log!("the fleet gate starts {task}, queued since {}", row.enqueued_at);
-    if let Err(error) = launch_from(domain, home, &Actor::System, body, choices, launcher, Origin::Admitted).await {
-        log!("the fleet gate could not start {task}: {}", error.message);
+    match launch_from(domain, home, &Actor::System, body, choices, launcher, Origin::Admitted).await {
+        Ok(_) => {
+            let mut store = domain.store.lock().expect("domain store poisoned");
+            store.dequeue_launch(&task)?;
+            store.set_start_retry(&task, None)?;
+        }
+        Err(error) => {
+            log!("the fleet gate could not start {task}: {}", error.message);
+            refused(domain, &task, &error, now)?;
+        }
     }
     Ok(())
+}
+
+/// A launch the gate let through and that did not start stays in the queue: a refusal that clears
+/// by itself (usage, disk) is tried again on a later turn, any other is a failed start, tried again
+/// by itself and then put to the user. `launch_from` records the failures it knows.
+fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::DomainError, now: Millis) -> anyhow::Result<()> {
+    domain.live.gate.not_started(&Key::Task(task.clone()));
+    if domain.live.is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "disk_low") {
+        return Ok(());
+    }
+    let state = domain.state()?;
+    if !still_waits(&state, &Key::Task(task.clone())) {
+        return Ok(());
+    }
+    crate::start_failures::failed(domain, task, alondra_core::domain::StartProblem::LaunchFailed { error: error.message.clone() }, now)
 }
 
 #[cfg(test)]

@@ -176,6 +176,11 @@ pub(super) fn stage(
             }
             _ => {}
         }
+        for (id, task) in &next.tasks {
+            if let Some(before) = state.tasks.get(id).filter(|before| needs_a_node_again(before, task)) {
+                queue_for_a_node(conn, id, before.state.terminal())?;
+            }
+        }
         let at = alondra_core::now_millis();
         repository::exec(
             conn,
@@ -365,3 +370,36 @@ mod tests;
 #[cfg(test)]
 #[path = "lifecycle_command_tests.rs"]
 mod lifecycle_tests;
+
+/// A task that was over, or was left in progress with no node, and now waits for one: the fleet
+/// must start it, so it goes back to its queue.
+fn needs_a_node_again(before: &Task, after: &Task) -> bool {
+    (before.state.terminal() || before.started_without_node())
+        && after.state == TaskState::NotStarted && after.agent_id.is_none() && !after.archived
+}
+
+/// Puts the task in the fleet's queue with its launch plan, in the transaction that reopened it,
+/// at the place its plan gave it, so being cancelled and reopened costs it no seniority. What its
+/// previous starts left (an automatic launch, a retry, a refusal) belongs to that life and goes.
+/// A reopened task with no plan could never start again, so its reopening is refused.
+fn queue_for_a_node(conn: &Connection, task: &TaskId, reopened: bool) -> std::result::Result<(), StoreError> {
+    let planned: Option<(String, i64)> = conn
+        .query_row("SELECT plan,at FROM task_launch_plans WHERE task_id=?1", [&task.0], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let Some((plan, since)) = planned else {
+        if reopened {
+            return Err(DomainError::new("invalid_input", format!(
+                "{task} has no launch plan, so nothing could start it again: create it again with its launch plan")).into());
+        }
+        return Ok(());
+    };
+    let plan: crate::launch_plans::LaunchPlan = serde_json::from_str(&plan).context("stored launch plan")?;
+    let body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task.clone(), &plan).to_queue();
+    repository::exec(conn,
+        "INSERT INTO launch_queue(task_id,body,origin,enqueued_at) VALUES(?1,?2,'reopen',?3) ON CONFLICT(task_id) DO UPDATE SET body=excluded.body,enqueued_at=min(enqueued_at,excluded.enqueued_at)",
+        params![task.0, serde_json::to_string(&body)?, since])?;
+    for table in ["auto_launches", "start_retries", "launch_refusals"] {
+        repository::exec(conn, &format!("DELETE FROM {table} WHERE task_id=?1"), [&task.0])?;
+    }
+    Ok(())
+}

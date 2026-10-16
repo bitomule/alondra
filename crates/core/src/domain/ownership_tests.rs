@@ -1,6 +1,6 @@
 //! No open task is ever left in nobody's hands. Generated runs of tasks, dependencies, a scheduled
 //! request, gate admissions, starts that fail, nodes that die or the user closes, deliveries,
-//! cancellations and answers to cards: after every step, with the daemon's reactions applied,
+//! cancellations, reopenings and answers to cards: after every step, with the daemon's reactions applied,
 //! every open task has a holder.
 use super::*;
 use proptest::prelude::*;
@@ -22,6 +22,7 @@ enum Step {
     Deliver(usize),
     AcceptAndFinish(usize),
     Cancel(usize),
+    Reopen(usize),
     AnswerProblem { pick: usize, option: usize },
 }
 
@@ -41,6 +42,7 @@ fn step() -> impl Strategy<Value = Step> {
         2 => (0usize..8).prop_map(Step::Deliver),
         2 => (0usize..8).prop_map(Step::AcceptAndFinish),
         1 => (0usize..8).prop_map(Step::Cancel),
+        2 => (0usize..8).prop_map(Step::Reopen),
         2 => (0usize..8, 0usize..3).prop_map(|(pick, option)| Step::AnswerProblem { pick, option }),
     ]
 }
@@ -291,6 +293,29 @@ impl World {
                     self.must(user(), Command::CancelTask { task_id: task });
                 }
             }
+            Step::Reopen(n) => {
+                let ended: Vec<TaskId> = self.s.tasks.values()
+                    .filter(|t| t.state.terminal() && self.facts.get(&t.id).is_some_and(|f| f.planned)).map(|t| t.id.clone()).collect();
+                let Some(task) = (!ended.is_empty()).then(|| ended[n % ended.len()].clone()) else { return };
+                if self.exec(orchestrator(), Command::ReopenTask { task_id: task.clone() }).is_err() {
+                    return;
+                }
+                if let Some(agent) = self.agent_of(&task) {
+                    let node = match self.s.node_phase(&agent) {
+                        Some(phase) if phase.coming_back() && self.s.open_user_card(&task).is_some() => NodeFact::Asking,
+                        Some(phase) if phase.coming_back() => NodeFact::Reviving,
+                        Some(phase) if phase.live() => NodeFact::Alive,
+                        _ => NodeFact::Gone,
+                    };
+                    self.fact(&task).node = node;
+                } else {
+                    self.attempts.remove(&task);
+                    self.stops.remove(&task);
+                    let fact = self.fact(&task);
+                    fact.start = Start::Launching;
+                    fact.node = NodeFact::Gone;
+                }
+            }
             Step::AnswerProblem { pick, option } => {
                 let Some(task) = self.pick(pick, |t, _| self.s.open_start_problem(&t.id).is_some()) else { return };
                 let card = self.s.open_start_problem(&task).unwrap();
@@ -341,6 +366,9 @@ impl World {
         let none = StartFacts::default();
         for id in self.open() {
             let task = &self.s.tasks[&id];
+            if task.started_without_node() {
+                return Err(format!("“{id}” is in progress with no node (state {:?}) after {steps:?}", task.state));
+            }
             if let Err(ownerless) = self.s.holder(task, self.facts.get(&id).unwrap_or(&none)) {
                 return Err(format!("“{}” is in nobody's hands: {} (state {:?}) after {steps:?}", ownerless.task, ownerless.why, task.state));
             }

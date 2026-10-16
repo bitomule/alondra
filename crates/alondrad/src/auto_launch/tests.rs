@@ -659,3 +659,72 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert!(problem(&f, "f1").is_none(), "nothing more to ask");
 }
+
+fn queued(f: &Fixture) -> Vec<(String, i64)> {
+    f.domain.store.lock().unwrap().launch_queue().unwrap().into_iter().map(|row| (row.task_id.0, row.enqueued_at)).collect()
+}
+
+/// 15 October: t-fastconn-5-remove-mailbox was cancelled at 19:42 and reopened at 19:45. It stayed
+/// in progress with no node, nothing started it, and once launched by hand the fleet took it out of
+/// its queue before starting it and was refused («Task already has a node»), so it was in no queue
+/// at all. Reopened, it goes back to the queue with its plan and its seniority; a start the fleet
+/// cannot make leaves it there, and its retry starts it.
+#[tokio::test]
+async fn a_reopened_task_waits_in_the_fleets_queue_with_its_seniority_and_a_refused_start_keeps_it_there() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    f.domain.live.gate.ignore_mac();
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let first = agent_of(&f, "f1").expect("its first node");
+    let planned_at = f.domain.store.lock().unwrap().planned_tasks().unwrap()[&TaskId::from("f1")];
+
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into() });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "f1".into(), end: NodeEnd::Closed, agent_id: Some(first) });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::ReopenTask { task_id: "f1".into() });
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("f1")].clone();
+    assert_eq!((task.state, task.started, task.agent_id), (TaskState::NotStarted, false, None), "never in progress with no node");
+    assert_eq!(queued(&f), [("f1".to_owned(), planned_at)], "queued with the place its plan gave it");
+    assert!(auto(&f, "f1").is_none(), "its first automatic launch belongs to its first life");
+
+    create(&f, "f2", &[], Some(&plan(&f, "app/f2")));
+    let body: LaunchBody = serde_json::from_value(json!({"task": "f2", "name": "app/f2", "cwd": f.project.to_str().unwrap()})).unwrap();
+    crate::fleet_gate::enqueue(&f.domain, &body, "orchestrator", alondra_core::now_millis()).unwrap();
+    let now = alondra_core::now_millis();
+    let snapshot = f.domain.live.gate.snapshot(&f.domain, now).unwrap();
+    let order: Vec<String> = snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect();
+    assert_eq!(order[0], "Task(TaskId(\"f1\"))", "reopened, it keeps its place ahead of later work: {order:?}");
+    assert_eq!(snapshot.working, 0, "back in the queue, its first start no longer counts as one under way");
+
+    *claude.refuse.lock().unwrap() = Some("claude is not logged in".into());
+    crate::fleet_gate::pass_at(&f.domain, &f.home, &claude, now).await.unwrap();
+    assert!(agent_of(&f, "f1").is_none());
+    assert!(queued(&f).iter().any(|(task, _)| task == "f1"), "a refused start never takes it out of the queue: {:?}", queued(&f));
+    let retry = f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")];
+    assert!(retry.1 > now, "it waits for its retry");
+    let order: Vec<String> = f.domain.live.gate.snapshot(&f.domain, now).unwrap().queue.iter()
+        .map(|waiting| format!("{:?}", waiting.key)).collect();
+    assert_eq!(order, ["Task(TaskId(\"f2\"))"], "while it waits for its retry it holds nobody back");
+
+    *claude.refuse.lock().unwrap() = None;
+    crate::fleet_gate::pass_at(&f.domain, &f.home, &claude, retry.1).await.unwrap();
+    assert!(agent_of(&f, "f1").is_some(), "its retry starts it");
+    assert!(!queued(&f).iter().any(|(task, _)| task == "f1"));
+    assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_task_with_no_launch_plan_cannot_be_reopened_because_nothing_could_start_it() {
+    let f = world();
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into() });
+    f.domain.store.lock().unwrap().forget_launch_plan(&"f1".into()).unwrap();
+    let state = f.domain.state().unwrap();
+    let refused = f.domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "reopen-planless".into(),
+        expected_revision: state.revision, command: Command::ReopenTask { task_id: "f1".into() },
+    }, None, || Ok(())).unwrap_err();
+    assert!(format!("{refused:?}").contains("no launch plan"), "{refused:?}");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::Cancelled);
+    assert!(queued(&f).is_empty());
+}

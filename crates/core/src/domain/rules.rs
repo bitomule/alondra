@@ -1911,7 +1911,11 @@ impl DomainState {
         next.wrap_up_step(&mut effects);
         next.settle_nodes();
         for id in self.touched_tasks(&next) {
-            next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
+            let task = next.tasks.get_mut(&id).unwrap();
+            if task.started_without_node() && !self.tasks.get(&id).is_some_and(Task::started_without_node) {
+                return fail("conflict", &format!("Task {} would be in progress with no node", id.0));
+            }
+            task.revision = self.revision + 1;
         }
         let changed = next != *self;
         if changed {
@@ -3678,17 +3682,18 @@ impl DomainState {
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;
                 let task = &self.tasks[task_id];
-                let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some());
+                let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some()
+                    || self.agents.get(a).is_none_or(|agent| !agent.phase.live()));
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
-                t.state = TaskState::Running;
-                t.started = true;
                 t.archived = false;
                 let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
                 t.wrap_up = WrapUp::default();
                 if released || node_gone {
                     t.agent_id = None;
                 }
+                t.started = t.agent_id.is_some();
+                t.state = if t.started { TaskState::Running } else { TaskState::NotStarted };
             }
             Command::ConfirmCleanup { task_id } => {
                 let t = self.assigned(actor, task_id)?;
@@ -3738,6 +3743,10 @@ impl DomainState {
                 system(actor)?;
                 nonempty(reason)?;
                 let task = self.active(task_id)?;
+                if task.agent_id.is_none() && task.started {
+                    self.tasks.get_mut(task_id).unwrap().started = false;
+                    return Ok(());
+                }
                 if task.agent_id.is_none() || task.final_presentation.is_some() {
                     return fail("conflict", "Task has no working Agent to release");
                 }

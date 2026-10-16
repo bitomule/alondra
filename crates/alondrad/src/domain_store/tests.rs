@@ -1883,3 +1883,23 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     let card = &state.interactions[&InteractionId::from("report")].card;
     assert_eq!((card.plan.as_deref(), card.kept_at.as_deref()), (Some(plan), Some("/home/files/results/task-1/report.md")));
 }
+
+/// A task an older daemon reopened was left in progress with no node. Releasing it, as starting the
+/// daemon does, leaves it not started and puts it in the fleet's queue with its plan, in the same
+/// transaction.
+#[test]
+fn releasing_a_task_left_in_progress_with_no_node_queues_it_with_its_plan() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    store.conn.execute("UPDATE tasks SET agent_id=NULL, started=1, state='running' WHERE id='task-1'", []).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert!(store.load().unwrap().tasks[&"task-1".into()].started_without_node());
+    execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "It was in progress with no node".into() });
+    let task = store.load().unwrap().tasks[&"task-1".into()].clone();
+    assert_eq!((task.state, task.started), (TaskState::NotStarted, false));
+    let planned = store.planned_tasks().unwrap()[&"task-1".into()];
+    let queue = store.launch_queue().unwrap();
+    assert_eq!(queue.iter().map(|row| (row.task_id.0.as_str(), row.enqueued_at, row.origin.as_str())).collect::<Vec<_>>(), [("task-1", planned, "reopen")]);
+}

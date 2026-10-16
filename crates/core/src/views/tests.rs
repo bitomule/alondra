@@ -1627,6 +1627,29 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     assert!(node.contains("Reconectando") && !node.contains("Esperando máquina"), "{node}");
 }
 
+/// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
+/// entregara» while it waited for its turn. Reopened, it waits in the fleet's queue: every client
+/// says it is queued, its place and what holds it, even though its old node was closed.
+#[test]
+fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_stopped() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    (task.state, task.started, task.agent_id, task.final_presentation) = (TaskState::NotStarted, false, None, None);
+    let mut live = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 2, of: 5, hold: LiveHold::Slots { working: 4, limit: 4 } }], vec![], None);
+    live.closed_tasks.push("t-1".into());
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
+        let shown = serde_json::to_string(&row).unwrap();
+        assert!(shown.contains("En cola · 2.º de 5") && shown.contains("Hay 4 de 4 trabajando"), "{client:?}: {shown}");
+        assert!(!shown.contains("Detenida") && !shown.contains("sin que entregara"), "{client:?}: {shown}");
+        assert_eq!(block, "block:waiting", "{client:?}");
+    }
+    let held = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
+    let shown = serde_json::to_string(&active_row(&state, &held, Client::Ios, Lang::Es, "t-1").1).unwrap();
+    assert!(shown.contains("El Mac va justo de memoria (9 % libre)"), "{shown}");
+}
+
 fn node_in(state: &mut DomainState, phase: NodePhase) {
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();

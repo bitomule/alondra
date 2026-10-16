@@ -293,15 +293,15 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
             error.lines().next().unwrap_or(error).to_owned()
         });
     }
+    if let Some(queued) = common::queued(task, context) {
+        return in_queue(task, queued, lang);
+    }
     if common::node_closed(task, context) {
         return Presentation::new(common::node_closed_label(lang), Tone::Warning, Waiting,
             Some(t!(lang, "You closed its session before it delivered", "Cerraste su sesión sin que entregara").into()));
     }
     if !open_dependencies(task, context).is_empty() {
         return chained(task, context);
-    }
-    if let Some(queued) = common::queued(task, context) {
-        return in_queue(task, queued, lang);
     }
     match context.live.start_waits.get(&task.id.0) {
         Some(_) if context.live.usage_exhausted.is_some() => Presentation::new(
