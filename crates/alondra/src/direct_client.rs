@@ -197,6 +197,12 @@ pub fn forget(home: &Path, name: &str) -> Result<Vec<String>> {
     Ok(gone.into_iter().map(|mac| mac.mac_id).collect())
 }
 
+/// Keeps, or forgets with `None`, how to dial one Mac over iroh, under the store lock.
+pub fn keep_dial(home: &Path, mac_id: &str, dial: Option<crate::iroh_client::Dial>) -> Result<()> {
+    let _lock = StoreLock::acquire(home)?;
+    crate::iroh_client::save_dial(home, mac_id, dial)
+}
+
 fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String], dial: Option<crate::iroh_client::Dial>) -> Result<()> {
     let _lock = StoreLock::acquire(home)?;
     let mut macs = load_from(home)?;
@@ -850,7 +856,7 @@ pub fn ping(name: Option<&str>, count: u32, json_output: bool) -> Result<()> {
 
 #[cfg(test)]
 #[path = "direct_client_iroh_tests.rs"]
-mod iroh_tests;
+pub(crate) mod iroh_tests;
 
 #[cfg(test)]
 mod tests {

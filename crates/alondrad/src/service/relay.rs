@@ -1,6 +1,7 @@
 //! The outbound relay connector: enrolls approved devices with the relay, long-polls it for
 //! envelopes, acknowledges and delivers responses, and hands encrypted pushes to APNs through it.
-//! Present only when `service.toml` names a relay.
+//! A relay without the mailbox leaves it a heartbeat that keeps enrollments, revocations and
+//! iroh bindings. Present only when `service.toml` names a relay.
 use super::{
     Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work, WorkGuard, ExecutionLane, MutationTurn,
     approval_bound_delivery, approved_method, bounded_response_within, decoded, domain_read_route, now_ms, registration_ended, relay_error_code, without_relay_extensions,
@@ -34,6 +35,11 @@ pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [
 ];
 #[cfg(test)]
 pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [Duration::from_millis(5); 4];
+/// With no mailbox to wait on, the connector checks devices, revocations and bindings this often.
+#[cfg(not(test))]
+const HEARTBEAT: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const HEARTBEAT: Duration = Duration::from_millis(50);
 
 /// A dropped connection, a timeout or a busy relay; never a refusal the relay meant.
 pub(super) fn transient_upload_failure(error: &anyhow::Error) -> bool {
@@ -63,6 +69,10 @@ pub(crate) struct RelayConnector {
     devices_bound: std::sync::Mutex<DevicesBound>,
     wake: tokio::sync::Notify,
     deliveries: Arc<tokio::sync::Semaphore>,
+    /// The relay epoch whose relay answered the work poll as a route it does not have.
+    mailbox_gone: std::sync::Mutex<Option<[u8; 16]>>,
+    #[cfg(test)]
+    pub(super) mailbox_uses: std::sync::Mutex<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -114,7 +124,31 @@ impl RelayConnector {
             url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None),
             devices_bound: std::sync::Mutex::default(), wake: tokio::sync::Notify::new(),
             deliveries: Arc::new(tokio::sync::Semaphore::new(MAX_ORDINARY_DELIVERIES)),
+            mailbox_gone: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            mailbox_uses: std::sync::Mutex::default(),
         }
+    }
+
+    fn mailbox_gone_in(&self, epoch: &[u8; 16]) -> bool {
+        *self.mailbox_gone.lock().expect("mailbox state lock poisoned") == Some(*epoch)
+    }
+
+    /// One line per request that reached this Mac through the relay mailbox, never its content:
+    /// the count that shows when no client needs the mailbox any more.
+    fn note_mailbox_use(&self, sender: &str, request: &super::LocalRequest, changes: bool) {
+        let kind = if changes {
+            "change wait"
+        } else if Service::ordinary_read(request) {
+            "read"
+        } else {
+            "action"
+        };
+        let path = request.path.split('?').next().unwrap_or_default();
+        let line = format!("mailbox {kind} from {sender}: {} {path}", request.method);
+        log!("{line}");
+        #[cfg(test)]
+        self.mailbox_uses.lock().expect("mailbox log lock poisoned").push(line);
     }
 
     /// The device list changed: re-enroll and re-sync revocations on the next iteration.
@@ -431,13 +465,30 @@ impl Service {
                 }
                 self.keep_iroh_endpoint_bound(&epoch).await;
                 self.keep_device_iroh_nodes_bound(&epoch).await;
+                if relay.mailbox_gone_in(&epoch) {
+                    tokio::select! {
+                        () = tokio::time::sleep(HEARTBEAT) => {}
+                        () = relay.wake.notified() => {}
+                    }
+                    // No signed poll notices a restarted relay; its new epoch re-enrolls and
+                    // asks for the mailbox again.
+                    if self.bootstrap().await? != epoch {
+                        *enrolled_epoch = None;
+                    }
+                    return Ok(());
+                }
                 let path = "/v1/work?wait_s=25";
                 let response = tokio::select! {
                     response = tokio::time::timeout(WORK_POLL_TIMEOUT, self.signed(Method::GET, path, Vec::new(), &epoch)) => response
-                        .map_err(|_| anyhow!("the relay held the work poll past {}s", WORK_POLL_TIMEOUT.as_secs()))??
-                        .error_for_status()?,
+                        .map_err(|_| anyhow!("the relay held the work poll past {}s", WORK_POLL_TIMEOUT.as_secs()))??,
                     () = relay.wake.notified() => return Ok(()),
                 };
+                if matches!(response.status(), StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED) {
+                    log!("the relay has no mailbox: devices, revocations and iroh bindings are checked every {}s", HEARTBEAT.as_secs());
+                    *relay.mailbox_gone.lock().expect("mailbox state lock poisoned") = Some(epoch);
+                    return Ok(());
+                }
+                let response = response.error_for_status()?;
                 if response.status() == StatusCode::NO_CONTENT {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -494,6 +545,7 @@ impl Service {
         let Some(mut prepared) = self.prepare_work(&work, Transport::Relay)? else {
             return Ok(());
         };
+        self.relay()?.note_mailbox_use(&work.envelope.sender, &prepared.request, prepared.guard.changes);
         if prepared.guard.changes {
             let service = self.clone();
             changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });

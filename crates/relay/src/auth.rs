@@ -1035,14 +1035,15 @@ impl Auth {
         self.verify_jwt(token, now_ms).await
     }
 
-    pub fn mac_ids_for_owner(&self, owner_sub: &str) -> Result<Vec<String>> {
+    /// Each enrolled Mac of the owner with the iroh endpoint it bound, if it bound one.
+    pub fn macs_for_owner(&self, owner_sub: &str) -> Result<Vec<(String, Option<String>)>> {
         self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();
-        let mut ids: Vec<String> = registry.macs.values()
+        let mut macs: Vec<_> = registry.macs.values()
             .filter(|mac| mac.owner_sub == owner_sub && !registry.revoked_mac_ids.contains(&mac.mac_id))
-            .map(|mac| mac.mac_id.clone()).collect();
-        ids.sort();
-        Ok(ids)
+            .map(|mac| (mac.mac_id.clone(), registry.iroh_nodes.get(&mac.mac_id).cloned())).collect();
+        macs.sort();
+        Ok(macs)
     }
 
     pub fn mac_for_owner(&self, mac_id: &str, owner_sub: &str) -> Result<VerifyingKey> {

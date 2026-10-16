@@ -6,27 +6,27 @@ use iroh::{Endpoint, RelayMode};
 use std::io::{BufRead as _, BufReader, Read as _};
 use std::net::{Ipv4Addr, TcpListener};
 
-const MAC: &str = "mac-fake";
-const DEVICE: &str = "client-fake";
+pub(crate) const MAC: &str = "mac-fake";
+pub(crate) const DEVICE: &str = "client-fake";
 
-fn mac_signing() -> SigningKey {
+pub(crate) fn mac_signing() -> SigningKey {
     SigningKey::from_slice(&[5u8; 32]).unwrap()
 }
-fn mac_agreement() -> SecretKey {
+pub(crate) fn mac_agreement() -> SecretKey {
     SecretKey::from_slice(&[6u8; 32]).unwrap()
 }
-fn device_signing() -> SigningKey {
+pub(crate) fn device_signing() -> SigningKey {
     SigningKey::from_slice(&[7u8; 32]).unwrap()
 }
-fn device_agreement() -> SecretKey {
+pub(crate) fn device_agreement() -> SecretKey {
     SecretKey::from_slice(&[8u8; 32]).unwrap()
 }
-fn wire(key: &VerifyingKey) -> String {
+pub(crate) fn wire(key: &VerifyingKey) -> String {
     B64.encode(key.to_sec1_point(false).as_bytes())
 }
 
 /// Opens a request envelope as the Mac and seals the answer it gets.
-fn answer(request: &[u8], routes: &Value) -> Vec<u8> {
+pub(crate) fn answer(request: &[u8], routes: &Value) -> Vec<u8> {
     let envelope: Envelope = serde_json::from_slice(request).unwrap();
     let plain = envelope
         .open(device_signing().verifying_key(), &mac_agreement(), DEVICE, MAC, MAC, now_ms())
@@ -105,21 +105,21 @@ impl Http {
 
 /// What the fake Mac's iroh endpoint does with a request stream.
 #[derive(Clone, Copy)]
-enum Behaviour {
+pub(crate) enum Behaviour {
     Answer,
     /// Reads the whole envelope, then drops the connection without answering.
     DropAfterRequest,
     Refuse(&'static str),
 }
 
-struct FakeIroh {
+pub(crate) struct FakeIroh {
     runtime: tokio::runtime::Runtime,
     endpoint: Endpoint,
     received: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl FakeIroh {
-    fn start(behaviour: Behaviour) -> Self {
+    pub(crate) fn start(behaviour: Behaviour) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let endpoint = runtime.block_on(async {
             Endpoint::builder(presets::Minimal)
@@ -172,7 +172,7 @@ impl FakeIroh {
         Self { runtime, endpoint, received }
     }
 
-    fn dial(&self) -> crate::iroh_client::Dial {
+    pub(crate) fn dial(&self) -> crate::iroh_client::Dial {
         crate::iroh_client::Dial {
             endpoint: self.endpoint.id().to_string(),
             addrs: self.endpoint.bound_sockets().iter().map(ToString::to_string).collect(),
@@ -180,7 +180,7 @@ impl FakeIroh {
         }
     }
 
-    fn received(&self) -> Vec<Vec<u8>> {
+    pub(crate) fn received(&self) -> Vec<Vec<u8>> {
         self.received.lock().unwrap().clone()
     }
 }

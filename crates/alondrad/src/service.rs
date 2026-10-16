@@ -2953,6 +2953,7 @@ mod domain_parity_tests;
 #[cfg(test)]
 mod tests {
     mod relay_scheduler_tests;
+    mod relay_heartbeat_tests;
     mod journal_admission_tests;
     mod journal_transition_tests;
     mod push_commit_tests;

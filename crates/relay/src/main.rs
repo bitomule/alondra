@@ -238,13 +238,18 @@ async fn enroll_mac(
         .into_response())
 }
 
-/// OIDC authenticates ownership for discovery, never authorizes content access.
+/// OIDC authenticates ownership for discovery, never authorizes content access. The iroh
+/// endpoint lets the owner's apps dial a Mac whose pairing predates it; the Mac still proves
+/// itself with its pairing key on that connection.
 async fn list_macs(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiResult {
     let owner = server.auth.account_owner(&headers, now_ms()).await.map_err(authentication_error)?;
     let _gate = server.device_gate.read().await;
-    let ids = server.auth.mac_ids_for_owner(&owner)
+    let macs = server.auth.macs_for_owner(&owner)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_directory_unavailable"))?;
-    let macs: Vec<Value> = ids.into_iter().map(|id| json!({"mac_id":id})).collect();
+    let macs: Vec<Value> = macs.into_iter().map(|(id, iroh)| match iroh {
+        Some(endpoint) => json!({"mac_id":id, "iroh_endpoint":endpoint}),
+        None => json!({"mac_id":id}),
+    }).collect();
     Ok(Json(json!({"macs":macs})).into_response())
 }
 
@@ -4271,6 +4276,25 @@ mod http_tests {
             assert_eq!(f.access(&phone_node).await, allowed());
             assert_eq!(f.access(&stranger).await, denied());
             assert_eq!(f.access_with(Some(TEST_IROH_ACCESS_TOKEN), "not-an-endpoint-id").await, denied());
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn the_mac_directory_names_a_bound_mac_endpoint_only_to_its_owner() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node) = (IrohKey::new(6), IrohKey::new(7));
+            let directory = |owner: &'static str| {
+                let request = f.http.get(format!("{}/v1/macs", f.url)).bearer_auth(jwt(owner, now_ms()));
+                async move { request.send().await.unwrap().json::<Value>().await.unwrap() }
+            };
+            assert_eq!(directory("owner").await, json!({"macs":[{"mac_id":"mac-1"}]}), "nothing bound yet");
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(directory("owner").await, json!({"macs":[{"mac_id":"mac-1","iroh_endpoint":mac_node.id()}]}),
+                "the Mac's endpoint, never its devices'");
+            assert_eq!(directory("other").await, json!({"macs":[]}));
+            assert_eq!(f.as_mac("DELETE", "/v1/iroh-node", Vec::new()).await, StatusCode::NO_CONTENT);
+            assert_eq!(directory("owner").await, json!({"macs":[{"mac_id":"mac-1"}]}), "an unbound endpoint is gone");
             f.task.abort();
         }
 

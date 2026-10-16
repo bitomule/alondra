@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod iroh;
+
 pub const RELAY: &str = "https://alondra-api.davidcollado.dev";
 static ACTIVE: OnceLock<Arc<Profile>> = OnceLock::new();
 #[derive(Clone, Serialize, Deserialize)]
@@ -123,7 +125,7 @@ impl RelayTransport {
             method: &str, path: &str, body: &[u8], deadline: Instant) -> Result<(u16, Value)> {
         remaining(deadline)?;
         if owner != profile.owner_sub { bail!("terminal approval belongs to another account"); }
-        if !matches!(method, "GET" | "POST") { bail!("unsupported relay method"); }
+        if !matches!(method, "GET" | "POST" | "PUT") { bail!("unsupported relay method"); }
         let epoch = self.epoch(deadline)?;
         let first = self.send(profile, access, method, path, body, epoch, deadline)?;
         if first.0 == 401 {
@@ -167,6 +169,11 @@ impl RelayTransport {
         let timeout = remaining(deadline)?.min(Duration::from_secs(35));
         let mut response = if method == "POST" {
             let mut request = self.agent.post(endpoint).config().timeout_global(Some(timeout)).build()
+                .header("content-type", "application/json");
+            for (key, value) in &headers { request = request.header(*key, value); }
+            request.send(body)?
+        } else if method == "PUT" {
+            let mut request = self.agent.put(endpoint).config().timeout_global(Some(timeout)).build()
                 .header("content-type", "application/json");
             for (key, value) in &headers { request = request.header(*key, value); }
             request.send(body)?
@@ -274,6 +281,7 @@ pub fn forget(mac: &str) -> Result<bool> {
     let gone = without(&mut profiles, mac);
     if gone {
         save(&profiles)?;
+        crate::direct_client::keep_dial(&crate::client::config().home, mac, None)?;
     }
     Ok(gone)
 }
@@ -362,6 +370,7 @@ impl Profile {
         )
     }
 
+    /// Over iroh when the Mac answers there, else the same envelope through the relay mailbox.
     pub fn request(
         &self,
         method: &str,
@@ -369,22 +378,42 @@ impl Profile {
         body: Option<&Value>,
         timeout: Duration,
     ) -> Result<(u16, Value)> {
-        self.request_via(
-            method,
-            path,
-            body,
-            Instant::now() + timeout,
-            |method, path, body, deadline| self.relay_call(method, path, body, deadline),
-        )
+        let home = &crate::client::config().home;
+        let deadline = Instant::now() + timeout;
+        self.request_over(home, method, path, body, deadline, || self.learn_iroh(home, deadline),
+            |method, path, body, deadline| self.relay_call(method, path, body, deadline))
     }
+    #[allow(clippy::too_many_arguments)]
+    fn request_over(
+        &self,
+        home: &Path,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        deadline: Instant,
+        learn: impl FnOnce() -> Option<crate::iroh_client::Dial>,
+        call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
+    ) -> Result<(u16, Value)> {
+        let (request_id, envelope) = self.seal(method, path, body, deadline)?;
+        let bytes = serde_json::to_vec(&envelope)?;
+        if let iroh::OverIroh::Answered(answer) = self.over_iroh(home, &bytes, &request_id, remaining(deadline)?, learn) {
+            return answer;
+        }
+        self.submit_via(&request_id, &bytes, deadline, call)
+    }
+    #[cfg(test)]
     fn request_via(
         &self,
         method: &str,
         path: &str,
         body: Option<&Value>,
         deadline: Instant,
-        mut call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
+        call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
     ) -> Result<(u16, Value)> {
+        let (request_id, envelope) = self.seal(method, path, body, deadline)?;
+        self.submit_via(&request_id, &serde_json::to_vec(&envelope)?, deadline, call)
+    }
+    fn seal(&self, method: &str, path: &str, body: Option<&Value>, deadline: Instant) -> Result<(String, Envelope)> {
         let timeout = remaining(deadline)?;
         let request_id = format!("op-{}", B64.encode(random::<16>()?));
         let plaintext = serde_json::to_vec(&json!({"method":method,"path":path,"body":body}))?;
@@ -401,10 +430,19 @@ impl Profile {
             &self.signing()?,
             &PublicKey::from_sec1_bytes(&B64.decode(&self.mac_agreement_key)?)?,
         )?;
+        Ok((request_id, envelope))
+    }
+    fn submit_via(
+        &self,
+        request_id: &str,
+        envelope: &[u8],
+        deadline: Instant,
+        mut call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
+    ) -> Result<(u16, Value)> {
         let (status, receipt) = call(
             "POST",
             "/v1/requests",
-            &serde_json::to_vec(&envelope)?,
+            envelope,
             deadline,
         )
         .context(
@@ -418,7 +456,7 @@ impl Profile {
             bail!("relay refused request (HTTP {status}); request was not retried");
         }
         let receipt_status = receipt["status"].as_str();
-        if receipt["request_id"].as_str() != Some(&request_id)
+        if receipt["request_id"].as_str() != Some(request_id)
             || !matches!((status, receipt_status),
                 (202, Some("queued" | "dispatched" | "received")) | (200, Some("completed"))) {
             bail!("invalid relay submission receipt; inspect destination before repeating an action");
@@ -430,14 +468,14 @@ impl Profile {
             remaining(deadline)?;
             let (status, job) = call("GET", &format!("/v1/requests/{request_id}"), &[], deadline)?;
             remaining(deadline)?;
-            if status != 200 || job["request_id"].as_str() != Some(&request_id) {
+            if status != 200 || job["request_id"].as_str() != Some(request_id) {
                 bail!("invalid relay request status ({status})");
             }
             let observed_revision = job["revision"].as_u64().filter(|n| *n > 0)
                 .context("invalid relay request revision")?;
             revision = revision.max(observed_revision);
             if let Some(value) = job.get("response").filter(|v| !v.is_null()) {
-                return self.open_response(value.clone(), &request_id, now_ms()?);
+                return self.open_response(value.clone(), request_id, now_ms()?);
             }
             if job["status"].as_str() == Some("expired") || Instant::now() >= deadline {
                 bail!("destination did not finish request; inspect it before repeating an action");
