@@ -5,6 +5,8 @@ mod command;
 mod connection;
 #[cfg(test)]
 mod live_read_trace;
+mod owner;
+pub(crate) use owner::{OwnerTransaction, StagedOutcome};
 pub(crate) mod model_metrics;
 mod repository;
 

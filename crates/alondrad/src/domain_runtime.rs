@@ -1,7 +1,7 @@
 //! Serialization boundary for the SQL domain and its authenticated producers.
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
-use crate::domain_store::{DomainStore, StoreError, TransportIdentity};
+use crate::domain_store::{DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
 use alondra_core::domain::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,11 @@ pub struct DomainRuntime {
     pub(crate) held:
         Mutex<std::collections::BTreeMap<alondra_core::domain::AgentId, Vec<String>>>,
     rejections: rejections::Rejections,
+    /// Store seals of owner transactions whose state readers already see, for the provider
+    /// driver to acknowledge.
+    acknowledgements: Mutex<Vec<alondra_store::Committed>>,
+    #[cfg(test)]
+    before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -77,6 +82,9 @@ impl DomainRuntime {
             live: crate::client_routes::Live::persisted_in(home),
             held: Default::default(),
             rejections: Default::default(),
+            acknowledgements: Default::default(),
+            #[cfg(test)]
+            before_owner_publish: Default::default(),
         })
     }
     pub(crate) fn home(&self) -> &Path {
@@ -88,6 +96,42 @@ impl DomainRuntime {
     /// The last committed state with its read index: both of the same revision.
     pub fn read(&self) -> Arc<ReadSnapshot> {
         Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned"))
+    }
+    /// Provider evidence, its normalization and the domain's decision commit in one transaction.
+    /// Still under the writer lock, readers get the committed state and the change is notified;
+    /// only then are the store's seals queued for acknowledgement.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
+    pub(crate) fn own<T>(
+        &self,
+        scope: alondra_store::AuthorityScope,
+        stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
+    ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
+        let mut store = self.store.lock().expect("domain store poisoned");
+        let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
+        let (value, commit) = store.own(scope, stage)?;
+        #[cfg(test)]
+        if let Some(hook) = self.before_owner_publish.lock().unwrap().as_mut() {
+            hook();
+        }
+        self.publish(&commit.draft.state);
+        let (draft, sealed) = commit.acknowledge(&self.read())?;
+        if draft.domain_changed {
+            self.changed.send_replace(draft.state.revision);
+            if draft.schedule_changed {
+                self.schedule_changed.send_replace(draft.state.revision);
+            }
+        }
+        self.acknowledgements.lock().expect("acknowledgements poisoned").push(sealed);
+        drop(store);
+        Ok((value, draft.outcomes))
+    }
+    #[cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
+    pub(crate) fn take_acknowledgements(&self) -> Vec<alondra_store::Committed> {
+        std::mem::take(&mut *self.acknowledgements.lock().expect("acknowledgements poisoned"))
+    }
+    #[cfg(test)]
+    pub(crate) fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {
+        *self.before_owner_publish.lock().unwrap() = Some(Box::new(hook));
     }
     /// Builds the index of a new commit; a replayed command hands back the state already read.
     fn publish(&self, state: &Arc<DomainState>) {
@@ -422,7 +466,7 @@ impl DomainRuntime {
     }
 }
 
-fn schedule_command(command: &Command) -> bool {
+pub(crate) fn schedule_command(command: &Command) -> bool {
     matches!(
         command,
         Command::CreateSchedule { .. }

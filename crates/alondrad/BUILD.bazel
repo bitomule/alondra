@@ -21,7 +21,15 @@ rust_binary(
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+    deps = all_crate_deps(normal = True) + [
+        "//crates/agent-application:agent_application",
+        "//crates/core:alondra_core",
+        "//crates/domain:domain",
+        "//crates/e2e:alondra_e2e",
+        "//crates/foundation:foundation",
+        "//crates/provider-contract:provider_contract",
+        "//crates/store:store",
+    ],
 )
 
 # launchd runs this at a fixed path so macOS keeps alondrad's Local Network permission across
@@ -66,6 +74,7 @@ rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
     deps = all_crate_deps(normal_dev = True) + [
+        "//crates/agent-application:agent_application",
         "//crates/domain:domain",
         "//crates/foundation:foundation",
         "//crates/provider-contract:provider_contract",

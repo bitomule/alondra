@@ -375,6 +375,13 @@ pub struct UnresolvedDispatch {
 /// ```compile_fail,E0616
 /// fn disarm(transaction: alondra_store::LifecycleTransaction<'_>) { let _ = transaction.failure; }
 /// ```
+/// Nor the SQL transaction it owns, so nothing can write or commit around the journal:
+/// ```compile_fail,E0616
+/// fn raw(transaction: alondra_store::LifecycleTransaction<'_>) { let _ = transaction.transaction; }
+/// ```
+/// ```compile_fail,E0599
+/// fn raw(transaction: alondra_store::LifecycleTransaction<'_>) { let _ = transaction.connection(); }
+/// ```
 /// The caller must install this port instead of independent legacy task/node writes at cutover.
 pub struct LifecycleTransaction<'connection> {
     transaction: Transaction<'connection>,
@@ -384,8 +391,8 @@ pub struct LifecycleTransaction<'connection> {
     claimed: Vec<DispatchAttempt>,
     owners: Vec<OwnerGrant>,
     cleared_cards: BTreeSet<(TaskId, alondra_foundation::InteractionId)>,
-    commands: Vec<CommittedCommand>,
-    observations: Vec<CommittedObservation>,
+    commands: Vec<commit_seals::StagedCommand>,
+    observations: Vec<commit_seals::StagedObservation>,
 }
 impl<'connection> LifecycleTransaction<'connection> {
     pub fn install(transaction: &mut Transaction<'_>) -> Result<()> {
@@ -1138,7 +1145,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 self.fence_owner(owner)?;
             }
             for command in &self.commands {
-                self.fence_committed_command(command)?;
+                self.fence_staged_command(command)?;
             }
             for observation in &self.observations {
                 self.verify_observation_commit(observation)?;
@@ -1194,8 +1201,8 @@ impl<'connection> LifecycleTransaction<'connection> {
                 permits,
                 attempts: self.claimed,
                 owners: self.owners,
-                commands: self.commands,
-                observations: self.observations,
+                commands: self.commands.into_iter().map(commit_seals::StagedCommand::seal).collect(),
+                observations: self.observations.into_iter().map(commit_seals::StagedObservation::seal).collect(),
             })
         })
     }

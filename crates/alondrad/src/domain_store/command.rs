@@ -367,10 +367,6 @@ pub(super) fn stage(
 #[path = "command_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "lifecycle_command_tests.rs"]
-mod lifecycle_tests;
-
 /// A task that was over, or was left in progress with no node, and now waits for one: the fleet
 /// must start it, so it goes back to its queue.
 fn needs_a_node_again(before: &Task, after: &Task) -> bool {

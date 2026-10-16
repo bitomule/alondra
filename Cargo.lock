@@ -244,6 +244,7 @@ dependencies = [
 name = "alondrad"
 version = "0.2.87"
 dependencies = [
+ "alondra-agent-application",
  "alondra-core",
  "alondra-domain",
  "alondra-e2e",

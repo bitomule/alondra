@@ -1,6 +1,37 @@
 //! Commit values attest only to SQL persistence, never application publication or policy.
 use super::*;
 
+/// What a transaction staged; only `LifecycleTransaction::commit`, after the SQL commit
+/// returned, turns it into the public value.
+#[derive(Debug)]
+pub(super) struct StagedCommand {
+    attempt: DispatchAttempt,
+    owner_generation: u64,
+    evidence: CommandEvidence,
+}
+#[derive(Debug)]
+pub(super) struct StagedObservation {
+    scope: AuthorityScope,
+    execution: ExecutionStamp,
+    binding: ProviderBinding,
+    owner_generation: u64,
+    cursor: u64,
+    digest: Vec<u8>,
+}
+impl StagedCommand {
+    pub(super) fn seal(self) -> CommittedCommand {
+        CommittedCommand { staged: self }
+    }
+}
+impl StagedObservation {
+    pub(super) fn seal(self) -> CommittedObservation {
+        CommittedObservation { staged: self }
+    }
+    fn matches_evidence(&self, raw: &[u8]) -> bool {
+        !raw.is_empty() && raw.len() <= MAX_PAYLOAD && evidence_digest(raw) == self.digest
+    }
+}
+
 /// Exact command evidence issued only after the owning SQL transaction commits.
 /// ```
 /// use alondra_store::CommittedCommand;
@@ -15,21 +46,23 @@ use super::*;
 /// fn requires_clone<T: Clone>() {}
 /// requires_clone::<CommittedCommand>();
 /// ```
+/// The staged draft is not nameable outside the store, so nothing else can seal it:
+/// ```compile_fail,E0432
+/// use alondra_store::StagedCommand;
+/// ```
 #[derive(Debug)]
 pub struct CommittedCommand {
-    attempt: DispatchAttempt,
-    owner_generation: u64,
-    evidence: CommandEvidence,
+    staged: StagedCommand,
 }
 impl CommittedCommand {
     pub fn attempt(&self) -> &DispatchAttempt {
-        &self.attempt
+        &self.staged.attempt
     }
     pub fn owner_generation(&self) -> u64 {
-        self.owner_generation
+        self.staged.owner_generation
     }
     pub fn bytes(&self) -> &[u8] {
-        self.evidence.bytes()
+        self.staged.evidence.bytes()
     }
 }
 
@@ -47,33 +80,31 @@ impl CommittedCommand {
 /// fn requires_clone<T: Clone>() {}
 /// requires_clone::<CommittedObservation>();
 /// ```
+/// ```compile_fail,E0432
+/// use alondra_store::StagedObservation;
+/// ```
 #[derive(Debug)]
 pub struct CommittedObservation {
-    scope: AuthorityScope,
-    execution: ExecutionStamp,
-    binding: ProviderBinding,
-    owner_generation: u64,
-    cursor: u64,
-    digest: Vec<u8>,
+    staged: StagedObservation,
 }
 impl CommittedObservation {
     pub fn scope(&self) -> &AuthorityScope {
-        &self.scope
+        &self.staged.scope
     }
     pub fn execution(&self) -> &ExecutionStamp {
-        &self.execution
+        &self.staged.execution
     }
     pub fn binding(&self) -> &ProviderBinding {
-        &self.binding
+        &self.staged.binding
     }
     pub fn owner_generation(&self) -> u64 {
-        self.owner_generation
+        self.staged.owner_generation
     }
     pub fn cursor(&self) -> u64 {
-        self.cursor
+        self.staged.cursor
     }
     pub fn matches_evidence(&self, raw: &[u8]) -> bool {
-        !raw.is_empty() && raw.len() <= MAX_PAYLOAD && evidence_digest(raw) == self.digest
+        self.staged.matches_evidence(raw)
     }
 }
 
@@ -90,7 +121,7 @@ impl LifecycleTransaction<'_> {
             self.fence_observation_owner(attempt.execution(), owner_generation)?;
             let retained = CommandEvidence::new(evidence.bytes().to_vec())?;
             self.record_command(&attempt, evidence)?;
-            self.commands.push(CommittedCommand {
+            self.commands.push(StagedCommand {
                 attempt,
                 owner_generation,
                 evidence: retained,
@@ -99,10 +130,13 @@ impl LifecycleTransaction<'_> {
         })
     }
     pub fn fence_committed_command(&self, command: &CommittedCommand) -> Result<()> {
+        self.fence_staged_command(&command.staged)
+    }
+    pub(super) fn fence_staged_command(&self, command: &StagedCommand) -> Result<()> {
         staging!(self, {
             self.fence_attempt(&command.attempt)?;
             self.fence_observation_owner(command.attempt.execution(), command.owner_generation)?;
-            if self.command_evidence(&command.attempt)?.bytes() != command.bytes() {
+            if self.command_evidence(&command.attempt)?.bytes() != command.evidence.bytes() {
                 return Err(Error::CommandConflict);
             }
             Ok(())
@@ -115,7 +149,7 @@ impl LifecycleTransaction<'_> {
         receipt: DispatchReceipt,
     ) -> Result<()> {
         staging!(self, {
-            self.record_receipt(command.attempt, receipt)
+            self.record_receipt(command.staged.attempt, receipt)
         })
     }
     /// The commit also requires the durable normalization checkpoint to cover this raw cursor.
@@ -136,7 +170,7 @@ impl LifecycleTransaction<'_> {
                 .iter()
                 .any(|prior| prior.execution == *execution && prior.cursor == cursor)
             {
-                self.observations.push(CommittedObservation {
+                self.observations.push(StagedObservation {
                     scope: self.scope.clone(),
                     execution: execution.clone(),
                     binding,
@@ -161,7 +195,7 @@ impl LifecycleTransaction<'_> {
         self.verify_retained_observation(observation)?;
         Ok(observation.binding.clone())
     }
-    fn verify_retained_observation(&self, observation: &CommittedObservation) -> Result<()> {
+    fn verify_retained_observation(&self, observation: &StagedObservation) -> Result<()> {
         if observation.scope != self.scope
             || provider_binding::for_execution(&self.transaction, &observation.execution)?
                 != observation.binding
@@ -185,7 +219,7 @@ impl LifecycleTransaction<'_> {
     }
     pub(super) fn verify_observation_commit(
         &self,
-        observation: &CommittedObservation,
+        observation: &StagedObservation,
     ) -> Result<()> {
         self.verify_retained_observation(observation)?;
         if self
