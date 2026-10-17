@@ -29,6 +29,7 @@ final class NewRequestFeatureTests: XCTestCase {
         clock: TestClock<Duration> = TestClock(),
         loaded: Bool = true,
         attachments: [AttachmentFeature.Entry] = [],
+        uuid: UUIDGenerator = .incrementing,
         respond: @escaping @Sendable (ActionRequest) async throws -> ActionResponse = { _ in try Responses.applied("Request sent") }
     ) async throws -> TestStoreOf<NewRequestFeature> {
         var state = NewRequestFeature.State()
@@ -37,7 +38,7 @@ final class NewRequestFeatureTests: XCTestCase {
             $0.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
             $0.viewsClient.perform = { request in sent.record(request); return try await respond(request) }
             $0.continuousClock = clock
-            $0.uuid = .incrementing
+            $0.uuid = uuid
         }
         store.exhaustivity = .off
         if loaded { await store.send(.screen(.loaded(try view()))) }
@@ -211,6 +212,44 @@ final class NewRequestFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.unshown.isEmpty)
         XCTAssertEqual(store.state.recent.map(\.id), [first, "r-old"])
         XCTAssertTrue(store.state.outbox.isEmpty)
+    }
+
+    /// 16 Oct, iPhone on 4G: one request showed twice under Pending Requests, because the daemon
+    /// names it by the operation that carried it, never by the bare id it was sent with.
+    @MainActor
+    func testTheDaemonsRowNamedByItsOperationTakesThePlaceOfOurs() async throws {
+        let sent = UUID(uuidString: "27d86775-cd69-4956-92d0-4a20cd01c813")!
+        let operation = "op_8e8dd8f1687d492b5a16fb35d2ca17cd_1_85_27d86775-cd69-4956-92d0-4a20cd01c813"
+        let gate = Gate()
+        let store = try await composer(uuid: .constant(sent)) { _ in await gate.wait(); return try Responses.applied() }
+        await store.send(.textChanged("Bug for the Redraft node"))
+        await store.send(.send)
+
+        await store.send(.screen(.loaded(try view(version: "v-taken", queue: [(operation, "Bug for the Redraft node")]))))
+        XCTAssertTrue(store.state.unshown.isEmpty, "the daemon's row is ours: it is shown once")
+        XCTAssertEqual(store.state.recent.map(\.id), [operation])
+
+        await gate.open()
+        await store.receive(\.answered)
+        XCTAssertTrue(store.state.unshown.isEmpty, "a late answer does not bring our copy back")
+    }
+
+    @MainActor
+    func testAClosedRequestLeavesPendingRequests() async throws {
+        let sent = UUID(uuidString: "27d86775-cd69-4956-92d0-4a20cd01c813")!
+        let operation = "op_8e8dd8f1687d492b5a16fb35d2ca17cd_1_85_27d86775-cd69-4956-92d0-4a20cd01c813"
+        let gate = Gate()
+        let store = try await composer(uuid: .constant(sent)) { _ in await gate.wait(); return try Responses.applied() }
+        await store.send(.textChanged("Bug for the Redraft node"))
+        await store.send(.send)
+
+        await store.send(.screen(.loaded(try view(version: "v-taken", queue: [(operation, "Bug for the Redraft node")]))))
+        await store.send(.screen(.loaded(try view(version: "v-closed", queue: []))))
+        await gate.open()
+        await store.receive(\.answered)
+
+        XCTAssertTrue(store.state.unshown.isEmpty, "closed while its answer was on its way: nothing is pending")
+        XCTAssertTrue(store.state.recent.isEmpty)
     }
 
     @MainActor

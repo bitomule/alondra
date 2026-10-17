@@ -117,7 +117,7 @@ public struct NewRequestFeature: Sendable {
                 if let form = state.form {
                     for field in form.fields where state.values[field.id] == nil { state.values[field.id] = field.value }
                 }
-                state.pending.reconcile(shown: Set(state.recent.map(\.id)), version: document.version)
+                state.pending.reconcile(shown: state.recent, version: document.version)
                 let pending = state.pending
                 state.outbox.removeAll { pending[$0.id] == nil }
                 return .merge(state.pending.entries.filter { $0.phase == .waiting(.options) }.map { dispatch($0.id, &state) })

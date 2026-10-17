@@ -502,6 +502,28 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 900), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
     }
 
+    /// The request this Mac sent, on its way, and the daemon's row for it, named by the operation
+    /// that carried it: the queue shows it once.
+    func test_newRequest_sentAndShownByTheDaemon_spanish() throws {
+        let nonce = "27d86775-cd69-4956-92d0-4a20cd01c813"
+        let text = "Bug para el nodo de Redraft. Tenía todas las fotos analizadas, salí de casa y me saltó la alerta de tienes x fotos por analizar."
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: ContractCodec.encode(document("new-request-mac-es"))) as? [String: Any])
+        var sections = try XCTUnwrap(json["sections"] as? [[String: Any]])
+        let sent = try XCTUnwrap(sections.firstIndex { $0["id"] as? String == "sent" })
+        var row = try XCTUnwrap((sections[sent]["items"] as? [[String: Any]])?.first)
+        row["id"] = "op_8e8dd8f1687d492b5a16fb35d2ca17cd_1_85_\(nonce)"
+        row["title"] = String(text.prefix(100))
+        sections[sent]["items"] = [row]
+        json["sections"] = sections
+        let shown = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: json))
+        let store = try newRequest(spanish: true) { state in
+            state.screen.document = shown
+            state.pending.add(nonce, text: text, phase: .sending)
+        }
+        assertWindow(size: CGSize(width: 900, height: 700), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
+    }
+
     func test_newRequest_beforeTheOptionsArrive() throws {
         let store = try presentation { state in
             state.selection = .viewKey("new_request")

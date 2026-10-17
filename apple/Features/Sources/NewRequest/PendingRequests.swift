@@ -1,11 +1,13 @@
 import AlondraContract
+import AlondraTransport
 import Foundation
 
 /// The requests sent from this device that the daemon's queue does not show yet. Sending puts one
 /// on top at once; it stays until the daemon's queue shows it, which then takes its place, or until
 /// a view newer than the one shown when the daemon took it leaves it out. A view drawn before the
 /// daemon answered never takes one away, a failed one stays until it is sent again or discarded,
-/// and the same request is never shown twice.
+/// and the same request is never shown twice: the daemon names it by the operation that carried it
+/// (`op_…_<id>`), whose last part is the id it was sent with.
 public struct PendingRequests: Equatable, Sendable {
     public enum Phase: Equatable, Sendable {
         /// Waiting for what it needs before it can go: the options from the daemon, or its attachments.
@@ -56,7 +58,8 @@ public struct PendingRequests: Equatable, Sendable {
 
     /// A view of the daemon's queue arrived: what it shows is the daemon's from now on, and what it
     /// leaves out after taking it has left the queue.
-    public mutating func reconcile(shown ids: Set<String>, version: String?) {
+    public mutating func reconcile(shown rows: [AlondraContract.Row], version: String?) {
+        let ids = Self.ids(rows)
         entries.removeAll { entry in
             if ids.contains(entry.id) { return true }
             guard case .applied(let shown) = entry.phase else { return false }
@@ -66,7 +69,11 @@ public struct PendingRequests: Equatable, Sendable {
 
     /// The local requests the daemon's rows do not show yet, newest first.
     public func unshown(_ rows: [AlondraContract.Row]) -> [Entry] {
-        let shown = Set(rows.map(\.id))
+        let shown = Self.ids(rows)
         return entries.filter { !shown.contains($0.id) }
+    }
+
+    private static func ids(_ rows: [AlondraContract.Row]) -> Set<String> {
+        Set(rows.map { ActionOperationID.nonce(from: $0.id) })
     }
 }

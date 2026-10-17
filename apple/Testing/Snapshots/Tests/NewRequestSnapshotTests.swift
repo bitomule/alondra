@@ -87,6 +87,30 @@ final class NewRequestSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1100) { NewRequestView(store: store) } }
     }
 
+    /// The request this iPhone sent, on its way, and the daemon's row for it, named by the
+    /// operation that carried it: the queue shows it once.
+    func test_sentAndShownByTheDaemon_spanish() throws {
+        let nonce = "27d86775-cd69-4956-92d0-4a20cd01c813"
+        let text = "Bug para el nodo de Redraft. Tenía todas las fotos analizadas, salí de casa y me saltó la alerta de tienes x fotos por analizar."
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: ContractCodec.encode(SampleViews.document("new-request-ios-es"))) as? [String: Any])
+        var sections = try XCTUnwrap(document["sections"] as? [[String: Any]])
+        let sent = try XCTUnwrap(sections.firstIndex { $0["id"] as? String == "sent" })
+        var row = try XCTUnwrap((sections[sent]["items"] as? [[String: Any]])?.first)
+        row["id"] = "op_8e8dd8f1687d492b5a16fb35d2ca17cd_1_85_\(nonce)"
+        row["title"] = String(text.prefix(100))
+        sections[sent]["items"] = [row]
+        document["sections"] = sections
+        let shown = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: document))
+        var state = NewRequestFeature.State()
+        state.screen = .showing(shown, key: .newRequest())
+        state.pending.add(nonce, text: text, phase: .sending)
+        let store = Store(initialState: state) { NewRequestFeature() } withDependencies: {
+            $0.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { NewRequestView(store: store) } }
+    }
+
     func test_beforeTheOptionsArrive() throws {
         var state = NewRequestFeature.State()
         state.values["text"] = .string("Polish the Alondra beta before Friday.")
