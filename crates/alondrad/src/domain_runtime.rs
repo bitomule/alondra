@@ -33,11 +33,20 @@ pub struct DomainRuntime {
     pub(crate) held:
         Mutex<std::collections::BTreeMap<alondra_core::domain::AgentId, Vec<String>>>,
     rejections: rejections::Rejections,
-    /// Store seals of owner transactions whose state readers already see, for the provider
-    /// driver to acknowledge.
-    acknowledgements: Mutex<Vec<alondra_store::Committed>>,
+    /// Store seals of commits whose state readers already see, for the SDK owners to claim,
+    /// send and acknowledge.
+    pub(crate) seals: crate::sdk_owner::Seals,
+    /// Set at startup only in a sandbox daemon whose configuration names one: otherwise no task
+    /// ever runs through the SDK.
+    sdk: std::sync::OnceLock<(crate::sdk_owner::SdkBackend, std::sync::Weak<DomainRuntime>)>,
+    pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
     #[cfg(test)]
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    #[cfg(test)]
+    before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    /// How many read indexes publication built: one per commit that changed the domain.
+    #[cfg(test)]
+    pub(crate) index_builds: std::sync::atomic::AtomicU64,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -82,10 +91,25 @@ impl DomainRuntime {
             live: crate::client_routes::Live::persisted_in(home),
             held: Default::default(),
             rejections: Default::default(),
-            acknowledgements: Default::default(),
+            seals: Default::default(),
+            sdk: Default::default(),
+            sdk_owners: Default::default(),
             #[cfg(test)]
             before_owner_publish: Default::default(),
+            #[cfg(test)]
+            before_acknowledge: Default::default(),
+            #[cfg(test)]
+            index_builds: Default::default(),
         })
+    }
+    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
+    pub(crate) fn enable_sdk(self: &Arc<Self>, backend: crate::sdk_owner::SdkBackend) {
+        let _ = self.sdk.set((backend, Arc::downgrade(self)));
+    }
+    /// The SDK backend and the runtime its owners run on, when this daemon has one.
+    pub(crate) fn sdk(&self) -> Option<(&crate::sdk_owner::SdkBackend, Arc<DomainRuntime>)> {
+        let (backend, runtime) = self.sdk.get()?;
+        Some((backend, runtime.upgrade()?))
     }
     pub(crate) fn home(&self) -> &Path {
         &self.home
@@ -100,7 +124,6 @@ impl DomainRuntime {
     /// Provider evidence, its normalization and the domain's decision commit in one transaction.
     /// Still under the writer lock, readers get the committed state and the change is notified;
     /// only then are the store's seals queued for acknowledgement.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
     pub(crate) fn own<T>(
         &self,
         scope: alondra_store::AuthorityScope,
@@ -121,23 +144,35 @@ impl DomainRuntime {
                 self.schedule_changed.send_replace(draft.state.revision);
             }
         }
-        self.acknowledgements.lock().expect("acknowledgements poisoned").push(sealed);
+        self.seals.put(sealed);
         drop(store);
         Ok((value, draft.outcomes))
     }
-    #[cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
+    #[cfg(test)]
     pub(crate) fn take_acknowledgements(&self) -> Vec<alondra_store::Committed> {
-        std::mem::take(&mut *self.acknowledgements.lock().expect("acknowledgements poisoned"))
+        self.seals.take_all()
     }
     #[cfg(test)]
     pub(crate) fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {
         *self.before_owner_publish.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(test)]
+    pub(crate) fn on_acknowledge(&self, hook: impl FnMut() + Send + 'static) {
+        *self.before_acknowledge.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(test)]
+    pub(crate) fn before_acknowledge(&self) {
+        if let Some(hook) = self.before_acknowledge.lock().unwrap().as_mut() {
+            hook();
+        }
     }
     /// Builds the index of a new commit; a replayed command hands back the state already read.
     fn publish(&self, state: &Arc<DomainState>) {
         if Arc::ptr_eq(self.read().state(), state) {
             return;
         }
+        #[cfg(test)]
+        self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
         *self.snapshot.write().expect("domain snapshot poisoned") = snapshot;
     }
@@ -381,8 +416,11 @@ impl DomainRuntime {
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
-        let commit = commit?;
+        let mut commit = commit?;
         self.publish(&commit.state);
+        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
+            self.seals.put(sealed);
+        }
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
             if schedule_command(&prepared.envelope.command) {
@@ -401,8 +439,11 @@ impl DomainRuntime {
     /// meanwhile never makes it stale.
     pub(crate) fn execute_on_current(&self, envelope: &CommandEnvelope) -> Result<CommandOutcome, StoreError> {
         let mut store = self.store.lock().expect("domain store poisoned");
-        let commit = store.execute_filling_revision(&Actor::System, envelope)?;
+        let mut commit = store.execute_filling_revision(&Actor::System, envelope)?;
         self.publish(&commit.state);
+        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
+            self.seals.put(sealed);
+        }
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
         }
@@ -462,8 +503,11 @@ impl DomainRuntime {
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
-        let commit = commit?;
+        let mut commit = commit?;
         self.publish(&commit.state);
+        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
+            self.seals.put(sealed);
+        }
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
             if schedule_command(&prepared.envelope.command) {

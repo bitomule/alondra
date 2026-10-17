@@ -14,6 +14,10 @@
 # NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
 # starts only when the wizard installs the service, through scripts that stand in for launchd
 # and the relay account.
+# SDK=1 (with FAKES=1, and SDK_NODE, SDK_HOST and SDK_ARCHIVE naming the pinned Node, the host
+# bundle and the native Claude's npm archive) gives Mac 1 the Agent SDK backend: every task it
+# launches runs through the SDK host and the pinned native Claude, under Seatbelt, against a
+# local model double, with a synthetic HOME (tools/e2e_sdk_backend.py). Never the real login.
 # SANDBOX_IROH_RELAY=<url> with SANDBOX_IROH_TOKEN makes the relay announce that iroh relay and
 # answer its access check with that bearer, and the Macs follow it (tools/e2e-iroh-cli.sh).
 set -eu
@@ -34,6 +38,15 @@ direct_listen=127.0.0.1
 
 case $macs in '' | *[!0-9]* | 0) echo "MACS must be a number from 1." >&2; exit 1 ;; esac
 case $fakes in 0 | 1) ;; *) echo "FAKES is 0 or 1." >&2; exit 1 ;; esac
+sdk=${SDK:-0}
+case $sdk in
+0) ;;
+1) [ "$fakes" = 1 ] || { echo "SDK=1 needs FAKES=1." >&2; exit 1; }
+	for artifact in "${SDK_NODE:?SDK=1 needs SDK_NODE}" "${SDK_HOST:?SDK=1 needs SDK_HOST}" "${SDK_ARCHIVE:?SDK=1 needs SDK_ARCHIVE}"; do
+		[ -f "$artifact" ] || { echo "$artifact does not exist." >&2; exit 1; }
+	done ;;
+*) echo "SDK is 0 or 1." >&2; exit 1 ;;
+esac
 
 if [ -e "$dir" ]; then
 	echo "$dir already exists; stop that sandbox with make e2e-sandbox-stop, remove it, or pick another SANDBOX_DIR." >&2
@@ -151,6 +164,9 @@ while [ "$i" -le "$macs" ]; do
 	[ -z "${SANDBOX_NAME:-}" ] || printf 'name = "%s %s"\n' "$SANDBOX_NAME" "$i" >>"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
 	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
+	if [ "$sdk" = 1 ] && [ "$i" = 1 ]; then
+		python3 -I "$repo/tools/e2e_sdk_backend.py" "$dir" "$home" "$SDK_NODE" "$SDK_HOST" "$SDK_ARCHIVE"
+	fi
 	# start runs this Mac's daemon with its environment; a journey restarts the daemon with it too.
 	{
 		printf '#!/bin/sh\n'
@@ -256,6 +272,14 @@ A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alond
   ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra mac connect --host 127.0.0.1:$(direct_port 1)
 
 EOF
+if [ "$sdk" = 1 ]; then
+	cat <<EOF
+SDK backend on Mac 1: its tasks run through the Agent SDK and the pinned native Claude, against a
+local model double (requests in $dir/sdk/model-requests.jsonl). Scripted journey:
+  $tool --sandbox $dir journey sdk
+
+EOF
+fi
 if [ "$fakes" = 1 ]; then
 	cat <<EOF
 Fakes: claude and gh are the sandbox's own (calls in $dir/fakes/calls.jsonl); nodes work in $dir/repo.

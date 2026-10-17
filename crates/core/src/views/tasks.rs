@@ -1185,6 +1185,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         && let Some(short_id) = task
             .agent_id
             .as_ref()
+            .filter(|agent| !context.index.node(agent).is_some_and(|node| node.through_sdk))
             .and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.0))
             .and_then(|node| node.short_id.as_ref())
     {

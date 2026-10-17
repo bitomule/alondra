@@ -28,6 +28,8 @@ pub struct ClaudeConfiguration {
     pub account_id: String,
     pub host_release: String,
     pub io_timeout: Duration,
+    /// A Seatbelt profile the whole host runs under, the native process included.
+    pub confinement: Option<PathBuf>,
 }
 
 /// Opaque technical worker. The application owns SQL, policy and publication.
@@ -175,6 +177,16 @@ impl ClaudeWorker {
             .ok_or(AdapterError::InvalidObservation)?;
         self.adapter
             .submit(invocation(committed.attempt()), &prepared.command)
+    }
+    /// Asks the host to stop and waits until it has exited; a worker without a host has none.
+    pub fn stop(&mut self) -> Result<(), AdapterError> {
+        self.adapter.connection = None;
+        let Some(host) = self.adapter.host.as_mut() else {
+            return Ok(());
+        };
+        host.request_stop().map_err(|_| AdapterError::Disconnected)?;
+        host.wait().map_err(|_| AdapterError::Disconnected)?;
+        Ok(())
     }
     pub fn poll(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         if let Some(pending) = &self.pending {
@@ -439,11 +451,12 @@ impl DurableAdapter for ClaudeAdapter {
         let session: SessionRecord = serde_json::from_slice(state.conversation())
             .map_err(|_| AdapterError::InvalidObservation)?;
         let expected = fence(&owner, &self.control);
-        let host = OwnedHost::launch(
+        let host = OwnedHost::launch_confined(
             owner,
             self.configuration.artifact.clone(),
             &self.configuration.state_directory,
             &self.configuration.host_environment,
+            self.configuration.confinement.as_deref(),
             |grant, identity| {
                 bootstrap(
                     grant,

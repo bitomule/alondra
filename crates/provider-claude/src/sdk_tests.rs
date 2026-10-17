@@ -213,6 +213,7 @@ fn scenario(prompt: &str, terminal_gap: bool) {
         account_id: "sdk-account".into(),
         host_release: "sdk-client-fixture".into(),
         io_timeout: Duration::from_secs(30),
+        confinement: None,
     };
     let probe = Arc::new(Mutex::new(Probe::default()));
     let adapter = OwnedSdkFixture {
@@ -548,6 +549,7 @@ impl FacadeFixture {
             account_id: "sdk-account".into(),
             host_release: "sdk-facade-fixture".into(),
             io_timeout: Duration::from_secs(30),
+            confinement: None,
         };
         let connection = database(&directory.join("domain.db"), &cwd);
         connection

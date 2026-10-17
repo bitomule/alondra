@@ -94,6 +94,7 @@ mod result_files;
 mod push_gate;
 mod push_retract;
 mod relaunch;
+mod sdk_owner;
 #[cfg(target_os = "macos")]
 mod schedule_clock;
 mod schedules;
@@ -215,6 +216,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         relaunch::keep_launcher(&daemon, &config.home);
     }
     ensure_domain_protocol(&config.home)?;
+    sdk_owner::backend::load(&config.home, config.sandbox)?;
     let _domain = domain_runtime::DomainRuntime::open(&config.home)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
@@ -482,6 +484,10 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     let domain = state.domain();
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
+    if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox)? {
+        log!("the SDK backend is on: every task this sandbox daemon launches runs through the Agent SDK");
+        domain.enable_sdk(backend);
+    }
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();

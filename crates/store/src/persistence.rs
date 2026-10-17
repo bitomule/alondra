@@ -21,6 +21,7 @@ pub(super) fn load(
     if epoch != scope.epoch.0 {
         return Err(Error::WrongScope);
     }
+    crate::measure::aggregate_loaded();
     let mut aggregate = TaskLifecycle::planned(task.clone(), InputId::new(initial)?)?;
     require_inputs(connection, &aggregate)?;
     let mut statement = connection.prepare(
@@ -35,6 +36,7 @@ pub(super) fn load(
             return Err(Error::CorruptJournal);
         }
         let event: codec::EventRecord = serde_json::from_str(&encoded)?;
+        crate::measure::event_decoded();
         let event = event.decode(&aggregate)?;
         aggregate
             .apply(aggregate.revision(), event)

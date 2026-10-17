@@ -12,6 +12,7 @@ mod codec;
 mod commit_seals;
 pub use commit_seals::{CommittedCommand, CommittedObservation};
 mod journal_format;
+pub mod measure;
 mod persistence;
 mod provider_binding;
 mod read;
@@ -296,7 +297,7 @@ impl DispatchAttempt {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Committed {
     pub permits: Vec<DispatchPermit>,
     pub attempts: Vec<DispatchAttempt>,

@@ -172,9 +172,18 @@ fn fold(
     }
     let kind = string(payload, "type")?;
     let mut facts = Vec::new();
+    if kind == "command_lifecycle" {
+        // The native Claude's trace of one of our inputs, even before init: evidence, no fact.
+        lookup(&[native_uuid(payload, "command_uuid")?])?;
+        return Ok(facts);
+    }
     if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("init") {
         if state.initialized {
-            return Err(AdapterError::InvalidObservation);
+            // The native Claude repeats init as each new prompt starts; never inside a turn.
+            if state.turn.is_some() {
+                return Err(AdapterError::InvalidObservation);
+            }
+            return Ok(facts);
         }
         state.initialized = true;
         facts.push(Observation::Available);
@@ -396,6 +405,23 @@ mod tests {
             .iter()
             .map(|id| InputId::new(id.as_str()).unwrap())
             .collect())
+    }
+    // What the native Claude 2.1.300 sends around each prompt: its lifecycle, from before init,
+    // and init again as the next prompt starts. Evidence of our own inputs, with no fact.
+    #[test]
+    fn the_native_prompt_lifecycle_and_a_repeated_init_between_turns_record_nothing() {
+        let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        let queued = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"queued","uuid":REPLY}));
+        assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![]);
+        let foreign = |_: &[MessageUuid]| Err(AdapterError::InvalidObservation);
+        assert!(matches!(fold(&queued, &session(), &mut state, foreign), Err(AdapterError::InvalidObservation)), "only an input of ours");
+        let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available]);
+        let again = fold(&init, &session(), &mut state, input);
+        assert!(matches!(&again, Ok(facts) if facts.is_empty()), "init again between turns records nothing: {again:?}");
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        assert!(matches!(fold(&init, &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "never inside a turn");
     }
     #[test]
     fn result_only_plural_preserves_consumption_and_pending_terminal_boundary() {

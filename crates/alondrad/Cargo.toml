@@ -9,8 +9,10 @@ publish.workspace = true
 alondra-core.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-agent-application.workspace = true
+alondra-agent-runtime.workspace = true
 alondra-domain.workspace = true
 alondra-foundation.workspace = true
+alondra-provider-claude.workspace = true
 alondra-provider-contract.workspace = true
 alondra-store.workspace = true
 anyhow.workspace = true

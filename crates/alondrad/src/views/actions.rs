@@ -601,12 +601,18 @@ async fn execute_external(
         Verb::Close => {
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
+            if domain.read().index().node(&agent).is_some_and(|node| node.through_sdk) {
+                return Ok(error_value_lang(lang, "unsupported", "This node runs through the Agent SDK: answer its card, or cancel its task"));
+            }
             let reply = client.write(&user_id, Write::Close(agent.0), &json!({}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         Verb::Interrupt => {
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
+            if domain.read().index().node(&agent).is_some_and(|node| node.through_sdk) {
+                return Ok(error_value_lang(lang, "unsupported", "This node runs through the Agent SDK: answer its card, or cancel its task"));
+            }
             match domain.live.pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
                 Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
@@ -1800,6 +1806,7 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "Alondra could not change the repo's settings file" => "Alondra no pudo cambiar el fichero de ajustes del repo",
         "This item has no active node" => "Este elemento no tiene un nodo activo",
         "This node is no longer available" => "Este nodo ya no está disponible",
+        "This node runs through the Agent SDK: answer its card, or cancel its task" => "Este nodo funciona con el Agent SDK: responde a su tarjeta o cancela su tarea",
         "This pull request is no longer open" => "Esta PR ya no está abierta",
         "This pull request is no longer available" => "Esta PR ya no está disponible",
         "This pull request has no active node" => "Esta PR no tiene un nodo activo",

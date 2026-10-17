@@ -18,6 +18,12 @@ def send(value):
     sys.stdout.write(json.dumps(value, ensure_ascii=False) + '\n')
     sys.stdout.flush()
 
+def lifecycle(message, state):
+    global serial
+    serial += 1
+    send(dict(type='command_lifecycle', command_uuid=message['uuid'], state=state, session_id=session_id,
+              uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
+
 def result(message, failed=False):
     global serial
     serial += 1
@@ -31,6 +37,8 @@ def result(message, failed=False):
     else:
         value.update(result='Fixture result', terminal_reason='completed', user_message_uuids=[entry['uuid'] for entry in pending])
     send(value)
+    for entry in pending:
+        lifecycle(entry, 'completed')
     pending.clear()
 
 for raw in sys.stdin:
@@ -48,7 +56,6 @@ for raw in sys.stdin:
             with open(capture, 'w') as stream:
                 json.dump(dict(args=sys.argv[1:], descriptors=descriptors, env_keys=sorted(os.environ), env_value_sha256={key: hashlib.sha256(value.encode()).hexdigest() for key, value in os.environ.items()}), stream)
             send(dict(type='control_response', response=dict(subtype='success', request_id=message['request_id'], response=dict(commands=[], models=[], account={}, output_style='default'))))
-            send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
         elif subtype == 'interrupt':
             send(dict(type='control_response', response=dict(subtype='success', request_id=message['request_id'], response=dict(still_queued=[]))))
             if pending:
@@ -57,6 +64,13 @@ for raw in sys.stdin:
             raise RuntimeError('Unexpected fixture control request')
     elif message['type'] == 'user':
         pending.append(message)
+        # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
+        for state in ('queued', 'started'):
+            lifecycle(message, state)
+        if len(pending) == 1:
+            send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+        with open(capture + '.prompts', 'a') as stream:
+            stream.write(json.dumps(message['message']['content']) + '\n')
         text = message['message']['content']
         if text == 'stop-cleanup':
             send(dict(type='system', subtype='status', status='compacting', uuid='00000000-0000-4000-8000-000000000103', session_id=session_id))

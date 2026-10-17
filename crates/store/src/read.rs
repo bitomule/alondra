@@ -43,6 +43,7 @@ pub fn read_journal(connection: &Connection, scope: &AuthorityScope) -> Result<B
                 return Err(Error::CorruptJournal);
             }
             let record: codec::EventRecord = serde_json::from_str(&encoded)?;
+            crate::measure::event_decoded();
             let event = record.decode(&aggregate)?;
             aggregate.apply(aggregate.revision(), event.clone()).map_err(|_| Error::CorruptJournal)?;
             persistence::require_inputs(connection, &aggregate)?;

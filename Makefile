@@ -4,6 +4,7 @@ LABEL = $(shell $(BIN)/alondra config get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 # A Rust target's executable: cquery also lists the clippy report it builds beside it.
 exe = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
+in_execroot = $$(bazelisk info execution_root 2>/dev/null)/$(call exe,$(1))
 export DEVICE
 
 # TestFlight betas go out with the /beta skill, which reads these variables.
@@ -14,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -157,8 +158,11 @@ mac:
 
 
 # MACS=n daemons in service mode with a loopback relay and a synthetic phone (tools/e2e-sandbox.sh).
+# SDK=1 FAKES=1 gives Mac 1 the Agent SDK backend with the pinned native Claude (tools/e2e_sdk_backend.py).
+SDK_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs @claude_native_test//:archive
 e2e-sandbox:
-	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(if $(filter 1,$(SDK)),$(SDK_TARGETS))
+	$(if $(filter 1,$(SDK)),SDK_NODE=$(call in_execroot,//agent-host:pinned_node) SDK_HOST=$(call in_execroot,//agent-host:persistent.cjs) SDK_ARCHIVE=$(call in_execroot,@claude_native_test//:archive)) \
 	tools/e2e-sandbox.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
@@ -292,6 +296,11 @@ e2e-ios-offline:
 skill-evals:
 	tools/skill-evals.sh $(if $(RUNS),--runs $(RUNS))
 
+
+# The SDK journey: a task through the Agent SDK host and the pinned native Claude, its turn-end card
+# answered from the phone (tests/sandbox/sdk_journey.sh). Opt-in: macOS arm64, ~250 MB native binary.
+e2e-sdk:
+	bazelisk test //tests/sandbox:sdk_journey --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed
 
 e2e-journeys:
 	bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false \

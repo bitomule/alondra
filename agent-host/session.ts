@@ -65,6 +65,7 @@ export function classify(payload: Record<string, unknown>): Observation & { type
     else if (payload.subtype !== 'api_retry' && (payload.error !== undefined || payload.errors !== undefined || (Array.isArray(payload.settings_parse_errors) && payload.settings_parse_errors.length > 0))) failure('settings', 'settings_parse_error');
     if (Array.isArray(payload.plugin_errors) && payload.plugin_errors.length > 0) failure('settings', 'plugin_error');
   } else if (['user', 'stream_event'].includes(String(payload.type))) kind = 'message';
+  else if (payload.type === 'command_lifecycle') kind = 'status';
   else if (['tool_progress', 'tool_use_summary', 'rate_limit_event', 'prompt_suggestion', 'mirror_error'].includes(String(payload.type))) {
     kind = 'status';
     if (payload.type === 'rate_limit_event') {

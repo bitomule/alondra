@@ -43,6 +43,9 @@ pub struct NodeReading {
     pub waiting: Vec<InteractionId>,
     /// What it said it still does after its task's PR merged.
     pub post_merge_work: Option<String>,
+    /// Its task's execution runs through the Agent SDK: no terminal to attach to, and what it
+    /// is told reaches it through its cards.
+    pub through_sdk: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -577,6 +580,7 @@ impl<'a> Builder<'a> {
                 waiting: waiting.remove(&agent.id).unwrap_or_default(),
                 post_merge_work: all.iter().filter(|t| !t.state.terminal())
                     .find_map(|t| t.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())),
+                through_sdk: task.is_some_and(|t| admitted_through_sdk(state, &t.id, &agent.id)),
             });
         }
     }
@@ -586,6 +590,15 @@ impl<'a> Builder<'a> {
 #[cfg(test)]
 pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
     ReadIndex::build(state).queued(state).map(Cow::into_owned).collect()
+}
+
+/// Whether the latest admission of `task` gave `node` an execution of its own: only the SDK's
+/// carry one, `claude --bg` nodes are admitted without.
+fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &AgentId) -> bool {
+    state.lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
+        LifecycleRecord::Admitted { node: admitted, execution } => Some(admitted == node && execution.is_some()),
+        _ => None,
+    })) == Some(true)
 }
 
 /// Every state a core test commits is read both ways: the index must say what the state answers
@@ -717,6 +730,16 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             && state.pull_requests.get(&a.pr_id).is_some_and(|pr| pr.state == PrState::Open));
         assert_eq!(read.merging, merging, "whether {} merges", agent.id);
+        let through_sdk = task.is_some_and(|t| {
+            let admissions = state.lifecycle_journal[&t.id].iter().filter_map(|record| match record {
+                LifecycleRecord::Admitted { node, execution } => Some((node, execution)),
+                _ => None,
+            });
+            admissions.last().is_some_and(|(node, execution)| {
+                *node == agent.id && execution.as_ref().is_some_and(|identity| identity.host != alondra_domain::CLAUDE_BG_HOST)
+            })
+        });
+        assert_eq!(read.through_sdk, through_sdk, "whether {} runs through the SDK", agent.id);
         let asking: Vec<InboxItem> = waiting.iter().filter(|item| item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
         assert_eq!(read.waiting, ids(&asking));
         let work = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal())

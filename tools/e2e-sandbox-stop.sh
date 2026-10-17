@@ -43,6 +43,11 @@ for pidfile in "$dir"/mac-*/alondrad.pid; do
 done
 stop "$dir/relay.pid"
 stop "$dir/issuer.pid"
+stop "$dir/sdk/model.pid"
+if [ -f "$dir/sdk/state-root" ]; then
+	state=$(cat "$dir/sdk/state-root")
+	case $state in /private/tmp/as-sdk-*) rm -rf "$state" ;; esac
+fi
 
 if [ "${KEEP:-0}" = 1 ]; then
 	rm -f "$dir/sandbox.json"

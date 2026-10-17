@@ -5,6 +5,7 @@ exports_files(
         "e2e-doc-review.py",
         "e2e_allow_always.py",
         "e2e_cards.py",
+        "e2e_sdk_backend.py",
         "e2e-sandbox.sh",
         "e2e-sandbox-stop.sh",
     ],

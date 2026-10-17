@@ -144,6 +144,19 @@ impl OwnedHost {
         environment: &BTreeMap<String, String>,
         build: impl FnOnce(&OwnerGrant, &LaunchIdentity) -> io::Result<Vec<u8>>,
     ) -> io::Result<Self> {
+        Self::launch_confined(owner, artifact, state_dir, environment, None, build)
+    }
+    /// `launch`, with the whole host process, and every process it starts, under the Seatbelt
+    /// profile `confinement` when one is given. `sandbox-exec` execs the host in place, so the
+    /// child is still the host itself.
+    pub fn launch_confined(
+        owner: OwnerGrant,
+        artifact: VerifiedArtifact,
+        state_dir: &Path,
+        environment: &BTreeMap<String, String>,
+        confinement: Option<&Path>,
+        build: impl FnOnce(&OwnerGrant, &LaunchIdentity) -> io::Result<Vec<u8>>,
+    ) -> io::Result<Self> {
         private_directory(state_dir)?;
         let state_dir = state_dir.canonicalize()?;
         let identity = LaunchIdentity {
@@ -207,7 +220,14 @@ impl OwnedHost {
                 }
             };
             let spawned = {
-                let mut command = Command::new(identity.artifact.executable());
+                let mut command = match confinement {
+                    Some(profile) => {
+                        let mut command = Command::new("/usr/bin/sandbox-exec");
+                        command.arg("-f").arg(profile).arg(identity.artifact.executable());
+                        command
+                    }
+                    None => Command::new(identity.artifact.executable()),
+                };
                 command
                     .arg(identity.artifact.artifact())
                     .current_dir(identity.state_dir())

@@ -126,3 +126,49 @@ sh_test(
         "requires-network",
     ],
 )
+
+# Opt-in: a task through the Agent SDK host and the pinned native Claude (make e2e-sdk), its
+# turn-end card answered from the phone. macOS arm64, about 250 MB of native binary, no account.
+sh_test(
+    name = "sdk_journey",
+    timeout = "long",
+    srcs = ["sdk_journey.sh"],
+    args = [
+        "$(rootpath //crates/alondrad)",
+        "$(rootpath //crates/alondra)",
+        "$(rootpath //crates/relay:alondra-relay)",
+        "$(rootpath //tools/sandbox:alondra-sandbox)",
+        "$(rootpath //agent-host:pinned_node)",
+        "$(rootpath //agent-host:persistent.cjs)",
+        "$(rootpath @claude_native_test//:archive)",
+    ],
+    data = [
+        "//:plugin_files",
+        "//agent-host:persistent.cjs",
+        "//agent-host:pinned_node",
+        "//crates/alondra",
+        "//crates/alondrad",
+        "//crates/relay:alondra-relay",
+        "//tests/native/claude:model_double.py",
+        "//tests/native/claude:run.py",
+        "//tools:e2e-sandbox.sh",
+        "//tools:e2e-sandbox-stop.sh",
+        "//tools:e2e_sdk_backend.py",
+        "//tools/sandbox:alondra-sandbox",
+        "@claude_native_test//:archive",
+    ],
+    env_inherit = [
+        "HOME",
+        "PATH",
+    ],
+    tags = [
+        "local",
+        "manual",
+        "requires-darwin",
+        "requires-network",
+    ],
+    target_compatible_with = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)

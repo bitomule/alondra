@@ -396,6 +396,15 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         (Workplace::Given(_), None) => mission,
     };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
+    if domain.sdk().is_some() {
+        if replaced.is_some() {
+            return Err(DomainError::new("unsupported", format!("{} runs through the Agent SDK, whose nodes cannot be replaced yet", task.id)));
+        }
+        if let Some(checked) = checked {
+            checked();
+        }
+        return crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt }).await;
+    }
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;

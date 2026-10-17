@@ -1,0 +1,356 @@
+//! The owner of an SDK execution, on the domain's writer lane: it admits the execution with
+//! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
+//! stages what the host observes and acknowledges it only once readers see the commit.
+//! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+pub(crate) mod backend;
+pub(crate) mod seals;
+pub(crate) use backend::SdkBackend;
+pub(crate) use seals::Seals;
+
+use crate::domain_runtime::DomainRuntime;
+use crate::domain_store::{Attached, Preparer, StoreError};
+use alondra_agent_application::InputMetadata;
+use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_core::domain::*;
+use alondra_domain::ActivityView;
+use alondra_foundation::InputId;
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker};
+use alondra_provider_contract::{AdapterError, Capability, Handoff, PreparedCommand, ProviderBinding};
+use alondra_store::{AuthorityScope, Committed, DispatchAttempt, DispatchPermit, DispatchReceipt};
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
+pub(crate) const HOST: &str = "alondra-sdk";
+const DRIVER: &str = "claude-agent-sdk";
+
+/// Whether `agent` holds the current execution of a task that runs through the SDK.
+pub(crate) fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
+    state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
+        state
+            .lifecycle_journal
+            .get(&task.id)
+            .and_then(|journal| replay(&task.id, journal).ok())
+            .is_some_and(|lifecycle| lifecycle.execution().is_some_and(|execution| execution.host().as_str() == HOST))
+    })
+}
+
+/// What a launch through the SDK starts: the task, in its worktree, told `prompt`.
+pub(crate) struct Launch {
+    pub(crate) task: TaskId,
+    pub(crate) name: String,
+    pub(crate) directory: String,
+    pub(crate) prompt: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct Failed(pub(crate) String);
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+fn failed(what: &str) -> impl Fn(StoreError) -> Failed + '_ {
+    move |error| Failed(format!("{what}: {}", store_text(&error)))
+}
+fn store_text(error: &StoreError) -> String {
+    match error {
+        StoreError::Domain(error) => error.message.clone(),
+        StoreError::Storage(error) => format!("{error:#}"),
+    }
+}
+fn adapter(what: &str) -> impl Fn(AdapterError) -> Failed + '_ {
+    move |error| Failed(format!("{what}: {error:?}"))
+}
+
+impl Preparer for ClaudeWorker {
+    fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
+        ClaudeWorker::stage_input(self, metadata)
+    }
+    fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> {
+        ClaudeWorker::prepare(self, attempt, metadata)
+    }
+}
+
+/// One execution's owner: its worker and the task whose dispatches only it claims.
+pub(crate) struct Driver {
+    domain: Arc<DomainRuntime>,
+    worker: ClaudeWorker,
+    scope: AuthorityScope,
+    task: TaskId,
+    agent: AgentId,
+    permits: VecDeque<DispatchPermit>,
+    /// The input last handed to the host, until the task's lifecycle no longer waits for it.
+    awaiting: Option<InputId>,
+}
+
+/// Admits the execution, starts its host and hands it the launch: once this returns, the task
+/// runs through the SDK, and any failure before it is the launch's own, never a `claude --bg`.
+pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch) -> Result<Driver, Failed> {
+    let suffix = crate::auth::random_hex(8);
+    let agent = AgentId(format!("sdk-{suffix}"));
+    let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
+    let envelope = |name: &str, command: Command| CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("sdk-{name}-{}-{suffix}", launch.task).into(),
+        expected_revision: 0,
+        command,
+    };
+    let binding = ProviderBinding::new(
+        format!("{DRIVER}-{}-{suffix}", launch.task),
+        DRIVER.into(),
+        HOST.into(),
+        "sandbox".into(),
+        1,
+        1,
+        BTreeSet::from([Capability::OfferInput]),
+        "native-login".into(),
+        1,
+    )
+    .map_err(|error| Failed(format!("the provider binding: {error:?}")))?;
+    let mut worker = ClaudeWorker::configured(binding.clone(), configuration(backend, &launch, &suffix)?)
+        .map_err(adapter("configuring the SDK worker"))?;
+    let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
+    domain
+        .execute_on_current(&envelope("register", Command::RegisterAgent {
+            agent_id: agent.clone(),
+            name: launch.name.clone(),
+            at: alondra_core::now_millis(),
+        }))
+        .map_err(failed("registering the node"))?;
+    let admit = envelope("admit", Command::AdmitExecution {
+        task_id: launch.task.clone(),
+        agent_id: agent.clone(),
+        conversation: format!("sdk-conversation-{suffix}"),
+        instance: format!("sdk-instance-{suffix}"),
+        host: HOST.into(),
+    });
+    let (first, _) = domain
+        .own(scope.clone(), |owner| {
+            owner.stage_command(&Actor::System, &admit, Attached::None)?;
+            owner.launch(&launch.task, &launch.prompt, &launch.directory, &binding, &mut worker)?;
+            let lifecycle = owner.lifecycle(&launch.task)?;
+            Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
+        })
+        .map_err(failed("admitting the execution"))?;
+    let mut driver = Driver { domain, worker, scope, task: launch.task, agent, permits: VecDeque::new(), awaiting: None };
+    let mut sealed = driver.sealed();
+    let grant = sealed.owners.pop().ok_or_else(|| Failed("the admission issued no owner grant".into()))?;
+    let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
+    driver.sealed();
+    driver.worker.install_owner(grant, state).map_err(adapter("starting the SDK host"))?;
+    let permit = driver.permits.pop_front().ok_or_else(|| Failed("the admission issued no launch permit".into()))?;
+    driver.dispatch(permit)?;
+    driver.awaiting = first;
+    Ok(driver)
+}
+
+/// The launch of a sandbox daemon with an SDK backend: the task runs through the SDK or does not
+/// start, with the reason. It never falls back to `claude --bg`.
+pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<serde_json::Value, DomainError> {
+    let Some((backend, runtime)) = domain.sdk() else {
+        return Err(DomainError::new("unavailable", "this daemon has no SDK backend"));
+    };
+    let backend = backend.clone();
+    let task = launch.task.clone();
+    let driver = tokio::task::spawn_blocking(move || start(runtime, &backend, launch))
+        .await
+        .map_err(|error| DomainError::new("launch_failed", format!("the SDK launch stopped: {error}")))?
+        .map_err(|Failed(why)| DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")))?;
+    let agent = driver.agent().clone();
+    domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
+    domain.live.forget_closed_task(&task.0);
+    Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
+}
+
+fn configuration(backend: &SdkBackend, launch: &Launch, suffix: &str) -> Result<ClaudeConfiguration, Failed> {
+    let state_directory = backend.state_root.join(suffix);
+    std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed(format!("creating the SDK state root: {error}")))?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&state_directory)
+            .map_err(|error| Failed(format!("creating the host's folder: {error}")))?;
+    }
+    Ok(ClaudeConfiguration {
+        artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
+            .map_err(|error| Failed(format!("verifying the SDK host: {error}")))?,
+        state_directory,
+        host_environment: backend.host_environment.clone(),
+        native_executable: backend.native.clone(),
+        native_directory: launch.directory.clone().into(),
+        native_environment: backend.native_environment.clone(),
+        profile_id: "alondra".into(),
+        account_id: "native-login".into(),
+        host_release: env!("CARGO_PKG_VERSION").into(),
+        io_timeout: Duration::from_secs(backend.io_timeout_seconds),
+        confinement: backend.confinement.clone(),
+    })
+}
+
+impl Driver {
+    pub(crate) fn agent(&self) -> &AgentId {
+        &self.agent
+    }
+
+    /// What the store issued for this task since the last look; its permits wait their turn.
+    fn sealed(&mut self) -> Committed {
+        let mut sealed = self.domain.seals.take(&self.task);
+        self.permits.extend(std::mem::take(&mut sealed.permits));
+        sealed
+    }
+
+    /// Claims the dispatch, records the exact command under the owner, hands it to the host
+    /// with no SQL held, and records how the handoff went.
+    fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
+        let input = permit.input().clone();
+        match self.domain.own(self.scope.clone(), |owner| owner.claim(permit)) {
+            Ok(_) => {}
+            Err(StoreError::Storage(error)) if stale(&error) => return Ok(()),
+            Err(error) => return Err(failed("claiming the dispatch")(error)),
+        }
+        let attempt = self.sealed().attempts.pop().ok_or_else(|| Failed("the claim issued no attempt".into()))?;
+        let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
+        let worker = &mut self.worker;
+        self.domain
+            .own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker))
+            .map_err(failed("recording the command"))?;
+        let command = self.sealed().commands.pop().ok_or_else(|| Failed("the command left no seal".into()))?;
+        let handoff = self.worker.submit(&command).unwrap_or(Handoff::Uncertain);
+        let receipt = match handoff {
+            Handoff::Offered => DispatchReceipt::Handed,
+            Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
+            Handoff::Uncertain => DispatchReceipt::Uncertain,
+        };
+        self.domain
+            .own(self.scope.clone(), |owner| owner.record_receipt(command, receipt))
+            .map_err(failed("recording the handoff"))?;
+        self.sealed();
+        if handoff == Handoff::Offered {
+            self.awaiting = Some(input);
+        }
+        Ok(())
+    }
+
+    /// The next thing the host observed, committed with the domain's decision, and acknowledged
+    /// only with the seal of a commit readers already see.
+    pub(crate) fn observe(&mut self) -> Result<alondra_store::ObservationAcceptance, Failed> {
+        let batch = self.worker.poll().map_err(adapter("reading the SDK host"))?.ok_or_else(|| Failed("the SDK host closed".into()))?;
+        let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
+        let binding = self.worker.binding().clone();
+        let worker = &self.worker;
+        let (acceptance, _) = self.domain
+            .own(self.scope.clone(), |owner| owner.stage_observation(&binding, generation, &batch, worker.normalizer()))
+            .map_err(failed("committing the observation"))?;
+        for observation in self.sealed().observations {
+            #[cfg(test)]
+            self.domain.before_acknowledge();
+            self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
+        }
+        Ok(acceptance)
+    }
+
+    /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
+    /// yet, or a turn or work of its own still going. Facts decide it, never a clock.
+    fn expects_host(&mut self) -> Result<bool, Failed> {
+        let state = Arc::clone(self.domain.read().state());
+        let journal = state.lifecycle_journal.get(&self.task).ok_or_else(|| Failed("the task has no lifecycle".into()))?;
+        let lifecycle = replay(&self.task, journal).map_err(|error| Failed(format!("{error:#}")))?;
+        if self.awaiting.as_ref().is_some_and(|input| !lifecycle.pending_inputs().contains(&input)) {
+            self.awaiting = None;
+        }
+        Ok(self.awaiting.is_some()
+            || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
+    }
+
+    /// One step: send what is waiting, else read the host when the lifecycle waits for it, else
+    /// wait for a dispatch the store issues for this task.
+    pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
+        self.sealed();
+        if let Some(permit) = self.permits.pop_front() {
+            return self.dispatch(permit);
+        }
+        if self.expects_host()? {
+            return self.observe().map(drop);
+        }
+        let sealed = self.domain.seals.wait(&self.task, stopped);
+        self.permits.extend(sealed.permits);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebind(&mut self, domain: Arc<DomainRuntime>) {
+        self.domain = domain;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_permits(&mut self) -> usize {
+        self.sealed();
+        self.permits.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waits_for_host(&mut self) -> bool {
+        self.expects_host().unwrap()
+    }
+
+    pub(crate) fn stop(&mut self) -> Result<(), Failed> {
+        self.worker.stop().map_err(adapter("stopping the SDK host"))
+    }
+}
+
+fn stale(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<alondra_store::Error>(),
+        Some(alondra_store::Error::StalePermit)
+    )
+}
+
+/// Runs the owner on a thread of its own until it is told to stop or the host goes.
+pub(crate) struct Owner {
+    stopped: Arc<AtomicBool>,
+    domain: Arc<DomainRuntime>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Owner {
+    pub(crate) fn spawn(mut driver: Driver) -> Self {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let domain = Arc::clone(&driver.domain);
+        let flag = Arc::clone(&stopped);
+        let thread = std::thread::Builder::new()
+            .name(format!("sdk-owner-{}", driver.task))
+            .spawn(move || {
+                let told = || flag.load(Ordering::SeqCst);
+                while !told() {
+                    if let Err(error) = driver.step(&told) {
+                        log!("the SDK owner of {} stopped: {error}", driver.task);
+                        break;
+                    }
+                }
+                if let Err(error) = driver.stop() {
+                    log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
+                }
+            })
+            .expect("spawning the SDK owner");
+        Self { stopped, domain, thread: Some(thread) }
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.domain.seals.wake();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "sdk_owner/tests.rs"]
+mod tests;

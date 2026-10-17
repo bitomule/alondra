@@ -1454,3 +1454,27 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     assert!(prompt.contains("Your part of it is points 2, 3; the other points are other tasks"), "{prompt}");
     assert!(prompt.contains("- [ ] Guards") && prompt.contains("- [ ] Index matches the state"), "the whole plan: {prompt}");
 }
+
+// With an SDK backend, a launch runs through the SDK or does not start, with its reason: it never
+// falls back to `claude --bg`, and no node takes the task.
+#[tokio::test]
+async fn an_sdk_launch_that_fails_does_not_start_claude_in_the_background_instead() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let missing = f.root.join("missing");
+    f.domain.enable_sdk(crate::sdk_owner::SdkBackend {
+        node: missing.join("node"), node_sha256: "0".repeat(64),
+        host: missing.join("host.cjs"), host_sha256: "0".repeat(64),
+        native: missing.join("claude"), native_sha256: "0".repeat(64),
+        host_environment: Default::default(), native_environment: Default::default(),
+        confinement: None, state_root: f.root.join("sdk"), io_timeout_seconds: 5,
+    });
+    let claude = FakeClaude::loading(&f.domain);
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"effort": "light", "title": "Editor colours"})), |_| Some(hard_choices()), &claude).await.unwrap_err();
+    assert_eq!(refused.code, "launch_failed", "{refused:?}");
+    assert!(refused.message.contains("did not start through the Agent SDK"), "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty(), "claude --bg never runs in its place");
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, None, "no node took the task");
+    assert_eq!(state.agents.len(), 1, "no node was registered for it");
+}

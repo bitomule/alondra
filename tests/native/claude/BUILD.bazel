@@ -1,5 +1,11 @@
 load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
 
+# The fixture's archive reader and the model double, for the e2e sandbox's SDK backend.
+exports_files(
+    ["model_double.py", "run.py"],
+    visibility = ["//tests/sandbox:__pkg__"],
+)
+
 js_run_binary(
     name = "client_bundle",
     tool = "//agent-host:bundle_tool",

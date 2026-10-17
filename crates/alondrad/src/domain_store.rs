@@ -6,7 +6,7 @@ mod connection;
 #[cfg(test)]
 mod live_read_trace;
 mod owner;
-pub(crate) use owner::{OwnerTransaction, StagedOutcome};
+pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 pub(crate) mod model_metrics;
 mod lifecycle_migration;
 mod repository;
@@ -415,6 +415,8 @@ pub(crate) struct Commit {
     pub state: Arc<DomainState>,
     pub outcome: CommandOutcome,
     pub replayed: bool,
+    /// What the store issued with the commit: the dispatches an SDK execution's owner claims.
+    pub sealed: Option<alondra_store::Committed>,
 }
 
 impl DomainStore {
@@ -775,7 +777,8 @@ impl DomainStore {
         let staged = journal.inspect_mut(|journal| {
             command::stage(conn, cached, actor, envelope, transport, fill_revision, attached, journal)
         })?;
-        journal.commit()?;
+        let mut staged = staged;
+        staged.commit.sealed = Some(journal.commit()?);
         #[cfg(test)]
         if !staged.commit.replayed && let Some(hook) = &mut self.after_commit {
             hook();

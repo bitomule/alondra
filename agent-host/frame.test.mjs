@@ -57,6 +57,8 @@ assert.throws(() => parsePayload(Buffer.from('{"protocol_version":1,"body":' + '
 assert(classify({ type: 'result', subtype: 'success', is_error: true }).failures.some((f) => f.code === 'success_is_error'));
 assert(classify({ type: 'result', subtype: 'success', is_error: false, terminal_reason: 'aborted_tools' }).failures.some((f) => f.surface === 'terminal' && f.code === 'aborted_tools'));
 assert.equal(classify({ type: 'rate_limit_event', rate_limit_info: { status: 'future_status' } }).kind, 'unsupported');
+const lifecycle = classify({ type: 'command_lifecycle', command_uuid: '695832ec-2f8d-436b-862e-8effef5118f3', state: 'queued', uuid: '1c5eb967-209b-4b70-b922-11f6762206ee', session_id: '6216f6b3-0e62-4fb4-a0a0-89e7cb252b30' });
+assert.deepEqual([lifecycle.kind, lifecycle.failures], ['status', []], 'the native Claude reports each input it queues and starts');
 assert(classify({ type: 'result', subtype: 'success', is_error: false, terminal_reason: 'future_reason' }).failures.some((f) => f.surface === 'terminal' && f.code === 'future_reason'));
 for (const terminal_reason of ['completed', 'background_requested', 'tool_deferred', undefined]) {
   assert.equal(classify({ type: 'result', subtype: 'success', is_error: false, ...(terminal_reason ? { terminal_reason } : {}) }).failures.length, 0);

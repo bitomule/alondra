@@ -1294,7 +1294,7 @@ fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &
     }
     out.extend(change_answers(interaction, context));
     if context.client == Client::Tui && context.transport == super::Transport::Loopback {
-        if let Some(session) = item.agent_id.as_ref().and_then(|agent| {
+        if let Some(session) = item.agent_id.as_ref().filter(|agent| !context.index.node(agent).is_some_and(|node| node.through_sdk)).and_then(|agent| {
             context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.short_id.clone())
         }) {
             out.push(local_action(t!(lang, "Attach to node", "Conectar al nodo"), "a", LocalLink::Attach { session }));

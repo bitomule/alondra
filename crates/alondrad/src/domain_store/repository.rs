@@ -846,7 +846,8 @@ pub(super) fn save_changes(
     Ok(())
 }
 /// The task's new records, as the events the store keeps: only the store writes the journal, and
-/// it replays the task and checks each event before keeping it.
+/// it replays the task and checks each event before keeping it. What a user tells an SDK
+/// execution leaves with its dispatch prepared in the same transaction, for its owner to claim.
 pub(super) fn save_journal(
     journal: &mut alondra_store::LifecycleTransaction<'_>,
     task: &TaskId,
@@ -857,12 +858,23 @@ pub(super) fn save_journal(
         match write.event {
             None => journal.create_without_text(task, write.input.context("a new journal names its initial input")?)?,
             Some(event) => {
-                match (&write.input, write.text) {
-                    (Some(input), Some(text)) => journal.put_input(task, alondra_store::InputPayload::new(input.clone(), text)?)?,
-                    (Some(input), None) => journal.put_input_without_text(task, input)?,
-                    (None, _) => {}
-                }
+                let told = match (&write.input, write.text) {
+                    (Some(input), Some(text)) => {
+                        journal.put_input(task, alondra_store::InputPayload::new(input.clone(), text)?)?;
+                        Some(input.clone())
+                    }
+                    (Some(input), None) => {
+                        journal.put_input_without_text(task, input)?;
+                        None
+                    }
+                    (None, _) => None,
+                };
                 journal.apply(task, write.revision, &format!("lifecycle-{}", write.revision + 1), event)?;
+                if let Some(input) = told
+                    && journal.load(task)?.execution().is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST)
+                {
+                    journal.stage_input(task, &input)?;
+                }
             }
         }
     }

@@ -331,6 +331,9 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
 
 /// An SDK task whose observed turn started: admitted, resource available, the planned input taken.
 fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
+    sdk_turn_named(s, id, node, "turn-1")
+}
+fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> String {
     task(s, id, None);
     must(s, Actor::System, Command::AdmitExecution {
         task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(),
@@ -338,9 +341,9 @@ fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
     let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(id)][0].clone() else { panic!("planned first") };
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
         RuntimeObservation::ResourceAvailable,
-        RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+        RuntimeObservation::TurnStarted { turn: turn.into(), input },
     ] });
-    format!("{TURN_ENDED_PREFIX}{id}-1-turn-1")
+    format!("{TURN_ENDED_PREFIX}{id}-1-{turn}")
 }
 fn holds_slot(s: &DomainState, id: &str) -> bool {
     replay(&id.into(), &s.lifecycle_journal[&TaskId::from(id)]).unwrap().holds_slot()
@@ -362,6 +365,20 @@ fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() }).unwrap_err().code,
         "conflict", "the same turn end does not ask twice");
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).count(), 1);
+    assert_aggregate_rules(&s);
+}
+
+// The native Claude names its turns `claude-message:<uuid>`; the card is still one a client can
+// open and answer, whose view key and actions the views' grammar takes.
+#[test]
+fn a_native_turn_ends_with_a_card_clients_can_name() {
+    let mut s = world();
+    let turn = "claude-message:3272f577-e432-452d-9331-2bb86fc8686c";
+    sdk_turn_named(&mut s, "t", "a", turn);
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into() });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(TURN_ENDED_PREFIX)).unwrap().clone();
+    assert_eq!(card.0, "turn-ended-t-1-claude-message-3272f577-e432-452d-9331-2bb86fc8686c");
+    assert!(crate::views::id::valid(&card.0), "{card:?} is a valid view id");
     assert_aggregate_rules(&s);
 }
 

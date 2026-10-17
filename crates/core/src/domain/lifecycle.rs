@@ -632,7 +632,7 @@ impl DomainState {
     /// the card that asks the user how it goes on, and it is created in this same step.
     pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
-        let card = InteractionId(format!("{TURN_ENDED_PREFIX}{task}-{generation}-{turn}"));
+        let card = turn_ended_card_id(task, generation, turn);
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
@@ -896,6 +896,14 @@ impl DomainState {
 /// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
 /// explains its next step.
 pub const TURN_ENDED_PREFIX: &str = "turn-ended-";
+
+/// The card a turn end asks with. Clients name cards in view keys and action ids, whose grammar
+/// takes letters, digits, `-`, `_` and `.`: an SDK turn such as `claude-message:<uuid>` keeps its
+/// other characters, with `-` in place of the rest.
+pub fn turn_ended_card_id(task: &TaskId, generation: u64, turn: &str) -> InteractionId {
+    let turn: String = turn.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).collect();
+    InteractionId(format!("{TURN_ENDED_PREFIX}{task}-{generation}-{turn}"))
+}
 /// The option of such a card that ends the task.
 pub const CANCEL_TASK: &str = "cancel_task";
 pub const CANCEL_TASK_LABEL: &str = "Cancel the task";

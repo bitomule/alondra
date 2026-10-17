@@ -246,10 +246,12 @@ name = "alondrad"
 version = "0.2.88"
 dependencies = [
  "alondra-agent-application",
+ "alondra-agent-runtime",
  "alondra-core",
  "alondra-domain",
  "alondra-e2e",
  "alondra-foundation",
+ "alondra-provider-claude",
  "alondra-provider-contract",
  "alondra-store",
  "anyhow",

@@ -1,12 +1,21 @@
 //! The one SQL transaction that stages domain commands, provider observations and the lifecycle
 //! journal, and commits them together. Only `LifecycleTransaction::commit` commits it, and only
 //! that commit issues the store's seals.
-#![cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
 use super::*;
-use alondra_agent_application::{ObservationNormalizer, ObservedFact};
-use alondra_domain::{RuntimeFact, Trigger};
-use alondra_provider_contract::{OrderedObservation, ProviderBinding};
-use alondra_store::{AuthorityScope, Committed, LifecycleTransaction, ObservationAcceptance};
+use alondra_agent_application::{InputMetadata, ObservationNormalizer, ObservedFact};
+use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
+use alondra_foundation::ExecutionStamp;
+use alondra_provider_contract::{AdapterError, OrderedObservation, Placement, PreparedCommand, ProviderBinding};
+use alondra_store::{
+    AdapterState, AuthorityScope, CommandEvidence, Committed, CommittedCommand, DispatchAttempt, DispatchPermit,
+    DispatchReceipt, InputPayload, LifecycleTransaction, ObservationAcceptance, OwnerGrant,
+};
+
+/// The provider's part of a dispatch: its metadata for an input, and the exact command it sends.
+pub(crate) trait Preparer {
+    fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> std::result::Result<(), AdapterError>;
+    fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> std::result::Result<PreparedCommand, AdapterError>;
+}
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
 /// whole transaction, even when the caller catches it, so it can only roll back.
@@ -181,6 +190,69 @@ impl<'connection> OwnerTransaction<'connection> {
             self.stage_command(&Actor::System, &envelope, Attached::None)?;
         }
         pending.settle(&mut self.journal).map_err(application_error)
+    }
+
+    /// After `AdmitExecution`, what launches it, in the same transaction: the task's worktree,
+    /// the text of its first input with the provider's metadata for it, the launch's dispatch in
+    /// that worktree and the owner's reservation. The commit issues the launch permit and grant.
+    pub(crate) fn launch(
+        &mut self,
+        task: &TaskId,
+        text: &str,
+        directory: &str,
+        binding: &ProviderBinding,
+        provider: &mut impl Preparer,
+    ) -> std::result::Result<ExecutionStamp, StoreError> {
+        let conn = self.conn;
+        self.journal.inspect(|| {
+            repository::exec(
+                conn,
+                "INSERT INTO task_worktrees(task_id,dir,at) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET dir=excluded.dir,at=excluded.at",
+                params![task.0, directory, alondra_core::now_millis()],
+            )
+        })?;
+        let first = self.journal.load(task)?.pending_inputs().first().map(|input| (*input).clone()).ok_or(alondra_store::Error::MissingInput)?;
+        self.journal.give_input_text(task, InputPayload::new(first.clone(), text.to_owned())?)?;
+        self.journal.bind_provider(task, binding)?;
+        let execution = self.journal.load(task)?.execution().cloned().ok_or(alondra_store::Error::MissingIntent)?;
+        InputMetadata::with_execution(&mut self.journal, &execution, &first, |metadata| provider.stage_input(metadata))
+            .map_err(application_error)?;
+        self.journal.stage_launch(task, &Placement::LocalDirectory(directory.to_owned()), binding)?;
+        self.journal.reserve_owner(&execution, 0)?;
+        Ok(execution)
+    }
+
+    pub(crate) fn adapter_state(&self, grant: &OwnerGrant) -> std::result::Result<AdapterState, StoreError> {
+        Ok(self.journal.adapter_state(grant)?)
+    }
+
+    pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<TaskLifecycle, StoreError> {
+        Ok(self.journal.load(task)?)
+    }
+
+    /// The commit hands back the attempt; a permit some later commit made stale is refused.
+    pub(crate) fn claim(&mut self, permit: DispatchPermit) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.claim(permit)?)
+    }
+
+    /// The provider's metadata for the attempt's input, the command it prepares from it and that
+    /// command's evidence, under the owner's generation. The commit hands back the command.
+    pub(crate) fn record_command(
+        &mut self,
+        attempt: DispatchAttempt,
+        owner_generation: u64,
+        provider: &mut impl Preparer,
+    ) -> std::result::Result<(), StoreError> {
+        InputMetadata::with_attempt(&mut self.journal, &attempt, |metadata| provider.stage_input(metadata))
+            .map_err(application_error)?;
+        let command = InputMetadata::with_attempt(&mut self.journal, &attempt, |metadata| provider.prepare(&attempt, metadata))
+            .map_err(application_error)?;
+        let evidence = CommandEvidence::new(command.bytes().to_vec())?;
+        Ok(self.journal.record_owned_command(attempt, owner_generation, evidence)?)
+    }
+
+    pub(crate) fn record_receipt(&mut self, command: CommittedCommand, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.record_committed_receipt(command, receipt)?)
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.

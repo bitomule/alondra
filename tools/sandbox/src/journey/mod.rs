@@ -3,6 +3,7 @@
 mod local;
 mod reopen;
 mod report;
+mod sdk;
 pub mod seed;
 mod session;
 mod steps;
@@ -22,17 +23,20 @@ pub use user::User;
 pub const PATIENCE: Duration = Duration::from_secs(60);
 
 pub const NAMES: [&str; 4] = ["task-cycle", "session", "local", "reopen"];
+/// Journeys that need a sandbox started for them, which `all` does not run.
+pub const OPT_IN: [&str; 1] = ["sdk"];
 
 pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
-    if let Some(unknown) = names.iter().find(|name| *name != "all" && !NAMES.contains(&name.as_str())) {
-        bail!("unknown journey {unknown}: {} or all", NAMES.join(", "));
+    if let Some(unknown) = names.iter().find(|name| *name != "all" && !NAMES.contains(&name.as_str()) && !OPT_IN.contains(&name.as_str())) {
+        bail!("unknown journey {unknown}: {}, {} or all", NAMES.join(", "), OPT_IN.join(", "));
     }
     let out = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR").map(PathBuf::from).unwrap_or_else(|| sandbox.dir.join("journeys"));
     let fakes = Fakes::open(&sandbox.dir)?;
     let mut report = Report::new(out)?;
     let all = names.is_empty() || names.iter().any(|name| name == "all");
-    for name in NAMES {
-        if !all && !names.iter().any(|wanted| wanted == name) {
+    for name in NAMES.into_iter().chain(OPT_IN) {
+        let opted = OPT_IN.contains(&name);
+        if !names.iter().any(|wanted| wanted == name) && (opted || !all) {
             continue;
         }
         match name {
@@ -40,6 +44,7 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
             "local" => local::run(&mut report, sandbox, &fakes),
             "session" => session::run(&mut report, sandbox, &fakes),
             "reopen" => reopen::run(&mut report, sandbox, &fakes),
+            "sdk" => sdk::run(&mut report, sandbox, &fakes),
             _ => unreachable!(),
         }
     }

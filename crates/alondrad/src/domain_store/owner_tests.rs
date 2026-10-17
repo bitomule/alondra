@@ -772,8 +772,8 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
     assert_eq!(runtime.read().state().revision, state.revision);
 }
 
-// 3d: answering the card: the lifecycle lets the card go before the card is answered, in one
-// commit with the dispatch of what the task is told. Only the owner stages that dispatch.
+// 3d and 4: answering the card: the lifecycle lets the card go before the card is answered, in
+// one commit with the dispatch of what the task is told, on the normal command path a client uses.
 #[test]
 fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
     let (fixture, mut store, execution) = running();
@@ -789,18 +789,13 @@ fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]),
         attachments: vec![],
     };
-    let ordinary = store.execute_filling_revision(&user(), &envelope(&state, "carry-on", carry_on.clone()));
-    assert!(matches!(ordinary, Err(StoreError::Storage(ref error)) if matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::MissingIntent))),
-        "outside the owner nothing stages its dispatch, so an SDK input is refused: {ordinary:?}");
-    store
-        .own(scope_of(&state), |owner| {
-            owner.stage_command(&user(), &envelope(&state, "carry-on", carry_on), Attached::None)?;
-            let journal = owner.journal();
-            let told = journal.load(&task())?.pending_inputs()[0].clone();
-            journal.stage_input(&task(), &told)?;
-            Ok(())
-        })
+    let ordinary = store.execute_filling_revision(&user(), &envelope(&state, "carry-on", carry_on)).unwrap();
+    let permits = &ordinary.sealed.as_ref().unwrap().permits;
+    assert_eq!(permits.len(), 1, "the commit hands the owner the dispatch of what the task is told");
+    let prepared: String = store.conn
+        .query_row("SELECT d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.task_id=?1 AND d.kind='input' AND i.body LIKE 'Go on with your task%'", [TASK], |r| r.get(0))
         .unwrap();
+    assert_eq!(prepared, "prepared");
     assert!(card(&store.conn, turn_ended_card().0.as_str()).unwrap().0.is_some(), "the card is answered");
     let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
     assert_eq!(held, 0, "the lifecycle no longer requires it");

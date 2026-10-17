@@ -88,6 +88,33 @@ when run by hand):
 - `fakes/`: every `claude` and `gh` call, and each node's messages and steps;
 - `logs/`: the daemons' and relay's logs, kept when a case failed.
 
+## Agent SDK backend (`SDK=1`)
+
+`SDK=1 FAKES=1 make e2e-sandbox` gives Mac 1 the Agent SDK backend: every task it launches runs
+through the SDK host (`agent-host`, pinned Node) and the pinned native Claude Code 2.1.300, never
+through `claude --bg`. `tools/e2e_sdk_backend.py` sets it up:
+- copies the pinned Node and `persistent.cjs`, and extracts the native Claude from its npm archive
+  (size and SHA256 checked);
+- starts the local model double (`tests/native/claude/model_double.py`), which answers each
+  `/v1/messages` with one text reply and logs the request in `$SANDBOX_DIR/sdk/model-requests.jsonl`;
+- writes the Seatbelt profile the whole host runs under (deny default, no mach-lookup, network only
+  to the model double, writes only in the sandbox's SDK folders) and the Mac's `sdk-backend.json`.
+
+Claude gets a synthetic HOME, configuration and temporary folder and the public fixture key: never
+the real login, Keychain or `~/.claude.json`. A daemon outside a sandbox that finds an
+`sdk-backend.json` refuses to start.
+
+`make e2e-sdk` (`//tests/sandbox:sdk_journey`, opt-in, macOS arm64) starts such a sandbox and runs
+the `sdk` journey: the phone sends a request, the native Claude's first turn ends with the card
+«stopped without delivering or asking», «Carry on» with a note reaches Claude, its next turn ends
+with a card of its own, and what the user writes on that card reaches Claude too.
+`alondra-sandbox journey sdk` runs it against a sandbox already started with `SDK=1`; `journey all`
+leaves it out.
+
+Start a sandbox you will drive from the TUI under `/private/tmp` (`SANDBOX_DIR=/private/tmp/…`):
+the local action journal opens SQLite with `NOFOLLOW`, and `/tmp` is a symbolic link, so the TUI's
+actions would get `503 outcome_unknown` and be retried in silence.
+
 ## Tester agent
 
 `make e2e-explore` (`tools/e2e-explore.sh`) builds a fresh two-Mac sandbox with the fakes and seeds

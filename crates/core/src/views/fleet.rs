@@ -516,7 +516,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         row.trailing = Some(Trailing::Time { at: since.clone(), format: super::TimeFormat::Relative });
         view.sections.push(common::section("since", None, vec![Item::Row(row)]));
     }
-    if let Some(short_id) = live.and_then(|node| node.short_id.as_ref()).filter(|_| context.client == super::Client::Tui) {
+    let through_sdk = context.index.node(&agent.id).is_some_and(|node| node.through_sdk);
+    if let Some(short_id) = live.and_then(|node| node.short_id.as_ref()).filter(|_| context.client == super::Client::Tui && !through_sdk) {
         let mut attach = common::row("attach", "node", Icon::Node,
             t!(context.lang, "Attach", "Conectar").into(), None);
         attach.link = Some(Link::Local { local: LocalLink::Attach { session: short_id.clone() } });
@@ -631,10 +632,15 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             rows,
         ));
     }
-    let mut actions: Vec<_> = message_action(id, context).into_iter().collect();
-    actions.extend(interrupt_action(id, context));
+    let mut actions = vec![];
+    if !through_sdk {
+        actions.extend(message_action(id, context));
+        actions.extend(interrupt_action(id, context));
+    }
     actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
-    actions.extend(close_action(id, context));
+    if !through_sdk {
+        actions.extend(close_action(id, context));
+    }
     if !actions.is_empty() {
         view.sections.push(common::section(
             "actions",

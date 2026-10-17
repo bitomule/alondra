@@ -86,6 +86,11 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     if !state.agents.contains_key(agent) {
         return Err(refused("not_found", "agent does not exist"));
     }
+    if crate::sdk_owner::runs_through_sdk(&state, agent) {
+        return Err(refused("unsupported", format!(
+            "{} runs through the Agent SDK, which takes what you tell it only through its cards for now: answer its card to tell it how to go on. Nothing was sent",
+            state.agents[agent].name)));
+    }
     let task = match &body.task_id {
         Some(id) => {
             let task = state.tasks.get(id).ok_or_else(|| refused("not_found", "task does not exist"))?;
