@@ -280,7 +280,7 @@ def main():
              # Bundle verification below still requires the exact requested leaf.
              "--@build_bazel_rules_apple//apple/build_settings:signing_certificate_name=" + signing_name,
              "--ios_multi_cpus=arm64" if args.destination == "ios" else "--macos_cpus=arm64",
-             "--jobs=1", "-c", "opt"]
+             "-c", "opt"]
     print("Building local " + args.destination + " distribution artifact…", flush=True)
     bazel = ["bazelisk"]
     if args.bazel_output_user_root:
