@@ -5,10 +5,11 @@ use super::*;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::tests::{Fixture, seeded};
 use alondra_agent_application::{Normalization, ObservationMetadata};
-use alondra_domain::{Event as LifecycleEvent, RuntimeFact, Trigger};
-use alondra_foundation::{ConversationId, HostId, InstanceId, TurnId};
+use alondra_foundation::{ExecutionStamp, InputId, TurnId, WorkId};
+use alondra_store::InputPayload;
 use alondra_provider_contract::{AdapterError, Capability, Observation, Placement};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
@@ -77,9 +78,6 @@ fn schedule() -> Command {
         schedule: serde_json::from_value(catalog["schedule_base"].clone()).unwrap(),
     }
 }
-fn payload(id: &str) -> InputPayload {
-    InputPayload::new(InputId::new(id).unwrap(), format!("Authorized fixture input {id}")).unwrap()
-}
 fn binding() -> ProviderBinding {
     ProviderBinding::new(
         "composite-binding".into(),
@@ -109,6 +107,10 @@ fn scope_of(state: &DomainState) -> AuthorityScope {
 enum Normalizer {
     Available,
     SwallowsMetadataError,
+    Released,
+    /// The resource is up, a turn takes `input` and ends, after starting work of its own if
+    /// `work`.
+    Turn { input: InputId, work: bool },
 }
 impl ObservationNormalizer for Normalizer {
     fn normalize(
@@ -119,23 +121,32 @@ impl ObservationNormalizer for Normalizer {
         if let Self::SwallowsMetadataError = self {
             assert!(metadata.lookup_inputs(&vec![b"native".to_vec(); 65]).is_err());
         }
-        Normalization::new(vec![Observation::Available], b"normalized".to_vec())
+        let facts = match self {
+            Self::Released => vec![Observation::ResourceReleased],
+            Self::Turn { input, work } => {
+                let turn = TurnId::new("turn-1").unwrap();
+                let mut facts = vec![Observation::Available, Observation::TurnStarted { input: input.clone(), turn: turn.clone() }];
+                if *work {
+                    facts.push(Observation::WorkStarted { turn: turn.clone(), work: WorkId::new("subagent").unwrap() });
+                }
+                facts.push(Observation::TurnEnded { turn });
+                facts
+            }
+            _ => vec![Observation::Available],
+        };
+        Normalization::new(facts, b"normalized".to_vec())
     }
 }
 
-fn admit(journal: &mut LifecycleTransaction<'_>, revision: u64, label: &str) -> alondra_store::Result<()> {
-    journal.apply(
-        &task(),
-        revision,
-        &format!("fixture-admit-{label}"),
-        LifecycleEvent::Admit {
-            node: "agent-1".into(),
-            conversation: ConversationId::new(format!("conversation-{label}")).unwrap(),
-            instance: InstanceId::new(format!("resource-{label}")).unwrap(),
-            host: HostId::new("fixture-service").unwrap(),
-        },
-    )?;
-    Ok(())
+/// The SDK host takes the task: the domain admits an execution of its own.
+fn admit(label: &str) -> Command {
+    Command::AdmitExecution {
+        task_id: task(),
+        agent_id: "agent-1".into(),
+        conversation: format!("conversation-{label}"),
+        instance: format!("resource-{label}"),
+        host: "fixture-service".into(),
+    }
 }
 fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<ExecutionStamp> {
     journal.stage_launch(&task(), &Placement::RemoteWorkspace("fixture/workspace".into()), &binding())?;
@@ -144,65 +155,21 @@ fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<Execu
     Ok(execution)
 }
 
-/// The Task waits on its card ("composite-card"), with the lifecycle journal installed.
-fn waiting() -> (Fixture, DomainStore) {
-    let (fixture, mut store) = installed();
-    let scope = scope_of(&store.load().unwrap());
-    store
-        .own(scope, |owner| {
-            let journal = owner.journal();
-            journal.create(&task(), payload("initial"))?;
-            journal.apply(&task(), 0, "fixture-wait", LifecycleEvent::Ask { card: "composite-card".into() })?;
-            Ok(())
-        })
-        .unwrap();
-    (fixture, store)
-}
-/// The Task runs an execution owned at generation 1 whose provider has observed nothing yet.
+/// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
+/// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.
 fn running() -> (Fixture, DomainStore, ExecutionStamp) {
     let (fixture, mut store) = installed();
-    let scope = scope_of(&store.load().unwrap());
+    let state = store.load().unwrap();
+    let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into() };
+    store.execute_filling_revision(&Actor::System, &envelope(&state, "fixture-release", release)).unwrap();
+    let state = store.load().unwrap();
     let (execution, _) = store
-        .own(scope, |owner| {
+        .own(scope_of(&state), |owner| {
+            owner.stage_command(&Actor::System, &envelope(&state, "fixture-admit", admit("running")), Attached::None)?;
             let journal = owner.journal();
-            journal.create(&task(), payload("initial"))?;
-            admit(journal, 0, "running")?;
+            let pending = journal.load(&task())?.pending_inputs()[0].clone();
+            journal.give_input_text(&task(), InputPayload::new(pending, "Authorized fixture input").unwrap())?;
             Ok(launch(journal)?)
-        })
-        .unwrap();
-    (fixture, store, execution)
-}
-/// The running execution's resource was released; its problem card is "composite-card".
-fn released() -> (Fixture, DomainStore, ExecutionStamp) {
-    let (fixture, mut store, execution) = running();
-    let scope = scope_of(&store.load().unwrap());
-    store
-        .own(scope, |owner| {
-            let journal = owner.journal();
-            for (cursor, fact) in [
-                RuntimeFact::ResourceAvailable,
-                RuntimeFact::TurnStarted {
-                    turn: TurnId::new("fixture-turn").unwrap(),
-                    trigger: Trigger::Input(InputId::new("initial").unwrap()),
-                },
-                RuntimeFact::ResourceReleased { problem_card: "composite-card".into() },
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let aggregate = journal.load(&task())?;
-                journal.apply(
-                    &task(),
-                    aggregate.revision(),
-                    &format!("fixture-fact-{cursor}"),
-                    LifecycleEvent::Runtime {
-                        stamp: execution.clone(),
-                        cursor: u64::try_from(cursor).unwrap() + 1,
-                        fact,
-                    },
-                )?;
-            }
-            Ok(())
         })
         .unwrap();
     (fixture, store, execution)
@@ -215,9 +182,6 @@ fn installed() -> (Fixture, DomainStore) {
     store
         .execute_filling_revision(&agent(), &envelope(&state, "composite-question", ask("composite-card")))
         .unwrap();
-    let mut install = store.conn.transaction().unwrap();
-    LifecycleTransaction::install(&mut install).unwrap();
-    install.commit().unwrap();
     (fixture, store)
 }
 fn runtime(fixture: &Fixture, store: DomainStore) -> DomainRuntime {
@@ -297,10 +261,14 @@ fn card_raw_observation_journal_and_checkpoint_commit_together_and_publish_befor
     assert_eq!(acknowledged[0].observations.len(), 1);
     assert!(acknowledged[0].observations[0].matches_evidence(b"raw observation 1"));
     let published = runtime.read();
-    assert_eq!(published.state().revision, outcomes[0].outcome.revision);
+    assert_eq!(outcomes.len(), 2, "the observation's facts and the card: two domain commands");
+    assert!(matches!(outcomes[0].command_id.0.as_str(), id if id.starts_with("observation:")));
+    let last = outcomes.last().unwrap();
+    assert_eq!(published.state().revision, last.outcome.revision);
     assert!(published.state().interactions.contains_key(&InteractionId::from("owner-card")));
+    assert!(published.state().tasks[&task()].started, "the observed resource starts the task through its journal");
     assert!(changes.has_changed().unwrap(), "the change is notified");
-    assert_eq!(*changes.borrow_and_update(), outcomes[0].outcome.revision);
+    assert_eq!(*changes.borrow_and_update(), last.outcome.revision);
 }
 
 // Case 2: a step error the caller catches poisons the owner: nothing commits, publishes or is acknowledged.
@@ -355,8 +323,9 @@ fn a_first_observation_and_an_exact_command_replay_still_commit() {
     let (_, replay) = runtime
         .own(scope_of(&state), |owner| owner.stage_command(&agent(), &command, Attached::None).map(|_| ()))
         .unwrap();
-    assert!(!first[0].replayed && replay[0].replayed);
-    assert_eq!(replay[0].outcome, first[0].outcome);
+    let first = first.last().unwrap();
+    assert!(!first.replayed && replay[0].replayed);
+    assert_eq!(replay[0].outcome, first.outcome);
     assert_eq!(counts(&observer), committed, "a replay writes no second card, receipt or message");
     assert_eq!(runtime.take_acknowledgements().len(), 2);
 }
@@ -394,54 +363,23 @@ fn a_deferred_commit_failure_issues_no_seal_publication_or_cache() {
     assert!(store.conn.is_autocommit());
 }
 
-// Case 4: retirement, its raw observation, card settlement and checkpoint in one transaction.
+// Case 4: a released resource is not a fact the domain records yet, so nothing retires the
+// execution behind its back: the observation is refused, and its raw evidence, checkpoint and
+// journal stay as they were, with nothing acknowledged.
 #[test]
-fn a_released_execution_retires_with_its_observation_card_and_checkpoint_and_a_replay_adds_nothing() {
-    let (fixture, store, execution) = released();
+fn a_released_resource_is_refused_and_nothing_of_its_observation_commits() {
+    let (fixture, store, execution) = running();
     let runtime = runtime(&fixture, store);
     let observer = observer(&fixture);
+    let before = counts(&observer);
     let state = Arc::clone(runtime.read().state());
-    let withdraw = envelope(&state, "composite-withdraw", Command::Withdraw { interaction_id: "composite-card".into() });
-    let retire = |owner: &mut OwnerTransaction<'_>| {
-        owner.retire_released(
-            &execution,
-            1,
-            1,
-            b"retirement observation".to_vec(),
-            b"normalized retirement".to_vec(),
-            "composite-card".into(),
-            payload("continuation"),
-        )?;
-        owner.stage_command(&agent(), &withdraw, Attached::None).map(|_| ())
-    };
-    runtime.own(scope_of(&state), retire).unwrap();
-    let acknowledged = runtime.take_acknowledgements();
-    assert_eq!(acknowledged.len(), 1);
-    assert_eq!(acknowledged[0].observations[0].cursor(), 1);
-    assert!(acknowledged[0].observations[0].matches_evidence(b"retirement observation"));
-    assert_eq!(card(&observer, "composite-card"), Some((None, true)));
-    let checkpoint: (i64, Vec<u8>) = observer
-        .query_row("SELECT cursor,bytes FROM provider_normalization_checkpoints", [], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap();
-    assert_eq!(checkpoint, (1, b"normalized retirement".to_vec()));
-    let retired = counts(&observer);
-
-    let late = runtime.own(scope_of(&state), |owner| {
-        owner.stage_observation(&binding(), 1, &batch(&execution, 2), &Normalizer::Available)
+    let refused = runtime.own(scope_of(&state), |owner| {
+        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Released)
     });
-    assert!(late.is_err(), "a retired execution accepts no new observation");
-    let replay = runtime.own(scope_of(&state), retire);
-    assert!(replay.is_err(), "the retired observation is not admitted again as current work");
-    let (_, withdrawn_again) = runtime
-        .own(scope_of(&state), |owner| owner.stage_command(&agent(), &withdraw, Attached::None).map(|_| ()))
-        .unwrap();
-    assert!(withdrawn_again[0].replayed, "the card settlement replays its stored outcome");
-    assert_eq!(counts(&observer), retired, "neither replay adds an effect, card, input or row");
-
-    drop(runtime);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    assert_eq!(card(&reopened.conn, "composite-card"), Some((None, true)));
-    assert_eq!(journal_after(&mut reopened), (vec!["continuation".to_owned()], false, 0));
+    assert!(refused.is_err(), "a released resource is refused");
+    assert_eq!(counts(&observer), before);
+    assert!(runtime.take_acknowledgements().is_empty());
+    assert_eq!(runtime.read().state().revision, state.revision);
 }
 
 // Case 5: the commit precedes publication; the acknowledgement waits for publication while the
@@ -672,47 +610,6 @@ fn a_late_failure_after_good_commands_rolls_back_every_command() {
     }
 }
 
-// The guarded answer and the lifecycle reply, admission and owner commit on one connection.
-#[test]
-fn guarded_answer_and_lifecycle_reply_commit_on_the_same_connection() {
-    let (fixture, mut store) = waiting();
-    let before = counts(&store.conn);
-    let state = store.load().unwrap();
-    let committed = store
-        .own(scope_of(&state), |owner| {
-            {
-                let journal = owner.journal();
-                journal.put_input(&task(), payload("reply"))?;
-                let revision = journal.load(&task())?.revision();
-                journal.apply(
-                    &task(),
-                    revision,
-                    "composite-lifecycle",
-                    LifecycleEvent::Answer { card: "composite-card".into(), input: InputId::new("reply").unwrap() },
-                )?;
-            }
-            owner.stage_command(&user(), &envelope(&state, "composite-answer", answer()), Attached::None)?;
-            let journal = owner.journal();
-            let revision = journal.load(&task())?.revision();
-            admit(journal, revision, "admitted")?;
-            launch(journal)?;
-            journal.stage_input(&task(), &InputId::new("reply").unwrap())?;
-            Ok(())
-        })
-        .map(|(_, commit)| commit.technical)
-        .unwrap();
-    assert_eq!(committed.permits.len(), 1);
-    assert_eq!(committed.permits[0].input(), &InputId::new("initial").unwrap());
-    assert_eq!(committed.owners.len(), 1);
-    assert_eq!(committed.owners[0].generation(), 1);
-    assert!(card(&store.conn, "composite-card").unwrap().0.is_some());
-    assert_eq!(counts(&store.conn)[2], before[2] + 2);
-    drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    assert!(card(&reopened.conn, "composite-card").unwrap().0.is_some());
-    assert_eq!(journal_after(&mut reopened), (vec!["initial".to_owned(), "reply".to_owned()], true, 0));
-}
-
 // A document's content is verified and stored outside the SQL transaction, so the owner refuses it.
 #[test]
 fn a_document_command_is_refused_and_poisons_the_owner() {
@@ -762,4 +659,205 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
     assert!(Arc::ptr_eq(&cached.state, runtime.read().state()), "the cache holds the published state");
     assert_eq!(cached.total_changes, store.conn.total_changes(), "the cache is current for this connection");
     assert_eq!(repository::load(&store.conn).unwrap(), *cached.state, "a reload reads the cached state");
+}
+
+// An accepted observation whose facts the domain never recorded cannot commit: dropping its
+// pending observation leaves nothing to acknowledge.
+#[test]
+fn an_observation_whose_facts_the_domain_did_not_record_cannot_commit() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let observer = observer(&fixture);
+    let before = counts(&observer);
+    let state = Arc::clone(runtime.read().state());
+    let unrecorded = runtime.own(scope_of(&state), |owner| {
+        let pending = alondra_agent_application::stage_observation(owner.journal(), &binding(), 1, &batch(&execution, 1), &Normalizer::Available)
+            .map_err(|error| StoreError::Storage(anyhow::anyhow!("{error:?}")))?;
+        assert_eq!(pending.facts().len(), 1, "the observation was normalized to one fact");
+        drop(pending);
+        Ok(())
+    });
+    match unrecorded {
+        Err(StoreError::Storage(error)) => assert!(
+            matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::UnsettledObservation)),
+            "{error:?}"
+        ),
+        other => panic!("expected UnsettledObservation, got {other:?}"),
+    }
+    assert_eq!(counts(&observer), before);
+    assert!(runtime.take_acknowledgements().is_empty());
+}
+
+fn pending_input(store: &mut DomainStore) -> InputId {
+    let (inputs, _, _) = journal_after(store);
+    InputId::new(inputs[0].clone()).unwrap()
+}
+/// The card the end of turn "turn-1" of the running execution would ask with; its `claude --bg`
+/// node was released, so the SDK's execution is the second.
+fn turn_ended_card() -> InteractionId {
+    InteractionId::from(format!("{TURN_ENDED_PREFIX}{TASK}-2-turn-1").as_str())
+}
+
+// 3d: a new task's turn ends with nothing that explains its next step. The raw observation, its
+// facts, the card that asks the user, the journal and the checkpoint commit together; readers see
+// the card before the acknowledgement; the same observation again adds nothing.
+#[test]
+fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_after_publication() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let runtime = runtime(&fixture, store);
+    let observer = observer(&fixture);
+    let state = Arc::clone(runtime.read().state());
+    let normalizer = Normalizer::Turn { input, work: false };
+    let (acceptance, outcomes) = runtime
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer))
+        .unwrap();
+    assert_eq!(acceptance, ObservationAcceptance::Accepted);
+    assert_eq!(outcomes.len(), 2, "the technical facts and the end of the turn");
+    let published = runtime.read();
+    assert!(published.state().interactions.contains_key(&turn_ended_card()), "readers see the card");
+    assert_eq!(published.state().tasks[&task()].final_presentation, None, "a native result is not a delivery");
+    assert_eq!(card(&observer, turn_ended_card().0.as_str()), Some((None, false)), "the card committed with the observation");
+    let acknowledged = runtime.take_acknowledgements();
+    assert_eq!(acknowledged.len(), 1);
+    assert!(acknowledged[0].observations[0].matches_evidence(b"raw observation 1"));
+    let committed = counts(&observer);
+
+    let (again, replayed) = runtime
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer))
+        .unwrap();
+    assert_eq!(again, ObservationAcceptance::Duplicate);
+    assert!(replayed.is_empty(), "a duplicate records nothing");
+    assert_eq!(counts(&observer), committed, "no second card, fact or row");
+    let cards: i64 = observer.query_row("SELECT count(*) FROM interactions WHERE id LIKE 'turn-ended-%'", [], |r| r.get(0)).unwrap();
+    assert_eq!(cards, 1);
+}
+
+// 3d: a turn that ends behind work of its own asks nothing, and the work keeps its slot.
+#[test]
+fn a_turn_end_behind_work_of_its_own_commits_no_card_and_keeps_the_slot() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let runtime = runtime(&fixture, store);
+    let state = Arc::clone(runtime.read().state());
+    runtime
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: true }))
+        .unwrap();
+    assert!(!runtime.read().state().interactions.contains_key(&turn_ended_card()));
+    drop(runtime);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let scope = scope_of(&reopened.load().unwrap());
+    let (holds, _) = reopened.own(scope, |owner| Ok(owner.journal().load(&task())?.holds_slot())).unwrap();
+    assert!(holds, "the work still running keeps the slot");
+}
+
+// 3d: the card cannot be created after the raw observation was accepted: nothing of the
+// observation, its facts, the journal or the checkpoint commits, and nothing is acknowledged.
+#[test]
+fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let state = store.load().unwrap();
+    store.execute_filling_revision(&agent(), &envelope(&state, "taken-card-id", ask(turn_ended_card().0.as_str()))).unwrap();
+    let runtime = runtime(&fixture, store);
+    let observer = observer(&fixture);
+    let before = counts(&observer);
+    let state = Arc::clone(runtime.read().state());
+    let failed = runtime.own(scope_of(&state), |owner| {
+        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false })
+    });
+    assert!(failed.is_err(), "the turn end is refused");
+    assert_eq!(counts(&observer), before);
+    assert!(runtime.take_acknowledgements().is_empty());
+    assert_eq!(runtime.read().state().revision, state.revision);
+}
+
+// 3d: answering the card: the lifecycle lets the card go before the card is answered, in one
+// commit with the dispatch of what the task is told. Only the owner stages that dispatch.
+#[test]
+fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let state = store.load().unwrap();
+    store
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false }))
+        .unwrap();
+    let state = store.load().unwrap();
+    let carry_on = Command::AnswerQuestion {
+        interaction_id: turn_ended_card(),
+        option_id: CARRY_ON.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]),
+        attachments: vec![],
+    };
+    let ordinary = store.execute_filling_revision(&user(), &envelope(&state, "carry-on", carry_on.clone()));
+    assert!(matches!(ordinary, Err(StoreError::Storage(ref error)) if matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::MissingIntent))),
+        "outside the owner nothing stages its dispatch, so an SDK input is refused: {ordinary:?}");
+    store
+        .own(scope_of(&state), |owner| {
+            owner.stage_command(&user(), &envelope(&state, "carry-on", carry_on), Attached::None)?;
+            let journal = owner.journal();
+            let told = journal.load(&task())?.pending_inputs()[0].clone();
+            journal.stage_input(&task(), &told)?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(card(&store.conn, turn_ended_card().0.as_str()).unwrap().0.is_some(), "the card is answered");
+    let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
+    assert_eq!(held, 0, "the lifecycle no longer requires it");
+    let text: String = store.conn
+        .query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND body LIKE 'Go on with your task%'", [TASK], |r| r.get(0))
+        .unwrap();
+    assert!(text.ends_with("Add the tests first"), "{text}");
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let (pending, _, cards) = journal_after(&mut reopened);
+    assert_eq!((pending.len(), cards), (1, 0), "the task waits to be told, with no card left");
+}
+
+/// Opt-in, for trying the card in the real TUI: `ALONDRA_TURN_END_DB` names the domain database
+/// of a stopped sandbox daemon. A test task gets an SDK execution whose turn ended with nothing
+/// that explains its next step, through the real owner path.
+#[test]
+#[ignore = "opt-in: needs ALONDRA_TURN_END_DB, the database of a stopped sandbox daemon"]
+fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
+    let path = PathBuf::from(std::env::var("ALONDRA_TURN_END_DB").expect("ALONDRA_TURN_END_DB names a sandbox database"));
+    assert!(!path.components().any(|part| part.as_os_str() == ".alondra"), "never the user's own database");
+    let mut store = DomainStore::open(&path).unwrap();
+    let state = store.load().unwrap();
+    let id = |name: &str| format!("{name}-{}", state.revision);
+    let task: TaskId = id("sdk-turn").as_str().into();
+    let request: RequestId = id("sdk-turn-request").as_str().into();
+    let node: AgentId = id("sdk-node").as_str().into();
+    let run = |store: &mut DomainStore, actor: &Actor, name: &str, command: Command| {
+        let state = store.load().unwrap();
+        store.execute_filling_revision(actor, &envelope(&state, &id(name), command)).unwrap();
+    };
+    run(&mut store, &Actor::System, "register", Command::RegisterAgent { agent_id: node.clone(), name: "SDK node".into(), at: 0 });
+    run(&mut store, &orchestrator(), "request", Command::CreateRequest { request_id: request.clone(), body: "Try the turn-end card".into(), auto_merge: false, maintenance: false, message: false });
+    run(&mut store, &orchestrator(), "title", Command::TitleRequest { request_id: request.clone(), title: "Turn-end card".into() });
+    run(&mut store, &orchestrator(), "task", Command::CreateTask {
+        plan_items: None, task_id: task.clone(), request_id: request, title: "Write the release notes".into(), agent_id: None,
+        review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+    });
+    let state = store.load().unwrap();
+    let admit = Command::AdmitExecution { task_id: task.clone(), agent_id: node, conversation: id("conversation"), instance: id("instance"), host: "fixture-service".into() };
+    let (execution, _) = store
+        .own(scope_of(&state), |owner| {
+            owner.stage_command(&Actor::System, &envelope(&state, &id("admit"), admit), Attached::None)?;
+            let journal = owner.journal();
+            let pending = journal.load(&task)?.pending_inputs()[0].clone();
+            journal.give_input_text(&task, InputPayload::new(pending, "Write the release notes").unwrap())?;
+            journal.stage_launch(&task, &Placement::RemoteWorkspace("sandbox/workspace".into()), &binding())?;
+            let execution = journal.load(&task)?.execution().unwrap().clone();
+            journal.reserve_owner(&execution, 0)?;
+            Ok(execution)
+        })
+        .unwrap();
+    let state = store.load().unwrap();
+    let input = InputId::new(state.lifecycle_journal[&task].iter().find_map(|record| match record {
+        LifecycleRecord::Planned { input } => Some(input.clone()),
+        _ => None,
+    }).unwrap()).unwrap();
+    let observation = OrderedObservation { owner_generation: 1, execution, cursor: 1, evidence: b"sandbox observation".to_vec() };
+    store.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &observation, &Normalizer::Turn { input, work: false })).unwrap();
 }

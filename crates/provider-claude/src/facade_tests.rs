@@ -133,6 +133,7 @@ impl Fixture {
             b"causal checkpoint".to_vec(),
         )
         .unwrap();
+        tx.settle_observation(self.owner.execution(), 1, 0).unwrap();
         tx.commit().unwrap().observations.pop().unwrap()
     }
 }

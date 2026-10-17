@@ -493,7 +493,7 @@ fn required_cards_use_actual_task_ownership_and_actionability_and_rollback_rejec
 }
 
 #[test]
-fn duplicate_node_and_unknown_task_dependency_fail_atomically() {
+fn duplicate_instance_and_unknown_task_dependency_fail_atomically() {
     let mut fixture = Fixture::new();
     fixture.create("task");
     fixture.create("other");
@@ -504,7 +504,7 @@ fn duplicate_node_and_unknown_task_dependency_fail_atomically() {
             &"other".into(),
             0,
             "admit",
-            admit("node", "second-instance")
+            admit("second-node", "instance")
         ),
         Err(Error::Database(_))
     ));
@@ -1858,6 +1858,7 @@ fn observation_commit_value_requires_exact_raw_and_normalization_checkpoint() {
     .unwrap();
     tx.put_normalization_checkpoint(owner.execution(), 1, None, b"causal checkpoint".to_vec())
         .unwrap();
+    tx.settle_observation(owner.execution(), 1, 0).unwrap();
     let mut committed = tx.commit().unwrap();
     assert_eq!(committed.observations.len(), 1);
     let value = committed.observations.pop().unwrap();
@@ -1990,6 +1991,7 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
         .unwrap();
         tx.put_normalization_checkpoint(&stamp, 1, None, b"normalized retirement".to_vec())
             .unwrap();
+        tx.settle_observation(&stamp, 1, 0).unwrap();
         tx.apply(
             &"task".into(),
             before_retirement_revision,
@@ -2209,6 +2211,7 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
             checkpoint.is_ok(),
             "same-transaction accepted raw must permit checkpoint after retirement: {checkpoint:?}"
         );
+        tx.settle_observation(&stamp, 1, 0).unwrap();
         if stale_owner {
             let changed = tx.connection.execute(
                 "UPDATE provider_execution_owners SET owner_generation=owner_generation+1 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND owner_generation=?4",
@@ -2467,4 +2470,87 @@ fn poisoned_journal_rolls_back_even_when_the_caller_asked_to_commit_on_drop() {
         .query_row("SELECT count(*) FROM lifecycle_tasks", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 0, "the caller's commit-on-drop cannot persist a poisoned journal");
+}
+
+fn claude_bg(task: &str) -> Event {
+    Event::Admit {
+        node: "node".into(),
+        conversation: ConversationId::new("node").unwrap(),
+        instance: InstanceId::new(format!("{}:{task}:1", alondra_domain::CLAUDE_BG_HOST)).unwrap(),
+        host: HostId::new(alondra_domain::CLAUDE_BG_HOST).unwrap(),
+    }
+}
+
+/// A task of the `claude --bg` backend keeps its journal in the store without any SDK
+/// dispatch: it commits with no launch intent or binding, and nothing can dispatch to it.
+#[test]
+fn a_claude_bg_execution_commits_without_intents_and_nothing_dispatches_to_it() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", claude_bg("task")).unwrap();
+    let committed = tx.commit().unwrap();
+    assert!(committed.permits.is_empty(), "no SDK offer for a claude --bg execution");
+    let backend: String = fixture.connection.query_row("SELECT backend FROM lifecycle_executions WHERE task_id='task'", [], |r| r.get(0)).unwrap();
+    assert_eq!(backend, "claude_bg");
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.stage_launch(&"task".into(), &local(&path), &test_binding()), Err(Error::NotDispatchable)));
+    drop(tx);
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.bind_provider(&"task".into(), &test_binding()), Err(Error::NotDispatchable)));
+    drop(tx);
+    let refused = fixture.connection.execute("INSERT INTO lifecycle_dispatches(task_id,generation,input_id,kind,placement_kind,placement,status) VALUES('task',1,'initial','launch','local','/x','prepared')", []);
+    assert!(refused.is_err(), "SQL refuses a dispatch to a claude --bg execution too");
+}
+
+/// An input the domain named without text gets the text an SDK execution is sent once, only
+/// while it is pending for that execution; the SDK can never be offered one without it.
+#[test]
+fn an_input_without_text_is_given_its_text_once_before_any_sdk_dispatch() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance")).unwrap();
+    assert!(matches!(tx.stage_launch(&"task".into(), &local(&path), &test_binding()), Err(Error::Database(_))));
+    drop(tx);
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance")).unwrap();
+    tx.give_input_text(&"task".into(), payload("initial")).unwrap();
+    tx.give_input_text(&"task".into(), payload("initial")).unwrap();
+    assert!(matches!(
+        tx.give_input_text(&"task".into(), InputPayload::new(id("initial"), "Another text").unwrap()),
+        Err(Error::InputConflict)
+    ));
+    drop(tx);
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance")).unwrap();
+    tx.give_input_text(&"task".into(), payload("initial")).unwrap();
+    tx.stage_launch(&"task".into(), &local(&path), &test_binding()).unwrap();
+    let committed = tx.commit().unwrap();
+    assert_eq!(committed.permits.len(), 1, "with its text the input is offered");
+    assert!(fixture.connection.execute("UPDATE lifecycle_inputs SET body='Changed' WHERE task_id='task'", []).is_err(), "a text is never changed");
+}
+
+/// What the daemon reads: every task's journal, with its events in order.
+#[test]
+fn the_journal_reads_every_task_with_its_events() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", claude_bg("task")).unwrap();
+    tx.commit().unwrap();
+    let journal = alondra_store::read_journal(&fixture.connection, &scope()).unwrap();
+    assert_eq!(journal.len(), 1);
+    let task = &journal[&"task".into()];
+    assert_eq!(task.initial, id("initial"));
+    assert_eq!(task.events, vec![claude_bg("task")]);
+    assert!(task.texts.is_empty(), "the claude --bg input has no text");
 }

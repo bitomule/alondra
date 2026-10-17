@@ -1,6 +1,6 @@
 //! Test-only SQL owner used by component fixtures; no production coordinator or publication claim.
 use alondra_agent_application::{
-    DurableAdapter, Error, InputMetadata, invocation, stage_observation,
+    DurableAdapter, Error, InputMetadata, PendingObservation, invocation, stage_observation,
 };
 use alondra_domain::{Event, TaskLifecycle};
 use alondra_foundation::TaskId;
@@ -12,6 +12,30 @@ use alondra_store::{
 use rusqlite::{Connection, TransactionBehavior};
 use std::collections::VecDeque;
 type Result<T> = std::result::Result<T, alondra_agent_application::Error>;
+
+/// What the domain does with an accepted observation's facts, for fixtures that run the store
+/// without it: each technical fact becomes the next runtime event of the execution, then the
+/// observation is settled. The end of a turn needs the domain's decision, so it is refused.
+pub fn record_facts(
+    transaction: &mut LifecycleTransaction<'_>,
+    pending: PendingObservation,
+) -> Result<alondra_store::ObservationAcceptance> {
+    let stamp = pending.execution().clone();
+    for (index, fact) in pending.facts().iter().enumerate() {
+        let alondra_agent_application::ObservedFact::Runtime(fact) = fact else {
+            return Err(Error::RequiresDomainCommand);
+        };
+        let aggregate = transaction.load(stamp.task())?;
+        let cursor = aggregate.cursor().unwrap_or(0) + 1;
+        transaction.apply(
+            stamp.task(),
+            aggregate.revision(),
+            &format!("fixture-fact-{}-{cursor}-{index}", stamp.generation()),
+            Event::Runtime { stamp: stamp.clone(), cursor, fact: fact.clone() },
+        )?;
+    }
+    pending.settle(transaction)
+}
 /// Owns the submitting adapter and serializes its command/observation lane with mutable access.
 /// The adapter must fence its external effect against its committed owner grant as well.
 pub struct WorkerController<A: DurableAdapter> {
@@ -164,13 +188,14 @@ impl<A: DurableAdapter> WorkerController<A> {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(alondra_store::Error::from)?;
         let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
-        stage_observation(
+        let pending = stage_observation(
             &mut transaction,
             self.adapter.binding(),
             self.adapter.owner_generation()?,
             batch,
             self.adapter.normalizer(),
         )?;
+        record_facts(&mut transaction, pending)?;
         self.permits.extend(transaction.commit()?.permits);
         self.adapter.acknowledge(&batch.execution, batch.cursor)?;
         self.pending = None;

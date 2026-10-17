@@ -705,7 +705,12 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
 }
 /// Write only what changed between two validated states. Rows are never
 /// removed except the per-Task dependency and stack sets, which are replaced.
-pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
+pub(super) fn save_changes(
+    c: &Connection,
+    journal: &mut alondra_store::LifecycleTransaction<'_>,
+    before: &DomainState,
+    after: &DomainState,
+) -> Result<()> {
     ensure_nothing_removed(before, after)?;
     if before.revision != after.revision
         || before.orchestrator_generation != after.orchestrator_generation
@@ -776,9 +781,13 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     for (p, prior) in &pull_requests {
         save_pull_request(c, p, *prior)?;
     }
-    for (i, prior) in changed(&before.interactions, &after.interactions) {
+    // A card the lifecycle requires exists before the event that requires it, and is answered or
+    // withdrawn only after the event that no longer requires it: new cards go before the journal,
+    // changes to existing ones after it.
+    let interactions: Vec<_> = changed(&before.interactions, &after.interactions).collect();
+    for (i, prior) in interactions.iter().filter(|(_, prior)| prior.is_none()) {
         upsert(c, "interactions", &["id"], interaction_row(i)?)?;
-        save_interaction_relations(c, i, prior)?;
+        save_interaction_relations(c, i, *prior)?;
     }
     for r in &after.document_reviews {
         let prior = before
@@ -822,12 +831,13 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     for (id, review) in after.plan_reviews.iter().filter(|(id, r)| before.plan_reviews.get(*id) != Some(*r)) {
         upsert(c, "plan_reviews", &["interaction_id"], object(&json!({"interaction_id": id, "review": review}))?)?;
     }
-    for (task, journal) in after.lifecycle_journal.iter().filter(|(id, j)| before.lifecycle_journal.get(*id) != Some(*j)) {
+    for (task, records) in after.lifecycle_journal.iter().filter(|(id, j)| before.lifecycle_journal.get(*id) != Some(*j)) {
         let known = before.lifecycle_journal.get(task).map_or(0, Vec::len);
-        for (seq, record) in journal.iter().enumerate().skip(known) {
-            exec(c, "INSERT INTO task_lifecycle_journal(task_id,seq,record) VALUES(?1,?2,?3)",
-                params![task.0, seq as i64, serde_json::to_string(record)?])?;
-        }
+        save_journal(journal, task, records, known)?;
+    }
+    for (i, prior) in interactions.iter().filter(|(_, prior)| prior.is_some()) {
+        upsert(c, "interactions", &["id"], interaction_row(i)?)?;
+        save_interaction_relations(c, i, *prior)?;
     }
     for (agent_id, text) in after.last_words.iter().filter(|(id, text)| before.last_words.get(*id) != Some(*text)) {
         upsert(c, "node_last_words", &["agent_id"], object(&json!({"agent_id": agent_id, "text": text}))?)?;
@@ -835,7 +845,50 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
+/// The task's new records, as the events the store keeps: only the store writes the journal, and
+/// it replays the task and checks each event before keeping it.
+pub(super) fn save_journal(
+    journal: &mut alondra_store::LifecycleTransaction<'_>,
+    task: &TaskId,
+    records: &[LifecycleRecord],
+    known: usize,
+) -> Result<()> {
+    for write in journal_writes(task, records, known)? {
+        match write.event {
+            None => journal.create_without_text(task, write.input.context("a new journal names its initial input")?)?,
+            Some(event) => {
+                match (&write.input, write.text) {
+                    (Some(input), Some(text)) => journal.put_input(task, alondra_store::InputPayload::new(input.clone(), text)?)?,
+                    (Some(input), None) => journal.put_input_without_text(task, input)?,
+                    (None, _) => {}
+                }
+                journal.apply(task, write.revision, &format!("lifecycle-{}", write.revision + 1), event)?;
+            }
+        }
+    }
+    Ok(())
+}
+/// The domain from its tables and its journal. Every task's lifecycle fields are checked against
+/// its journal before anything else reads them: a column that disagrees fails the load, and
+/// nothing repairs it.
 pub(super) fn load(c: &Connection) -> Result<DomainState> {
+    let mut state = load_rows(c)?;
+    let scope = alondra_store::AuthorityScope::new(state.data_epoch.clone())?;
+    for (task, stored) in alondra_store::read_journal(c, &scope)? {
+        ensure!(state.tasks.contains_key(&task), "the lifecycle journal of task {task} has no task");
+        let records = records_from_events(&task, &stored.initial, &stored.events, &stored.texts)?;
+        state.lifecycle_journal.insert(task, records);
+    }
+    state.read_endings()?;
+    state.validate_journal()?;
+    state.derive_states();
+    state.validate()?;
+    state.validate_journal()?;
+    Ok(state)
+}
+/// The domain's rows as its tables keep them, without the journal: what a migration reads to
+/// write the journal of tasks that have none.
+pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     let (epoch, revision, generation): (String, i64, i64) = c.query_row(
         "SELECT data_epoch,revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
         [],
@@ -1163,21 +1216,9 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for row in rows(c, "plan_reviews", &[], &["review"])? {
         state.plan_reviews.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["review"].clone())?);
     }
-    let mut journal = c.prepare("SELECT task_id, seq, record FROM task_lifecycle_journal ORDER BY task_id, seq")?;
-    let mut records = journal.query([])?;
-    while let Some(row) = records.next()? {
-        let (task, seq, record): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
-        let entries = state.lifecycle_journal.entry(TaskId::from(task.as_str())).or_default();
-        ensure!(entries.len() as i64 == seq, "the lifecycle journal of task {task} has a gap before record {seq}");
-        entries.push(serde_json::from_str(&record)?);
-    }
-    state.read_endings()?;
     for row in rows(c, "node_last_words", &[], &[])? {
         state.last_words.insert(AgentId::from(s(&row["agent_id"])?), s(&row["text"])?.to_owned());
     }
     state.schedule = load_schedule_state(c)?;
-    state.derive_states();
-    state.validate()?;
-    state.validate_journal()?;
     Ok(state)
 }

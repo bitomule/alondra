@@ -539,6 +539,7 @@ fn stage_and_commit(probe: Probe) -> (bool, alondra_store::Result<()>, i64) {
     };
     let staged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         stage_observation(&mut transaction, &binding, 1, &batch, &ProbeNormalizer(probe))
+            .and_then(|pending| fixture_controller::record_facts(&mut transaction, pending))
     }));
     let accepted = matches!(staged, Ok(Ok(ObservationAcceptance::Accepted)));
     let committed = transaction.commit().map(drop);

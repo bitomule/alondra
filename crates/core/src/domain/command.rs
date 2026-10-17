@@ -441,6 +441,29 @@ pub enum Command {
     RecordTaskCleanup {
         task_id: TaskId,
     },
+    /// The SDK host took the Task with an execution of its own, running as `conversation`,
+    /// `instance` and `host`. Never the `claude --bg` backend, whose node is assigned.
+    AdmitExecution {
+        task_id: TaskId,
+        agent_id: AgentId,
+        conversation: String,
+        instance: String,
+        host: String,
+    },
+    /// What the SDK observed of the Task's execution of `generation`, in order, normalized from
+    /// one accepted observation.
+    RecordRuntimeFacts {
+        task_id: TaskId,
+        generation: u64,
+        facts: Vec<RuntimeObservation>,
+    },
+    /// The root turn `turn` of the Task's SDK execution of `generation` ended. Evidence, never
+    /// success: when nothing explains the Task's next step, its card asks the user how it goes on.
+    RecordTurnBoundary {
+        task_id: TaskId,
+        generation: u64,
+        turn: String,
+    },
 }
 /// A wire command written before cards existed gets the card its own fields describe; the
 /// optional `need` and `why` fields override what is read from its body.

@@ -3,13 +3,10 @@
 //! that commit issues the store's seals.
 #![cfg_attr(not(test), expect(dead_code, reason = "the SDK host drives it from the vertical slice"))]
 use super::*;
-use alondra_agent_application::ObservationNormalizer;
-use alondra_foundation::{ExecutionStamp, InputId};
+use alondra_agent_application::{ObservationNormalizer, ObservedFact};
+use alondra_domain::{RuntimeFact, Trigger};
 use alondra_provider_contract::{OrderedObservation, ProviderBinding};
-use alondra_store::{
-    AuthorityScope, CommandEvidence, Committed, InputPayload, LifecycleTransaction,
-    ObservationAcceptance,
-};
+use alondra_store::{AuthorityScope, Committed, LifecycleTransaction, ObservationAcceptance};
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
 /// whole transaction, even when the caller catches it, so it can only roll back.
@@ -65,6 +62,21 @@ impl From<alondra_store::Error> for StoreError {
         Self::Storage(error.into())
     }
 }
+/// A fact the domain records for an SDK execution, as its command carries it.
+fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, StoreError> {
+    Ok(match fact {
+        RuntimeFact::ResourceAvailable => RuntimeObservation::ResourceAvailable,
+        RuntimeFact::TurnStarted { turn, trigger: Trigger::Input(input) } => {
+            RuntimeObservation::TurnStarted { turn: turn.as_str().into(), input: input.as_str().into() }
+        }
+        RuntimeFact::InputConsumed { input } => RuntimeObservation::InputConsumed { input: input.as_str().into() },
+        RuntimeFact::WorkStarted { turn, work } => RuntimeObservation::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() },
+        RuntimeFact::WorkEnded { work, continuation } => {
+            RuntimeObservation::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
+        }
+        other => return Err(StoreError::Storage(anyhow::anyhow!("provider observation refused: the domain does not record {other:?} yet"))),
+    })
+}
 fn application_error(error: alondra_agent_application::Error) -> StoreError {
     match error {
         alondra_agent_application::Error::Store(error) => error.into(),
@@ -108,7 +120,7 @@ impl<'connection> OwnerTransaction<'connection> {
         attached: Attached<'_>,
     ) -> std::result::Result<&CommandOutcome, StoreError> {
         let (conn, cached) = (self.conn, self.cached);
-        let prepared = self.journal.inspect(|| {
+        let prepared = self.journal.inspect_mut(|journal| {
             if matches!(envelope.command, Command::CreateDocument { .. } | Command::ReviseDocument { .. }) {
                 return Err(DomainError::new(
                     "invalid_input",
@@ -116,13 +128,16 @@ impl<'connection> OwnerTransaction<'connection> {
                 )
                 .into());
             }
-            command::stage(conn, cached, actor, envelope, None, true, attached)
+            command::stage(conn, cached, actor, envelope, None, true, attached, journal)
         })?;
         self.draft.record(&envelope.command, &envelope.command_id, prepared.commit);
         Ok(&self.draft.outcomes.last().expect("outcome just recorded").outcome)
     }
 
-    /// Raw provider evidence, its normalized facts and checkpoint.
+    /// Raw provider evidence and its checkpoint, and the facts it was normalized to, recorded by
+    /// the domain's own commands in this same transaction: technical facts by RecordRuntimeFacts,
+    /// the end of the root turn by RecordTurnBoundary. Facts the domain does not record yet (a
+    /// lost connection, a released resource) refuse the whole observation.
     pub(crate) fn stage_observation<N: ObservationNormalizer>(
         &mut self,
         binding: &ProviderBinding,
@@ -130,48 +145,42 @@ impl<'connection> OwnerTransaction<'connection> {
         batch: &OrderedObservation,
         normalizer: &N,
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
-        alondra_agent_application::stage_observation(
+        let pending = alondra_agent_application::stage_observation(
             &mut self.journal,
             binding,
             owner_generation,
             batch,
             normalizer,
         )
-        .map_err(application_error)
-    }
-
-    /// Accepts the raw observation that reports the released resource, then retires its
-    /// execution with the continuation that waits for the next one. The problem card is settled
-    /// by a guarded command in this same transaction, or the commit refuses.
-    pub(crate) fn retire_released(
-        &mut self,
-        execution: &ExecutionStamp,
-        owner_generation: u64,
-        cursor: u64,
-        evidence: Vec<u8>,
-        checkpoint: Vec<u8>,
-        problem_card: alondra_foundation::InteractionId,
-        continuation: InputPayload,
-    ) -> std::result::Result<(), StoreError> {
-        let task = execution.task();
-        let evidence = self.journal.inspect(|| CommandEvidence::new(evidence))?;
-        let previous = self
-            .journal
-            .normalization_checkpoint(execution)?
-            .map(|checkpoint| checkpoint.cursor());
-        self.journal.accept_owned_observation(execution, owner_generation, cursor, evidence)?;
-        let input: InputId = continuation.id().clone();
-        self.journal.put_input(task, continuation)?;
-        let revision = self.journal.load(task)?.revision();
-        self.journal.apply(
-            task,
-            revision,
-            &format!("retire-{}-{cursor}", execution.generation()),
-            alondra_domain::Event::RetireReleasedExecution { problem_card, input },
-        )?;
-        self.journal
-            .put_normalization_checkpoint(execution, cursor, previous, checkpoint)?;
-        Ok(())
+        .map_err(application_error)?;
+        let execution = pending.execution().clone();
+        let mut commands = vec![];
+        let mut technical = vec![];
+        for fact in pending.facts() {
+            match fact {
+                ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
+                ObservedFact::TurnEnded(turn) => {
+                    if !technical.is_empty() {
+                        commands.push(Command::RecordRuntimeFacts { task_id: execution.task().clone(), generation: execution.generation(), facts: std::mem::take(&mut technical) });
+                    }
+                    commands.push(Command::RecordTurnBoundary { task_id: execution.task().clone(), generation: execution.generation(), turn: turn.as_str().into() });
+                }
+            }
+        }
+        if !technical.is_empty() {
+            commands.push(Command::RecordRuntimeFacts { task_id: execution.task().clone(), generation: execution.generation(), facts: technical });
+        }
+        for (index, command) in commands.into_iter().enumerate() {
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: self.draft.state.data_epoch.clone(),
+                command_id: format!("observation:{}:{}:{}:{index}", execution.task(), execution.generation(), batch.cursor).as_str().into(),
+                expected_revision: 0,
+                command,
+            };
+            self.stage_command(&Actor::System, &envelope, Attached::None)?;
+        }
+        pending.settle(&mut self.journal).map_err(application_error)
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.

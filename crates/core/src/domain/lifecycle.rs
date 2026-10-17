@@ -1,22 +1,24 @@
 //! The one authority of a task's lifecycle: its `TaskLifecycle`, replayed inside the transaction
 //! from the records its decisions left in the task's journal. The task's state, node, start and
 //! ending in the DTO are read from it and checked against it before a transition is accepted, so
-//! no other writer can move them for a task that has a journal. A task created before the journal
-//! keeps the old writers until the migration of phase 3c.
+//! no other writer can move them. Every task has a journal; the store keeps it as the events these
+//! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
 use alondra_domain::{
-    ActivityView, ConversationId, DrainObligation, Event, FinishIntent, HostId, InputId, InstanceId, OperationId,
-    PlanReviewOutcome as ReviewSettlement, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle,
-    TaskPhase, Trigger, TurnId,
+    ActivityView, CLAUDE_BG_HOST, ContinuationId, ConversationId, DrainObligation, Event, FinishIntent, HostId, InputId,
+    InstanceId, OperationId, PlanReviewOutcome as ReviewSettlement, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle,
+    TaskPhase, Trigger, TurnId, WorkId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 type Result<T> = std::result::Result<T, DomainError>;
 
-/// The host of every node of the `claude --bg` backend: one process per session, so the session
-/// names both the conversation and the instance.
-const LEGACY_HOST: &str = "claude-bg";
+/// The instance of a `claude --bg` execution: one per task and generation, even when a node that
+/// stays alive takes the task again, so no two executions share one.
+fn claude_bg_instance(task: &TaskId, generation: u64) -> String {
+    format!("{CLAUDE_BG_HOST}:{task}:{generation}")
+}
 
 /// How a task is ending. Shown apart from its state, which stays Closing until the last receipt
 /// of what the ending still owes: the node's session, its cleanup, work after the merge.
@@ -53,14 +55,51 @@ pub enum ReviewOutcome {
 /// let task: alondra_core::domain::Task = serde_json::from_str("{}").unwrap();
 /// let lifecycle: alondra_domain::TaskLifecycle = task.into();
 /// ```
+/// Who an SDK execution runs as. An execution of the `claude --bg` backend has none of its own:
+/// its identity is Alondra's, by task and generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionIdentity {
+    pub conversation: String,
+    pub instance: String,
+    pub host: String,
+}
+
+/// What the SDK observed of an execution, normalized: the facts the domain applies to its task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeObservation {
+    ResourceAvailable,
+    TurnStarted { turn: String, input: String },
+    InputConsumed { input: String },
+    WorkStarted { turn: String, work: String },
+    WorkEnded { work: String, continuation: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LifecycleRecord {
     Planned { input: String },
-    Admitted { node: AgentId },
+    Admitted {
+        node: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution: Option<ExecutionIdentity>,
+    },
     ResourceAvailable,
     TurnStarted { turn: String, input: String },
     InputConsumed { input: String },
+    WorkStarted { turn: String, work: String },
+    WorkEnded { work: String, continuation: String },
+    /// The root turn of an SDK execution ended. `unheard_card` is the card the aggregate requires
+    /// when nothing else explains the task's next step; otherwise it stays unused.
+    TurnEnded { turn: String, unheard_card: InteractionId },
+    /// The user answered a card the lifecycle requires: the task goes on with `input`, whose text
+    /// is what it is told.
+    Answered {
+        card: InteractionId,
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     ExecutionReleased { input: String },
     Presented { delivery: InteractionId },
     HandedBack { delivery: InteractionId, input: String },
@@ -115,12 +154,36 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
     };
     Ok(match record {
         LifecycleRecord::Planned { .. } => return Err(corrupt(task, "a second planned record")),
-        LifecycleRecord::Admitted { node } => Event::Admit {
+        LifecycleRecord::Admitted { node, execution: None } => Event::Admit {
             node: node.clone(),
             conversation: ConversationId::new(node.0.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
-            instance: InstanceId::new(node.0.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
-            host: HostId::new(LEGACY_HOST).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            instance: InstanceId::new(claude_bg_instance(task, lifecycle.generation() + 1)).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            host: HostId::new(CLAUDE_BG_HOST).map_err(|e| corrupt(task, format!("{e:?}")))?,
         },
+        LifecycleRecord::Admitted { node, execution: Some(identity) } => {
+            if identity.host == CLAUDE_BG_HOST {
+                return Err(corrupt(task, "an SDK execution on the claude --bg host"));
+            }
+            Event::Admit {
+                node: node.clone(),
+                conversation: ConversationId::new(identity.conversation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+                instance: InstanceId::new(identity.instance.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+                host: HostId::new(identity.host.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            }
+        }
+        LifecycleRecord::WorkStarted { turn, work } => runtime(RuntimeFact::WorkStarted {
+            turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+        })?,
+        LifecycleRecord::TurnEnded { turn, unheard_card } => runtime(RuntimeFact::TurnEnded {
+            turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            unheard_card: unheard_card.clone(),
+        })?,
+        LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
+        LifecycleRecord::WorkEnded { work, continuation } => runtime(RuntimeFact::WorkEnded {
+            work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+        })?,
         LifecycleRecord::ResourceAvailable => runtime(RuntimeFact::ResourceAvailable)?,
         LifecycleRecord::TurnStarted { turn, input } => runtime(RuntimeFact::TurnStarted {
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -180,6 +243,174 @@ pub fn replay(task: &TaskId, journal: &[LifecycleRecord]) -> Result<TaskLifecycl
     Ok(lifecycle)
 }
 
+/// What the store writes for a task's records from `from` on, in order: each event with the
+/// revision it applies at, after creating the task or naming the input the record introduces.
+#[derive(Debug, PartialEq, Eq)]
+pub struct JournalWrite {
+    pub revision: u64,
+    pub event: Option<Event>,
+    pub input: Option<InputId>,
+    /// The text of `input`, when the record has one to tell the task.
+    pub text: Option<String>,
+}
+
+/// The input a record names for the first time, which the store keeps before the event, and its
+/// text when it has one.
+fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
+    match record {
+        LifecycleRecord::Planned { input }
+        | LifecycleRecord::ExecutionReleased { input }
+        | LifecycleRecord::HandedBack { input, .. }
+        | LifecycleRecord::Reopened { input } => Some((input, None)),
+        LifecycleRecord::Answered { input, text, .. } => Some((input, text.as_deref())),
+        _ => None,
+    }
+}
+
+/// The store's writes for a task's journal from record `from` on. The first record creates the
+/// task with its initial input and has no event.
+pub fn journal_writes(task: &TaskId, journal: &[LifecycleRecord], from: usize) -> Result<Vec<JournalWrite>> {
+    let mut records = journal.iter();
+    let Some(LifecycleRecord::Planned { input }) = records.next() else {
+        return Err(corrupt(task, "it does not start with the planned record"));
+    };
+    let mut lifecycle = TaskLifecycle::planned(task.clone(), input_id(task, input)?).map_err(|r| corrupt(task, format!("{r:?}")))?;
+    let mut writes = vec![];
+    if from == 0 {
+        writes.push(JournalWrite { revision: 0, event: None, input: Some(input_id(task, input)?), text: None });
+    }
+    for (n, record) in records.enumerate() {
+        let event = event(task, record, &lifecycle)?;
+        let revision = lifecycle.revision();
+        if n + 1 >= from {
+            let (input, text) = match introduced(record) {
+                Some((input, text)) => (Some(input_id(task, input)?), text.map(str::to_owned)),
+                None => (None, None),
+            };
+            writes.push(JournalWrite { revision, event: Some(event.clone()), input, text });
+        }
+        lifecycle.apply(revision, event).map_err(|refusal| corrupt(task, format!("record {} {record:?} refused: {refusal:?}", n + 1)))?;
+    }
+    Ok(writes)
+}
+
+/// The record an event of the store stands for, given the aggregate before it. An event the
+/// domain does not decide yet has none: the journal cannot be read.
+fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) -> Result<LifecycleRecord> {
+    let drained = |obligation: &DrainObligation| -> Result<Drained> {
+        Ok(match obligation {
+            DrainObligation::Execution(instance) => Drained::Execution { instance: instance.as_str().into() },
+            DrainObligation::Cleanup(operation) => Drained::Cleanup { operation: operation.as_str().into() },
+            DrainObligation::PostMerge(operation) => Drained::PostMerge { operation: operation.as_str().into() },
+            other => return Err(corrupt(task, format!("a drained obligation the domain does not decide: {other:?}"))),
+        })
+    };
+    Ok(match event {
+        Event::Admit { node, host, .. } if host.as_str() == CLAUDE_BG_HOST => LifecycleRecord::Admitted { node: node.clone(), execution: None },
+        Event::Admit { node, conversation, instance, host } => LifecycleRecord::Admitted {
+            node: node.clone(),
+            execution: Some(ExecutionIdentity {
+                conversation: conversation.as_str().into(),
+                instance: instance.as_str().into(),
+                host: host.as_str().into(),
+            }),
+        },
+        Event::Runtime { fact: RuntimeFact::WorkStarted { turn, work }, .. } => {
+            LifecycleRecord::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::TurnEnded { turn, unheard_card }, .. } => {
+            LifecycleRecord::TurnEnded { turn: turn.as_str().into(), unheard_card: unheard_card.clone() }
+        }
+        Event::Answer { card, input } => LifecycleRecord::Answered {
+            card: card.clone(),
+            input: input.as_str().into(),
+            text: texts.get(input).cloned(),
+        },
+        Event::Runtime { fact: RuntimeFact::WorkEnded { work, continuation }, .. } => {
+            LifecycleRecord::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::ResourceAvailable, .. } => LifecycleRecord::ResourceAvailable,
+        Event::Runtime { fact: RuntimeFact::TurnStarted { turn, trigger: Trigger::Input(input) }, .. } => {
+            LifecycleRecord::TurnStarted { turn: turn.as_str().into(), input: input.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
+        Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
+        Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
+        Event::HandBack { delivery, input } => LifecycleRecord::HandedBack { delivery: delivery.clone(), input: input.as_str().into() },
+        Event::Accept { delivery, merge: None } => LifecycleRecord::Accepted { delivery: delivery.clone() },
+        Event::Finish { intent, cleanup, post_merge } => LifecycleRecord::Finished {
+            intent: match intent {
+                FinishIntent::Complete => TaskEnding::Completing,
+                FinishIntent::Cancel => TaskEnding::Cancelling,
+            },
+            cleanup: cleanup.as_str().into(),
+            post_merge: post_merge.as_ref().map(|op| op.as_str().into()),
+        },
+        Event::DrainObserved { obligation } => LifecycleRecord::Drained { obligation: drained(obligation)? },
+        Event::Reopen { input } => LifecycleRecord::Reopened { input: input.as_str().into() },
+        Event::HoldForPlanReview { review } => LifecycleRecord::HeldForPlanReview { review: review.clone() },
+        Event::PlanReviewSettled { review, plan_revision, outcome } => LifecycleRecord::PlanReviewSettled {
+            review: review.clone(),
+            plan_revision: *plan_revision,
+            outcome: match outcome {
+                ReviewSettlement::Unchanged => ReviewOutcome::Unchanged,
+                ReviewSettlement::PlanChanged => ReviewOutcome::PlanChanged,
+                ReviewSettlement::Cancelled => ReviewOutcome::Cancelled,
+                ReviewSettlement::KeptByUser => ReviewOutcome::KeptByUser,
+            },
+        },
+        other => return Err(corrupt(task, format!("an event the domain does not decide: {other:?}"))),
+    })
+}
+
+/// The records a task's journal in the store stands for. Each record must give back exactly the
+/// event the store kept, identities and cursors included, or the journal cannot be read.
+pub fn records_from_events(task: &TaskId, initial: &InputId, events: &[Event], texts: &BTreeMap<InputId, String>) -> Result<Vec<LifecycleRecord>> {
+    let mut lifecycle = TaskLifecycle::planned(task.clone(), initial.clone()).map_err(|r| corrupt(task, format!("{r:?}")))?;
+    let mut records = vec![LifecycleRecord::Planned { input: initial.as_str().into() }];
+    for (n, stored) in events.iter().enumerate() {
+        let record = record_of(task, stored, texts)?;
+        let derived = event(task, &record, &lifecycle)?;
+        if derived != *stored {
+            return Err(corrupt(task, format!("event {} {stored:?} is not the one its record stands for ({derived:?})", n + 1)));
+        }
+        lifecycle.apply(lifecycle.revision(), derived).map_err(|refusal| corrupt(task, format!("event {} refused: {refusal:?}", n + 1)))?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+/// A journal kept while an execution's instance was its node's id: the same decisions, each
+/// drained execution named by the instance the execution has now.
+pub fn with_execution_instances(task: &TaskId, journal: Vec<LifecycleRecord>) -> Result<Vec<LifecycleRecord>> {
+    let mut records = journal.into_iter();
+    let Some(LifecycleRecord::Planned { input }) = records.next() else {
+        return Err(corrupt(task, "it does not start with the planned record"));
+    };
+    let mut lifecycle = TaskLifecycle::planned(task.clone(), input_id(task, &input)?).map_err(|r| corrupt(task, format!("{r:?}")))?;
+    let mut renamed = vec![LifecycleRecord::Planned { input }];
+    let mut node = None;
+    for (n, record) in records.enumerate() {
+        if let LifecycleRecord::Admitted { node: admitted, .. } = &record {
+            node = Some(admitted.0.clone());
+        }
+        let record = match record {
+            LifecycleRecord::Drained { obligation: Drained::Execution { instance } } => {
+                let owed = owed(&lifecycle).into_iter().find(|owed| matches!(owed, Drained::Execution { .. }));
+                match owed {
+                    Some(owed) if node.as_deref() == Some(instance.as_str()) => LifecycleRecord::Drained { obligation: owed },
+                    _ => return Err(corrupt(task, format!("record {} drains execution {instance}, which the task does not owe", n + 1))),
+                }
+            }
+            other => other,
+        };
+        let event = event(task, &record, &lifecycle)?;
+        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| corrupt(task, format!("record {} {record:?} refused: {refusal:?}", n + 1)))?;
+        renamed.push(record);
+    }
+    Ok(renamed)
+}
+
 /// What the ending of a finishing task still owes, as receipts discharge them.
 pub fn owed(lifecycle: &TaskLifecycle) -> Vec<Drained> {
     lifecycle
@@ -217,12 +448,6 @@ impl Task {
 }
 
 impl DomainState {
-    /// A task whose lifecycle the aggregate owns: it has a journal. Any other task is one created
-    /// before the journal, which the old writers still move.
-    pub fn owned(&self, task: &TaskId) -> bool {
-        self.lifecycle_journal.contains_key(task)
-    }
-
     /// The input a task waits with, named after the revision that queued it: an identity of
     /// Alondra's own, never one of the SDK's.
     pub(super) fn next_input(&self, task: &TaskId) -> String {
@@ -234,7 +459,7 @@ impl DomainState {
 
     pub(super) fn lifecycle<'a>(&self, lifecycles: &'a mut Lifecycles, task: &TaskId) -> Result<&'a TaskLifecycle> {
         if !lifecycles.replayed.contains_key(task) {
-            let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("not_owned", format!("Task {task} has no lifecycle journal")))?;
+            let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
             lifecycles.replayed.insert(task.clone(), replay(task, journal)?);
         }
         Ok(&lifecycles.replayed[task])
@@ -250,14 +475,14 @@ impl DomainState {
         Ok(())
     }
 
-    /// A lifecycle decision on an owned task: the aggregate validates it, the journal keeps it and
+    /// A lifecycle decision on a task: the aggregate validates it, the journal keeps it and
     /// the task's DTO reads it, in one step. A refusal changes nothing.
     pub(super) fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
         self.lifecycle(lifecycles, task)?;
         let lifecycle = lifecycles.replayed.get_mut(task).expect("replayed above");
         let event = event(task, &record, lifecycle)?;
         lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?;
-        self.lifecycle_journal.get_mut(task).expect("owned").push(record);
+        self.lifecycle_journal.get_mut(task).expect("replayed above").push(record);
         let lifecycle = &lifecycles.replayed[task];
         self.materialize(task, lifecycle);
         Ok(())
@@ -268,7 +493,7 @@ impl DomainState {
     /// end of a task's node is recorded, the node and its start stay as history of the task.
     fn materialize(&mut self, task: &TaskId, lifecycle: &TaskLifecycle) {
         let phase = lifecycle.phase();
-        let t = self.tasks.get_mut(task).expect("an owned task exists");
+        let t = self.tasks.get_mut(task).expect("a task with a journal exists");
         let terminal = matches!(phase, TaskPhase::Completed | TaskPhase::Cancelled);
         if !terminal && t.wrap_up.node.is_none() {
             t.agent_id = lifecycle.execution().map(|stamp| stamp.node().clone());
@@ -284,11 +509,11 @@ impl DomainState {
         };
     }
 
-    /// What the store keeps no column for: the ending of every owned task, read from its journal.
-    /// The other lifecycle fields come from their columns and are checked by `validate_journal`.
+    /// What the store keeps no column for: the ending of every task, read from its journal. The
+    /// other lifecycle fields come from their columns and are checked by `validate_journal`.
     pub fn read_endings(&mut self) -> Result<()> {
-        let owned: Vec<TaskId> = self.lifecycle_journal.keys().cloned().collect();
-        for task in owned {
+        let tasks: Vec<TaskId> = self.lifecycle_journal.keys().cloned().collect();
+        for task in tasks {
             let lifecycle = replay(&task, &self.lifecycle_journal[&task])?;
             let t = self.tasks.get_mut(&task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
             t.ending = ending_of(&lifecycle);
@@ -296,8 +521,11 @@ impl DomainState {
         Ok(())
     }
 
-    /// Every owned task agrees with its journal: what a loaded state proves before it is used.
+    /// Every task has a journal and agrees with it: what a loaded state proves before it is used.
     pub fn validate_journal(&self) -> Result<()> {
+        if let Some(task) = self.tasks.keys().find(|task| !self.lifecycle_journal.contains_key(*task)) {
+            return Err(DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")));
+        }
         self.validate_lifecycles(self.lifecycle_journal.keys())
     }
 
@@ -305,7 +533,7 @@ impl DomainState {
     /// is refused. Checked for every task a transition touched.
     pub(super) fn validate_lifecycles<'a>(&self, tasks: impl Iterator<Item = &'a TaskId>) -> Result<()> {
         for task in tasks {
-            let Some(journal) = self.lifecycle_journal.get(task) else { continue };
+            let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
             let lifecycle = replay(task, journal)?;
             let t = self.tasks.get(task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
             if let Err(detail) = self.agrees(t, &lifecycle) {
@@ -373,15 +601,11 @@ impl DomainState {
 impl DomainState {
     /// A node takes the task: a new execution of its lifecycle, after releasing one it still had.
     pub(super) fn admit_node(&mut self, task: &TaskId, node: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
-        if !self.owned(task) {
-            self.tasks.get_mut(task).expect("the task exists").agent_id = Some(node.clone());
-            return Ok(());
-        }
         if self.lifecycle(lifecycles, task)?.execution().is_some() {
             let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
             self.decide(lifecycles, task, record)?;
         }
-        self.decide(lifecycles, task, LifecycleRecord::Admitted { node: node.clone() })?;
+        self.decide(lifecycles, task, LifecycleRecord::Admitted { node: node.clone(), execution: None })?;
         let running = self.agents.get(node).is_some_and(|agent| agent.phase.live() && !matches!(agent.phase, NodePhase::Starting { .. } | NodePhase::Lost));
         if running {
             self.decide(lifecycles, task, LifecycleRecord::ResourceAvailable)?;
@@ -389,14 +613,98 @@ impl DomainState {
         Ok(())
     }
 
+    /// The current SDK execution of `generation`: facts about another, or about one of the
+    /// `claude --bg` backend, are refused.
+    fn sdk_execution(&self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        let Some(stamp) = lifecycle.execution().filter(|stamp| stamp.generation() == generation) else {
+            return Err(DomainError::new("stale_execution", format!("Task {task} has no execution of generation {generation}")));
+        };
+        if stamp.host().as_str() == CLAUDE_BG_HOST {
+            return Err(DomainError::new("invalid_input", "The claude --bg backend reports its facts through its node"));
+        }
+        Ok(())
+    }
+
+    /// The root turn of the task's SDK execution ended. A result of the SDK is evidence, never
+    /// success: nothing is delivered, finished or released. When nothing explains what the task
+    /// does next (no work of its own, no continuation, no input waiting), the lifecycle requires
+    /// the card that asks the user how it goes on, and it is created in this same step.
+    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        let card = InteractionId(format!("{TURN_ENDED_PREFIX}{task}-{generation}-{turn}"));
+        if self.interactions.contains_key(&card) {
+            return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
+        }
+        self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone() })?;
+        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
+            let title = self.tasks[task].title.clone();
+            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, self.revision + 1));
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        }
+        Ok(())
+    }
+
+    /// The user answered `card`, one the lifecycle of the task requires: cancelling ends the
+    /// task, any other answer tells it how to go on. False for a card the lifecycle does not hold.
+    pub(super) fn answer_lifecycle_card(&mut self, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<bool> {
+        let Some(Scope::Task { task_id }) = self.interactions.get(card).map(|i| i.scope.clone()) else { return Ok(false) };
+        if !self.lifecycle_journal.contains_key(&task_id) || !self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, _)| *held == card) {
+            return Ok(false);
+        }
+        if option == CANCEL_TASK {
+            self.cancel(&task_id, effects, lifecycles)?;
+            return Ok(true);
+        }
+        let mut text = if option == CARRY_ON { CARRY_ON_INSTRUCTION.to_owned() } else { String::new() };
+        if let Some(written) = written.map(str::trim).filter(|written| !written.is_empty()) {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(written);
+        }
+        if text.is_empty() {
+            return Err(DomainError::new("invalid_input", "Tell the task how it goes on, or cancel it"));
+        }
+        let record = LifecycleRecord::Answered { card: card.clone(), input: self.next_input(&task_id), text: Some(text) };
+        self.decide(lifecycles, &task_id, record)?;
+        Ok(true)
+    }
+
+    /// The SDK host takes the task with an execution of its own, after releasing one it still had.
+    pub(super) fn admit_execution(&mut self, task: &TaskId, node: &AgentId, identity: ExecutionIdentity, lifecycles: &mut Lifecycles) -> Result<()> {
+        if identity.host == CLAUDE_BG_HOST {
+            return Err(DomainError::new("invalid_input", "An execution of the claude --bg backend is admitted by assigning its node"));
+        }
+        if self.lifecycle(lifecycles, task)?.execution().is_some() {
+            let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
+            self.decide(lifecycles, task, record)?;
+        }
+        self.decide(lifecycles, task, LifecycleRecord::Admitted { node: node.clone(), execution: Some(identity) })
+    }
+
+    /// What the SDK observed of the task's execution of `generation`, applied in order. Facts about
+    /// another execution, or about one of the `claude --bg` backend, are refused.
+    pub(super) fn record_runtime_facts(&mut self, task: &TaskId, generation: u64, facts: &[RuntimeObservation], lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        if facts.is_empty() {
+            return Err(DomainError::new("invalid_input", "An observation without facts records nothing"));
+        }
+        for fact in facts {
+            let record = match fact.clone() {
+                RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,
+                RuntimeObservation::TurnStarted { turn, input } => LifecycleRecord::TurnStarted { turn, input },
+                RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
+                RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
+                RuntimeObservation::WorkEnded { work, continuation } => LifecycleRecord::WorkEnded { work, continuation },
+            };
+            self.decide(lifecycles, task, record)?;
+        }
+        Ok(())
+    }
+
     /// The task's node is gone and left nothing behind: the task waits for another.
     pub(super) fn release(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        if !self.owned(task) {
-            let t = self.tasks.get_mut(task).expect("the task exists");
-            t.agent_id = None;
-            t.started = false;
-            return Ok(());
-        }
         let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
         self.decide(lifecycles, task, record)
     }
@@ -404,7 +712,7 @@ impl DomainState {
     /// A receipt of an ending task discharges what its ending still owes among `which`. A task
     /// that is not ending owes nothing yet.
     pub(super) fn drain(&mut self, task: &TaskId, lifecycles: &mut Lifecycles, which: impl Fn(&Drained) -> bool) -> Result<()> {
-        if !self.owned(task) || !self.tasks[task].ending() {
+        if !self.tasks[task].ending() {
             return Ok(());
         }
         let owed: Vec<Drained> = owed(self.lifecycle(lifecycles, task)?).into_iter().filter(|owed| which(owed)).collect();
@@ -415,11 +723,13 @@ impl DomainState {
     }
 
     /// The node ran with what it was given: its `claude --bg` process is up and its turn took
-    /// every input the task had queued for it. Known when the launcher reports the start, when a
+    /// every input the task had queued for it. An SDK execution reports its own facts instead. Known when the launcher reports the start, when a
     /// turn of the node begins and when the node delivers or has a delivery taken back.
     pub(super) fn node_has_run(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
-        if lifecycle.execution().is_none() || matches!(lifecycle.phase(), TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled) {
+        if lifecycle.execution().is_none_or(|stamp| stamp.host().as_str() != CLAUDE_BG_HOST)
+            || matches!(lifecycle.phase(), TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled)
+        {
             return Ok(());
         }
         if lifecycle.resource() == Some(ResourceEvidence::Reserved) {
@@ -460,11 +770,11 @@ impl DomainState {
         self.drain(task, lifecycles, |_| true)
     }
 
-    /// Every owned task whose final delivery settled with nothing left for the user, and whose
+    /// Every task whose final delivery settled with nothing left for the user, and whose
     /// node is over, is done now. One whose node still winds up stays delivered and closing.
     pub(super) fn finish_settled_deliveries(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
         let settled: Vec<TaskId> = self.tasks.values()
-            .filter(|t| !t.over() && !t.archived && self.owned(&t.id))
+            .filter(|t| !t.over() && !t.archived)
             .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t))
             .map(|t| t.id.clone())
             .collect();
@@ -474,9 +784,9 @@ impl DomainState {
         Ok(())
     }
 
-    /// The state of an owned task within the phase its lifecycle materialized: what it waits for
+    /// The state of a task within the phase its lifecycle materialized: what it waits for
     /// or who has to act. Never a phase change: no Done, Cancelled or Closing comes from here.
-    pub(super) fn owned_state(&self, t: &Task) -> TaskState {
+    pub(super) fn state_within_phase(&self, t: &Task) -> TaskState {
         match t.ending {
             Some(TaskEnding::Cancelling) => return TaskState::Closing,
             Some(TaskEnding::Completing) => {
@@ -509,6 +819,113 @@ impl DomainState {
         } else {
             TaskState::NotStarted
         }
+    }
+}
+
+/// What a task's columns show, for a journal that cannot be written for them.
+pub fn task_shape(task: &Task) -> String {
+    format!(
+        "state {:?}, {}, {}, {}",
+        task.state,
+        if task.started { "started" } else { "not started" },
+        if task.agent_id.is_some() { "with a node" } else { "without a node" },
+        if task.final_presentation.is_some() { "with a final delivery" } else { "without a final delivery" },
+    )
+}
+
+/// The shortest journal that leads to what a task's columns show, for a task kept before every
+/// task had one. Its inputs and executions are Alondra's own, of the `claude --bg` backend:
+/// nothing of the SDK is made up. A shape no journal leads to is refused.
+pub fn journal_for(task: &Task) -> Result<Vec<LifecycleRecord>> {
+    let refused = |detail: &str| DomainError::new("lifecycle_journal", format!(
+        "task {} has a shape no lifecycle journal leads to ({}){detail}", task.id, task_shape(task)));
+    let input = format!("input:{}:migrated", task.id);
+    let mut records = vec![LifecycleRecord::Planned { input: input.clone() }];
+    if let Some(node) = &task.agent_id {
+        records.push(LifecycleRecord::Admitted { node: node.clone(), execution: None });
+        if task.started {
+            records.push(LifecycleRecord::ResourceAvailable);
+            records.push(LifecycleRecord::TurnStarted { turn: format!("turn:{}:migrated", task.id), input });
+        }
+    } else if task.started && !task.state.terminal() {
+        return Err(refused(""));
+    }
+    let delivery = task.final_presentation.clone();
+    let ending = match task.state {
+        TaskState::Done => {
+            let delivery = delivery.ok_or_else(|| refused(""))?;
+            records.push(LifecycleRecord::Presented { delivery: delivery.clone() });
+            records.push(LifecycleRecord::Accepted { delivery });
+            Some(TaskEnding::Completing)
+        }
+        TaskState::Cancelled => Some(TaskEnding::Cancelling),
+        TaskState::ForYourReview | TaskState::AwaitingBlocker | TaskState::Closing => {
+            records.push(LifecycleRecord::Presented { delivery: delivery.ok_or_else(|| refused(""))? });
+            None
+        }
+        TaskState::NotStarted | TaskState::Running | TaskState::NeedsYou | TaskState::WaitingDependency => {
+            if let Some(delivery) = delivery {
+                records.push(LifecycleRecord::Presented { delivery });
+            }
+            None
+        }
+    };
+    if let Some(intent) = ending {
+        records.push(LifecycleRecord::Finished { intent, cleanup: format!("cleanup:{}:migrated", task.id), post_merge: None });
+        let lifecycle = replay(&task.id, &records).map_err(|error| refused(&format!(": {}", error.message)))?;
+        records.extend(owed(&lifecycle).into_iter().map(|obligation| LifecycleRecord::Drained { obligation }));
+    }
+    replay(&task.id, &records).map_err(|error| refused(&format!(": {}", error.message)))?;
+    Ok(records)
+}
+
+#[cfg(test)]
+impl DomainState {
+    /// A state built by hand, as if it had been migrated: every task without a journal gets the one
+    /// its columns lead to. False when a task has a shape no journal leads to.
+    pub(crate) fn journal_every_task(&mut self) -> bool {
+        let unjournaled: Vec<TaskId> = self.tasks.keys().filter(|id| !self.lifecycle_journal.contains_key(*id)).cloned().collect();
+        for id in unjournaled {
+            let Ok(records) = journal_for(&self.tasks[&id]) else { return false };
+            self.lifecycle_journal.insert(id, records);
+        }
+        self.read_endings().is_ok() && self.validate_journal().is_ok()
+    }
+}
+
+/// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
+/// explains its next step.
+pub const TURN_ENDED_PREFIX: &str = "turn-ended-";
+/// The option of such a card that ends the task.
+pub const CANCEL_TASK: &str = "cancel_task";
+pub const CANCEL_TASK_LABEL: &str = "Cancel the task";
+const CANCEL_TASK_MEANS: &str = "The task ends and its execution is closed";
+const CARRY_ON_INSTRUCTION: &str = "Go on with your task: deliver your result, or ask the user through a card when you need them.";
+const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.";
+
+fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+    let need = clip(&format!("“{title}” stopped without delivering or asking: tell it how to go on"), CardSpec::NEED_MAX);
+    Interaction {
+        attachments: vec![],
+        id,
+        scope: Scope::Task { task_id: task.clone() },
+        author: Author::System,
+        recipient: Recipient::User,
+        body: need.clone(),
+        blocking: true,
+        subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![
+                QuestionOption { id: CARRY_ON.into(), label: CARRY_ON_LABEL.into(), description: Some(CARRY_ON_MEANS.into()) },
+                QuestionOption { id: CANCEL_TASK.into(), label: CANCEL_TASK_LABEL.into(), description: Some(CANCEL_TASK_MEANS.into()) },
+            ],
+            answer: None,
+        },
+        revision,
+        order: revision,
+        withdrawn: false,
+        card: CardSpec::new(CardKind::Decide, need).why(TURN_ENDED_WHY),
+        clarification: None,
     }
 }
 

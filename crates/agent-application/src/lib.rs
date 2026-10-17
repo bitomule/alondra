@@ -23,7 +23,7 @@
 //! ```compile_fail,E0432
 //! use alondra_agent_application::WorkerController;
 //! ```
-use alondra_domain::{Event, RuntimeFact, Trigger};
+use alondra_domain::{RuntimeFact, Trigger, TurnId};
 use alondra_foundation::{ExecutionStamp, InputId};
 use alondra_provider_contract::{
     Adapter, AdapterError, Invocation, Observation, Operation, OrderedObservation,
@@ -209,8 +209,16 @@ pub fn invocation(attempt: &DispatchAttempt) -> Invocation<'_> {
         placement: attempt.placement(),
     }
 }
-fn domain_fact(fact: &Observation) -> Result<RuntimeFact> {
-    Ok(match fact {
+/// A normalized fact for the domain to record. The end of the root turn carries no card: which
+/// card it requires, if any, is the domain's decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObservedFact {
+    Runtime(RuntimeFact),
+    TurnEnded(TurnId),
+}
+
+fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
+    Ok(ObservedFact::Runtime(match fact {
         Observation::Available => RuntimeFact::ResourceAvailable,
         Observation::TurnStarted { input, turn } => RuntimeFact::TurnStarted {
             turn: turn.clone(),
@@ -227,14 +235,51 @@ fn domain_fact(fact: &Observation) -> Result<RuntimeFact> {
             work: work.clone(),
             continuation: continuation.clone(),
         },
-        Observation::TurnEnded { .. }
-        | Observation::TransportLost
-        | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
-    })
+        Observation::TurnEnded { turn } => return Ok(ObservedFact::TurnEnded(turn.clone())),
+        Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
+    }))
 }
 
-/// Stages only technical facts. The real database owner commits and later decides when to ACK.
-/// Terminal observations return RequiresDomainCommand before any acknowledgement can be issued.
+/// An accepted observation whose normalized facts the domain still has to record. It exists only
+/// after the raw evidence, its owner, binding and cursor were checked and its checkpoint staged;
+/// the owner records its facts through a domain command and then settles it, once. Until it is
+/// settled the transaction cannot commit.
+/// ```compile_fail,E0277
+/// fn duplicate<T: Clone>() {}
+/// duplicate::<alondra_agent_application::PendingObservation>();
+/// ```
+#[derive(Debug)]
+#[must_use = "an accepted observation must be settled, or its transaction cannot commit"]
+pub struct PendingObservation {
+    acceptance: ObservationAcceptance,
+    execution: ExecutionStamp,
+    cursor: u64,
+    facts: Vec<ObservedFact>,
+}
+impl PendingObservation {
+    pub fn acceptance(&self) -> ObservationAcceptance {
+        self.acceptance
+    }
+    pub fn execution(&self) -> &ExecutionStamp {
+        &self.execution
+    }
+    /// The facts the domain records, in order. A duplicate of an observation already recorded has
+    /// none: they were recorded with it.
+    pub fn facts(&self) -> &[ObservedFact] {
+        &self.facts
+    }
+    /// The domain recorded every fact: the task's runtime moved by exactly that many.
+    pub fn settle(self, transaction: &mut LifecycleTransaction<'_>) -> Result<ObservationAcceptance> {
+        if self.acceptance == ObservationAcceptance::Accepted {
+            transaction.settle_observation(&self.execution, self.cursor, self.facts.len())?;
+        }
+        Ok(self.acceptance)
+    }
+}
+
+/// Accepts the raw observation and stages its checkpoint; the facts it was normalized to are the
+/// domain's to record. A lost transport or a released resource returns RequiresDomainCommand
+/// before anything else: the domain does not record them yet.
 /// The owner must abort the whole transaction on error; this helper stages no independent commit.
 pub fn stage_observation<N: ObservationNormalizer>(
     transaction: &mut LifecycleTransaction<'_>,
@@ -242,7 +287,7 @@ pub fn stage_observation<N: ObservationNormalizer>(
     owner_generation: u64,
     batch: &OrderedObservation,
     normalizer: &N,
-) -> Result<ObservationAcceptance> {
+) -> Result<PendingObservation> {
     transaction.inspect(|| {
         if batch.evidence.is_empty() || batch.evidence.len() > 1_048_576 {
             return Err(Error::ObservationCapacity);
@@ -261,8 +306,9 @@ pub fn stage_observation<N: ObservationNormalizer>(
         batch.cursor,
         transaction.inspect(|| CommandEvidence::new(batch.evidence.clone()))?,
     )?;
+    let mut facts = vec![];
     if acceptance == ObservationAcceptance::Accepted {
-        let (previous, facts, checkpoint) = transaction.inspect(|| {
+        let (previous, normalized, checkpoint) = transaction.inspect(|| {
             let metadata = ObservationMetadata {
                 transaction,
                 execution: &batch.execution,
@@ -277,30 +323,7 @@ pub fn stage_observation<N: ObservationNormalizer>(
                 .collect::<Result<Vec<_>>>()?;
             Ok::<_, Error>((previous, facts, normalized.checkpoint))
         })?;
-        for (index, fact) in facts.into_iter().enumerate() {
-            let (revision, cursor) = transaction.inspect(|| {
-                let aggregate = transaction.load(batch.execution.task())?;
-                let cursor = aggregate
-                    .cursor()
-                    .and_then(|cursor| cursor.checked_add(1))
-                    .ok_or(alondra_store::Error::InvalidInput)?;
-                Ok::<_, Error>((aggregate.revision(), cursor))
-            })?;
-            transaction.apply(
-                batch.execution.task(),
-                revision,
-                &format!(
-                    "adapter-{}-{}-{index}",
-                    batch.execution.generation(),
-                    batch.cursor
-                ),
-                Event::Runtime {
-                    stamp: batch.execution.clone(),
-                    cursor,
-                    fact,
-                },
-            )?;
-        }
+        facts = normalized;
         transaction.put_normalization_checkpoint(
             &batch.execution,
             batch.cursor,
@@ -315,6 +338,11 @@ pub fn stage_observation<N: ObservationNormalizer>(
         {
             return Err(alondra_store::Error::CheckpointConflict.into());
         }
-        Ok(acceptance)
+        Ok(PendingObservation {
+            acceptance,
+            execution: batch.execution.clone(),
+            cursor: batch.cursor,
+            facts,
+        })
     })
 }

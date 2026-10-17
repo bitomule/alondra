@@ -842,6 +842,6 @@ async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receip
     assert!(rig.domain.store.lock().unwrap().launch_queue().unwrap().iter().all(|row| row.task_id.0 != "u"));
     assert_eq!(rig.task().state, TaskState::NotStarted, "the other task is untouched");
     let journal: i64 = rig.domain.store.lock().unwrap().conn_for_test()
-        .query_row("SELECT count(*) FROM task_lifecycle_journal WHERE task_id='u'", [], |row| row.get(0)).unwrap();
-    assert_eq!(journal, 3, "planned, finished, drained: the receipt came with the commit that cancelled it");
+        .query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='u'", [], |row| row.get(0)).unwrap();
+    assert_eq!(journal, 2, "finished and drained after the plan: the receipt came with the commit that cancelled it");
 }

@@ -8,6 +8,7 @@ mod live_read_trace;
 mod owner;
 pub(crate) use owner::{OwnerTransaction, StagedOutcome};
 pub(crate) mod model_metrics;
+mod lifecycle_migration;
 mod repository;
 
 use alondra_core::domain::*;
@@ -18,7 +19,9 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
+/// The schema before every task's lifecycle moved into the store's journal: opening it migrates it.
+pub(crate) const PREVIOUS_SCHEMA_VERSION: i64 = 4;
 pub(crate) const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEDULE_LAUNCH_TRANSITION: &str = include_str!("domain_store/schedule_launch_transition.sql");
@@ -117,15 +120,6 @@ const REQUEST_PLANS: &str = "CREATE TABLE IF NOT EXISTS request_plans(\
 const PLAN_REVIEWS: &str = "CREATE TABLE IF NOT EXISTS plan_reviews(\
  interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
  review TEXT NOT NULL CHECK(json_valid(review)));";
-/// The decisions that moved each task's lifecycle, in order, for the tasks created since the
-/// journal exists: the only source of a task's lifecycle; its `tasks` columns are read from the
-/// replay and checked against it. Append-only; created on every open like plan_reviews. Phase 3c
-/// moves it to the store's journal format with a reviewed migration.
-const TASK_LIFECYCLE_JOURNAL: &str = "CREATE TABLE IF NOT EXISTS task_lifecycle_journal(\
- task_id TEXT NOT NULL REFERENCES tasks(id),\
- seq INTEGER NOT NULL CHECK(seq>=0),\
- record TEXT NOT NULL CHECK(json_valid(record)),\
- PRIMARY KEY(task_id, seq));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
 /// since when. See docs/fleet-pacing.md.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
@@ -432,12 +426,23 @@ impl DomainStore {
     /// revision: the history a long-lived domain carries.
     #[cfg(test)]
     pub(crate) fn add_task_history(&mut self, tasks: usize, steps: usize) {
-        let tx = self.conn.transaction().unwrap();
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred).unwrap();
         let request: String = tx.query_row("SELECT id FROM requests LIMIT 1", [], |row| row.get(0)).unwrap();
+        let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn).unwrap()).unwrap();
+        let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope).unwrap();
         for task in 0..tasks {
-            tx.execute("INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES(?1,?2,?1,'done',0,1,1,1)",
-                params![format!("finished-{task}"), request]).unwrap();
+            let id = TaskId::from(format!("finished-{task}").as_str());
+            self.conn.execute("INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES(?1,?2,?1,'cancelled',0,0,1,1)",
+                params![id.0, request]).unwrap();
+            let mut records = vec![
+                LifecycleRecord::Planned { input: format!("input:{id}:history") },
+                LifecycleRecord::Finished { intent: TaskEnding::Cancelling, cleanup: format!("cleanup:{id}:history"), post_merge: None },
+            ];
+            records.extend(owed(&replay(&id, &records).unwrap()).into_iter().map(|obligation| LifecycleRecord::Drained { obligation }));
+            repository::save_journal(&mut journal, &id, &records, 0).unwrap();
         }
+        journal.commit().unwrap();
+        let tx = self.conn.transaction().unwrap();
         let tasks = tx.prepare("SELECT id FROM tasks").unwrap()
             .query_map([], |row| row.get::<_, String>(0)).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap();
@@ -516,12 +521,17 @@ impl DomainStore {
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
-        let (mut conn, _) = connection::open(path)?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (conn, database) = connection::open(path)?;
+        let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if found == PREVIOUS_SCHEMA_VERSION {
+            lifecycle_migration::keep_copy(&conn, &database)?;
+        }
+        let mut tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version == 0 || version == SCHEMA_VERSION,
+        ensure!(version == 0 || version == SCHEMA_VERSION || version == PREVIOUS_SCHEMA_VERSION,
             "unsupported domain database schema {version}; this build requires {SCHEMA_VERSION}; database preserved at {}",
             path.display());
+        ensure!(version == found, "the domain database changed while it was being opened");
         let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
         if version == 0 {
             let existing: i64 = tx.query_row(
@@ -536,6 +546,7 @@ impl DomainStore {
             tx.execute_batch(SCHEMA)?;
             tx.execute("INSERT INTO domain_meta(singleton,data_epoch,revision,orchestrator_generation) VALUES(1,?1,0,0)",[crate::auth::random_hex(32)])?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+            alondra_store::LifecycleTransaction::install(&mut tx)?;
         } else {
             ensure!(
                 application == APPLICATION_ID,
@@ -570,7 +581,6 @@ impl DomainStore {
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;
-        tx.execute_batch(TASK_LIFECYCLE_JOURNAL)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;
@@ -597,7 +607,12 @@ impl DomainStore {
         // never dispatches the same run again solely because the daemon reopened.
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
-        tx.commit()?;
+        if version == PREVIOUS_SCHEMA_VERSION {
+            lifecycle_migration::migrate(&conn, tx)
+                .with_context(|| format!("the domain database at {} keeps schema {version}: moving its tasks into the lifecycle journal failed", path.display()))?;
+        } else {
+            tx.commit()?;
+        }
         let store = Self::from_connection(conn);
         store.integrity_check()?;
         store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
@@ -753,13 +768,14 @@ impl DomainStore {
         fill_revision: bool,
         attached: Attached<'_>,
     ) -> std::result::Result<Commit, StoreError> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let staged = command::stage(
-            &tx, &self.cached, actor, envelope, transport, fill_revision, attached,
-        )?;
-        tx.commit()?;
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn)?)?;
+        let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope)?;
+        let (conn, cached) = (&self.conn, &self.cached);
+        let staged = journal.inspect_mut(|journal| {
+            command::stage(conn, cached, actor, envelope, transport, fill_revision, attached, journal)
+        })?;
+        journal.commit()?;
         #[cfg(test)]
         if !staged.commit.replayed && let Some(hook) = &mut self.after_commit {
             hook();
@@ -779,6 +795,10 @@ fn history_summary(command: &Command) -> String {
     words.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().chars().take(200).collect()
 }
 
+fn epoch_of(conn: &Connection) -> Result<alondra_foundation::DataEpoch> {
+    let epoch: String = conn.query_row("SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |r| r.get(0))?;
+    Ok(alondra_foundation::DataEpoch(epoch))
+}
 fn check_schema(conn: &Connection) -> Result<()> {
     ensure!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? == SCHEMA_VERSION

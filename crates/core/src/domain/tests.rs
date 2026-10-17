@@ -33,8 +33,13 @@ fn receipt(s: &mut DomainState, task: &str) {
     exec(s, Actor::System, command).unwrap();
 }
 /// A task an older daemon created before the lifecycle journal: the old writers still move it.
-fn legacy(s: &mut DomainState, task: &str) {
+/// The state an older daemon left, as the migration journals it: the task's columns say `state`.
+/// A done task always kept its final delivery, so one is presented first.
+fn left_by_an_older_daemon(s: &mut DomainState, task: &str, state: TaskState) {
+    let t = s.tasks.get_mut(&task.into()).unwrap();
+    t.state = state;
     s.lifecycle_journal.remove(&TaskId::from(task));
+    assert!(s.journal_every_task(), "the migration journals the task");
 }
 /// The task waits in Closing for its node; Alondra records the node closed and the task is done.
 fn end_node(s: &mut DomainState, task: &str) {
@@ -2903,9 +2908,12 @@ fn variant_index(c: &Command) -> usize {
         Command::SettleSuggestion { .. } => 62,
         Command::RecordTaskCleanup { .. } => 64,
         Command::SettlePlanReview { .. } => 63,
+        Command::AdmitExecution { .. } => 65,
+        Command::RecordRuntimeFacts { .. } => 66,
+        Command::RecordTurnBoundary { .. } => 67,
     }
 }
-const COMMAND_KINDS: usize = 65;
+const COMMAND_KINDS: usize = 68;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3027,6 +3035,10 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
+        (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
+            instance: "instance".into(), host: "sdk-host".into() }, false),
+        (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
+        (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3719,16 +3731,6 @@ fn a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it() {
     assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::Running, true, Some("a".into())));
 }
 #[test]
-fn a_task_an_older_daemon_left_in_progress_with_no_node_is_released_for_the_fleet() {
-    let mut s = fixture();
-    legacy(&mut s, "t");
-    let t = s.tasks.get_mut(&"t".into()).unwrap();
-    (t.started, t.agent_id, t.state) = (true, None, TaskState::Running);
-    exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "in progress with no node".into() }).unwrap();
-    let t = &s.tasks[&"t".into()];
-    assert_eq!((t.state, t.started), (TaskState::NotStarted, false), "the repair leaves it for the fleet");
-}
-#[test]
 fn the_orchestrator_cannot_give_a_node_a_second_task() {
     let mut s = fixture();
     accept_text(&mut s);
@@ -4019,13 +4021,15 @@ fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_
 #[test]
 fn a_notice_left_for_a_cancelled_task_is_taken_away() {
     let mut s = fixture();
-    legacy(&mut s, "t");
+    present(&mut s, "final", text());
     ask_aside(&mut s, "q");
-    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
+    left_by_an_older_daemon(&mut s, "t", TaskState::Done);
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice));
-    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Cancelled;
+    s.tasks.get_mut(&"t".into()).unwrap().final_presentation = None;
+    left_by_an_older_daemon(&mut s, "t", TaskState::Cancelled);
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!pending(&s, &notice));
 }
@@ -4033,9 +4037,10 @@ fn a_notice_left_for_a_cancelled_task_is_taken_away() {
 #[test]
 fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
     let mut s = fixture();
-    legacy(&mut s, "t");
+    present(&mut s, "final", text());
     hold_plan(&mut s, "plan");
-    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
+    left_by_an_older_daemon(&mut s, "t", TaskState::Done);
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(s.interactions[&"plan".into()].withdrawn);
     assert!(notices(&s).is_empty());
@@ -4044,9 +4049,10 @@ fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
 #[test]
 fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     let mut s = fixture();
-    legacy(&mut s, "t");
+    present(&mut s, "final", text());
     ask_aside(&mut s, "q");
-    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
+    left_by_an_older_daemon(&mut s, "t", TaskState::Done);
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));

@@ -14,9 +14,12 @@ pub use commit_seals::{CommittedCommand, CommittedObservation};
 mod journal_format;
 mod persistence;
 mod provider_binding;
+mod read;
+pub use read::{JournalTask, read_journal};
 
 use alondra_domain::{
-    Event, ExecutionStamp, InputId, Refusal, ResourceEvidence, TaskLifecycle, TaskPhase, WaitReason,
+    CLAUDE_BG_HOST, Event, ExecutionStamp, InputId, Refusal, ResourceEvidence, TaskLifecycle, TaskPhase,
+    WaitReason,
 };
 use alondra_foundation::{DataEpoch, Revision, TaskId};
 use alondra_provider_contract::{Capability, Placement, ProviderBinding};
@@ -57,6 +60,11 @@ pub enum Error {
     OfferOrder,
     UnresolvedDispatch,
     InvalidCard,
+    /// An execution of the `claude --bg` backend, or an input Alondra delivers there without text:
+    /// nothing reaches them through the SDK.
+    NotDispatchable,
+    /// An accepted observation whose facts the domain has not recorded yet.
+    UnsettledObservation,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -464,10 +472,85 @@ impl<'connection> LifecycleTransaction<'connection> {
             Ok(())
         })
     }
+    /// A task whose inputs the `claude --bg` backend receives from Alondra itself: the journal
+    /// keeps their identity and no text, so the SDK can never dispatch them.
+    pub fn create_without_text(&mut self, task: &TaskId, initial: InputId) -> Result<()> {
+        staging!(self, {
+            identity(&task.0)?;
+            identity(initial.as_str())?;
+            let _ = TaskLifecycle::planned(task.clone(), initial.clone())?;
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute(
+                "INSERT INTO lifecycle_tasks(task_id,epoch,initial_input,revision) VALUES(?1,?2,?3,0)",
+                params![task.0, self.scope.epoch.0, initial.as_str()],
+            )?;
+            savepoint.execute(
+                "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,NULL)",
+                params![task.0, initial.as_str()],
+            )?;
+            savepoint.commit()?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
+    pub fn put_input_without_text(&mut self, task: &TaskId, input: &InputId) -> Result<()> {
+        staging!(self, {
+            identity(input.as_str())?;
+            self.load(task)?;
+            let existing: Option<Option<String>> = self
+                .transaction
+                .query_row(
+                    "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
+                    params![task.0, input.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match existing {
+                Some(Some(_)) => return Err(Error::InputConflict),
+                Some(None) => {}
+                None => {
+                    self.transaction.execute(
+                        "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,NULL)",
+                        params![task.0, input.as_str()],
+                    )?;
+                }
+            }
+            self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
+    /// The text an SDK execution is sent for an input the domain named without one: given once,
+    /// only to an input the current SDK execution has pending, and never changed after.
+    pub fn give_input_text(&mut self, task: &TaskId, input: InputPayload) -> Result<()> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            through_sdk(stamp)?;
+            if !aggregate.pending_inputs().contains(&&input.id) {
+                return Err(Error::MissingInput);
+            }
+            let changed = self.transaction.execute(
+                "UPDATE lifecycle_inputs SET body=?3 WHERE task_id=?1 AND input_id=?2 AND body IS NULL",
+                params![task.0, input.id.as_str(), input.text],
+            )?;
+            if changed != 1 {
+                let kept: Option<String> = self.transaction.query_row(
+                    "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
+                    params![task.0, input.id.as_str()],
+                    |row| row.get(0),
+                )?;
+                if kept.as_deref() != Some(input.text.as_str()) {
+                    return Err(Error::InputConflict);
+                }
+            }
+            self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
     pub fn put_input(&mut self, task: &TaskId, input: InputPayload) -> Result<()> {
         staging!(self, {
             self.load(task)?;
-            let existing: Option<String> = self
+            let existing: Option<Option<String>> = self
                 .transaction
                 .query_row(
                     "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
@@ -476,7 +559,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 )
                 .optional()?;
             if let Some(existing) = existing {
-                if existing != input.text {
+                if existing.as_deref() != Some(input.text.as_str()) {
                     return Err(Error::InputConflict);
                 }
             } else {
@@ -575,6 +658,7 @@ impl<'connection> LifecycleTransaction<'connection> {
         staging!(self, {
             let aggregate = self.load(task)?;
             let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            through_sdk(stamp)?;
             let savepoint = self.transaction.savepoint()?;
             provider_binding::activate_initial(&savepoint, binding)?;
             provider_binding::bind(&savepoint, stamp, binding)?;
@@ -687,6 +771,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 .copied()
                 .ok_or(Error::MissingInput)?;
             let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            through_sdk(stamp)?;
             let savepoint = self.transaction.savepoint()?;
             provider_binding::activate_initial(&savepoint, binding)?;
             provider_binding::bind(&savepoint, stamp, binding)?;
@@ -703,6 +788,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 return Err(Error::MissingInput);
             }
             let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            through_sdk(stamp)?;
             let binding = provider_binding::for_execution(&self.transaction, stamp)?;
             provider_binding::require_active(&self.transaction, &binding)?;
             if !binding.permits(Capability::OfferInput) {
@@ -1068,7 +1154,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             if next_offer(&self.transaction, &aggregate)?.map(|(id, _)| id) != Some(permit.id) {
                 return Err(Error::OfferOrder);
             }
-            let record: Option<(String, Option<String>, Option<String>, String, String)> = self.transaction.query_row(
+            let record: Option<(String, Option<String>, Option<String>, Option<String>, String)> = self.transaction.query_row(
                 "SELECT d.kind,d.placement_kind,d.placement,i.body,d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.id=?1 AND d.task_id=?2 AND d.generation=?3 AND d.input_id=?4",
                 params![permit.id, permit.stamp.task().0, crate::sql_number(permit.stamp.generation())?, permit.input.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
             let (kind, placement_kind, placement_value, text, status) =
@@ -1083,7 +1169,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             {
                 return Err(Error::StalePermit);
             }
-            let input = InputPayload::new(permit.input, text)?;
+            let input = InputPayload::new(permit.input, text.ok_or(Error::NotDispatchable)?)?;
             let payload = match (kind.as_str(), placement_kind.as_deref(), placement_value) {
                 ("launch", Some("local"), Some(directory)) => {
                     require_directory(&self.transaction, permit.stamp.task(), &directory)?;
@@ -1168,7 +1254,10 @@ impl<'connection> LifecycleTransaction<'connection> {
             for task in &self.touched {
                 let aggregate = self.load(task)?;
                 persistence::require_inputs(&self.transaction, &aggregate)?;
-                persistence::require_intents(&self.transaction, &aggregate)?;
+                let sdk = aggregate.execution().is_some_and(|stamp| through_sdk(stamp).is_ok());
+                if sdk {
+                    persistence::require_intents(&self.transaction, &aggregate)?;
+                }
                 if matches!(
                     aggregate.phase(),
                     TaskPhase::Completed | TaskPhase::Cancelled
@@ -1176,7 +1265,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 {
                     return Err(Error::UnresolvedDispatch);
                 }
-                if !dispatchable(&aggregate) {
+                if !sdk || !dispatchable(&aggregate) {
                     continue;
                 }
                 let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
@@ -1208,6 +1297,12 @@ impl<'connection> LifecycleTransaction<'connection> {
     }
 }
 
+fn through_sdk(stamp: &ExecutionStamp) -> Result<()> {
+    if stamp.host().as_str() == CLAUDE_BG_HOST {
+        return Err(Error::NotDispatchable);
+    }
+    Ok(())
+}
 fn identity(value: &str) -> Result<()> {
     if value.trim().is_empty() || value.len() > 256 || value.contains('\0') {
         Err(Error::InvalidInput)
@@ -1408,7 +1503,7 @@ impl CommandEvidence {
         &self.0
     }
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObservationAcceptance {
     Accepted,
     Duplicate,

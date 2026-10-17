@@ -513,6 +513,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }
         | Command::RecordTaskCleanup { task_id }
+        | Command::AdmitExecution { task_id, .. }
+        | Command::RecordRuntimeFacts { task_id, .. }
+        | Command::RecordTurnBoundary { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }

@@ -677,7 +677,8 @@ fn last_hand_back(feedback: &[Feedback]) -> Option<&Feedback> {
 
 /// Every button any test projects on a valid state is also judged by running its command on a
 /// copy: the guard must refuse exactly what the command refuses, with the same reason. A state
-/// built by hand that breaks the domain's invariants refuses every command, so it says nothing.
+/// built by hand gets the journal its columns lead to first; one that breaks the domain's
+/// invariants, or that no journal leads to, refuses every command, so it says nothing.
 #[cfg(test)]
 pub(super) fn assert_guard_matches_execution(
     state: &DomainState,
@@ -688,7 +689,11 @@ pub(super) fn assert_guard_matches_execution(
     if state.validate().is_err() || state.validate_nodes().is_err() {
         return;
     }
-    let executed = state.preview(actor, envelope).err();
+    let mut journaled = state.clone();
+    if !journaled.journal_every_task() {
+        return;
+    }
+    let executed = journaled.preview(actor, envelope).err();
     assert_eq!(
         guarded,
         executed.as_ref(),

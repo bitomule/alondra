@@ -87,8 +87,7 @@ impl DomainState {
         if dependents.is_empty() {
             return Ok(());
         }
-        let held: Vec<TaskId> = dependents.iter().filter(|t| self.owned(t)).cloned().collect();
-        for dependent in &held {
+        for dependent in &dependents {
             self.decide(lifecycles, dependent, LifecycleRecord::HeldForPlanReview { review: answered.clone() })?;
         }
         self.plan_reviews.insert(answered.clone(), PlanReview {
@@ -147,7 +146,7 @@ impl DomainState {
     /// Once a review holds nothing, the problem raised about it no longer asks anything.
     fn settle_held(&mut self, review_id: &InteractionId, task_id: &TaskId, outcome: PlanReviewOutcome, lifecycles: &mut Lifecycles) -> Result<()> {
         let at_revision = self.revision + 1;
-        if self.owned(task_id) && self.lifecycle(lifecycles, task_id)?.plan_reviews().iter().any(|(held, _)| *held == review_id) {
+        if self.lifecycle(lifecycles, task_id)?.plan_reviews().iter().any(|(held, _)| *held == review_id) {
             let settled = match &outcome {
                 PlanReviewOutcome::Unchanged { .. } => ReviewOutcome::Unchanged,
                 PlanReviewOutcome::PlanChanged { .. } => ReviewOutcome::PlanChanged,

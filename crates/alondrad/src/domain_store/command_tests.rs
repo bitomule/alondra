@@ -1,6 +1,13 @@
 use super::*;
 use crate::domain_store::tests::{Fixture, seeded};
 
+/// The journal over a new transaction on the store's connection, as every write path opens it.
+fn journal(store: &DomainStore) -> alondra_store::LifecycleTransaction<'_> {
+    let transaction = rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let scope = alondra_store::AuthorityScope::new(epoch_of(&store.conn).unwrap()).unwrap();
+    alondra_store::LifecycleTransaction::attach(transaction, scope).unwrap()
+}
+
 fn user() -> Actor {
     Actor::User {
         user_id: "transaction-user".into(),
@@ -58,30 +65,6 @@ fn counts(connection: &Connection) -> [i64; 5] {
 }
 
 #[test]
-fn command_staging_refuses_autocommit_before_any_write() {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    seeded(&mut store);
-    let envelope = information(&mut store);
-    let before = counts(&store.conn);
-    let cached = Arc::clone(&store.cached.as_ref().unwrap().state);
-    let error = stage(
-        &store.conn,
-        &store.cached,
-        &Actor::System,
-        &envelope,
-        None,
-        false,
-        Attached::None,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("requires an active transaction"));
-    assert!(store.conn.is_autocommit());
-    assert_eq!(counts(&store.conn), before);
-    assert!(Arc::ptr_eq(&store.cached.as_ref().unwrap().state, &cached));
-}
-
-#[test]
 fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -90,8 +73,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
     let before = store.load().unwrap();
     let reader = Connection::open(fixture.path()).unwrap();
     let before_counts = counts(&reader);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
         &store.cached,
@@ -99,7 +81,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
         &envelope,
         Some(("phone", "transaction-op", &[7; 32])),
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert!(!staged.commit.replayed);
@@ -145,8 +127,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     let reader = Connection::open(fixture.path()).unwrap();
     let before = counts(&reader);
     let cached = Arc::clone(&store.cached.as_ref().unwrap().state);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
         &store.cached,
@@ -154,7 +135,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
         &envelope,
         Some(("phone", "replayed-op", &[2; 32])),
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert!(staged.commit.replayed);
@@ -163,11 +144,10 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     assert_eq!(counts(&reader), before);
     assert!(!store.conn.is_autocommit());
     assert!(Arc::ptr_eq(&store.cached.as_ref().unwrap().state, &cached));
-    transaction.rollback().unwrap();
+    drop(transaction);
     assert_eq!(counts(&reader), before);
     assert_eq!(store.load().unwrap(), first.state);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     let transported = stage(
         &store.conn,
         &store.cached,
@@ -175,7 +155,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
         &envelope,
         Some(("phone", "first-op", &[1; 32])),
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert!(transported.commit.replayed);
@@ -202,19 +182,18 @@ fn rejected_command_leaves_the_callers_transaction_owned_and_rollbackable() {
         .unwrap();
     let reader = Connection::open(fixture.path()).unwrap();
     let before = counts(&reader);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     store
         .conn
         .execute("INSERT INTO command_outer_witness VALUES(1)", [])
         .unwrap();
     assert!(
-        matches!(stage(&store.conn, &store.cached, &user(), &envelope, None, false, Attached::None), Err(StoreError::Domain(error)) if error.code == "stale_revision")
+        matches!(stage(&store.conn, &store.cached, &user(), &envelope, None, false, Attached::None, &mut transaction), Err(StoreError::Domain(error)) if error.code == "stale_revision")
     );
     assert!(!store.conn.is_autocommit());
     assert_eq!(rows(&store.conn, "command_outer_witness"), 1);
     assert_eq!(rows(&reader, "command_outer_witness"), 0);
-    transaction.rollback().unwrap();
+    drop(transaction);
     assert_eq!(rows(&reader, "command_outer_witness"), 0);
     assert_eq!(counts(&reader), before);
 }
@@ -229,8 +208,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
     let reader = Connection::open(fixture.path()).unwrap();
     let before = counts(&reader);
     let cached = Arc::clone(&store.cached.as_ref().unwrap().state);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     let error = stage(
         &store.conn,
         &store.cached,
@@ -238,7 +216,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
         &envelope,
         None,
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap_err();
     assert!(error.to_string().contains("fixture receipt refusal"));
@@ -251,7 +229,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
     assert!(!store.conn.is_autocommit());
     assert_eq!(counts(&reader), before);
     assert!(Arc::ptr_eq(&store.cached.as_ref().unwrap().state, &cached));
-    transaction.rollback().unwrap();
+    drop(transaction);
     assert_eq!(counts(&reader), before);
     assert_eq!(store.load().unwrap(), cached);
 }
@@ -264,8 +242,7 @@ fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
     let envelope = information(&mut store);
     let reader = Connection::open(fixture.path()).unwrap();
     let before = counts(&reader);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     assert!(
         rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).is_err()
     );
@@ -277,12 +254,12 @@ fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
         &envelope,
         None,
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert!(!staged.commit.replayed);
     assert_eq!(counts(&reader), before);
-    transaction.rollback().unwrap();
+    drop(transaction);
     assert_eq!(counts(&reader), before);
 }
 
@@ -295,8 +272,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     let before = store.load().unwrap();
     let reader = Connection::open(fixture.path()).unwrap();
     let before_counts = counts(&reader);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     let first = stage(
         &store.conn,
         &store.cached,
@@ -304,7 +280,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
         &first_envelope,
         None,
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     let mut second_envelope = first_envelope.clone();
@@ -328,7 +304,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
         &second_envelope,
         None,
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert_eq!(second.commit.outcome.revision, before.revision + 2);
@@ -372,8 +348,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
     store.conn.execute_batch("CREATE TABLE command_commit_witness(parent TEXT REFERENCES requests(id) DEFERRABLE INITIALLY DEFERRED)").unwrap();
     let reader = Connection::open(fixture.path()).unwrap();
     let before_counts = counts(&reader);
-    let transaction =
-        rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let mut transaction = journal(&store);
     store
         .conn
         .execute(
@@ -388,7 +363,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
         &envelope,
         None,
         false,
-        Attached::None,
+        Attached::None, &mut transaction,
     )
     .unwrap();
     assert!(
@@ -401,7 +376,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
     assert_eq!(counts(&reader), before_counts);
     let error = transaction.commit().unwrap_err();
     assert!(
-        matches!(error, rusqlite::Error::SqliteFailure(ref failure, _) if failure.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY)
+        matches!(error, alondra_store::Error::Database(rusqlite::Error::SqliteFailure(ref failure, _)) if failure.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY)
     );
     assert!(store.conn.is_autocommit());
     assert!(Arc::ptr_eq(&store.cached.as_ref().unwrap().state, &before));

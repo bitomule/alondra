@@ -17,6 +17,9 @@ pub(super) struct StagedObservation {
     owner_generation: u64,
     cursor: u64,
     digest: Vec<u8>,
+    /// The runtime cursor of the task before this observation, while the domain has not yet
+    /// recorded the facts it was normalized to.
+    unsettled: Option<u64>,
 }
 impl StagedCommand {
     pub(super) fn seal(self) -> CommittedCommand {
@@ -164,6 +167,7 @@ impl LifecycleTransaction<'_> {
             self.fence_observation_owner(execution, owner_generation)?;
             let binding = self.execution_binding(execution)?;
             let digest = evidence_digest(evidence.bytes());
+            let before = self.load(execution.task())?.cursor().unwrap_or(0);
             let acceptance = self.accept_observation(execution, cursor, evidence)?;
             if !self
                 .observations
@@ -177,9 +181,30 @@ impl LifecycleTransaction<'_> {
                     owner_generation,
                     cursor,
                     digest,
+                    unsettled: (acceptance == ObservationAcceptance::Accepted).then_some(before),
                 });
             }
             Ok(acceptance)
+        })
+    }
+    /// The domain recorded the `facts` an accepted observation was normalized to: the task's
+    /// runtime cursor moved by exactly that many facts since the observation was accepted, or the
+    /// observation brought none and its execution was retired by a decision of the domain. Until
+    /// then the transaction cannot commit.
+    pub fn settle_observation(&mut self, execution: &ExecutionStamp, cursor: u64, facts: usize) -> Result<()> {
+        staging!(self, {
+            let now = self.load(execution.task())?;
+            let observation = self.observations.iter_mut()
+                .find(|observation| observation.execution == *execution && observation.cursor == cursor)
+                .ok_or(Error::StalePermit)?;
+            let before = observation.unsettled.ok_or(Error::ObservationConflict)?;
+            let moved = u64::try_from(facts).map_err(|_| Error::InvalidInput)?;
+            let current = now.execution() == Some(execution);
+            if (current && now.cursor().unwrap_or(0) != before + moved) || (!current && moved != 0) {
+                return Err(Error::UnsettledObservation);
+            }
+            observation.unsettled = None;
+            Ok(())
         })
     }
     pub(super) fn checkpoint_binding_for_accepted_observation(
@@ -227,6 +252,9 @@ impl LifecycleTransaction<'_> {
             .is_none_or(|checkpoint| checkpoint.cursor() < observation.cursor)
         {
             return Err(Error::CheckpointConflict);
+        }
+        if observation.unsettled.is_some() {
+            return Err(Error::UnsettledObservation);
         }
         Ok(())
     }

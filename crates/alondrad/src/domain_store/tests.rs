@@ -1431,8 +1431,10 @@ fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
     let mut after = DomainState::clone(&before);
     after.agents.remove(&"agent-1".into());
     after.revision += 1;
-    let tx = store.conn.transaction().unwrap();
-    let error = repository::save_changes(&tx, &before, &after).unwrap_err();
+    let tx = rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let scope = alondra_store::AuthorityScope::new(epoch_of(&store.conn).unwrap()).unwrap();
+    let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope).unwrap();
+    let error = repository::save_changes(&store.conn, &mut journal, &before, &after).unwrap_err();
     assert!(error.to_string().contains("cannot remove agent"), "{error}");
 }
 
@@ -1894,25 +1896,52 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     assert_eq!((card.plan.as_deref(), card.kept_at.as_deref()), (Some(plan), Some("/home/files/results/task-1/report.md")));
 }
 
-/// A task an older daemon reopened was left in progress with no node. Releasing it, as starting the
-/// daemon does, leaves it not started and puts it in the fleet's queue with its plan, in the same
-/// transaction.
+/// The journal rules the task columns: a column edited behind it after a commit makes the store
+/// refuse to load, naming the task and how it disagrees, and nothing writes the column back.
 #[test]
-fn releasing_a_task_left_in_progress_with_no_node_queues_it_with_its_plan() {
+fn a_lifecycle_column_edited_behind_the_journal_is_refused_not_repaired() {
+    for (column, edit) in [
+        ("node", "UPDATE tasks SET agent_id=NULL WHERE id='task-1'"),
+        ("start", "UPDATE tasks SET started=0 WHERE id='task-1'"),
+        ("state", "UPDATE tasks SET state='done' WHERE id='task-1'"),
+    ] {
+        let fixture = Fixture::new();
+        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        seeded(&mut store);
+        execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
+        store.conn.execute(edit, []).unwrap();
+        let edited: (Option<String>, i64, String) = store.conn.query_row("SELECT agent_id,started,state FROM tasks WHERE id='task-1'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        drop(store);
+        let error = match DomainStore::open(&fixture.path()) {
+            Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("the aggregate rules: task task-1"), "{column}: {message}");
+        let conn = rusqlite::Connection::open(fixture.path()).unwrap();
+        let kept: (Option<String>, i64, String) = conn.query_row("SELECT agent_id,started,state FROM tasks WHERE id='task-1'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(kept, edited, "{column}: the edited column is left as it is, never repaired");
+    }
+}
+
+/// A command about another task never moves this one: its journal and columns stay as they were.
+#[test]
+fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    store.conn.execute("UPDATE tasks SET agent_id=NULL, started=1, state='running' WHERE id='task-1'", []).unwrap();
-    store.conn.execute("DELETE FROM task_lifecycle_journal WHERE task_id='task-1'", []).unwrap();
-    drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    assert!(store.load().unwrap().tasks[&"task-1".into()].started_without_node());
-    execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "It was in progress with no node".into() });
-    let task = store.load().unwrap().tasks[&"task-1".into()].clone();
-    assert_eq!((task.state, task.started), (TaskState::NotStarted, false));
-    let planned = store.planned_tasks().unwrap()[&"task-1".into()];
-    let queue = store.launch_queue().unwrap();
-    assert_eq!(queue.iter().map(|row| (row.task_id.0.as_str(), row.enqueued_at, row.origin.as_str())).collect::<Vec<_>>(), [("task-1", planned, "reopen")]);
+    execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
+    let before = store.load().unwrap();
+    let events = |store: &DomainStore| -> i64 { store.conn.query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='task-1'", [], |r| r.get(0)).unwrap() };
+    let kept = events(&store);
+    execute(&mut store, &Actor::System, "last-words", Command::RecordLastWords { agent_id: "agent-1".into(), text: "Still here".into() });
+    execute(&mut store, &Actor::System, "listed", Command::ReconcileNodes { listed: Default::default(), at: 1 });
+    let after = store.load().unwrap();
+    assert_eq!(after.tasks[&TaskId::from("task-1")].state, before.tasks[&TaskId::from("task-1")].state);
+    assert_eq!(after.tasks[&TaskId::from("task-1")].agent_id, before.tasks[&TaskId::from("task-1")].agent_id);
+    assert_eq!(after.tasks[&TaskId::from("task-1")].started, before.tasks[&TaskId::from("task-1")].started);
+    assert_eq!(after.lifecycle_journal, before.lifecycle_journal);
+    assert_eq!(events(&store), kept);
 }
 
 /// The lifecycle journal survives a restart as it was written, append-only, and a store whose
@@ -1927,7 +1956,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     let state = store.load().unwrap();
     let task = &state.tasks[&TaskId::from("task-1")];
     assert_eq!((task.state, task.ending), (TaskState::Closing, Some(alondra_core::domain::TaskEnding::Cancelling)));
-    assert_eq!(count(&store, "task_lifecycle_journal"), state.lifecycle_journal[&TaskId::from("task-1")].len() as i64);
+    assert_eq!(count(&store, "lifecycle_events") + 1, state.lifecycle_journal[&TaskId::from("task-1")].len() as i64, "every record after the plan is one event of the store");
     let expected = store.load().unwrap();
     drop(store);
 
@@ -1938,8 +1967,8 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     });
     let state = restarted.load().unwrap();
     assert_eq!(state.tasks[&TaskId::from("task-1")].state, TaskState::Cancelled);
-    let kept = count(&restarted, "task_lifecycle_journal");
-    assert_eq!(kept, state.lifecycle_journal[&TaskId::from("task-1")].len() as i64);
+    let kept = count(&restarted, "lifecycle_events");
+    assert_eq!(kept + 1, state.lifecycle_journal[&TaskId::from("task-1")].len() as i64);
     restarted.conn.execute("UPDATE tasks SET state='running' WHERE id='task-1'", []).unwrap();
     drop(restarted);
 
@@ -1948,4 +1977,41 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
         Err(error) => error,
     };
     assert!(format!("{error:#}").contains("the aggregate rules"), "{error:#}");
+}
+
+/// An event of the journal moved out of its place by hand after a commit makes the store refuse
+/// to load: the journal is not repaired from the task's columns either.
+#[test]
+fn a_journal_event_edited_behind_the_store_is_refused() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
+    let trigger: String = store.conn.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_event_immutable'", [], |r| r.get(0)).unwrap();
+    store.conn.execute_batch("DROP TRIGGER lifecycle_event_immutable").unwrap();
+    let changed = store.conn.execute("UPDATE lifecycle_events SET revision=revision+5 WHERE task_id='task-1' AND revision=(SELECT max(revision) FROM lifecycle_events WHERE task_id='task-1')", []).unwrap();
+    assert_eq!(changed, 1, "the last event is moved out of its place");
+    store.conn.execute_batch(&trigger).unwrap();
+    drop(store);
+    let error = match DomainStore::open(&fixture.path()) {
+        Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("CorruptJournal"), "{error:#}");
+}
+
+/// Only the store writes the journal: no SQL of the daemon inserts, changes or deletes its rows.
+#[test]
+fn no_daemon_code_writes_the_journal_tables_but_the_store() {
+    for (name, source) in [
+        ("domain_store.rs", include_str!("../domain_store.rs")),
+        ("repository.rs", include_str!("repository.rs")),
+        ("command.rs", include_str!("command.rs")),
+        ("owner.rs", include_str!("owner.rs")),
+        ("lifecycle_migration.rs", include_str!("lifecycle_migration.rs")),
+    ] {
+        for write in ["INSERT INTO lifecycle_", "INSERT OR IGNORE INTO lifecycle_", "UPDATE lifecycle_", "DELETE FROM lifecycle_", "REPLACE INTO lifecycle_"] {
+            assert!(!source.contains(write), "{name} writes the journal: {write}");
+        }
+    }
 }

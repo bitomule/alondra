@@ -825,8 +825,9 @@ fn facade_ack_scenario(substitute_raw: bool) {
             b"SQL-only checkpoint".to_vec(),
         )
         .unwrap();
+        tx.settle_observation(&received.execution, received.cursor, 0).unwrap();
     } else {
-        alondra_agent_application::stage_observation(
+        let pending = alondra_agent_application::stage_observation(
             &mut tx,
             fixture.worker.binding(),
             fixture.worker.owner_generation().unwrap(),
@@ -834,6 +835,7 @@ fn facade_ack_scenario(substitute_raw: bool) {
             fixture.worker.normalizer(),
         )
         .unwrap();
+        fixture_controller::record_facts(&mut tx, pending).unwrap();
     }
     let committed = tx.commit().unwrap().observations.pop().unwrap();
     if substitute_raw {

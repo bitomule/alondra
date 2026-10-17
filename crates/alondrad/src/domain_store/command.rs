@@ -16,6 +16,7 @@ pub(super) fn stage(
     transport: Option<TransportIdentity<'_>>,
     fill_revision: bool,
     attached: Attached<'_>,
+    journal: &mut alondra_store::LifecycleTransaction<'_>,
 ) -> std::result::Result<PreparedCommit, StoreError> {
     if conn.is_autocommit() {
         return Err(StoreError::Storage(anyhow::anyhow!(
@@ -114,7 +115,7 @@ pub(super) fn stage(
     let mut next = DomainState::clone(&state);
     let outcome = next.execute(actor, envelope)?;
     if outcome.changed {
-        repository::save_changes(conn, &state, &next)?;
+        repository::save_changes(conn, journal, &state, &next)?;
         if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command
             && let Some(request_id) = &next.schedule.runs[run_id].request_id
         {

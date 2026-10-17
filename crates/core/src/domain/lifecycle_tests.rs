@@ -2,6 +2,7 @@
 //! state, node, start or ending; a cancellation or a completion ends only with its receipts; and
 //! a DTO edited by hand is refused, never repaired.
 use super::*;
+use alondra_domain::Event;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn user() -> Actor {
@@ -61,21 +62,34 @@ fn deliver(s: &mut DomainState, task: &str, agent: &str, id: &str) {
     });
 }
 
-/// After every accepted command, the DTO of every owned task agrees with the replay of its
-/// journal, and running the derivations again moves nothing: only decisions do.
+/// The texts the store keeps for a journal's inputs.
+fn writes_texts(id: &TaskId, records: &[LifecycleRecord]) -> BTreeMap<alondra_domain::InputId, String> {
+    journal_writes(id, records, 0).unwrap().into_iter()
+        .filter_map(|write| Some((write.input?, write.text?)))
+        .collect()
+}
+
+/// After every accepted command, the DTO of every task agrees with the replay of its journal,
+/// running the derivations again moves nothing (only decisions do), and the events the store keeps
+/// for each journal give back exactly its records.
 pub(super) fn assert_aggregate_rules(s: &DomainState) {
     s.validate_journal().unwrap_or_else(|error| panic!("{error}"));
     let mut again = s.clone();
     again.derive_states();
     again.settle_nodes();
     for (id, task) in &s.tasks {
-        if s.owned(id) {
-            assert_eq!(&again.tasks[id], task, "derive_states moved the owned task {id} without a decision");
-        }
+        assert_eq!(&again.tasks[id], task, "derive_states moved the task {id} without a decision");
     }
     assert_eq!(again.agents, s.agents, "settle_nodes moved a node without a decision");
+    for (id, records) in &s.lifecycle_journal {
+        let writes = journal_writes(id, records, 0).unwrap();
+        let initial = writes[0].input.clone().expect("the journal is created with its initial input");
+        let events: Vec<_> = writes.into_iter().filter_map(|write| write.event).collect();
+        let texts = writes_texts(id, records);
+        assert_eq!(&records_from_events(id, &initial, &events, &texts).unwrap(), records, "the store's events of {id} do not give back its records");
+    }
     for (review, held) in &s.plan_reviews {
-        for task in held.open().filter(|task| s.owned(task)) {
+        for task in held.open() {
             let lifecycle = replay(task, &s.lifecycle_journal[task]).unwrap();
             assert!(lifecycle.plan_reviews().iter().any(|(id, _)| *id == review), "the lifecycle of {task} does not hold it for the review {review}");
         }
@@ -86,7 +100,6 @@ pub(super) fn assert_aggregate_rules(s: &DomainState) {
 fn cancelling_a_task_without_a_node_ends_only_with_the_cleanup_receipt() {
     let mut s = world();
     task(&mut s, "t", None);
-    assert!(s.owned(&"t".into()));
     assert_eq!(kinds(&s, "t"), ["planned"]);
     assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, None, None));
 
@@ -246,26 +259,33 @@ fn a_dto_edited_by_hand_is_refused_and_never_repaired() {
 }
 
 #[test]
-fn a_task_created_before_the_journal_keeps_the_old_writers() {
+fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
     let mut s = world();
-    let legacy = Task {
+    let unjournaled = Task {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
         verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
     };
-    s.tasks.insert(legacy.id.clone(), legacy);
-    s.derive_states();
-    s.settle_nodes();
-    s.validate().unwrap();
-    assert!(!s.owned(&"old".into()));
-    must(&mut s, user(), Command::CancelTask { task_id: "old".into() });
-    assert_eq!(lifecycle(&s, "old"), (TaskState::Cancelled, true, Some("a".into()), None), "cancelled at once, as before the journal");
-    assert!(!s.lifecycle_journal.contains_key(&TaskId::from("old")));
-    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "old".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
-    must(&mut s, user(), Command::ReopenTask { task_id: "old".into() });
-    assert_eq!(lifecycle(&s, "old"), (TaskState::NotStarted, false, None, None));
-    assert_aggregate_rules(&s);
+    s.tasks.insert(unjournaled.id.clone(), unjournaled);
+    assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");
+    let before = s.clone();
+    assert_eq!(exec(&mut s, user(), Command::CancelTask { task_id: "old".into() }).unwrap_err().code, "lifecycle_journal");
+    assert_eq!(s, before, "no old writer cancels it");
+}
+
+#[test]
+fn a_journal_whose_store_event_was_changed_cannot_be_read() {
+    let mut s = world();
+    task(&mut s, "t", Some("a"));
+    must(&mut s, node("a"), Command::StartTask { task_id: "t".into() });
+    let id = TaskId::from("t");
+    let writes = journal_writes(&id, &s.lifecycle_journal[&id], 0).unwrap();
+    let initial = writes[0].input.clone().unwrap();
+    let mut events: Vec<_> = writes.into_iter().filter_map(|write| write.event).collect();
+    let Event::Admit { node, conversation, host, .. } = events[0].clone() else { panic!("the first event admits the node") };
+    events[0] = Event::Admit { node, conversation, host, instance: alondra_domain::InstanceId::new("another-instance").unwrap() };
+    assert_eq!(records_from_events(&id, &initial, &events, &BTreeMap::new()).unwrap_err().code, "lifecycle_journal");
 }
 
 #[test]
@@ -279,5 +299,104 @@ fn an_orphan_reviewer_is_cancelled_through_its_lifecycle() {
     must(&mut s, user(), Command::CancelTask { task_id: "work".into() });
     assert_eq!(lifecycle(&s, "review"), (TaskState::Closing, true, Some("b".into()), Some(TaskEnding::Cancelling)), "nothing is left to review");
     assert_eq!(kinds(&s, "review").last().map(String::as_str), Some("finished"));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_facts() {
+    let mut s = world();
+    task(&mut s, "t", None);
+    let admit = |host: &str| Command::AdmitExecution {
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(),
+    };
+    assert_eq!(exec(&mut s, Actor::System, admit(alondra_domain::CLAUDE_BG_HOST)).unwrap_err().code, "invalid_input", "the claude --bg node is assigned instead");
+    assert_eq!(exec(&mut s, user(), admit("sdk-host")).unwrap_err().code, "forbidden");
+    must(&mut s, Actor::System, admit("sdk-host"));
+    assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, Some("a".into()), None));
+    let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from("t")][0].clone() else { panic!("planned first") };
+    let facts = |generation: u64| Command::RecordRuntimeFacts {
+        task_id: "t".into(), generation,
+        facts: vec![RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input: input.clone() }],
+    };
+    let stale = facts(2);
+    assert_eq!(exec(&mut s, Actor::System, stale).unwrap_err().code, "stale_execution");
+    let current = facts(1);
+    must(&mut s, Actor::System, current);
+    assert_eq!(lifecycle(&s, "t"), (TaskState::Running, true, Some("a".into()), None), "the observed resource starts it");
+    assert_eq!(kinds(&s, "t"), ["planned", "admitted", "resource_available", "turn_started"]);
+    must(&mut s, node("a"), Command::StartTask { task_id: "t".into() });
+    assert_eq!(kinds(&s, "t").len(), 4, "the node's start reports nothing the SDK did not observe");
+    assert_aggregate_rules(&s);
+}
+
+/// An SDK task whose observed turn started: admitted, resource available, the planned input taken.
+fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
+    task(s, id, None);
+    must(s, Actor::System, Command::AdmitExecution {
+        task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(),
+    });
+    let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(id)][0].clone() else { panic!("planned first") };
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable,
+        RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+    ] });
+    format!("{TURN_ENDED_PREFIX}{id}-1-turn-1")
+}
+fn holds_slot(s: &DomainState, id: &str) -> bool {
+    replay(&id.into(), &s.lifecycle_journal[&TaskId::from(id)]).unwrap().holds_slot()
+}
+
+#[test]
+fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    let created = &s.interactions[&InteractionId::from(card.as_str())];
+    assert_eq!(created.card.need, "“Task t” stopped without delivering or asking: tell it how to go on");
+    assert!(matches!(&created.payload, InteractionPayload::Question { options, answer: None }
+        if options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>() == [CARRY_ON, CANCEL_TASK]));
+    assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == card)), "the user hears of it");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, None, "a native result is not a delivery");
+    assert!(!s.tasks[&TaskId::from("t")].over(), "nor the end of the task");
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() }).unwrap_err().code,
+        "conflict", "the same turn end does not ask twice");
+    assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).count(), 1);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "subagent".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(TURN_ENDED_PREFIX)), "its own work explains the next step");
+    assert!(holds_slot(&s, "t"), "the work still running keeps the slot");
+    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CARRY_ON.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]) });
+    let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    assert!(text.starts_with("Go on with your task") && text.ends_with("Add the tests first"), "{text}");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert_aggregate_rules(&s);
+
+    let mut s = world();
+    let card = sdk_turn(&mut s, "u", "b");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "u".into(), generation: 1, turn: "turn-1".into() });
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CANCEL_TASK.into(), inputs: BTreeMap::new() });
+    assert_eq!(lifecycle(&s, "u").0, TaskState::Closing);
+    assert_eq!(lifecycle(&s, "u").3, Some(TaskEnding::Cancelling));
     assert_aggregate_rules(&s);
 }

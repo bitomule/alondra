@@ -15,7 +15,7 @@ pub const UNHEARD_PREFIX: &str = "unheard-";
 /// The one option of such a card: the node carries on with its task.
 pub const CARRY_ON: &str = "carry_on";
 pub const CARRY_ON_LABEL: &str = "Carry on";
-const CARRY_ON_MEANS: &str = "It goes on with its task and asks you through a card when it needs you";
+pub(super) const CARRY_ON_MEANS: &str = "It goes on with its task and asks you through a card when it needs you";
 const UNHEARD_WHY: &str = "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.";
 /// The longest last words a node's card carries.
 pub(super) const LAST_WORDS_MAX: usize = 20_000;

@@ -65,20 +65,7 @@ pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
         }
     }
     domain.store.lock().expect("domain store poisoned").forget_planless_blocks()?;
-    release_started_without_node(domain, &state);
     cancel_planless(domain, &*domain.state()?)
-}
-
-/// A task an older daemon reopened was left in progress with no node, which nothing could start:
-/// it is released, which puts it back in the fleet's queue with its plan.
-fn release_started_without_node(domain: &DomainRuntime, state: &DomainState) {
-    for task in state.tasks.values().filter(|task| task.started_without_node()) {
-        let released = crate::domain_github::execute_system(domain, alondra_core::domain::Command::ReleaseTask {
-            task_id: task.id.clone(), reason: "It was in progress with no node".into() });
-        if let Err(error) = released {
-            log!("could not put {} back in the queue, in progress with no node: {error:?}", task.id);
-        }
-    }
 }
 
 const PLANLESS: &str = "It had no launch plan, so nothing would ever start it";

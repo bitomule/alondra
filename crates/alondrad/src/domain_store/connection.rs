@@ -53,7 +53,7 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     // journal_mode can rewrite the database header; reject incompatible stores first.
     let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(found == 0 || found == super::SCHEMA_VERSION,
+    ensure!(found == 0 || found == super::SCHEMA_VERSION || found == super::PREVIOUS_SCHEMA_VERSION,
         "unsupported domain database schema {found}; this build requires {}; database preserved at {}. Use a compatible Alondra build or an explicit migration",
         super::SCHEMA_VERSION, path.display());
     conn.pragma_update(None, "foreign_keys", "ON")?;

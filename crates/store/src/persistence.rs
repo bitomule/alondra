@@ -110,8 +110,9 @@ pub(super) fn save_relations(connection: &Connection, aggregate: &TaskLifecycle)
         ] {
             crate::identity(value)?;
         }
-        connection.execute("INSERT INTO lifecycle_executions(task_id,generation,node_id,instance_id,conversation_id,host_id) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id,generation) DO NOTHING",
-            params![task, crate::sql_number(stamp.generation())?, stamp.node().0, stamp.instance().as_str(), stamp.conversation().as_str(), stamp.host().as_str()])?;
+        let backend = if crate::through_sdk(stamp).is_ok() { "sdk" } else { "claude_bg" };
+        connection.execute("INSERT INTO lifecycle_executions(task_id,generation,node_id,instance_id,conversation_id,host_id,backend) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(task_id,generation) DO NOTHING",
+            params![task, crate::sql_number(stamp.generation())?, stamp.node().0, stamp.instance().as_str(), stamp.conversation().as_str(), stamp.host().as_str(), backend])?;
         let exact: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM lifecycle_executions WHERE task_id=?1 AND generation=?2 AND node_id=?3 AND instance_id=?4 AND conversation_id=?5 AND host_id=?6)",
             params![task, crate::sql_number(stamp.generation())?, stamp.node().0, stamp.instance().as_str(), stamp.conversation().as_str(), stamp.host().as_str()], |row| row.get(0))?;
         if !exact {
@@ -146,7 +147,7 @@ fn values(connection: &Connection, sql: &str, task: &str) -> Result<BTreeSet<Str
         .query_map(params![task], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?)
 }
-fn verify_relations(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
+pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
     let task = &aggregate.task().0;
     let cards = values(
         connection,

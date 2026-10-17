@@ -804,7 +804,10 @@ fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lan
 /// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
 /// someone worded.
 pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    start_problem_text(interaction, domain, lang).or_else(|| pace_text(interaction, domain, lang)).or_else(|| unheard_text(interaction, domain, lang))
+    start_problem_text(interaction, domain, lang)
+        .or_else(|| pace_text(interaction, domain, lang))
+        .or_else(|| unheard_text(interaction, domain, lang))
+        .or_else(|| turn_ended_text(interaction, domain, lang))
 }
 
 /// What a node said last, when the card holds its words: the task's row shows them.
@@ -830,6 +833,20 @@ fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> 
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.",
         "Terminó su turno sin un resultado ni una pregunta para ti. Respóndele o escríbele y sigue.").into()))
+}
+
+/// The card that asks how a task goes on when its SDK turn ended with nothing that explains its
+/// next step, in the viewer's language.
+fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::TURN_ENDED_PREFIX) {
+        return None;
+    }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
+    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+        "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
+        "Su turno terminó sin nada que explique qué hace después. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
 }
 
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
@@ -919,6 +936,10 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             t!(lang, "Carry on", "Que siga"),
             Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
                 "Sigue con su tarea y te pregunta con una tarjeta cuando te necesite")),
+        ),
+        (crate::domain::CANCEL_TASK, crate::domain::CANCEL_TASK_LABEL) => (
+            t!(lang, "Cancel the task", "Cancelar la tarea"),
+            Some(t!(lang, "The task ends and its execution is closed", "La tarea termina y se cierra su ejecución")),
         ),
         ("fixed", "I've fixed it") => (
             t!(lang, "I've fixed it", "Ya lo he arreglado"),

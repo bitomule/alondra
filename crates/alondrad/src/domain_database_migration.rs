@@ -333,7 +333,8 @@ fn inspect_database(path: &Path) -> Result<(String, i64)> {
     let app_id: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let schema: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        app_id == APPLICATION_ID && schema == crate::domain_store::SCHEMA_VERSION,
+        app_id == APPLICATION_ID
+            && (schema == crate::domain_store::SCHEMA_VERSION || schema == crate::domain_store::PREVIOUS_SCHEMA_VERSION),
         "database has an unexpected application or schema version"
     );
     let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;

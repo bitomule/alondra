@@ -8,6 +8,10 @@ pub use alondra_foundation::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// The host of every execution of the `claude --bg` backend: Alondra delivers its inputs itself,
+/// so nothing dispatches to it through the SDK.
+pub const CLAUDE_BG_HOST: &str = "claude-bg";
+
 fn valid_id(value: &str) -> Result<(), Refusal> {
     if value.trim().is_empty() {
         Err(Refusal::EmptyIdentity)
@@ -538,6 +542,10 @@ impl TaskLifecycle {
     }
     pub fn revision(&self) -> Revision {
         self.revision
+    }
+    /// How many executions the task has had: the next one is admitted with the one after.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn plan_revision(&self) -> u64 {
         self.plan_revision

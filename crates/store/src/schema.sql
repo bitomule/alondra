@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_tasks(
 );
 CREATE TABLE IF NOT EXISTS lifecycle_inputs(
  task_id TEXT NOT NULL REFERENCES lifecycle_tasks(task_id), input_id TEXT NOT NULL CHECK(length(input_id)>0),
- body TEXT NOT NULL CHECK(length(body)>0 AND length(CAST(body AS BLOB))<=1048576),
+ body TEXT CHECK(body IS NULL OR (length(body)>0 AND length(CAST(body AS BLOB))<=1048576)),
  PRIMARY KEY(task_id,input_id)
 );
 CREATE TABLE IF NOT EXISTS lifecycle_events(
@@ -21,10 +21,11 @@ CREATE TABLE IF NOT EXISTS lifecycle_executions(
  task_id TEXT NOT NULL REFERENCES lifecycle_tasks(task_id), generation INTEGER NOT NULL CHECK(generation BETWEEN 1 AND 9007199254740991),
  node_id TEXT NOT NULL REFERENCES agents(id), instance_id TEXT NOT NULL UNIQUE,
  conversation_id TEXT NOT NULL, host_id TEXT NOT NULL,
+ backend TEXT NOT NULL CHECK(backend IN('sdk','claude_bg') AND (backend='claude_bg')=(host_id='claude-bg')),
  PRIMARY KEY(task_id,generation), UNIQUE(task_id,generation,node_id)
 );
 CREATE TABLE IF NOT EXISTS lifecycle_current_execution(
- task_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, node_id TEXT NOT NULL UNIQUE,
+ task_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, node_id TEXT NOT NULL,
  FOREIGN KEY(task_id,generation,node_id) REFERENCES lifecycle_executions(task_id,generation,node_id)
 );
 CREATE TABLE IF NOT EXISTS lifecycle_cards(
@@ -72,6 +73,7 @@ CREATE TRIGGER IF NOT EXISTS lifecycle_event_retained BEFORE DELETE ON lifecycle
 CREATE TRIGGER IF NOT EXISTS lifecycle_event_immutable BEFORE UPDATE ON lifecycle_events
  BEGIN SELECT RAISE(ABORT,'lifecycle journal is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_input_immutable BEFORE UPDATE ON lifecycle_inputs
+ WHEN OLD.body IS NOT NULL OR NEW.body IS NULL OR NEW.task_id<>OLD.task_id OR NEW.input_id<>OLD.input_id
  BEGIN SELECT RAISE(ABORT,'lifecycle input is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_execution_immutable BEFORE UPDATE ON lifecycle_executions
  BEGIN SELECT RAISE(ABORT,'lifecycle execution identity is immutable'); END;
@@ -80,6 +82,10 @@ CREATE TRIGGER IF NOT EXISTS lifecycle_required_delivery_retained BEFORE UPDATE 
  WHEN EXISTS(SELECT 1 FROM lifecycle_delivery d WHERE d.card_id=OLD.id)
  AND (NEW.id<>OLD.id OR NEW.task_id IS NOT OLD.task_id OR NEW.scope_kind<>'task' OR NEW.kind<>'delivery')
  BEGIN SELECT RAISE(ABORT,'lifecycle requires its delivery record'); END;
+CREATE TRIGGER IF NOT EXISTS lifecycle_dispatch_through_sdk BEFORE INSERT ON lifecycle_dispatches
+ WHEN EXISTS(SELECT 1 FROM lifecycle_executions e WHERE e.task_id=NEW.task_id AND e.generation=NEW.generation AND e.backend<>'sdk')
+   OR EXISTS(SELECT 1 FROM lifecycle_inputs i WHERE i.task_id=NEW.task_id AND i.input_id=NEW.input_id AND i.body IS NULL)
+ BEGIN SELECT RAISE(ABORT,'only an SDK execution dispatches, and only an input with its text'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_dispatch_retained BEFORE DELETE ON lifecycle_dispatches
  BEGIN SELECT RAISE(ABORT,'lifecycle dispatch evidence is retained'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_dispatch_transition BEFORE UPDATE ON lifecycle_dispatches
