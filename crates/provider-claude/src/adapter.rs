@@ -3,7 +3,7 @@ use crate::records::{InputRecord, SessionRecord};
 use crate::wire::{Connection, ControlIdentity, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_agent_protocol::{Action, Body, Command, SDK_VERSION};
-use alondra_agent_runtime::owned_host::{LaunchIdentity, OwnedHost, VerifiedArtifact};
+use alondra_agent_runtime::owned_host::{AdoptedHost, LaunchIdentity, OwnedHost, VerifiedArtifact};
 use alondra_foundation::{ExecutionStamp, MessageUuid};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
@@ -123,6 +123,20 @@ impl ClaudeWorker {
     ) -> Result<(), AdapterError> {
         self.adapter.install_owner(grant, state)
     }
+    /// Adopts the host a previous daemon left running, with this new owner generation, rather than
+    /// launching a fresh one: the same Claude keeps its session.
+    pub fn adopt_owner(
+        &mut self,
+        grant: OwnerGrant,
+        state: AdapterState,
+    ) -> Result<(), AdapterError> {
+        self.adapter.adopt_owner(grant, state)
+    }
+    /// Re-sends the exact recorded bytes of a dispatch whose receipt a crash lost, and returns the
+    /// host's definitive answer.
+    pub fn reconcile(&mut self, command: &[u8]) -> Result<Handoff, AdapterError> {
+        self.adapter.reconcile(command)
+    }
     pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
         if metadata.binding().map_err(storage)? != *self.binding() {
             return Err(AdapterError::InvalidObservation);
@@ -178,15 +192,14 @@ impl ClaudeWorker {
         self.adapter
             .submit(invocation(committed.attempt()), &prepared.command)
     }
-    /// Asks the host to stop and waits until it has exited; a worker without a host has none.
+    /// Asks a launched host to stop and waits until it has exited; an adopted host's process is not
+    /// ours to stop, and a worker without a host has none.
     pub fn stop(&mut self) -> Result<(), AdapterError> {
         self.adapter.connection = None;
         let Some(host) = self.adapter.host.as_mut() else {
             return Ok(());
         };
-        host.request_stop().map_err(|_| AdapterError::Disconnected)?;
-        host.wait().map_err(|_| AdapterError::Disconnected)?;
-        Ok(())
+        host.stop().map_err(|_| AdapterError::Disconnected)
     }
     pub fn poll(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         if let Some(pending) = &self.pending {
@@ -231,11 +244,60 @@ fn validate_ack(
     Ok(())
 }
 
+/// The transport's host: one this daemon launched, or one a previous daemon left running that
+/// this one adopted. An adopted host's process is not ours to stop or reap.
+enum Host {
+    Launched(OwnedHost),
+    Adopted(AdoptedHost),
+}
+impl Host {
+    fn owner(&self) -> &OwnerGrant {
+        match self {
+            Host::Launched(host) => host.owner(),
+            Host::Adopted(host) => host.owner(),
+        }
+    }
+    fn artifact(&self) -> &VerifiedArtifact {
+        match self {
+            Host::Launched(host) => host.identity().artifact(),
+            Host::Adopted(host) => host.identity().artifact(),
+        }
+    }
+    fn connect(&mut self, deadline: Instant) -> std::io::Result<std::os::unix::net::UnixStream> {
+        match self {
+            Host::Launched(host) => host.wait_for_socket(deadline),
+            Host::Adopted(host) => host.connect(deadline),
+        }
+    }
+    fn request_stop(&mut self) -> std::io::Result<()> {
+        match self {
+            Host::Launched(host) => host.request_stop(),
+            Host::Adopted(_) => Ok(()),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Host::Launched(host) => host.wait(),
+            Host::Adopted(_) => Err(std::io::Error::other("an adopted host is not ours to reap")),
+        }
+    }
+    /// Stops a host we launched; an adopted host's process is not ours to stop (that is phase 5d).
+    fn stop(&mut self) -> std::io::Result<()> {
+        match self {
+            Host::Launched(host) => {
+                host.request_stop()?;
+                host.wait().map(|_| ())
+            }
+            Host::Adopted(_) => Ok(()),
+        }
+    }
+}
+
 struct ClaudeAdapter {
     binding: ProviderBinding,
     configuration: ClaudeConfiguration,
     control: ControlIdentity,
-    host: Option<OwnedHost>,
+    host: Option<Host>,
     connection: Option<Connection>,
     normalizer: Normalizer,
 }
@@ -287,9 +349,108 @@ impl ClaudeAdapter {
             .checked_add(self.configuration.io_timeout)
             .ok_or(AdapterError::Disconnected)
     }
-    fn host(&self) -> Result<&OwnedHost, AdapterError> {
+    fn host(&self) -> Result<&Host, AdapterError> {
         self.host.as_ref().ok_or(AdapterError::Disconnected)
     }
+    /// Re-sends the exact recorded command bytes of an unresolved dispatch and reads the host's
+    /// definitive answer. The owner is rechecked; the lane is the adopted one.
+    fn reconcile(&mut self, command: &[u8]) -> Result<Handoff, AdapterError> {
+        let deadline = self.deadline()?;
+        let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
+        let prepared = PreparedCommand::new(command.to_vec())?;
+        self.connection.as_mut().ok_or(AdapterError::Disconnected)?.reconcile(host.owner(), &prepared, deadline)
+    }
+    /// Opens the owner lane to the current host, from the cursor already committed in SQL.
+    fn connect(&mut self, committed_cursor: u64) -> Result<(), AdapterError> {
+        let deadline = self.deadline()?;
+        let host = self.host.as_mut().ok_or(AdapterError::Disconnected)?;
+        let stream = host.connect(deadline).map_err(|_| AdapterError::Disconnected)?;
+        self.connection = Some(Connection::attach(stream, host.owner(), host.artifact(), &self.control, committed_cursor, deadline)?);
+        Ok(())
+    }
+    /// Adopts the host a previous daemon left running: it reads the retained bootstrap, verifies it
+    /// against this grant and configuration, rebuilds the control identity and session from it, and
+    /// attaches with the new owner generation from the committed checkpoint. It launches nothing
+    /// and spawns no Claude; a missing or changed endpoint is a dead host (`Disconnected`).
+    fn adopt_owner(&mut self, owner: OwnerGrant, state: AdapterState) -> Result<(), AdapterError> {
+        if owner.binding() != &self.binding || state.validate_owner(&owner).is_err() || self.host.is_some() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
+        let expected = fence(&owner, &self.control);
+        let expected_execution = execution(&owner);
+        let native_directory = self.configuration.native_directory.clone();
+        let (profile_id, account_id) = (self.configuration.profile_id.clone(), self.configuration.account_id.clone());
+        let (host, (control, session)) = AdoptedHost::adopt(
+            owner,
+            self.configuration.artifact.clone(),
+            &self.configuration.state_directory,
+            |grant, identity, bytes| {
+                let retained: RetainedBootstrap = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+                let refuse = |why: &str| std::io::Error::other(format!("retained host bootstrap {why}"));
+                if retained.manifest.host_sha256 != identity.artifact().artifact_sha256()
+                    || retained.manifest.executable_sha256 != identity.artifact().executable_sha256()
+                {
+                    return Err(refuse("artifact hashes differ"));
+                }
+                if retained.execution != expected_execution || retained.fence != fence(grant, &ControlIdentity {
+                    profile_id: profile_id.clone(), account_id: account_id.clone(),
+                    host_instance_id: retained.host_instance_id.clone(), secret: [0; 32], host_release: retained.manifest.host_release.clone(),
+                }) {
+                    return Err(refuse("fence or execution differs"));
+                }
+                if std::path::Path::new(&retained.native.cwd) != native_directory {
+                    return Err(refuse("native working directory differs"));
+                }
+                let session = SessionRecord { session_id: MessageUuid::new(&retained.native.session_id).map_err(|_| refuse("native session id"))? };
+                if session.session_id != stored.session_id {
+                    return Err(refuse("native session differs from the stored conversation"));
+                }
+                let secret = decode_secret(&retained.control_secret).ok_or_else(|| refuse("control secret"))?;
+                Ok((ControlIdentity {
+                    profile_id: profile_id.clone(), account_id: account_id.clone(),
+                    host_instance_id: retained.host_instance_id, secret, host_release: retained.manifest.host_release,
+                }, session))
+            },
+        )
+        .map_err(|_| AdapterError::Disconnected)?;
+        self.control = control;
+        self.host = Some(Host::Adopted(host));
+        self.normalizer.session = Some(session);
+        self.normalizer.fence = Some(expected);
+        self.connect(state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RetainedBootstrap {
+    host_instance_id: String,
+    control_secret: String,
+    fence: alondra_agent_protocol::Fence,
+    execution: alondra_agent_protocol::Execution,
+    manifest: RetainedManifest,
+    native: RetainedNative,
+}
+#[derive(serde::Deserialize)]
+struct RetainedManifest {
+    host_release: String,
+    host_sha256: String,
+    executable_sha256: String,
+}
+#[derive(serde::Deserialize)]
+struct RetainedNative {
+    session_id: String,
+    cwd: String,
+}
+fn decode_secret(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut secret = [0; 32];
+    for (index, byte) in secret.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(secret)
 }
 impl Adapter for ClaudeAdapter {
     type NativeInput = InputRecord;
@@ -476,17 +637,10 @@ impl DurableAdapter for ClaudeAdapter {
             },
         )
         .map_err(|_| AdapterError::Disconnected)?;
-        self.host = Some(host);
+        self.host = Some(Host::Launched(host));
         self.normalizer.session = Some(session);
         self.normalizer.fence = Some(expected);
-        let deadline = self.deadline()?;
-        self.connection = Some(Connection::attach(
-            self.host.as_mut().ok_or(AdapterError::Disconnected)?,
-            &self.control,
-            0,
-            deadline,
-        )?);
-        Ok(())
+        self.connect(0)
     }
 }
 pub(super) fn bootstrap(

@@ -3,7 +3,7 @@ use alondra_agent_protocol::{
     HostExpectation, MAX_FRAME_BYTES, ReceiptOutcome, ReceiptPhase, ReceivedFrame, SDK_VERSION,
     encode, owner_proof, verify_host_proof,
 };
-use alondra_agent_runtime::owned_host::OwnedHost;
+use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_provider_contract::{AdapterError, Handoff, PreparedCommand};
 use alondra_foundation::DataEpoch;
 use alondra_store::OwnerGrant;
@@ -67,8 +67,10 @@ pub(super) struct Connection {
     failed: bool,
 }
 impl Connection {
-    pub fn attach<O: HostOwner>(
-        host: &mut OwnedHost<O>,
+    pub fn attach(
+        stream: UnixStream,
+        owner: &impl HostOwner,
+        artifact: &VerifiedArtifact,
         control: &ControlIdentity,
         committed_cursor: u64,
         deadline: Instant,
@@ -76,11 +78,10 @@ impl Connection {
         if committed_cursor > alondra_agent_protocol::MAX_SAFE_INTEGER {
             return Err(invalid("persisted host cursor bound"));
         }
-        let fence = fence(host.owner(), control);
-        let execution = execution(host.owner());
+        let fence = fence(owner, control);
+        let execution = execution(owner);
         fence.validate().map_err(protocol)?;
         execution.validate().map_err(protocol)?;
-        let stream = host.wait_for_socket(deadline).map_err(disconnected)?;
         let mut writer = stream.try_clone().map_err(disconnected)?;
         let probe = stream.try_clone().map_err(disconnected)?;
         let read_deadline = Arc::new(Mutex::new(deadline));
@@ -96,7 +97,7 @@ impl Connection {
             .negotiate(&HostExpectation {
                 fence: &fence,
                 host_release: &control.host_release,
-                host_sha256: host.identity().artifact().artifact_sha256(),
+                host_sha256: artifact.artifact_sha256(),
                 required_capabilities: &["streaming_input", "owner_attach", "commit_ack"],
             })
             .map_err(protocol)?;
@@ -107,7 +108,7 @@ impl Connection {
         if challenge.fence != fence
             || challenge.execution != execution
             || challenge.host_instance_id != control.host_instance_id
-            || challenge.executable_sha256 != host.identity().artifact().executable_sha256()
+            || challenge.executable_sha256 != artifact.executable_sha256()
         {
             return Err(invalid("host challenge identity mismatch"));
         }
@@ -116,10 +117,10 @@ impl Connection {
             execution: execution.clone(),
             host_instance_id: control.host_instance_id.clone(),
             nonce: challenge.nonce,
-            owner_generation: host.owner().owner_generation(),
+            owner_generation: owner.owner_generation(),
             host_release: control.host_release.clone(),
-            host_sha256: host.identity().artifact().artifact_sha256().into(),
-            executable_sha256: host.identity().artifact().executable_sha256().into(),
+            host_sha256: artifact.artifact_sha256().into(),
+            executable_sha256: artifact.executable_sha256().into(),
             sdk_version: SDK_VERSION.into(),
             proof: String::new(),
         };
@@ -194,7 +195,10 @@ impl Connection {
             let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
             match &received.frame().body {
                 Body::Receipt(receipt) => {
-                    self.commands.receipt(receipt).map_err(protocol)?;
+                    match self.commands.receipt(receipt) {
+                        Ok(_) | Err(alondra_agent_protocol::Error::UnknownCommand) => {}
+                        Err(error) => return Err(protocol(error)),
+                    }
                     if receipt.command_id == expected_command {
                         match &receipt.outcome {
                             ReceiptOutcome::Rejected { .. } => {
@@ -207,6 +211,62 @@ impl Connection {
                                 phase: ReceiptPhase::Admitted,
                             } => {}
                         }
+                    }
+                }
+                Body::Event(_) => self.queue(received)?,
+                _ => return Err(invalid("unexpected host response after attach")),
+            }
+        }
+    }
+    /// Reconciles a dispatch whose receipt a crash lost by re-sending its exact recorded bytes and
+    /// reading the host's definitive answer. A command the host never had is admitted and acted on
+    /// now (its final receipt arrives); one the host already had returns its retained receipt, which
+    /// may be admitted-only when the action ran but its outcome is unknown. The first receipt for
+    /// the command is final: offered/applied is a handoff, rejected a pre-offer refusal, and an
+    /// admitted-only answer is uncertainty, never permission to offer again.
+    pub fn reconcile(
+        &mut self,
+        owner: &OwnerGrant,
+        prepared: &PreparedCommand,
+        deadline: Instant,
+    ) -> Result<Handoff, AdapterError> {
+        self.check_owner(owner)?;
+        let result = self.reconcile_inner(prepared, deadline);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn reconcile_inner(
+        &mut self,
+        prepared: &PreparedCommand,
+        deadline: Instant,
+    ) -> Result<Handoff, AdapterError> {
+        let mut input = FramedReader::new(Cursor::new(prepared.bytes()));
+        let received = input.read_received().map_err(protocol)?.ok_or_else(|| invalid("missing command"))?;
+        if input.read_received().map_err(protocol)?.is_some() {
+            return Err(invalid("multiple prepared commands"));
+        }
+        let Body::Command(command) = &received.frame().body else {
+            return Err(invalid("prepared value is not a command"));
+        };
+        if encode(received.frame()).map_err(protocol)? != prepared.bytes() {
+            return Err(invalid("prepared command encoding changed"));
+        }
+        // A re-send is a deliberate replay, so a duplicate is expected, not a conflict.
+        self.commands.record(command).map_err(protocol)?;
+        write(&mut self.writer, prepared.bytes(), deadline)?;
+        let expected_command = command.command_id.clone();
+        loop {
+            let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
+            match &received.frame().body {
+                Body::Receipt(receipt) => {
+                    if receipt.command_id == expected_command {
+                        return Ok(match &receipt.outcome {
+                            ReceiptOutcome::Rejected { .. } => Handoff::RefusedBeforeOffer,
+                            ReceiptOutcome::Accepted { phase: ReceiptPhase::Offered | ReceiptPhase::Applied } => Handoff::Offered,
+                            ReceiptOutcome::Accepted { phase: ReceiptPhase::Admitted } => Handoff::Uncertain,
+                        });
                     }
                 }
                 Body::Event(_) => self.queue(received)?,
@@ -249,7 +309,12 @@ impl Connection {
             };
             match &received.frame().body {
                 Body::Receipt(receipt) => {
-                    self.commands.receipt(receipt).map_err(protocol)?;
+                    // After adoption the host re-sends receipts for commands this fresh registry
+                    // never issued; those are reconciled separately, so an unknown one is ignored.
+                    match self.commands.receipt(receipt) {
+                        Ok(_) | Err(alondra_agent_protocol::Error::UnknownCommand) => {}
+                        Err(error) => return Err(protocol(error)),
+                    }
                 }
                 Body::Event(event) => {
                     self.check_event(&received)?;

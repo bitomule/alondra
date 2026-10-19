@@ -115,7 +115,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
 }
 
 /// Stops Mac `number`'s daemon and starts it again with the script the sandbox started it with.
-fn restart(sandbox: &Sandbox, number: usize) -> Result<()> {
+pub(super) fn restart(sandbox: &Sandbox, number: usize) -> Result<()> {
     let target = sandbox.mac(number)?;
     let home = sandbox.dir.join(format!("mac-{number}"));
     let pid: u32 = fs::read_to_string(home.join("alondrad.pid"))?.trim().parse().context("alondrad.pid")?;

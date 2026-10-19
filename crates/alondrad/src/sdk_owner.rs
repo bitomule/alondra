@@ -111,7 +111,7 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         1,
     )
     .map_err(|error| Failed(format!("the provider binding: {error:?}")))?;
-    let mut worker = ClaudeWorker::configured(binding.clone(), configuration(backend, &launch, &suffix)?)
+    let mut worker = ClaudeWorker::configured(binding.clone(), configuration(backend, &launch.directory, &agent.0, true)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
@@ -125,7 +125,7 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         task_id: launch.task.clone(),
         agent_id: agent.clone(),
         conversation: format!("sdk-conversation-{suffix}"),
-        instance: format!("sdk-instance-{suffix}"),
+        instance: agent.0.clone(),
         host: HOST.into(),
     });
     let (first, _) = domain
@@ -166,10 +166,76 @@ pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<ser
     Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
 }
 
-fn configuration(backend: &SdkBackend, launch: &Launch, suffix: &str) -> Result<ClaudeConfiguration, Failed> {
-    let state_directory = backend.state_root.join(suffix);
-    std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed(format!("creating the SDK state root: {error}")))?;
-    {
+/// Adopts the host of `task` a previous daemon left running: it reserves the next owner generation,
+/// adopts the live host with the same session, reconciles every dispatch a crash left unresolved
+/// against the receipt the host retained, and resumes from where the lifecycle waits. It launches
+/// no process; if the host is gone the adoption fails and the execution is left as it is.
+pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<Driver, Failed> {
+    let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
+    let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
+    let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
+    let ((stamp, directory, unresolved), _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
+    let grant = domain.seals.take(&task).owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
+    let owner_generation = grant.generation();
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false)?)
+        .map_err(adapter("configuring the SDK worker"))?;
+    let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
+    domain.seals.take(&task);
+    worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
+    let mut driver = Driver { domain, worker, scope, task: task.clone(), agent, permits: VecDeque::new(), awaiting: None };
+    for command in unresolved {
+        let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
+        let receipt = match handoff {
+            Handoff::Offered => DispatchReceipt::Handed,
+            Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
+            Handoff::Uncertain => DispatchReceipt::Uncertain,
+        };
+        let stamp = stamp.clone();
+        let intent = command.intent_id;
+        driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
+    }
+    driver.sealed();
+    let read = driver.domain.read();
+    driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+        .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
+    drop(read);
+    Ok(driver)
+}
+
+/// At startup, adopts the live host of every task that was running through the SDK and is not
+/// terminal. A host that is gone leaves its execution as it is, with the reason in the log.
+pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
+    let Ok(state) = domain.state() else { return };
+    let tasks: Vec<TaskId> = state
+        .tasks
+        .values()
+        .filter(|task| {
+            task.agent_id.is_some()
+                && state.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| {
+                    lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
+                        && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
+                })
+        })
+        .map(|task| task.id.clone())
+        .collect();
+    for task in tasks {
+        match adopt(Arc::clone(domain), backend, task.clone()) {
+            Ok(driver) => {
+                domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
+                domain.live.forget_closed_task(&task.0);
+                log!("the SDK host of {task} was adopted: the same Claude keeps its session");
+            }
+            Err(Failed(why)) => log!("the SDK host of {task} was not adopted and its execution is left as it is: {why}"),
+        }
+    }
+}
+
+/// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
+/// daemon that comes back finds it without searching. A launch creates it; an adoption reuses it.
+fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: bool) -> Result<ClaudeConfiguration, Failed> {
+    let state_directory = backend.state_root.join(instance);
+    if create {
+        std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed(format!("creating the SDK state root: {error}")))?;
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -182,7 +248,7 @@ fn configuration(backend: &SdkBackend, launch: &Launch, suffix: &str) -> Result<
         state_directory,
         host_environment: backend.host_environment.clone(),
         native_executable: backend.native.clone(),
-        native_directory: launch.directory.clone().into(),
+        native_directory: directory.into(),
         native_environment: backend.native_environment.clone(),
         profile_id: "alondra".into(),
         account_id: "native-login".into(),
@@ -287,6 +353,41 @@ impl Driver {
         self.domain = domain;
     }
 
+    /// Claims and records the next waiting dispatch but does not send it: the crash state a daemon
+    /// leaves when it dies after recording a command and before the host receives it.
+    #[cfg(test)]
+    pub(crate) fn claim_and_record_without_sending(&mut self) -> bool {
+        self.sealed();
+        let Some(permit) = self.permits.pop_front() else {
+            return false;
+        };
+        self.domain.own(self.scope.clone(), |owner| owner.claim(permit)).unwrap();
+        let attempt = self.sealed().attempts.pop().expect("the claim issued an attempt");
+        let generation = self.worker.owner_generation().unwrap();
+        let worker = &mut self.worker;
+        self.domain.own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker)).unwrap();
+        self.sealed();
+        true
+    }
+
+    /// Claims, records and sends the next waiting dispatch to the host, but does not record its
+    /// receipt: the crash state a daemon leaves when it dies after the host offered the input.
+    #[cfg(test)]
+    pub(crate) fn claim_record_and_offer_without_receipt(&mut self) -> bool {
+        self.sealed();
+        let Some(permit) = self.permits.pop_front() else {
+            return false;
+        };
+        self.domain.own(self.scope.clone(), |owner| owner.claim(permit)).unwrap();
+        let attempt = self.sealed().attempts.pop().expect("the claim issued an attempt");
+        let generation = self.worker.owner_generation().unwrap();
+        let worker = &mut self.worker;
+        self.domain.own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker)).unwrap();
+        let command = self.sealed().commands.pop().expect("the command left a seal");
+        assert_eq!(self.worker.submit(&command).unwrap(), Handoff::Offered, "the host offered the input");
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_permits(&mut self) -> usize {
         self.sealed();
@@ -332,9 +433,8 @@ impl Owner {
                         break;
                     }
                 }
-                if let Err(error) = driver.stop() {
-                    log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
-                }
+                // The daemon detaches from the host, leaving it and its Claude running: a daemon
+                // that comes back adopts them. Stopping the host when the task ends is phase 5d.
             })
             .expect("spawning the SDK owner");
         Self { stopped, domain, thread: Some(thread) }

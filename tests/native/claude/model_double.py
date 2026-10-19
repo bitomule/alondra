@@ -127,7 +127,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.served += 1
             served = self.server.served
             with open(self.server.log, 'a') as stream:
-                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'orchestrator': orchestrator}) + '\n')
+                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator}) + '\n')
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                    'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
         made = made_since_prompt(body)

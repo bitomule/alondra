@@ -124,6 +124,12 @@ js_test(
     entry_point = "host-stop.test.mjs",
     data = [":host_lib", "host-stop-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
+js_test(
+    name = "reconcile_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "reconcile.test.mjs",
+    data = [":host_lib", "reconcile-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
 
 pinned_node(
     name = "pinned_node",

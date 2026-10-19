@@ -110,8 +110,12 @@ export class PersistentHost {
     const digest = commandDigest(raw); const previous = this.journal.commands.get(command.command_id);
     if (previous) {
       if (previous.digest !== digest) throw new Error('Command identity conflict');
-      // Admission without a final receipt is uncertain, never permission to offer again.
-      this.flush(lane); return;
+      // A re-sent command is the owner reconciling after a crash. Return its definitive retained
+      // receipt whatever its phase, so an admitted-only receipt (the action already ran and its
+      // outcome is unknown) reaches the owner: it is never permission to offer again.
+      const receipt = previous.receipt;
+      if (receipt) { this.current(lane); await lane.channel.write(receipt); }
+      return;
     }
     if (this.journal.commands.size >= MAX_COMMANDS || command.deadline_ms < Date.now()) throw new Error('Command admission refused');
     this.persist({ protocol_version: PROTOCOL_VERSION, body: command }, raw);
@@ -160,9 +164,9 @@ export class PersistentHost {
           this.current(lane); this.session.close(); await this.session.finished;
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
       }
-    } catch {
+    } catch (error) {
       // Once SDK handoff may have occurred, keep admission as uncertainty rather than fabricate rejection.
-      this.diagnostic('sdk_action_uncertain');
+      this.diagnostic('sdk_action_uncertain ' + ((error as { message?: string })?.message ?? String(error)));
       throw new Error('SDK action uncertain');
     }
   }
@@ -196,6 +200,9 @@ export class PersistentHost {
           for (const record of this.journal.commands.values()) {
             const frame = record.receipt;
             if (!frame) continue;
+            // The admitted receipt is an internal uncertainty marker, not a reconciliation answer:
+            // it is retained and re-sent only when the owner re-sends its command, never flushed.
+            if (frame.body.outcome.status === 'accepted' && frame.body.outcome.phase === 'admitted') continue;
             const identity = JSON.stringify(frame.body.outcome);
             if (lane.receipts.get(record.command.command_id) === identity) continue;
             await lane.channel.write(frame); this.current(lane);

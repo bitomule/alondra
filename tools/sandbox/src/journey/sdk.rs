@@ -35,14 +35,25 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         let card = user.view(&format!("card:{first}"))?;
         report.snapshot("card-turn-ended", &card)?;
+        report.snapshot("fleet-before-restart", &user.view("fleet")?)?;
+        report.step("the Mac's daemon restarts and adopts the running host", || super::session::restart(sandbox, 1))?;
+        report.snapshot("fleet-after-restart", &user.view("fleet")?)?;
         let carry_on = user.action_labeled(&card, "Carry on").context("the card offers no «Carry on»")?;
-        report.step("the user presses «Carry on» with a note", || {
+        report.step("the user presses «Carry on» with a note after the restart", || {
             user.press(carry_on["id"].as_str().unwrap_or_default(), carry_on["option_id"].as_str(), Some(NOTE))
         })?;
-        wait(report, "what the user wrote reaches the native Claude", || {
+        wait(report, "what the user wrote reaches the same native Claude after the restart", || {
             let requests = model_requests(sandbox)?;
             let told = requests.iter().skip(1).find(|request| request["user"].as_str().is_some_and(|text| text.contains(NOTE)));
             Ok((told.map(drop), format!("{} requests", requests.len())))
+        })?;
+        report.step("the carry-on continued the same conversation, not a fresh one", || {
+            let requests = model_requests(sandbox)?;
+            let first_messages = requests.first().and_then(|request| request["messages"].as_u64()).unwrap_or(0);
+            let note_messages = requests.iter().find(|request| request["user"].as_str().is_some_and(|text| text.contains(NOTE)))
+                .and_then(|request| request["messages"].as_u64()).unwrap_or(0);
+            anyhow::ensure!(note_messages > first_messages, "the carry-on request carried {note_messages} messages, the first {first_messages}: the conversation did not grow");
+            Ok(())
         })?;
         let second = wait(report, "its next turn ends with a card of its own", || turn_card(&user, Some(&first)))?;
         let card = user.view(&format!("card:{second}"))?;

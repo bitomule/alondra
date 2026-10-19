@@ -487,7 +487,11 @@ async fn run_domain(config: &Config) -> Result<()> {
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox)? {
         log!("the SDK backend is on: every task this sandbox daemon launches runs through the Agent SDK");
-        domain.enable_sdk(backend);
+        domain.enable_sdk(backend.clone());
+        // Adopt the live host of every task a previous daemon left running, so a restart keeps the
+        // same Claude and its session instead of starting over.
+        let adopting = domain.clone();
+        tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
     }
     let state_domain = domain.clone();
     let gauges = state.gauges();

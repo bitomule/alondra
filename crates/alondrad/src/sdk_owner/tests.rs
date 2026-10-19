@@ -347,3 +347,122 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     assert_eq!(replay, Work { aggregate_loads: 0, event_decodes: 0, writes: 0, index_builds: 0 }, "an exact replay rebuilds nothing");
     driver.stop().unwrap();
 }
+
+/// The owner generation currently fencing the slice's execution, read straight from SQL.
+fn owner_generation(database: &Path) -> i64 {
+    Connection::open(database).unwrap().query_row("SELECT owner_generation FROM provider_execution_owners", [], |row| row.get(0)).unwrap()
+}
+
+fn carry_on(domain: &DomainRuntime, note: &str) {
+    let (card, _) = Slice::read_cards(domain).into_iter().find(|(_, answered)| !answered).expect("an open turn-end card");
+    let state = domain.state().unwrap();
+    let answer = Command::AnswerQuestion {
+        interaction_id: card.as_str().into(),
+        option_id: CARRY_ON.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.into()))]),
+        attachments: vec![],
+    };
+    assert!(domain.execute_with(&user(), &envelope(&state, "client-carry-on", answer), None, None, || Ok(())).unwrap().changed);
+}
+
+// B1: the daemon crashes with the host still running. A fresh daemon on the same database adopts
+// that live host with the next owner generation, and «Carry on» from a client reaches the same
+// native Claude, which starts only once; its next turn ends with a card of its own.
+#[test]
+fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_turn() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    assert_eq!(slice.prompts(), ["Write the release notes"], "the launch prompt reached the host once");
+    assert_eq!(owner_generation(&slice.database), 1, "the launch owned the execution as generation 1");
+    // The daemon dies: drop its driver without stopping the host, which keeps running.
+    drop(driver);
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    assert_eq!(owner_generation(&slice.database), 2, "adoption reserved the next owner generation");
+    carry_on(&restarted, "Add the tests first");
+    adopted.step(&|| false).unwrap();
+    slice.settle(&mut adopted);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "the same Claude got the launch and the carry-on, no restart: {prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the adopted turn ended with its own card");
+    adopted.stop().unwrap();
+}
+
+// B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the
+// live host, which re-sends the unacknowledged event; the adopting owner sees the store already has
+// it (Duplicate), acknowledges it once and publishes exactly one card.
+#[test]
+fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    let database = slice.database.clone();
+    slice.domain.before_owner_publish(move || {
+        let cards: i64 = Connection::open(&database).unwrap()
+            .query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [format!("{TURN_ENDED_PREFIX}{TASK}-%")], |row| row.get(0)).unwrap();
+        if cards > 0 {
+            panic!("the daemon stopped after the commit");
+        }
+    });
+    let crash = loop {
+        if let Err(crash) = catch_unwind(AssertUnwindSafe(|| driver.observe().unwrap())) {
+            break crash;
+        }
+    };
+    assert_eq!(crash.downcast_ref::<&str>(), Some(&"the daemon stopped after the commit"));
+    assert_eq!(slice.stored_cards(), 1, "the turn end committed its card");
+    drop(driver);
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let acknowledged = Arc::new(Mutex::new(0));
+    let counter = Arc::clone(&acknowledged);
+    restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    assert_eq!(adopted.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate, "the host re-sends the unacknowledged turn end and the store knows it");
+    assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
+    assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
+    assert_eq!(slice.stored_cards(), 1, "the replay adds no second card");
+    adopted.stop().unwrap();
+}
+
+// B3: a client's answer is claimed and recorded, then the daemon dies before the host receives it.
+// A fresh daemon adopts and reconciles the unsent dispatch by re-sending its exact bytes: the host
+// offers it to the same Claude exactly once.
+#[test]
+fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first");
+    assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
+    drop(driver);
+    assert_eq!(slice.prompts().len(), 1, "the host's Claude never got the answer");
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    slice.settle(&mut adopted);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "reconciliation sent the answer to the same Claude exactly once: {prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    adopted.stop().unwrap();
+}
+
+// B4: the host offered a client's answer but the daemon crashed before recording its receipt. A
+// fresh daemon adopts and reconciles it from the retained receipt: it is handed, and the host is
+// not asked to offer it a second time.
+#[test]
+fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first");
+    assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
+    drop(driver);
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    slice.settle(&mut adopted);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "the answer reached the host once; reconciliation did not offer it again: {prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the reconciled turn ended with its own card");
+    adopted.stop().unwrap();
+}

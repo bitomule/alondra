@@ -226,6 +226,28 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.adapter_state(grant)?)
     }
 
+    /// Takes the task's current execution with the next owner generation, for a daemon that is
+    /// adopting a host a previous one left running. The commit issues the grant; the returned
+    /// dispatches are the ones a crash left claimed, with the exact bytes to re-send to the host.
+    pub(crate) fn adopt(&mut self, task: &TaskId) -> std::result::Result<(ExecutionStamp, String, Vec<alondra_store::UnresolvedCommand>), StoreError> {
+        let stamp = self.journal.load(task)?.execution().cloned().ok_or(alondra_store::Error::MissingIntent)?;
+        let current = self.journal.owner_generation(&stamp)?;
+        self.journal.reserve_owner(&stamp, current)?;
+        let unresolved = self.journal.unresolved_commands(task)?;
+        let conn = self.conn;
+        let directory = self.journal.inspect(|| {
+            conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task.0], |row| row.get::<_, String>(0))
+                .map_err(|error| StoreError::Storage(error.into()))
+        })?;
+        Ok((stamp, directory, unresolved))
+    }
+
+    /// Resolves a claimed dispatch with the host's answer, fenced by the generation it was
+    /// reconciled under. It never invents consumption.
+    pub(crate) fn resolve(&mut self, stamp: &ExecutionStamp, intent: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
+    }
+
     pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<TaskLifecycle, StoreError> {
         Ok(self.journal.load(task)?)
     }

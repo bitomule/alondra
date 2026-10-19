@@ -1743,6 +1743,94 @@ fn owned_claim(fixture: &mut Fixture) -> (DispatchAttempt, OwnerGrant) {
     let attempt = tx.commit().unwrap().attempts.pop().unwrap();
     (attempt, owner)
 }
+
+/// A claim whose command bytes are recorded and committed but whose receipt a crash lost: the
+/// dispatch stays `claimed` with its exact bytes in `provider_commands`.
+fn crashed_claim(fixture: &mut Fixture, bytes: &[u8]) -> OwnerGrant {
+    let (attempt, owner) = owned_claim(fixture);
+    let mut tx = fixture.transaction();
+    tx.record_owned_command(attempt, owner.generation(), CommandEvidence::new(bytes.to_vec()).unwrap())
+        .unwrap();
+    tx.commit().unwrap();
+    owner
+}
+
+#[test]
+fn an_adopting_owner_reserves_the_generation_over_the_current_one() {
+    let mut fixture = Fixture::new();
+    let owner = crashed_claim(&mut fixture, b"framed command");
+    let stamp = owner.execution().clone();
+    let tx = fixture.transaction();
+    assert_eq!(tx.owner_generation(&stamp).unwrap(), 1, "the launch owned it as generation 1");
+    drop(tx);
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 1).unwrap();
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    assert_eq!(adopted.generation(), 2, "adoption reserves the next generation");
+    assert_eq!(fixture.transaction().owner_generation(&stamp).unwrap(), 2);
+}
+
+#[test]
+fn unresolved_commands_return_claimed_sends_with_their_exact_bytes() {
+    let mut fixture = Fixture::new();
+    let _owner = crashed_claim(&mut fixture, b"the exact framed launch command");
+    let tx = fixture.transaction();
+    let unresolved = tx.unresolved_commands(&"task".into()).unwrap();
+    assert_eq!(unresolved.len(), 1, "one claimed send waits to be reconciled");
+    assert_eq!(unresolved[0].input, id("initial"));
+    assert_eq!(unresolved[0].command, b"the exact framed launch command");
+}
+
+#[test]
+fn resolve_dispatch_moves_a_claimed_send_only_under_the_current_owner_and_never_reoffers() {
+    let mut fixture = Fixture::new();
+    let owner = crashed_claim(&mut fixture, b"framed command");
+    let stamp = owner.execution().clone();
+    let intent = fixture.transaction().unresolved_commands(&"task".into()).unwrap()[0].intent_id;
+
+    // Adopt as generation 2: the launch's generation 1 is now stale and cannot resolve the send.
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 1).unwrap();
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.resolve_dispatch(&stamp, intent, 1, DispatchReceipt::Handed), Err(Error::StaleOwner)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+
+    // Under the adopting generation, resolve as handed: the dispatch is handed, the input stays
+    // pending (no invented consumption) and no new permit is offered for it.
+    let mut tx = fixture.transaction();
+    tx.resolve_dispatch(&stamp, intent, adopted.generation(), DispatchReceipt::Handed).unwrap();
+    let committed = tx.commit().unwrap();
+    assert!(committed.permits.is_empty(), "a handed send is never offered again");
+    let tx = fixture.transaction();
+    assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs(), vec![&id("initial")], "a handed send does not consume its input");
+    assert!(tx.unresolved_commands(&"task".into()).unwrap().is_empty(), "the claimed send is resolved");
+    drop(tx);
+
+    // Resolving it again finds nothing claimed.
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.resolve_dispatch(&stamp, intent, adopted.generation(), DispatchReceipt::Handed), Err(Error::StalePermit)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn an_uncertain_resolution_leaves_the_send_terminal_and_the_input_pending() {
+    let mut fixture = Fixture::new();
+    let owner = crashed_claim(&mut fixture, b"framed command");
+    let stamp = owner.execution().clone();
+    let intent = fixture.transaction().unresolved_commands(&"task".into()).unwrap()[0].intent_id;
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 1).unwrap();
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.resolve_dispatch(&stamp, intent, adopted.generation(), DispatchReceipt::Uncertain).unwrap();
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
+    assert!(tx.unresolved_commands(&"task".into()).unwrap().is_empty(), "an uncertain send is no longer claimed");
+    assert_eq!(tx.unresolved(&"task".into()).unwrap().iter().filter(|d| d.uncertain_receipt).count(), 1, "it stays uncertain for the recovery card");
+    assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs(), vec![&id("initial")], "an uncertain send never invents consumption");
+}
+
 #[test]
 fn command_commit_value_preserves_exact_claim_and_bytes_only_after_real_commit() {
     let mut fixture = Fixture::new();

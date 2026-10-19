@@ -80,7 +80,8 @@ impl<O: HostOwner> BatchHost<O> {
         )
         .map_err(|_| AdapterError::Disconnected)?;
         let deadline = deadline(configuration.io_timeout)?;
-        let connection = Connection::attach(&mut host, &control, 0, deadline)?;
+        let stream = host.wait_for_socket(deadline).map_err(|_| AdapterError::Disconnected)?;
+        let connection = Connection::attach(stream, host.owner(), host.identity().artifact(), &control, 0, deadline)?;
         let mut batch = Self {
             host,
             connection,

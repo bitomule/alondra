@@ -361,6 +361,15 @@ pub struct UnresolvedDispatch {
     pub uncertain_receipt: bool,
 }
 
+/// A dispatch the owner claimed but whose receipt a crash lost, with the exact command bytes it
+/// recorded. An adopting owner re-sends these to the host and resolves them with its answer.
+#[derive(Debug)]
+pub struct UnresolvedCommand {
+    pub intent_id: i64,
+    pub input: InputId,
+    pub command: Vec<u8>,
+}
+
 /// Owns a caller-created transaction on domain.db. Drop rolls back every staged effect.
 /// Business card settlement belongs to guarded application commands on the same transaction.
 ///
@@ -1112,6 +1121,73 @@ impl<'connection> LifecycleTransaction<'connection> {
         staging!(self, {
             self.load(task)?;
             self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
+    /// The owner generation currently fencing the task's execution, or `StaleOwner` when the
+    /// execution was never owned. An adopting owner reserves the next one over this.
+    pub fn owner_generation(&self, stamp: &ExecutionStamp) -> Result<u64> {
+        staging!(self, {
+            let binding = self.execution_binding(stamp)?;
+            self.transaction
+                .query_row(
+                    "SELECT owner_generation FROM provider_execution_owners WHERE task_id=?1 AND generation=?2 AND binding_id=?3",
+                    params![stamp.task().0, sql_number(stamp.generation())?, binding.id()],
+                    |row| read_number(row, 0),
+                )
+                .optional()?
+                .ok_or(Error::StaleOwner)
+        })
+    }
+    /// The claimed dispatches of the task's current execution whose receipt a crash lost, with the
+    /// exact command bytes the owner recorded, in intent order. An adopting owner re-sends each to
+    /// the host. Dispatches already `uncertain` are terminal and not returned.
+    pub fn unresolved_commands(&self, task: &TaskId) -> Result<Vec<UnresolvedCommand>> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let mut statement = self.transaction.prepare(
+                "SELECT d.id,d.input_id,c.bytes FROM lifecycle_dispatches d JOIN provider_commands c ON c.intent_id=d.id AND c.task_id=d.task_id AND c.generation=d.generation WHERE d.task_id=?1 AND d.generation=?2 AND d.status='claimed' ORDER BY d.id",
+            )?;
+            let rows = statement.query_map(params![task.0, sql_number(stamp.generation())?], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))
+            })?;
+            rows.map(|row| {
+                let (intent_id, input, command) = row?;
+                if command.is_empty() || command.len() > MAX_PAYLOAD {
+                    return Err(Error::CorruptJournal);
+                }
+                Ok(UnresolvedCommand { intent_id, input: InputId::new(input)?, command })
+            })
+            .collect()
+        })
+    }
+    /// Resolves a claimed dispatch of the task's current execution with the host's answer, fenced
+    /// by the owner generation it was reconciled under. `claimed` → `handed`/`rejected`/`uncertain`;
+    /// nothing else transitions. It never invents consumption: a handed input stays pending.
+    pub fn resolve_dispatch(
+        &mut self,
+        stamp: &ExecutionStamp,
+        intent_id: i64,
+        owner_generation: u64,
+        receipt: DispatchReceipt,
+    ) -> Result<()> {
+        staging!(self, {
+            check_epoch(&self.transaction, &self.scope)?;
+            self.fence_observation_owner(stamp, owner_generation)?;
+            let status = match receipt {
+                DispatchReceipt::Handed => "handed",
+                DispatchReceipt::Rejected => "rejected",
+                DispatchReceipt::Uncertain => "uncertain",
+            };
+            let changed = self.transaction.execute(
+                "UPDATE lifecycle_dispatches SET status=?4 WHERE id=?1 AND task_id=?2 AND generation=?3 AND status='claimed'",
+                params![intent_id, stamp.task().0, sql_number(stamp.generation())?, status],
+            )?;
+            if changed != 1 {
+                return Err(Error::StalePermit);
+            }
+            self.touched.insert(stamp.task().clone());
             Ok(())
         })
     }

@@ -4,4 +4,4 @@ checks:
     uses: bazel/test
     paths: ["**"]
     with:
-      targets: ["//agent-host:sdk_test", "//agent-host:sea_test", "//agent-host:frame_test", "//agent-host:ownership_test", "//agent-host:journal_test", "//agent-host:channel_test", "//agent-host:sdk_cleanup_test", "//agent-host:host_stop_test", "//agent-host:sdk_descendant_test", "//agent-host:host_flush_test", "//agent-host:sdk_retry_test", "//agent-host:sdk_orchestrator_test"]
+      targets: ["//agent-host:sdk_test", "//agent-host:sea_test", "//agent-host:frame_test", "//agent-host:ownership_test", "//agent-host:journal_test", "//agent-host:channel_test", "//agent-host:sdk_cleanup_test", "//agent-host:host_stop_test", "//agent-host:sdk_descendant_test", "//agent-host:host_flush_test", "//agent-host:sdk_retry_test", "//agent-host:sdk_orchestrator_test", "//agent-host:reconcile_test"]
