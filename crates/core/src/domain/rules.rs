@@ -1919,6 +1919,9 @@ impl DomainState {
             | Command::AdmitExecution { task_id, .. }
             | Command::RecordRuntimeFacts { task_id, .. }
             | Command::RecordTurnBoundary { task_id, .. }
+            | Command::RecordHostEnded { task_id, .. }
+            | Command::RecordDoubtfulHandoff { task_id, .. }
+            | Command::ResendUntakenInput { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
@@ -3979,6 +3982,25 @@ impl DomainState {
                 self.task(task_id)?;
                 nonempty(turn)?;
                 self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), effects, lifecycles)?;
+            }
+            Command::RecordHostEnded { task_id, generation } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.record_host_ended(task_id, *generation, effects, lifecycles)?;
+            }
+            Command::RecordDoubtfulHandoff { task_id, generation, input, text } => {
+                system(actor)?;
+                self.task(task_id)?;
+                nonempty(input)?;
+                nonempty(text)?;
+                self.record_doubtful_handoff(task_id, *generation, input, text, effects, lifecycles)?;
+            }
+            Command::ResendUntakenInput { task_id, generation, input, text } => {
+                system(actor)?;
+                self.task(task_id)?;
+                nonempty(input)?;
+                nonempty(text)?;
+                self.resend_untaken(task_id, *generation, input, text, lifecycles)?;
             }
             Command::ProbeClaudeAccess { hold } => {
                 system(actor)?;

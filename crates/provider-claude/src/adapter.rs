@@ -3,7 +3,8 @@ use crate::records::{InputRecord, SessionRecord};
 use crate::wire::{Connection, ControlIdentity, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_agent_protocol::{Action, Body, Command, SDK_VERSION};
-use alondra_agent_runtime::owned_host::{AdoptedHost, HostStop, LaunchIdentity, OwnedHost, VerifiedArtifact};
+use alondra_agent_runtime::owned_host::{AdoptedHost, EndedHost, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
+use crate::ended::EndedJournal;
 use alondra_foundation::{ExecutionStamp, MessageUuid};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
@@ -141,6 +142,16 @@ impl ClaudeWorker {
         state: AdapterState,
     ) -> Result<(), AdapterError> {
         self.adapter.adopt_owner(grant, state)
+    }
+    /// Whether a host of this execution still runs (adopt it) or ended (what its journal proves).
+    pub fn find_host(&mut self, grant: &OwnerGrant, state: &AdapterState) -> Result<Found, AdapterError> {
+        self.adapter.find_host(grant, state)
+    }
+    /// Launches a fresh host for the same execution once the evidence of the ended one is
+    /// committed; its first input resumes the stored native session when `resume`.
+    pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> {
+        self.adapter.configuration.native_environment.extend(environment);
+        self.adapter.relaunch(grant, state, base, resume)
     }
     /// Re-sends the exact recorded bytes of a dispatch whose receipt a crash lost, and returns the
     /// host's definitive answer.
@@ -333,6 +344,7 @@ struct ClaudeAdapter {
     host: Option<Host>,
     connection: Option<Connection>,
     normalizer: Normalizer,
+    ended: Option<(EndedHost, String)>,
 }
 impl ClaudeConfiguration {
     /// Checks the configuration and makes the private control material of one host.
@@ -374,7 +386,10 @@ impl ClaudeAdapter {
             normalizer: Normalizer {
                 session: None,
                 fence: None,
+                first_cursor: None,
+                host_ended: false,
             },
+            ended: None,
         })
     }
     fn deadline(&self) -> Result<Instant, AdapterError> {
@@ -401,6 +416,37 @@ impl ClaudeAdapter {
         self.connection = Some(Connection::attach(stream, host.owner(), host.artifact(), &self.control, committed_cursor, deadline)?);
         Ok(())
     }
+    /// The retained bootstrap of a host of this execution, checked against this grant and
+    /// configuration and against the stored conversation. A live host must run this daemon's
+    /// artifact; an ended one may have run the release before an upgrade.
+    fn retained(&self, grant: &OwnerGrant, artifact: Option<&VerifiedArtifact>, bytes: &[u8], stored: &SessionRecord) -> std::io::Result<Retained> {
+        let retained: RetainedBootstrap = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+        let refuse = |why: &str| std::io::Error::other(format!("retained host bootstrap {why}"));
+        if artifact.is_some_and(|artifact| {
+            retained.manifest.host_sha256 != artifact.artifact_sha256() || retained.manifest.executable_sha256 != artifact.executable_sha256()
+        }) {
+            return Err(refuse("artifact hashes differ"));
+        }
+        let control = |secret| ControlIdentity {
+            profile_id: self.configuration.profile_id.clone(),
+            account_id: self.configuration.account_id.clone(),
+            host_instance_id: retained.host_instance_id.clone(),
+            secret,
+            host_release: retained.manifest.host_release.clone(),
+        };
+        if retained.execution != execution(grant) || retained.fence != fence(grant, &control([0; 32])) {
+            return Err(refuse("fence or execution differs"));
+        }
+        if std::path::Path::new(&retained.native.cwd) != self.configuration.native_directory {
+            return Err(refuse("native working directory differs"));
+        }
+        let session = SessionRecord { session_id: MessageUuid::new(&retained.native.session_id).map_err(|_| refuse("native session id"))? };
+        if session.session_id != stored.session_id {
+            return Err(refuse("native session differs from the stored conversation"));
+        }
+        let secret = decode_secret(&retained.control_secret).ok_or_else(|| refuse("control secret"))?;
+        Ok(Retained { control: control(secret), session, journal_base: retained.journal_base })
+    }
     /// Adopts the host a previous daemon left running: it reads the retained bootstrap, verifies it
     /// against this grant and configuration, rebuilds the control identity and session from it, and
     /// attaches with the new owner generation from the committed checkpoint. It launches nothing
@@ -411,48 +457,102 @@ impl ClaudeAdapter {
         }
         let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
         let expected = fence(&owner, &self.control);
-        let expected_execution = execution(&owner);
-        let native_directory = self.configuration.native_directory.clone();
-        let (profile_id, account_id) = (self.configuration.profile_id.clone(), self.configuration.account_id.clone());
-        let (host, (control, session)) = AdoptedHost::adopt(
+        let (host, retained) = AdoptedHost::adopt(
             owner,
             self.configuration.artifact.clone(),
             &self.configuration.state_directory,
-            |grant, identity, bytes| {
-                let retained: RetainedBootstrap = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
-                let refuse = |why: &str| std::io::Error::other(format!("retained host bootstrap {why}"));
-                if retained.manifest.host_sha256 != identity.artifact().artifact_sha256()
-                    || retained.manifest.executable_sha256 != identity.artifact().executable_sha256()
-                {
-                    return Err(refuse("artifact hashes differ"));
-                }
-                if retained.execution != expected_execution || retained.fence != fence(grant, &ControlIdentity {
-                    profile_id: profile_id.clone(), account_id: account_id.clone(),
-                    host_instance_id: retained.host_instance_id.clone(), secret: [0; 32], host_release: retained.manifest.host_release.clone(),
-                }) {
-                    return Err(refuse("fence or execution differs"));
-                }
-                if std::path::Path::new(&retained.native.cwd) != native_directory {
-                    return Err(refuse("native working directory differs"));
-                }
-                let session = SessionRecord { session_id: MessageUuid::new(&retained.native.session_id).map_err(|_| refuse("native session id"))? };
-                if session.session_id != stored.session_id {
-                    return Err(refuse("native session differs from the stored conversation"));
-                }
-                let secret = decode_secret(&retained.control_secret).ok_or_else(|| refuse("control secret"))?;
-                Ok((ControlIdentity {
-                    profile_id: profile_id.clone(), account_id: account_id.clone(),
-                    host_instance_id: retained.host_instance_id, secret, host_release: retained.manifest.host_release,
-                }, session))
-            },
+            |grant, identity, bytes| self.retained(grant, Some(identity.artifact()), bytes, &stored),
         )
         .map_err(|_| AdapterError::Disconnected)?;
-        self.control = control;
+        self.control = retained.control;
         self.host = Some(Host::Adopted(host));
-        self.normalizer.session = Some(session);
+        self.normalizer.session = Some(retained.session);
         self.normalizer.fence = Some(expected);
+        self.normalizer.first_cursor = retained.journal_base.map(|base| base + 1);
         self.connect(state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0))
     }
+    /// Whether a host of this execution still runs. When none does, the evidence its journal kept
+    /// beyond `state`'s checkpoint; the ended host's folder stays locked until `relaunch`.
+    fn find_host(&mut self, owner: &OwnerGrant, state: &AdapterState) -> Result<Found, AdapterError> {
+        if owner.binding() != &self.binding || state.validate_owner(owner).is_err() || self.host.is_some() || self.ended.is_some() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
+        let committed = state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
+        let wire_fence = fence(owner, &self.control);
+        let journal = match EndedHost::claim(&self.configuration.state_directory).map_err(|_| AdapterError::Disconnected)? {
+            RetainedHost::Held => return Ok(Found::Live),
+            RetainedHost::Absent => EndedJournal::without_evidence(committed),
+            RetainedHost::Ended(ended) => {
+                let retained = self.retained(owner, None, ended.bootstrap(), &stored).map_err(|_| AdapterError::InvalidObservation)?;
+                let journal = EndedJournal::read(ended.state_dir(), &wire_fence, &execution(owner), &retained.control.host_instance_id, committed)?;
+                self.ended = Some((ended, retained.control.host_instance_id));
+                journal
+            }
+        };
+        self.normalizer.session = Some(stored);
+        self.normalizer.fence = Some(wire_fence);
+        self.normalizer.host_ended = true;
+        Ok(Found::Ended(journal))
+    }
+    /// Launches a fresh host for the same execution after its host ended: the ended host's folder
+    /// is kept as evidence, the new host's journal continues from `base`, and its first input
+    /// resumes the stored native session when `resume`, or starts it with the same id.
+    fn relaunch(&mut self, owner: OwnerGrant, state: AdapterState, base: u64, resume: bool) -> Result<(), AdapterError> {
+        if owner.binding() != &self.binding || state.validate_owner(&owner).is_err() || self.host.is_some() || !self.normalizer.host_ended {
+            return Err(AdapterError::InvalidObservation);
+        }
+        if state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0) != base {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let session: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
+        let directory = self.configuration.state_directory.clone();
+        if let Some((ended, instance)) = self.ended.take() {
+            let mut archive = directory.clone().into_os_string();
+            archive.push(format!(".ended-{instance}"));
+            ended.retire(std::path::Path::new(&archive)).map_err(|_| AdapterError::Disconnected)?;
+        }
+        if !directory.try_exists().map_err(|_| AdapterError::Disconnected)? {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&directory).map_err(|_| AdapterError::Disconnected)?;
+        }
+        let expected = fence(&owner, &self.control);
+        let continued = Continued { journal_base: base, resume };
+        let host = OwnedHost::launch_confined(
+            owner,
+            self.configuration.artifact.clone(),
+            &directory,
+            &self.configuration.host_environment,
+            self.configuration.confinement.as_deref(),
+            |grant, identity| bootstrap(grant, identity, &self.control, &self.configuration, &session, None, Some(continued)),
+        )
+        .map_err(|_| AdapterError::Disconnected)?;
+        self.host = Some(Host::Launched(host));
+        self.normalizer.session = Some(session);
+        self.normalizer.fence = Some(expected);
+        self.normalizer.first_cursor = Some(base + 1);
+        self.normalizer.host_ended = false;
+        self.connect(base)
+    }
+}
+
+/// What a daemon that takes an execution over finds of its host.
+pub enum Found {
+    /// A host still runs: adopt it.
+    Live,
+    /// No host runs any more: what its journal proves, for a relaunch.
+    Ended(EndedJournal),
+}
+struct Retained {
+    control: ControlIdentity,
+    session: SessionRecord,
+    journal_base: Option<u64>,
+}
+/// A host launched for an execution whose previous host ended.
+#[derive(Clone, Copy)]
+pub(super) struct Continued {
+    journal_base: u64,
+    resume: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -463,6 +563,8 @@ struct RetainedBootstrap {
     execution: alondra_agent_protocol::Execution,
     manifest: RetainedManifest,
     native: RetainedNative,
+    #[serde(default)]
+    journal_base: Option<u64>,
 }
 #[derive(serde::Deserialize)]
 struct RetainedManifest {
@@ -666,6 +768,7 @@ impl DurableAdapter for ClaudeAdapter {
                     &self.configuration,
                     &session,
                     None,
+                    None,
                 )
             },
         )
@@ -683,6 +786,7 @@ pub(super) fn bootstrap(
     configuration: &ClaudeConfiguration,
     session: &SessionRecord,
     orchestrator: Option<&crate::batch::OrchestratorProfile>,
+    continued: Option<Continued>,
 ) -> std::io::Result<Vec<u8>> {
     let secret = control
         .secret
@@ -713,6 +817,10 @@ pub(super) fn bootstrap(
         "manifest": { "mode": "node_bundle", "artifact_path": identity.artifact().artifact(), "host_release": control.host_release, "host_sha256": identity.artifact().artifact_sha256(), "executable_sha256": identity.artifact().executable_sha256(), "sdk_version": SDK_VERSION },
         "native": { "session_id": session.session_id, "executable": configuration.native_executable, "cwd": configuration.native_directory, "env": configuration.native_environment }
     });
+    if let Some(continued) = continued {
+        bootstrap["journal_base"] = continued.journal_base.into();
+        bootstrap["native"]["resume"] = continued.resume.into();
+    }
     match (orchestrator, &configuration.worker) {
         (Some(_), Some(_)) => return Err(std::io::Error::other("a host runs the orchestrator or a task, never both")),
         (Some(profile), None) => bootstrap["orchestrator"] = serde_json::to_value(profile).map_err(std::io::Error::other)?,

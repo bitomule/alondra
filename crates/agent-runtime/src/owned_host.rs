@@ -640,6 +640,77 @@ impl AdoptedHost {
         }
     }
 }
+/// What a daemon finds in the folder where a host of its execution ran. The kernel releases a
+/// host's lock when its process ends, a reboot included, so taking the lock is the fact that
+/// the host ended: no age, PID or failed connection decides it.
+pub enum Retained {
+    /// No host ever wrote its bootstrap here.
+    Absent,
+    /// A process still holds the host's lock: the host is alive.
+    Held,
+    /// No process holds the lock: the host ended. The claim keeps the lock until it is retired.
+    Ended(EndedHost),
+}
+/// The folder of a host that ended, locked by this daemon, with the bootstrap it ran with.
+pub struct EndedHost {
+    state_dir: PathBuf,
+    bootstrap: Vec<u8>,
+    _lock: File,
+}
+impl EndedHost {
+    pub fn claim(state_dir: &Path) -> io::Result<Retained> {
+        match fs::symlink_metadata(state_dir) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
+            Err(error) => return Err(error),
+            Ok(_) => private_directory(state_dir)?,
+        }
+        let path = state_dir.join("host.lock");
+        let mut file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
+            other => other?,
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o600
+            || metadata.len() > BOOTSTRAP_LIMIT as u64
+        {
+            return Err(refused("retained private host material refused"));
+        }
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Ok(Retained::Held),
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
+        let named = fs::symlink_metadata(&path)?;
+        if named.is_symlink() || (named.dev(), named.ino()) != (metadata.dev(), metadata.ino()) {
+            return Err(refused("retained lock inode changed while claimed"));
+        }
+        let mut bootstrap = Vec::new();
+        file.read_to_end(&mut bootstrap)?;
+        if bootstrap.is_empty() {
+            return Ok(Retained::Absent);
+        }
+        Ok(Retained::Ended(Self { state_dir: state_dir.to_path_buf(), bootstrap, _lock: file }))
+    }
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+    pub fn bootstrap(&self) -> &[u8] {
+        &self.bootstrap
+    }
+    /// Keeps the ended host's folder as evidence under `archive` and frees its path for the next
+    /// host. The lock is released only once the rename is durable.
+    pub fn retire(self, archive: &Path) -> io::Result<()> {
+        if archive.parent() != self.state_dir.parent() || fs::symlink_metadata(archive).is_ok() {
+            return Err(refused("ended host archive refused"));
+        }
+        fs::rename(&self.state_dir, archive)?;
+        let parent = archive.parent().ok_or_else(|| refused("ended host archive has no parent"))?;
+        File::open(parent)?.sync_all()
+    }
+}
 fn connect_identity(
     identity: &LaunchIdentity,
     expected_lock: (u64, u64),

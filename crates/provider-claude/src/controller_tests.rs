@@ -59,6 +59,8 @@ impl FixtureAdapter {
             normalizer: Normalizer {
                 session: None,
                 fence: None,
+                first_cursor: None,
+                host_ended: false,
             },
             fixture,
         }

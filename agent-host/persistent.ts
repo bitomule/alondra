@@ -31,7 +31,7 @@ export class PersistentHost {
       if (!('execution' in body)) throw new Error('Journal identity missing');
       this.binding(body);
       if ('host_instance_id' in body && body.host_instance_id !== config.host_instance_id) throw new Error('Journal host instance mismatch');
-    });
+    }, config.journal_base);
     for (const record of this.journal.commands.values()) this.binding(record.command);
     for (const frame of this.journal.events.values()) this.binding(frame.body);
     this.server = createServer((socket) => this.connection(socket));
@@ -132,19 +132,18 @@ export class PersistentHost {
     try {
       switch (command.action.type) {
         case 'start': {
-          if (this.session || command.action.cwd !== this.config.native.cwd) throw new Error('Owned session configuration refused');
+          if (this.session || command.action.cwd !== this.config.native.cwd || this.config.journal_base !== undefined) throw new Error('Owned session configuration refused');
           this.current(lane);
-          this.session = new Session({ ...this.config.native, sessionId: this.config.native.session_id, orchestrator: this.config.orchestrator, worker: this.config.worker,
-            beforeSpawn: () => { this.hooks.beforeSpawn?.(); this.current(lane); },
-            observe: (observation) => this.observe(observation),
-          });
+          this.session = this.open(lane);
           this.current(lane);
           this.session.offer(command.action.input_id, command.action.prompt);
           this.receipt(record, { status: 'accepted', phase: 'offered' });
-          void this.session.finished.catch(() => this.storageUncertain());
           break;
         }
         case 'offer':
+          // A host launched after its execution's previous host ended starts the native session on
+          // its first input: resumed when that host's Claude had one, never by a turn of its own.
+          if (!this.session && this.config.journal_base !== undefined) this.session = this.open(lane);
           if (!this.session) throw new Error('Session absent');
           this.current(lane); this.session.offer(command.action.input_id, command.action.prompt);
           this.receipt(record, { status: 'accepted', phase: 'offered' }); break;
@@ -169,6 +168,14 @@ export class PersistentHost {
       this.diagnostic('sdk_action_uncertain ' + ((error as { message?: string })?.message ?? String(error)));
       throw new Error('SDK action uncertain');
     }
+  }
+  private open(lane: Lane): Session {
+    const session = new Session({ ...this.config.native, sessionId: this.config.native.session_id, orchestrator: this.config.orchestrator, worker: this.config.worker,
+      beforeSpawn: () => { this.hooks.beforeSpawn?.(); this.current(lane); },
+      observe: (observation) => this.observe(observation),
+    });
+    void session.finished.catch(() => this.storageUncertain());
+    return session;
   }
   private receipt(record: CommandRecord, outcome: Extract<Frame['body'], { type: 'receipt' }>['outcome']): void {
     this.persist({ protocol_version: PROTOCOL_VERSION, body: { type: 'receipt', fence: this.config.fence, execution: this.config.execution, command_id: record.command.command_id, command_sha256: record.digest, outcome } });

@@ -1858,3 +1858,97 @@ fn work_after_the_merge_is_owed_from_its_declaration_and_only_a_fact_ends_it() {
     assert_eq!(task.phase(), TaskPhase::Cancelled);
     assert_eq!(task.post_merge(), None);
 }
+
+fn card(value: &str) -> InteractionId {
+    InteractionId::from(value)
+}
+fn waiting_for_the_next_input() -> TaskLifecycle {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    apply(&mut task, Event::Answer { card: card("turn-card"), input: input("next") });
+    assert_eq!(task.pending_inputs(), [&input("next")]);
+    task
+}
+
+#[test]
+fn a_host_that_ends_mid_turn_ends_its_turn_and_work_and_the_task_asks_how_to_go_on() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("background") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    assert_eq!(task.activity(), ActivityView::Resting);
+    assert!(!task.holds_slot(), "nothing of the ended host runs any more");
+    assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)]);
+}
+
+#[test]
+fn a_host_that_ends_while_its_task_waits_on_a_card_adds_no_second_card() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    assert_eq!(task.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
+}
+
+#[test]
+fn a_doubtful_input_holds_the_task_until_the_user_sends_it_again_in_its_place() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    assert!(task.cards().is_empty(), "the input still explains the next step");
+    apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
+    assert_eq!(task.cards(), [(&card("doubt"), WaitReason::Doubt)]);
+    assert_eq!(
+        task.apply(task.revision(), Event::Answer { card: card("doubt"), input: input("other") }),
+        Err(Refusal::InvalidState),
+        "only settling answers a doubt"
+    );
+    apply(&mut task, Event::SettleHandoff { card: card("doubt"), resend: Some(input("again")), unheard_card: card("unheard") });
+    assert_eq!(task.pending_inputs(), [&input("again")]);
+    assert!(task.settled(&input("next")) && task.doubts().is_empty() && task.cards().is_empty());
+    assert_eq!(task.activity(), ActivityView::Starting);
+}
+
+#[test]
+fn a_doubtful_input_taken_as_received_leaves_the_queue_unconsumed_and_the_task_asks_how_to_go_on() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
+    apply(&mut task, Event::SettleHandoff { card: card("doubt"), resend: None, unheard_card: card("unheard") });
+    assert!(task.pending_inputs().is_empty());
+    assert!(task.settled(&input("next")));
+    assert_eq!(task.cards(), [(&card("unheard"), WaitReason::Unheard)]);
+}
+
+#[test]
+fn cancelling_settles_every_open_doubt() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
+    apply(&mut task, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    assert!(task.settled(&input("next")) && task.doubts().is_empty());
+}
+
+#[test]
+fn a_launch_input_can_be_sent_again_but_never_taken_as_received() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    admit(&mut task, "instance");
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("initial") });
+    assert_eq!(
+        task.apply(task.revision(), Event::SettleHandoff { card: card("doubt"), resend: None, unheard_card: card("unheard") }),
+        Err(Refusal::InvalidState)
+    );
+    apply(&mut task, Event::SettleHandoff { card: card("doubt"), resend: Some(input("again")), unheard_card: card("unheard") });
+    assert_eq!(task.pending_inputs(), [&input("again")]);
+}
+
+#[test]
+fn an_input_the_ended_host_never_took_is_sent_again_in_its_place_without_asking() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut task, Event::ResendUntaken { input: input("next"), resend: input("again") });
+    assert_eq!(task.pending_inputs(), [&input("again")]);
+    assert!(task.cards().is_empty());
+    assert_eq!(
+        task.apply(task.revision(), Event::ResendUntaken { input: input("missing"), resend: input("other") }),
+        Err(Refusal::UnknownObligation)
+    );
+}

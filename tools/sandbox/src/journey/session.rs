@@ -132,3 +132,50 @@ pub(super) fn restart(sandbox: &Sandbox, number: usize) -> Result<()> {
         Ok(agent.get(&daemon).call().ok().filter(|reply| reply.status() == 200).map(drop))
     })
 }
+
+/// Turns Mac `number` off and on again: the kernel ends every SDK host it ran, with its native
+/// Claude, and the daemon starts again with no host left to adopt.
+pub(super) fn power_cycle(sandbox: &Sandbox, number: usize) -> Result<()> {
+    let groups = || -> Result<Vec<(String, String)>> {
+        let node = sandbox.dir.join("sdk/runtime/node");
+        let real = fs::canonicalize(&sandbox.dir)?.join("sdk/runtime/node");
+        let listing = Command::new("ps").args(["-axo", "pid=,pgid=,command="]).output()?;
+        Ok(String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((fields.next()?.to_owned(), fields.next()?.to_owned(), fields.next()?.to_owned()))
+            })
+            .filter(|(_, _, command)| *command == node.to_string_lossy() || *command == real.to_string_lossy())
+            .map(|(pid, pgid, _)| (pid, pgid))
+            .collect())
+    };
+    let hosts: Vec<String> = groups()?.into_iter().filter(|(pid, pgid)| pid == pgid).map(|(_, pgid)| pgid).collect();
+    anyhow::ensure!(!hosts.is_empty(), "no SDK host runs on Mac {number}");
+    for group in &hosts {
+        Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status()?;
+    }
+    // An ended process the daemon has not reaped yet is a zombie: it runs nothing and holds no lock.
+    wait_for("every process of the SDK hosts to end", Duration::from_secs(30), || {
+        let listing = Command::new("ps").args(["-axo", "pgid=,stat="]).output()?;
+        let alive = String::from_utf8_lossy(&listing.stdout).lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            let (group, stat) = (fields.next().unwrap_or_default(), fields.next().unwrap_or_default());
+            !stat.starts_with('Z') && hosts.iter().any(|host| host == group)
+        });
+        Ok((!alive).then_some(()))
+    })?;
+    restart(sandbox, number)
+}
+
+/// The command line of every native Claude the sandbox's SDK hosts run.
+pub(super) fn native_claudes(sandbox: &Sandbox) -> Result<Vec<String>> {
+    let claude = sandbox.dir.join("sdk/runtime/claude");
+    let real = fs::canonicalize(&sandbox.dir)?.join("sdk/runtime/claude");
+    let listing = Command::new("ps").args(["-axo", "command="]).output()?;
+    Ok(String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter(|command| command.starts_with(&format!("{} ", claude.display())) || command.starts_with(&format!("{} ", real.display())))
+        .map(str::to_owned)
+        .collect())
+}

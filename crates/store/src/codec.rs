@@ -36,6 +36,7 @@ pub(super) enum WaitRecord {
     Pause,
     Recovery,
     Unheard,
+    Doubt,
 }
 impl From<&WaitReason> for WaitRecord {
     fn from(event: &WaitReason) -> Self {
@@ -45,6 +46,7 @@ impl From<&WaitReason> for WaitRecord {
             WaitReason::Pause => Self::Pause,
             WaitReason::Recovery => Self::Recovery,
             WaitReason::Unheard => Self::Unheard,
+            WaitReason::Doubt => Self::Doubt,
         }
     }
 }
@@ -56,6 +58,7 @@ impl From<WaitRecord> for WaitReason {
             WaitRecord::Pause => Self::Pause,
             WaitRecord::Recovery => Self::Recovery,
             WaitRecord::Unheard => Self::Unheard,
+            WaitRecord::Doubt => Self::Doubt,
         }
     }
 }
@@ -304,6 +307,9 @@ pub(super) enum FactRecord {
         operation: String,
     },
     Notification,
+    HostEnded {
+        unheard_card: String,
+    },
 }
 impl From<&RuntimeFact> for FactRecord {
     fn from(event: &RuntimeFact) -> Self {
@@ -367,6 +373,9 @@ impl From<&RuntimeFact> for FactRecord {
                 operation: operation.as_str().to_owned(),
             },
             RuntimeFact::Notification => Self::Notification,
+            RuntimeFact::HostEnded { unheard_card } => Self::HostEnded {
+                unheard_card: unheard_card.0.clone(),
+            },
         }
     }
 }
@@ -434,6 +443,9 @@ impl FactRecord {
                 operation: OperationId::new(operation).map_err(Error::from)?,
             },
             FactRecord::Notification => RuntimeFact::Notification,
+            FactRecord::HostEnded { unheard_card } => RuntimeFact::HostEnded {
+                unheard_card: InteractionId(unheard_card),
+            },
         })
     }
 }
@@ -531,6 +543,19 @@ pub(super) enum EventRecord {
         review: String,
         plan_revision: u64,
         outcome: PlanReviewOutcomeRecord,
+    },
+    DoubtHandoff {
+        card: String,
+        input: String,
+    },
+    SettleHandoff {
+        card: String,
+        resend: Option<String>,
+        unheard_card: String,
+    },
+    ResendUntaken {
+        input: String,
+        resend: String,
     },
 }
 impl From<&Event> for EventRecord {
@@ -644,6 +669,23 @@ impl From<&Event> for EventRecord {
                 review: review.0.clone(),
                 plan_revision: *plan_revision,
                 outcome: (*outcome).into(),
+            },
+            Event::DoubtHandoff { card, input } => Self::DoubtHandoff {
+                card: card.0.clone(),
+                input: input.as_str().to_owned(),
+            },
+            Event::SettleHandoff {
+                card,
+                resend,
+                unheard_card,
+            } => Self::SettleHandoff {
+                card: card.0.clone(),
+                resend: resend.as_ref().map(|value| value.as_str().to_owned()),
+                unheard_card: unheard_card.0.clone(),
+            },
+            Event::ResendUntaken { input, resend } => Self::ResendUntaken {
+                input: input.as_str().to_owned(),
+                resend: resend.as_str().to_owned(),
             },
         }
     }
@@ -763,6 +805,25 @@ impl EventRecord {
                 review: InteractionId(review),
                 plan_revision,
                 outcome: outcome.into(),
+            },
+            EventRecord::DoubtHandoff { card, input } => Event::DoubtHandoff {
+                card: InteractionId(card),
+                input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::SettleHandoff {
+                card,
+                resend,
+                unheard_card,
+            } => Event::SettleHandoff {
+                card: InteractionId(card),
+                resend: resend
+                    .map(|value| InputId::new(value).map_err(Error::from))
+                    .transpose()?,
+                unheard_card: InteractionId(unheard_card),
+            },
+            EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
+                input: InputId::new(input).map_err(Error::from)?,
+                resend: InputId::new(resend).map_err(Error::from)?,
             },
         })
     }
@@ -985,6 +1046,40 @@ mod tests {
             &current,
             Event::HoldForPlanReview {
                 review: "decision".into(),
+            },
+        );
+        roundtrip(
+            &current,
+            Event::DoubtHandoff {
+                card: "doubt".into(),
+                input: InputId::new("input").unwrap(),
+            },
+        );
+        for resend in [None, Some(InputId::new("again").unwrap())] {
+            roundtrip(
+                &current,
+                Event::SettleHandoff {
+                    card: "doubt".into(),
+                    resend,
+                    unheard_card: "unheard".into(),
+                },
+            );
+        }
+        roundtrip(
+            &current,
+            Event::ResendUntaken {
+                input: InputId::new("input").unwrap(),
+                resend: InputId::new("again").unwrap(),
+            },
+        );
+        roundtrip(
+            &current,
+            Event::Runtime {
+                stamp: current.execution().unwrap().clone(),
+                cursor: 2,
+                fact: RuntimeFact::HostEnded {
+                    unheard_card: "session-ended".into(),
+                },
             },
         );
         for outcome in [

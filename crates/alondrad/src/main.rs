@@ -486,6 +486,14 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     let domain = state.domain();
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
+    // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
+    match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
+        Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
+            Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
+            Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
+        },
+        None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
+    }
     if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox)? {
         log!("the SDK backend is on: every task this sandbox daemon launches runs through the Agent SDK");
         domain.enable_sdk(backend.clone());
@@ -569,13 +577,6 @@ async fn run_domain(config: &Config) -> Result<()> {
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
     tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
-        Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
-            Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
-            Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
-        },
-        None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
-    }
     tokio::spawn(mods_check::run(plugins::node()));
     if config.fast_timing {
         domain.live.gate.tune(fleet_gate::Tuning { spacing: 1_000, limit: Some(fleet_gate::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });

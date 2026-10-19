@@ -20,7 +20,9 @@ export class Journal {
   readonly recovering: boolean;
   readonly path: string;
   readonly uncertainPath: string;
-  constructor(private directory: string, private validateBinding: (frame: Frame) => void) {
+  /** `base` is the cursor the execution's previous host ended at: this journal's events continue from it. */
+  constructor(private directory: string, private validateBinding: (frame: Frame) => void, base = 0) {
+    this.cursor = base; this.acknowledged = base;
     this.path = join(directory, 'outbox'); this.uncertainPath = join(directory, 'uncertain');
     this.fd = openSync(this.path, constants.O_CREAT | constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
     const stat = fstatSync(this.fd);

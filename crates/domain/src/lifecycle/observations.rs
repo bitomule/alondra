@@ -23,6 +23,7 @@ impl TaskLifecycle {
         let mut aborted_callback = None;
         let mut requested_card = None;
         let mut resting_card = None;
+        let mut ended_callbacks = Vec::new();
         if execution.resource != ResourceEvidence::Available
             && matches!(
                 fact,
@@ -318,6 +319,23 @@ impl TaskLifecycle {
                 }
             }
             RuntimeFact::Notification => {}
+            RuntimeFact::HostEnded { unheard_card } => {
+                valid_id(&unheard_card.0)?;
+                if !matches!(execution.resource, ResourceEvidence::Reserved | ResourceEvidence::Available) {
+                    return Err(Refusal::InvalidState);
+                }
+                let cut = matches!(
+                    execution.activity,
+                    Activity::Turn { .. } | Activity::OwnWork { .. } | Activity::Continuation(_)
+                );
+                ended_callbacks = execution.callbacks.drain(..).map(|state| callback_id(&state).clone()).collect();
+                if cut {
+                    execution.activity = Activity::Resting;
+                }
+                if cut || !ended_callbacks.is_empty() {
+                    resting_card = Some(unheard_card);
+                }
+            }
         }
         let held = self
             .cards()
@@ -338,6 +356,7 @@ impl TaskLifecycle {
             && matches!(self.state, State::InProgress(Progress::Executing { .. }))
         {
             let id = resting_card
+                .clone()
                 .or_else(|| aborted_callback.as_ref().map(|(_, id)| id.clone()))
                 .ok_or(Refusal::InvalidState)?;
             forced_card = Some(Card {
@@ -370,6 +389,7 @@ impl TaskLifecycle {
                 if let Some((callback, _)) = &aborted_callback {
                     updated.retain(|_, card| card.callback.as_ref() != Some(callback));
                 }
+                updated.retain(|_, card| card.callback.as_ref().is_none_or(|callback| !ended_callbacks.contains(callback)));
                 if let Some(card) = requested_card {
                     if updated.insert(card.id.clone(), card).is_some() {
                         return Err(Refusal::DuplicateObligation);
@@ -386,7 +406,7 @@ impl TaskLifecycle {
                 }
                 if updated.is_empty() {
                     if matches!(execution.activity, Activity::Resting) {
-                        let (_, id) = aborted_callback.ok_or(Refusal::InvalidState)?;
+                        let id = aborted_callback.map(|(_, id)| id).or(resting_card).ok_or(Refusal::InvalidState)?;
                         updated.insert(
                             id.clone(),
                             Card {
@@ -414,6 +434,7 @@ impl TaskLifecycle {
                 if let Some((callback, _)) = aborted_callback {
                     decisions.retain(|_, card| card.callback.as_ref() != Some(&callback));
                 }
+                decisions.retain(|_, card| card.callback.as_ref().is_none_or(|callback| !ended_callbacks.contains(callback)));
                 if let Some(card) = requested_card {
                     if decisions.insert(card.id.clone(), card).is_some() {
                         return Err(Refusal::DuplicateObligation);
@@ -436,6 +457,9 @@ impl TaskLifecycle {
                         .decisions
                         .retain(|_, card| card.callback.as_ref() != Some(&callback));
                 }
+                delivered
+                    .decisions
+                    .retain(|_, card| card.callback.as_ref().is_none_or(|callback| !ended_callbacks.contains(callback)));
                 if let Some(card) = requested_card {
                     if delivered.decisions.insert(card.id.clone(), card).is_some() {
                         return Err(Refusal::DuplicateObligation);

@@ -585,6 +585,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::AdmitExecution { task_id, .. }
         | Command::RecordRuntimeFacts { task_id, .. }
         | Command::RecordTurnBoundary { task_id, .. }
+        | Command::RecordHostEnded { task_id, .. }
+        | Command::RecordDoubtfulHandoff { task_id, .. }
+        | Command::ResendUntakenInput { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }

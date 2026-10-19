@@ -276,10 +276,13 @@ fn still_stalled(domain: &DomainRuntime, session: &str) -> bool {
 /// Whether the session still has to be brought back: its agent works on an open task and its mod
 /// holds no connection. A paused node is the gate's: it resumes it in its turn, and brings it back
 /// first if its session is gone.
-fn needed(domain: &DomainRuntime, session: &str) -> bool {
+/// A node of the Agent SDK is no background session: its owner takes over its host, or replaces
+/// one that ended, so it is never respawned here.
+pub(crate) fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let agent = AgentId(session.to_owned());
-    state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
+    !crate::sdk_owner::runs_through_sdk(&state, &agent)
+        && state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
         && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)

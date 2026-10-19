@@ -76,7 +76,7 @@ impl<O: HostOwner> BatchHost<O> {
             &configuration.state_directory,
             &configuration.host_environment,
             configuration.confinement.as_deref(),
-            |owner, identity| bootstrap(owner, identity, &control, configuration, &session, Some(profile)),
+            |owner, identity| bootstrap(owner, identity, &control, configuration, &session, Some(profile), None),
         )
         .map_err(|_| AdapterError::Disconnected)?;
         let deadline = deadline(configuration.io_timeout)?;

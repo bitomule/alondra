@@ -93,6 +93,7 @@ def orchestrator_calls(scripts, text):
     return calls
 
 
+# A task's requests stay unanswered while a file named `model-hold` is next to the log.
 # A task's requests get this HTTP error while a file named `model-refuse` next to the log holds
 # its status: 401 is a sign-in the API no longer takes, 529 an overloaded API.
 ERRORS = {
@@ -164,6 +165,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(self.server.log, 'a') as stream:
                 stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
                                          'tools': [tool.get('name') for tool in body.get('tools', [])], 'context': context_text(body)}) + '\n')
+        if not orchestrator and Path(self.server.log).with_name('model-hold').exists():
+            # Held unanswered, as when the Mac shuts down before the model replies.
+            threading.Event().wait()
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                    'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
         made = made_since_prompt(body)

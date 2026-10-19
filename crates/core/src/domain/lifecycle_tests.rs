@@ -575,3 +575,96 @@ fn the_screens_show_one_sign_in_card_and_name_the_wait_of_the_other_task() {
     let other = render("task:u");
     assert!(other.contains("Espera a que inicies sesión en Claude"), "{other}");
 }
+
+fn options(s: &DomainState, card: &InteractionId) -> Vec<String> {
+    let InteractionPayload::Question { options, .. } = &s.interactions[card].payload else { panic!("a question") };
+    options.iter().map(|option| option.id.clone()).collect()
+}
+fn answer(s: &mut DomainState, card: &InteractionId, option: &str) {
+    must(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: option.into(), inputs: BTreeMap::new() });
+}
+
+#[test]
+fn a_host_that_ends_mid_turn_asks_once_how_the_task_goes_on() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1 });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the interrupted task asks").clone();
+    assert_eq!(s.interactions[&card].card.need, "“Task t” was interrupted when its session closed: tell it how to go on");
+    assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
+    assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
+    assert!(!holds_slot(&s, "t"), "nothing of the ended host runs");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    answer(&mut s, &card, CARRY_ON);
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::Answered { .. })), "the answer goes to the resumed session");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1 });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "its turn card already asks");
+    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("host_ended"));
+    assert_aggregate_rules(&s);
+}
+
+/// A task whose host ended while the user's answer to its turn card was handed and not yet read.
+fn doubtful(s: &mut DomainState, written: &str) -> (InteractionId, String) {
+    let turn = sdk_turn(s, "t", "a");
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: turn.as_str().into(), option_id: CARRY_ON.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(written.into()))]) });
+    let Some(LifecycleRecord::Answered { input, text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1 });
+    must(s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: input.clone(), text: text.clone() });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX)).expect("the doubt asks the user").clone();
+    (card, text)
+}
+
+#[test]
+fn a_message_the_ended_host_may_not_have_read_is_shown_whole_and_sent_again_only_on_the_users_word() {
+    let mut s = world();
+    let (card, text) = doubtful(&mut s, "Add the tests first");
+    let doubt = &s.interactions[&card];
+    assert_eq!(doubt.card.need, "“Task t” may not have got your message: send it again?");
+    assert_eq!(doubt.card.content.as_ref().map(|content| content.body.as_str()), Some(text.as_str()), "the card carries the whole message");
+    assert_eq!(options(&s, &card), [RESEND, TAKE_AS_RECEIVED]);
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: "other".into(), text: "other".into() })
+        .unwrap_err().code, "conflict", "an input that is not pending is never doubted");
+    answer(&mut s, &card, RESEND);
+    let Some(LifecycleRecord::HandoffSettled { resent: Some(resent), text: Some(again), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("settled") };
+    assert_eq!(again, text, "the same words go again");
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(resent).unwrap()]);
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "the message explains the next step");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_message_taken_as_received_is_not_sent_again_and_the_task_asks_how_to_go_on() {
+    let mut s = world();
+    let (card, _) = doubtful(&mut s, "Add the tests first");
+    answer(&mut s, &card, TAKE_AS_RECEIVED);
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::HandoffSettled { resent: None, text: None, .. })));
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(replayed.pending_inputs().is_empty(), "nothing is sent and nothing is recorded as read");
+    let next = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the task asks how to go on").clone();
+    assert_eq!(options(&s, &next), [CARRY_ON, CANCEL_TASK]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn what_the_user_writes_on_the_card_of_a_doubtful_message_is_sent_in_its_place() {
+    let mut s = world();
+    let (card, _) = doubtful(&mut s, "Add the tests first");
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: TAKE_AS_RECEIVED.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Skip the tests, write the docs".into()))]) });
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(),
+        Some(LifecycleRecord::HandoffSettled { resent: Some(_), text: Some(text), .. }) if text == "Skip the tests, write the docs"));
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "what they wrote explains the next step");
+    assert_aggregate_rules(&s);
+}

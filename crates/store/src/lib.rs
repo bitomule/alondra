@@ -642,6 +642,18 @@ impl<'connection> LifecycleTransaction<'connection> {
                     replayed: true,
                 });
             }
+            let handoff = match &event {
+                Event::DoubtHandoff { input, .. } => Some((input, ["handed", "uncertain"])),
+                Event::ResendUntaken { input, .. } => Some((input, ["rejected", "rejected"])),
+                _ => None,
+            };
+            if let Some((input, allowed)) = handoff {
+                let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+                let status: Option<String> = self.transaction.query_row("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND generation=?2 AND input_id=?3", params![task.0, sql_number(stamp.generation())?, input.as_str()], |row| row.get(0)).optional()?;
+                if !status.is_some_and(|status| allowed.contains(&status.as_str())) {
+                    return Err(Error::InvalidInput);
+                }
+            }
             let old_execution = aggregate.execution().cloned();
             let old_cards: Vec<_> = aggregate
                 .cards()
@@ -649,11 +661,8 @@ impl<'connection> LifecycleTransaction<'connection> {
                 .map(|(card, _)| card.clone())
                 .collect();
             aggregate.apply(expected_revision, event)?;
-            if old_execution.as_ref() != aggregate.execution() {
-                let unresolved: bool = self.transaction.query_row("SELECT EXISTS(SELECT 1 FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain'))", params![task.0], |row| row.get(0))?;
-                if unresolved {
-                    return Err(Error::UnresolvedDispatch);
-                }
+            if old_execution.as_ref() != aggregate.execution() && !unresolved(&self.transaction, &aggregate)?.is_empty() {
+                return Err(Error::UnresolvedDispatch);
             }
             let cleared: Vec<_> = old_cards
                 .into_iter()
@@ -1223,28 +1232,34 @@ impl<'connection> LifecycleTransaction<'connection> {
             Ok(())
         })
     }
+    /// The dispatches that still hold the task: claimed ones, whose receipt is unknown, and
+    /// uncertain ones the user has not settled.
     pub fn unresolved(&self, task: &TaskId) -> Result<Vec<UnresolvedDispatch>> {
         staging!(self, {
-            self.load(task)?;
-            let mut statement = self.transaction.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
-            let rows = statement.query_map(params![task.0], |row| {
-                Ok((
-                    row.get(0)?,
-                    read_number(row, 1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?;
-            rows.map(|row| {
-                let (intent_id, generation, input, status) = row?;
-                Ok(UnresolvedDispatch {
-                    intent_id,
-                    generation,
-                    input: InputId::new(input)?,
-                    uncertain_receipt: status == "uncertain",
-                })
-            })
-            .collect()
+            let aggregate = self.load(task)?;
+            unresolved(&self.transaction, &aggregate)
+        })
+    }
+    /// The pending inputs of the task's current execution that left for a host and were not
+    /// consumed, with their text and how their handoff ended: `handed`, `uncertain` or `rejected`.
+    pub fn pending_handoffs(&self, task: &TaskId) -> Result<Vec<(InputPayload, String)>> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let mut doubtful = vec![];
+            for input in aggregate.pending_inputs() {
+                let row: Option<(String, Option<String>)> = self.transaction.query_row(
+                    "SELECT d.status,i.body FROM lifecycle_dispatches d JOIN lifecycle_inputs i ON i.task_id=d.task_id AND i.input_id=d.input_id WHERE d.task_id=?1 AND d.generation=?2 AND d.input_id=?3",
+                    params![task.0, sql_number(stamp.generation())?, input.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional()?;
+                if let Some((status, Some(text))) = row
+                    && matches!(status.as_str(), "handed" | "uncertain" | "rejected")
+                {
+                    doubtful.push((InputPayload::new(input.clone(), text)?, status));
+                }
+            }
+            Ok(doubtful)
         })
     }
     pub fn claim(&mut self, permit: DispatchPermit) -> Result<()> {
@@ -1436,6 +1451,8 @@ fn check_epoch(connection: &Connection, scope: &AuthorityScope) -> Result<()> {
     }
     Ok(())
 }
+/// A paused task, or one whose doubtful input waits for the user, sends nothing: a later input
+/// never overtakes the doubtful one.
 fn dispatchable(aggregate: &TaskLifecycle) -> bool {
     matches!(
         aggregate.resource(),
@@ -1446,7 +1463,25 @@ fn dispatchable(aggregate: &TaskLifecycle) -> bool {
     ) && !aggregate
         .cards()
         .iter()
-        .any(|(_, reason)| *reason == WaitReason::Pause)
+        .any(|(_, reason)| matches!(reason, WaitReason::Pause | WaitReason::Doubt))
+}
+
+fn unresolved(connection: &Connection, aggregate: &TaskLifecycle) -> Result<Vec<UnresolvedDispatch>> {
+    let mut statement = connection.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
+    let rows = statement.query_map(params![aggregate.task().0], |row| {
+        Ok((row.get(0)?, read_number(row, 1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+    })?;
+    let mut holding = vec![];
+    for row in rows {
+        let (intent_id, generation, input, status) = row?;
+        let input = InputId::new(input)?;
+        let uncertain_receipt = status == "uncertain";
+        if uncertain_receipt && aggregate.settled(&input) {
+            continue;
+        }
+        holding.push(UnresolvedDispatch { intent_id, generation, input, uncertain_receipt });
+    }
+    Ok(holding)
 }
 
 fn require_directory(connection: &Connection, task: &TaskId, directory: &str) -> Result<()> {
@@ -1466,7 +1501,10 @@ fn next_offer(
     aggregate: &TaskLifecycle,
 ) -> Result<Option<(i64, InputId)>> {
     let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
-    for input in aggregate.pending_inputs() {
+    // Before the native session reported itself, only the input that starts it may go: the launch,
+    // or what the user sent again in its place for a host launched after the first one ended.
+    let starting = aggregate.resource() == Some(ResourceEvidence::Reserved);
+    for (at, input) in aggregate.pending_inputs().into_iter().enumerate() {
         let row: Option<(i64, String, String)> = connection.query_row("SELECT id,status,kind FROM lifecycle_dispatches WHERE task_id=?1 AND generation=?2 AND input_id=?3", params![aggregate.task().0, crate::sql_number(stamp.generation())?, input.as_str()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
         let (id, status, kind) = row.ok_or(Error::MissingIntent)?;
@@ -1474,6 +1512,7 @@ fn next_offer(
             "handed" => continue,
             "prepared"
                 if kind == "launch"
+                    || (starting && at == 0)
                     || aggregate.resource() == Some(ResourceEvidence::Available) =>
             {
                 return Ok(Some((id, input.clone())));

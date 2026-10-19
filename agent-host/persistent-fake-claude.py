@@ -5,14 +5,31 @@ import os
 import sys
 
 capture = os.environ['FIXTURE_CAPTURE']
+
+def flag(name):
+    arguments = sys.argv[1:]
+    for at, argument in enumerate(arguments):
+        if argument.startswith(name + '='):
+            return argument.split('=', 1)[1]
+        if argument == name and at + 1 < len(arguments):
+            return arguments[at + 1]
+    return None
+
+resumed = flag('--resume')
+session_id = resumed or flag('--session-id')
+# Like the native Claude, a session keeps its transcript on disk: a resumed one starts with it.
+transcript = capture + '.transcript-' + session_id
+history = sum(1 for _ in open(transcript)) if os.path.exists(transcript) else 0
+if resumed and not history:
+    raise RuntimeError('No conversation found with session ID: ' + resumed)
 with open(capture + '.starts', 'a') as stream:
-    stream.write(json.dumps(dict(pid=os.getpid())) + '\n')
+    stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history)) + '\n')
     stream.flush()
     os.fsync(stream.fileno())
-session_id = next(argument.split('=', 1)[1] for argument in sys.argv[1:] if argument.startswith('--session-id='))
 pending = []
 permission = None
-serial = 0
+# Message uuids are unique across processes, as the native ones are: a resumed session never repeats them.
+serial = (os.getpid() % 100000) * 1000000
 # The API refuses every prompt, with a 401 for an expired sign-in or a 529 when it is overloaded,
 # until the test marks it recovered with a file next to the capture.
 refused = None
@@ -121,6 +138,10 @@ for raw in sys.stdin:
             send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
         with open(capture + '.prompts', 'a') as stream:
             stream.write(json.dumps(message['message']['content']) + '\n')
+        with open(transcript, 'a') as stream:
+            stream.write(json.dumps(message['message']['content']) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
         text = message['message']['content']
         if text.endswith('signed-out'):
             refused = 401
@@ -134,6 +155,9 @@ for raw in sys.stdin:
             refuse(message, refused)
         elif text == 'stop-cleanup':
             send(dict(type='system', subtype='status', status='compacting', uuid='00000000-0000-4000-8000-000000000103', session_id=session_id))
+        elif text.endswith('unread') and not resumed:
+            # The session ends before Claude shows it read the prompt: no turn, no answer.
+            pass
         elif text == 'native-failure-now':
             sys.exit(7)
         elif text == 'failed-delivery':

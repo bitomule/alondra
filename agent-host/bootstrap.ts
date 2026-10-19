@@ -11,7 +11,8 @@ const shape = z.strictObject({
   host_instance_id: z.string().min(1).max(256), control_secret: digest,
   fence: z.unknown(), execution: z.unknown(),
   manifest: z.strictObject({ mode: z.literal('node_bundle'), artifact_path: absolute, host_release: z.string().min(1).max(256), host_sha256: digest, executable_sha256: digest, sdk_version: z.literal(SDK_VERSION) }),
-  native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()) }),
+  native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()), resume: z.boolean().optional() }),
+  journal_base: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   orchestrator: z.strictObject({
     resume: z.boolean(),
     model: z.string().min(1).max(64),

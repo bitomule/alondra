@@ -467,6 +467,28 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<SdkApiFailure>,
     },
+    /// The Task's SDK host of `generation` ended: no process holds its lock any more. What it had
+    /// running ended with it; when nothing explains the Task's next step, its card asks the user.
+    RecordHostEnded {
+        task_id: TaskId,
+        generation: u64,
+    },
+    /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
+    /// it showed the input was read: a card asks the user to send it again or take it as received.
+    RecordDoubtfulHandoff {
+        task_id: TaskId,
+        generation: u64,
+        input: String,
+        text: String,
+    },
+    /// `input`, told `text`, never reached the Task's ended SDK host of `generation`: the same
+    /// text goes to its next host in its place.
+    ResendUntakenInput {
+        task_id: TaskId,
+        generation: u64,
+        input: String,
+        text: String,
+    },
     /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
     ProbeClaudeAccess {
         hold: ClaudeHold,

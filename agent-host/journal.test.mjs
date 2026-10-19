@@ -44,5 +44,14 @@ try {
   assert.throws(() => journal.append(frame({ type: 'attached', ...identity, owner_generation: 1, proof: '0'.repeat(64) })), /generation/);
   assert.throws(() => journal.append(frame({ ...start.body, fence: { ...identity.fence, account_id: 'wrong' } })), /deep-equal/);
   assert.equal(statSync(journal.path).size, before);
+  const continued = mkdtempSync(join(process.env.TEST_TMPDIR, 'journal-continued-'));
+  let next = new Journal(continued, validate, 4);
+  try {
+    assert.equal(next.recovering, false, 'a host launched after the previous one ended starts with nothing to reconcile');
+    assert.throws(() => next.append(event), /cursor/, 'its events continue from the previous host, never from 1');
+    next.append(frame({ ...event.body, cursor: 5 }));
+    next.close(); next = new Journal(continued, validate, 4);
+    assert.equal(next.cursor, 5, 'replay continues from the same base');
+  } finally { next.close(); rmSync(continued, { recursive: true, force: true }); }
   console.log('Technical journal retains exact command and uncertainty; ACK only releases persisted observations');
 } finally { journal?.close(); rmSync(root, { recursive: true, force: true }); }

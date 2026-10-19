@@ -58,14 +58,36 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let second = wait(report, "its next turn ends with a card of its own", || turn_card(&user, Some(&first)))?;
         let card = user.view(&format!("card:{second}"))?;
         report.snapshot("card-turn-ended-again", &card)?;
-        let reply = user.action(&card, "reply:").context("the card offers no «Reply»")?;
+        report.snapshot("fleet-before-power-cycle", &user.view("fleet")?)?;
+        report.step("the Mac shuts down: the SDK host, its native Claude and the daemon all end", || super::session::power_cycle(sandbox, 1))?;
+        report.step("no native Claude runs until the user answers", || {
+            let running = super::session::native_claudes(sandbox)?;
+            anyhow::ensure!(running.is_empty(), "{running:?}");
+            Ok(())
+        })?;
+        report.snapshot("fleet-after-power-cycle", &user.view("fleet")?)?;
+        let card = user.view(&format!("card:{second}"))?;
+        let reply = user.action(&card, "reply:").context("the card offers no «Reply» after the Mac came back")?;
         report.step("the user writes on the card what to do", || {
             user.press(reply["id"].as_str().unwrap_or_default(), None, Some(WRITTEN))
         })?;
-        wait(report, "what the user wrote on the card reaches the native Claude", || {
+        wait(report, "what the user wrote on the card reaches the resumed native Claude", || {
             let requests = model_requests(sandbox)?;
             let told = requests.iter().skip(2).find(|request| request["user"].as_str().is_some_and(|text| text.contains(WRITTEN)));
             Ok((told.map(drop), format!("{} requests", requests.len())))
+        })?;
+        report.step("the new native Claude resumed the stored session", || {
+            let running = super::session::native_claudes(sandbox)?;
+            anyhow::ensure!(running.len() == 1 && running[0].contains("--resume"), "{running:?}");
+            Ok(())
+        })?;
+        report.step("the resumed session carries the whole conversation, not a fresh one", || {
+            let requests = model_requests(sandbox)?;
+            let messages = |text: &str| requests.iter().find(|request| request["user"].as_str().is_some_and(|user| user.contains(text)))
+                .and_then(|request| request["messages"].as_u64()).unwrap_or(0);
+            let (before, after) = (messages(NOTE), messages(WRITTEN));
+            anyhow::ensure!(after > before, "after the power cycle the request carried {after} messages, before it {before}: the context was lost");
+            Ok(())
         })?;
         report.snapshot("fleet", &user.view("fleet")?)
     });
@@ -142,6 +164,68 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
+    report.case("S5", "The Mac shuts down before Claude shows it read its mission: each task asks before sending it again", |report| {
+        hold(sandbox, true)?;
+        for (request_id, task, title) in DOUBTFUL {
+            request(report, fakes, &user, &task_script(request_id, task, title), title)?;
+            wait(report, &format!("{task}'s native Claude got its mission and the model has not answered"), || {
+                let requests = model_requests(sandbox)?;
+                Ok((requests.iter().any(|request| request["user"].as_str().is_some_and(|text| text.contains(title))).then_some(()), format!("{} requests", requests.len())))
+            })?;
+        }
+        report.step("the Mac shuts down: every SDK host, its native Claude and the daemon end", || super::session::power_cycle(sandbox, 1))?;
+        hold(sandbox, false)?;
+        let mut doubts = vec![];
+        for (_, task, title) in DOUBTFUL {
+            let card = wait(report, &format!("{task} asks whether to send its mission again"), || hold_card(&user, &format!("handoff-doubt-{task}-")))?;
+            let view = user.view(&format!("card:{card}"))?;
+            report.step(&format!("{task}'s card carries the whole message"), || {
+                anyhow::ensure!(view.to_string().contains(title), "{view}");
+                Ok(())
+            })?;
+            doubts.push(view);
+        }
+        report.snapshot("card-doubtful-message", &doubts[0])?;
+        report.step("nothing is sent while the user decides", || {
+            let running = super::session::native_claudes(sandbox)?;
+            anyhow::ensure!(running.is_empty(), "{running:?}");
+            Ok(())
+        })?;
+        let (_, resent, mission) = DOUBTFUL[0];
+        let again = user.action_labeled(&doubts[0], "Send it again").context("the card offers no «Send it again»")?;
+        report.step(&format!("the user sends {resent}'s message again"), || user.press(again["id"].as_str().unwrap_or_default(), again["option_id"].as_str(), None))?;
+        wait(report, "the same mission reaches a native Claude once more", || {
+            let requests = model_requests(sandbox)?;
+            let told = requests.iter().filter(|request| request["user"].as_str().is_some_and(|text| text.contains(mission))).count();
+            Ok(((told == 2).then_some(()), format!("{told} requests with the mission")))
+        })?;
+        wait(report, &format!("{resent}'s turn ends with a card of its own"), || hold_card(&user, &format!("turn-ended-{resent}-")))?;
+        let (_, received, _) = DOUBTFUL[1];
+        let taken = user.action_labeled(&doubts[1], "Take it as received").context("the card offers no «Take it as received»")?;
+        report.step(&format!("the user takes {received}'s message as received"), || user.press(taken["id"].as_str().unwrap_or_default(), taken["option_id"].as_str(), None))?;
+        let ended = wait(report, &format!("{received} asks how to go on"), || hold_card(&user, &format!("session-ended-{received}-")))?;
+        report.snapshot("card-session-ended", &user.view(&format!("card:{ended}"))?)?;
+        report.snapshot("fleet", &user.view("fleet")?)
+    });
+}
+
+/// Three tasks whose mission Claude had not shown it read when the Mac shut down.
+const DOUBTFUL: [(&str, &str, &str); 3] = [
+    ("req-s5", "t-s5", "Write the migration notes"),
+    ("req-s6", "t-s6", "Write the rollout plan"),
+    ("req-s7", "t-s7", "Write the support guide"),
+];
+
+/// The model double takes the tasks' requests and holds them unanswered while it is set.
+fn hold(sandbox: &Sandbox, on: bool) -> Result<()> {
+    let marker = sandbox.dir.join("sdk/model-hold");
+    if on {
+        return std::fs::write(&marker, "").with_context(|| format!("writing {}", marker.display()));
+    }
+    match std::fs::remove_file(&marker) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error).context("removing the hold"),
+        _ => Ok(()),
+    }
 }
 
 /// How many requests the model answered that told a held task to go on.

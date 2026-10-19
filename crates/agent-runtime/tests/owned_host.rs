@@ -368,3 +368,31 @@ fn actual_host_survives_only_its_owned_fake_daemon_group_death() {
         "remaining owned host survives the dead daemon's isolated process group"
     );
 }
+#[test]
+fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_folder() {
+    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    let directory = support::directory();
+    let state = directory.join("host");
+    let archive = directory.join("host.ended");
+    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Absent), "no folder, no host");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut environment = support::environment(&directory);
+    environment.insert("ALONDRA_FIXTURE_STATE".into(), state.to_str().unwrap().into());
+    let mut host = OwnedHost::launch(support::owner(&directory, 0), artifact(), &state, &environment, |_, _| {
+        Ok(b"retained-bootstrap".to_vec())
+    })
+    .unwrap();
+    drop(host.wait_for_socket(Instant::now() + Duration::from_secs(10)).unwrap());
+    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Held), "the live host holds its lock");
+    message(&state.join("s"), b"exit\n").unwrap();
+    assert!(host.wait().unwrap().success());
+    let Retained::Ended(ended) = EndedHost::claim(&state).unwrap() else { panic!("the host ended, so its lock is free") };
+    assert_eq!(ended.bootstrap(), b"retained-bootstrap");
+    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Held), "the claim keeps the lock until it is retired");
+    ended.retire(&archive).unwrap();
+    assert_eq!(fs::read(archive.join("host.lock")).unwrap(), b"retained-bootstrap", "the ended host is kept as evidence");
+    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Absent), "its path is free for the next host");
+    let lock = OpenOptions::new().read(true).write(true).open(archive.join("host.lock")).unwrap();
+    assert!(lock.try_lock().is_ok(), "retiring released the lock");
+}

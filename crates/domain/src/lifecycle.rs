@@ -61,6 +61,9 @@ pub enum WaitReason {
     Pause,
     Recovery,
     Unheard,
+    /// An input was handed to a host that ended before it showed the input was read: only the
+    /// user settles it, by sending it again or taking it as received.
+    Doubt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +268,26 @@ pub enum Event {
         plan_revision: u64,
         outcome: PlanReviewOutcome,
     },
+    /// `input` is pending, but it was handed to a host that ended before showing it was read:
+    /// the task waits on `card` for the user to settle it.
+    DoubtHandoff {
+        card: InteractionId,
+        input: InputId,
+    },
+    /// `input` provably never reached the ended host (it never took its command, or refused it
+    /// before offering it): `resend`, with the same text, takes its place for the next host.
+    ResendUntaken {
+        input: InputId,
+        resend: InputId,
+    },
+    /// The user settled the doubtful input of `card`: `resend` takes its place, or it is taken as
+    /// received and leaves the queue without being consumed. When nothing is left to explain the
+    /// task's next step, it waits on `unheard_card`.
+    SettleHandoff {
+        card: InteractionId,
+        resend: Option<InputId>,
+        unheard_card: InteractionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,6 +341,12 @@ pub enum RuntimeFact {
         operation: OperationId,
     },
     Notification,
+    /// The execution's host ended (no process holds its lock any more), and its native Claude
+    /// with it: the turn, the work and the questions it had open ended too. When that leaves
+    /// nothing to explain the task's next step, it waits on `unheard_card`.
+    HostEnded {
+        unheard_card: InteractionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -551,6 +580,11 @@ pub struct TaskLifecycle {
     /// Work the node declared it runs after the merge, until its fact ends it. Kept apart from
     /// `state` until the task finishes, when it becomes one of the obligations the ending owes.
     post_merge: Option<OperationId>,
+    /// The doubtful inputs, by the card that holds each one until the user settles it.
+    doubts: BTreeMap<InteractionId, InputId>,
+    /// Inputs the user settled (sent again, taken as received, or dropped with the task), whose
+    /// uncertain handoff no longer holds the task.
+    settled: BTreeSet<InputId>,
 }
 
 impl TaskLifecycle {
@@ -564,6 +598,8 @@ impl TaskLifecycle {
             plan_revision: 0,
             plan_reviews: BTreeMap::new(),
             post_merge: None,
+            doubts: BTreeMap::new(),
+            settled: BTreeSet::new(),
         })
     }
     pub fn task(&self) -> &TaskId {
@@ -728,6 +764,14 @@ impl TaskLifecycle {
             })
         })
     }
+    /// The doubtful inputs, each with the card that holds it.
+    pub fn doubts(&self) -> Vec<(&InteractionId, &InputId)> {
+        self.doubts.iter().collect()
+    }
+    /// Whether the user settled `input`, so an uncertain handoff of it no longer holds the task.
+    pub fn settled(&self, input: &InputId) -> bool {
+        self.settled.contains(input)
+    }
     pub fn drain(&self) -> impl Iterator<Item = &DrainObligation> {
         let obligations = match &self.state {
             State::Finishing(finishing) => Some(&finishing.remaining),
@@ -752,6 +796,8 @@ impl TaskLifecycle {
             plan_revision: self.plan_revision,
             plan_reviews: self.plan_reviews.clone(),
             post_merge: self.post_merge.clone(),
+            doubts: self.doubts.clone(),
+            settled: self.settled.clone(),
         };
         candidate.transition(event)?;
         candidate.revision += 1;

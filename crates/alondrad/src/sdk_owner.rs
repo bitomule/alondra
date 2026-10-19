@@ -14,8 +14,8 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, WorkerProfile};
-use alondra_provider_contract::{AdapterError, Capability, Handoff, PreparedCommand, ProviderBinding};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile};
+use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -87,6 +87,9 @@ pub(crate) struct Driver {
     permits: VecDeque<DispatchPermit>,
     /// The input last handed to the host, until the task's lifecycle no longer waits for it.
     awaiting: Option<InputId>,
+    /// The host was launched to replace one that ended and has been handed nothing yet: it runs no
+    /// Claude, so it has nothing to say whatever the lifecycle still waits for.
+    replacement: bool,
 }
 
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
@@ -116,11 +119,7 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         1,
     )
     .map_err(|error| Failed(format!("the provider binding: {error:?}")))?;
-    let profile = WorkerProfile {
-        plugins: vec![launch.plugin.clone()],
-        settings: crate::plugins::launch_settings_with(None).as_object().cloned().unwrap_or_default(),
-    };
-    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(profile))?;
+    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin)))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
         .execute_on_current(&envelope("register", Command::RegisterAgent {
@@ -147,7 +146,7 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
         })
         .map_err(failed("admitting the execution"))?;
-    let mut driver = Driver { domain, worker, scope, task: launch.task, agent, permits: VecDeque::new(), awaiting: None };
+    let mut driver = Driver { domain, worker, scope, task: launch.task, agent, permits: VecDeque::new(), awaiting: None, replacement: false };
     let mut sealed = driver.sealed();
     let grant = sealed.owners.pop().ok_or_else(|| Failed("the admission issued no owner grant".into()))?;
     let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -177,39 +176,101 @@ pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<ser
     Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
 }
 
-/// Adopts the host of `task` a previous daemon left running: it reserves the next owner generation,
-/// adopts the live host with the same session, reconciles every dispatch a crash left unresolved
-/// against the receipt the host retained, and resumes from where the lifecycle waits. It launches
-/// no process; if the host is gone the adoption fails and the execution is left as it is.
-pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<Driver, Failed> {
+/// Takes over the execution of `task` a previous daemon left: it reserves the next owner
+/// generation and finds the execution's host. A host that still runs is adopted with the same
+/// session, and every dispatch a crash left unresolved is reconciled against the receipt it
+/// retained. A host that ended (no process holds its lock, as after the Mac restarts) is replaced:
+/// the evidence its journal kept is committed, each unresolved dispatch is resolved from it, and a
+/// fresh host is launched that resumes the same native session on the next input. `plugin` is
+/// Alondra's node plugin, which that fresh host's Claude loads.
+pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     let ((stamp, directory, unresolved), _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
     let grant = domain.seals.take(&task).owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false, None)?)
+    let profile = plugin.map(worker_profile);
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
-    worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
-    let mut driver = Driver { domain, worker, scope, task: task.clone(), agent, permits: VecDeque::new(), awaiting: None };
+    let journal = match worker.find_host(&grant, &adapter_state).map_err(adapter("finding the SDK host"))? {
+        Found::Live => None,
+        Found::Ended(journal) => Some(journal),
+    };
+    let Some(journal) = journal else {
+        worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
+        let mut driver = Driver { domain, worker, scope, task: task.clone(), agent, permits: VecDeque::new(), awaiting: None, replacement: false };
+        for command in unresolved {
+            let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
+            let receipt = match handoff {
+                Handoff::Offered => DispatchReceipt::Handed,
+                Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
+                Handoff::Uncertain => DispatchReceipt::Uncertain,
+            };
+            let stamp = stamp.clone();
+            let intent = command.intent_id;
+            driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
+        }
+        driver.sealed();
+        let read = driver.domain.read();
+        driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+            .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
+        drop(read);
+        return Ok(driver);
+    };
+    if plugin.is_none() {
+        return Err(Failed("the host ended and Alondra's node plugin, which its replacement loads, was not found".into()));
+    }
+    for event in journal.events() {
+        let batch = OrderedObservation { owner_generation, execution: stamp.clone(), cursor: event.cursor, evidence: event.payload.clone() };
+        let binding = grant.binding().clone();
+        let normalizer = worker.normalizer();
+        domain.own(scope.clone(), |owner| owner.stage_observation(&binding, owner_generation, &batch, normalizer))
+            .map_err(failed("committing what the ended host observed"))?;
+    }
     for command in unresolved {
-        let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
-        let receipt = match handoff {
-            Handoff::Offered => DispatchReceipt::Handed,
-            Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
-            Handoff::Uncertain => DispatchReceipt::Uncertain,
+        let receipt = match journal.retained(&command.command).map_err(adapter("reading the ended host's receipt"))? {
+            Retained::Offered => DispatchReceipt::Handed,
+            Retained::Refused | Retained::Absent => DispatchReceipt::Rejected,
+            Retained::AdmittedOnly => DispatchReceipt::Uncertain,
         };
         let stamp = stamp.clone();
-        let intent = command.intent_id;
-        driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
+        domain.own(scope.clone(), |owner| owner.resolve(&stamp, command.intent_id, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
     }
+    let generation = stamp.generation();
+    domain.own(scope.clone(), |owner| {
+        let envelope = |name: String, command: Command| CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("host-ended:{task}:{generation}:{owner_generation}:{name}").as_str().into(),
+            expected_revision: 0,
+            command,
+        };
+        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation }), Attached::None)?;
+        let doubted: Vec<InputId> = owner.lifecycle(&task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
+        for (input, status) in owner.pending_handoffs(&task)? {
+            let (id, text) = (input.id().as_str().to_owned(), input.text().to_owned());
+            let command = match status.as_str() {
+                "rejected" => Command::ResendUntakenInput { task_id: task.clone(), generation, input: id.clone(), text },
+                _ if doubted.contains(input.id()) => continue,
+                _ => Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: id.clone(), text },
+            };
+            owner.stage_command(&Actor::System, &envelope(id, command), Attached::None)?;
+        }
+        Ok(())
+    })
+    .map_err(failed("recording the end of the host"))?;
+    let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
+    let base = adapter_state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
+    let resume = domain.read().state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+        .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
+    let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
+    let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
+    worker.relaunch(grant, adapter_state, base, resume, environment).map_err(adapter("launching the host that resumes the session"))?;
+    let mut driver = Driver { domain, worker, scope, task, agent, permits: VecDeque::new(), awaiting: None, replacement: true };
     driver.sealed();
-    let read = driver.domain.read();
-    driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
-        .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
-    drop(read);
     Ok(driver)
 }
 
@@ -229,14 +290,15 @@ pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
         })
         .map(|task| task.id.clone())
         .collect();
+    let plugin = crate::plugins::node();
     for task in tasks {
-        match adopt(Arc::clone(domain), backend, task.clone()) {
+        match adopt(Arc::clone(domain), backend, task.clone(), plugin.as_deref()) {
             Ok(driver) => {
                 domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
                 domain.live.forget_closed_task(&task.0);
-                log!("the SDK host of {task} was adopted: the same Claude keeps its session");
+                log!("the SDK execution of {task} was taken over: the same Claude session goes on");
             }
-            Err(Failed(why)) => log!("the SDK host of {task} was not adopted and its execution is left as it is: {why}"),
+            Err(Failed(why)) => log!("the SDK execution of {task} was not taken over and is left as it is: {why}"),
         }
     }
 }
@@ -268,6 +330,14 @@ fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: 
         confinement: backend.confinement.clone(),
         worker,
     })
+}
+
+/// Alondra's node plugin and launch settings, which a task's Claude loads on top of the user's own.
+fn worker_profile(plugin: &std::path::Path) -> WorkerProfile {
+    WorkerProfile {
+        plugins: vec![plugin.to_path_buf()],
+        settings: crate::plugins::launch_settings_with(None).as_object().cloned().unwrap_or_default(),
+    }
 }
 
 /// How the task's Claude reaches Alondra through the node plugin's MCP server: as its node, with
@@ -329,6 +399,7 @@ impl Driver {
         self.sealed();
         if handoff == Handoff::Offered {
             self.awaiting = Some(input);
+            self.replacement = false;
         }
         Ok(())
     }
@@ -354,6 +425,9 @@ impl Driver {
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
     /// yet, or a turn or work of its own still going. Facts decide it, never a clock.
     fn expects_host(&mut self) -> Result<bool, Failed> {
+        if self.replacement {
+            return Ok(false);
+        }
         let state = Arc::clone(self.domain.read().state());
         let journal = state.lifecycle_journal.get(&self.task).ok_or_else(|| Failed("the task has no lifecycle".into()))?;
         let lifecycle = replay(&self.task, journal).map_err(|error| Failed(format!("{error:#}")))?;

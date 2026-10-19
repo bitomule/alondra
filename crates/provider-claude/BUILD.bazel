@@ -6,6 +6,7 @@ _PROVIDER_SOURCES = glob(["src/*.rs"], exclude = ["src/*_tests.rs"])
 _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
     "src/controller_tests.rs",
     "src/facade_tests.rs",
+    "src/ended_tests.rs",
     "//crates:test_support.rs",
     "//crates/agent-application:tests/support/controller.rs",
 ]

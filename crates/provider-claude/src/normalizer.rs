@@ -16,6 +16,12 @@ const CHECKPOINT_FORMAT: u16 = 1;
 pub(super) struct Normalizer {
     pub session: Option<SessionRecord>,
     pub fence: Option<Fence>,
+    /// The first cursor of a host launched after its execution's previous host ended: the turn and
+    /// work that host's Claude had open ended with it.
+    pub first_cursor: Option<u64>,
+    /// The events being committed are the last of a host that ended: the exit of its Claude and the
+    /// end of its SDK iterator are evidence, not facts.
+    pub host_ended: bool,
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,10 +111,19 @@ impl ObservationNormalizer for Normalizer {
                 ..Checkpoint::default()
             }
         };
+        if self.first_cursor == Some(batch.cursor) {
+            checkpoint.turn = None;
+            checkpoint.work.clear();
+        }
         let session = self
             .session
             .as_ref()
             .ok_or(AdapterError::InvalidObservation)?;
+        if self.host_ended && ended_with_its_host(&event.observation) {
+            checkpoint.cursor = batch.cursor;
+            let bytes = serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
+            return Normalization::new(Vec::new(), bytes);
+        }
         let facts = fold(event, session, &mut checkpoint, |ids| {
             let keys = ids
                 .iter()
@@ -143,6 +158,20 @@ impl ObservationNormalizer for Normalizer {
         let bytes =
             serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
         Normalization::new(facts, bytes)
+    }
+}
+/// What a host leaves behind as it ends: its Claude's exit, and the end of the SDK iterator that
+/// read it (closed by the host, or cut by the exit).
+fn ended_with_its_host(observation: &WireObservation) -> bool {
+    match observation {
+        WireObservation::ProcessExited { .. } => true,
+        WireObservation::Sdk { kind: SdkEventKind::Diagnostic, failures, .. } => {
+            !failures.is_empty()
+                && failures.iter().all(|failure| {
+                    matches!(failure.surface, alondra_agent_protocol::FailureSurface::Control | alondra_agent_protocol::FailureSurface::Iterator)
+                })
+        }
+        _ => false,
     }
 }
 fn fold(
@@ -816,5 +845,18 @@ mod diagnostic_tests {
             ),
             Err(AdapterError::InvalidObservation)
         ));
+    }
+
+    #[test]
+    fn only_the_exit_and_the_iterator_end_are_what_a_host_leaves_as_it_ends() {
+        use alondra_agent_protocol::{FailureSurface, SdkFailure};
+        let failure = |surface| SdkFailure { surface, code: "aborted".into(), details: json!({}) };
+        let diagnostic = |failures| WireObservation::Sdk { kind: SdkEventKind::Diagnostic, native: NativeCorrelation::default(), payload: json!({}), failures };
+        assert!(ended_with_its_host(&WireObservation::ProcessExited { exit_code: Some(0), signal: None }));
+        assert!(ended_with_its_host(&diagnostic(vec![failure(FailureSurface::Control)])));
+        assert!(ended_with_its_host(&diagnostic(vec![failure(FailureSurface::Iterator)])));
+        assert!(!ended_with_its_host(&diagnostic(vec![failure(FailureSurface::Auth)])), "a sign-in failure is a fact, not the host's end");
+        assert!(!ended_with_its_host(&diagnostic(vec![])));
+        assert!(!ended_with_its_host(&event(SdkEventKind::Result, json!({"type": "result"})).observation));
     }
 }

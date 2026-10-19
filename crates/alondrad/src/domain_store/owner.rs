@@ -250,6 +250,11 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
     }
 
+    /// The task's inputs that left for a host and were not consumed, with how their handoff ended.
+    pub(crate) fn pending_handoffs(&self, task: &TaskId) -> std::result::Result<Vec<(InputPayload, String)>, StoreError> {
+        Ok(self.journal.pending_handoffs(task)?)
+    }
+
     pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<std::sync::Arc<TaskLifecycle>, StoreError> {
         Ok(self.journal.load(task)?)
     }

@@ -94,6 +94,35 @@ impl TaskLifecycle {
                 valid_id(&card.0)?;
                 self.wait_on_card(card, WaitReason::Pause)?;
             }
+            Event::DoubtHandoff { card, input } => {
+                valid_id(&card.0)?;
+                if self.doubts.contains_key(&card) || self.doubts.values().any(|held| held == &input) {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                if self.session().is_none() || !self.pending_inputs().contains(&&input) {
+                    return Err(Refusal::UnknownObligation);
+                }
+                self.wait_on_card(card.clone(), WaitReason::Doubt)?;
+                self.doubts.insert(card, input);
+            }
+            Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
+            Event::ResendUntaken { input, resend } => {
+                if self.doubts.values().any(|held| held == &input) {
+                    return Err(Refusal::InvalidState);
+                }
+                if self.pending_inputs().contains(&&resend) || self.settled.contains(&resend) {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                let execution = match &mut self.state {
+                    State::InProgress(Progress::Executing { execution, .. }) => &mut execution.0,
+                    State::InProgress(Progress::Waiting { session, .. } | Progress::Dependency { session, .. }) => {
+                        session.execution_mut().ok_or(Refusal::InvalidState)?
+                    }
+                    State::Delivered(delivered) => delivered.session.execution_mut().ok_or(Refusal::InvalidState)?,
+                    _ => return Err(Refusal::InvalidState),
+                };
+                replace_handoff(execution, &input, Some(resend))?;
+            }
             Event::Answer { card, input } => self.answer(card, input, false)?,
             Event::Resume { card, input } => self.answer(card, input, true)?,
             Event::BlockDelivery {
@@ -573,7 +602,7 @@ impl TaskLifecycle {
         if (card.reason == WaitReason::Pause) != resume {
             return Err(Refusal::InvalidState);
         }
-        if card.reason == WaitReason::Recovery {
+        if matches!(card.reason, WaitReason::Recovery | WaitReason::Doubt) {
             return Err(Refusal::InvalidState);
         }
         if let Some(callback) = &card.callback {
@@ -632,6 +661,60 @@ impl TaskLifecycle {
                     stage,
                     execution: ActiveExecution::new(execution)?,
                 }),
+            };
+        }
+        Ok(())
+    }
+
+    fn settle_handoff(&mut self, id: InteractionId, resend: Option<InputId>, unheard: InteractionId) -> Result<(), Refusal> {
+        valid_id(&unheard.0)?;
+        let input = self.doubts.get(&id).cloned().ok_or(Refusal::CorrelationMismatch)?;
+        if resend.as_ref().is_some_and(|resend| self.pending_inputs().contains(&resend) || self.settled.contains(resend)) {
+            return Err(Refusal::DuplicateObligation);
+        }
+        let (stage, mut cards, mut session) = match &self.state {
+            State::InProgress(Progress::Waiting { stage, cards, session }) => (*stage, cards.map(), session.clone()),
+            State::InProgress(Progress::Dependency { stage, decisions, session, .. }) => (*stage, decisions.clone(), session.clone()),
+            State::Delivered(delivered) => (WorkStage::Implement, delivered.decisions.clone(), delivered.session.clone()),
+            _ => return Err(Refusal::InvalidState),
+        };
+        if cards.remove(&id).is_none_or(|card| card.reason != WaitReason::Doubt) {
+            return Err(Refusal::CorrelationMismatch);
+        }
+        match &mut session {
+            Session::Present(execution) => replace_handoff(execution, &input, resend)?,
+            Session::Absent(pending) => {
+                let at = pending.iter().position(|held| held == &input).ok_or(Refusal::UnknownObligation)?;
+                match resend {
+                    Some(resend) => pending[at] = resend,
+                    None => {
+                        pending.remove(at);
+                    }
+                }
+            }
+        }
+        self.doubts.remove(&id);
+        self.settled.insert(input);
+        if let State::Delivered(delivered) = &mut self.state {
+            delivered.decisions = cards;
+            delivered.session = session;
+        } else if let State::InProgress(Progress::Dependency { decisions, session: current, .. }) = &mut self.state {
+            *decisions = cards;
+            *current = session;
+        } else if !cards.is_empty() {
+            self.state = State::InProgress(Progress::Waiting { stage, cards: Decisions::new(cards)?, session });
+        } else {
+            self.state = match session {
+                Session::Absent(mut pending) => {
+                    let first = pending.pop_front().ok_or(Refusal::EmptyObligation)?;
+                    State::InProgress(Progress::Queued { stage, input: first, remaining: pending })
+                }
+                Session::Present(execution) if matches!(execution.activity, Activity::Resting) => State::InProgress(Progress::Waiting {
+                    stage,
+                    cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, callback: None }),
+                    session: Session::Present(execution),
+                }),
+                Session::Present(execution) => State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? }),
             };
         }
         Ok(())
@@ -740,6 +823,10 @@ impl TaskLifecycle {
             .session()
             .cloned()
             .map_or(Session::Absent(VecDeque::new()), Session::Present);
+        if intent == FinishIntent::Cancel {
+            let doubted = std::mem::take(&mut self.doubts);
+            self.settled.extend(doubted.into_values());
+        }
         let mut remaining = BTreeSet::from([DrainObligation::Cleanup(cleanup)]);
         let declared = self.post_merge.take();
         remaining.extend(post_merge.into_iter().chain(declared).map(DrainObligation::PostMerge));
@@ -782,4 +869,29 @@ impl TaskLifecycle {
         });
         Ok(())
     }
+}
+
+/// Puts `resend` where the doubtful `input` waited, or takes `input` out of the execution's queue.
+/// A launch input cannot be taken as received: nothing would be left to start the session.
+fn replace_handoff(execution: &mut Execution, input: &InputId, resend: Option<InputId>) -> Result<(), Refusal> {
+    match (&mut execution.activity, resend) {
+        (Activity::Launching(held) | Activity::InputPending(held), Some(resend)) if held == input => *held = resend,
+        (Activity::Launching(held), None) if held == input => return Err(Refusal::InvalidState),
+        (Activity::InputPending(held), None) if held == input => {
+            execution.activity = match execution.inbox.pop_front() {
+                Some(next) => Activity::InputPending(next),
+                None => Activity::Resting,
+            };
+        }
+        (_, resend) => {
+            let at = execution.inbox.iter().position(|held| held == input).ok_or(Refusal::UnknownObligation)?;
+            match resend {
+                Some(resend) => execution.inbox[at] = resend,
+                None => {
+                    execution.inbox.remove(at);
+                }
+            }
+        }
+    }
+    Ok(())
 }

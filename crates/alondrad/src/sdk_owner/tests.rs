@@ -467,7 +467,7 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     // The daemon dies: drop its driver without stopping the host, which keeps running.
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(owner_generation(&slice.database), 2, "adoption reserved the next owner generation");
     carry_on(&restarted, "Add the tests first");
     adopted.step(&|| false).unwrap();
@@ -509,7 +509,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     let acknowledged = Arc::new(Mutex::new(0));
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate, "the host re-sends the unacknowledged turn end and the store knows it");
     assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
     assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
@@ -530,7 +530,7 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     drop(driver);
     assert_eq!(slice.prompts().len(), 1, "the host's Claude never got the answer");
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "reconciliation sent the answer to the same Claude exactly once: {prompts:?}");
@@ -550,7 +550,7 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "the answer reached the host once; reconciliation did not offer it again: {prompts:?}");
@@ -682,4 +682,199 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
     let expected: String = sha2::Sha256::digest(agent.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(session, expected, "the node the capability was issued to");
     driver.stop().unwrap();
+}
+
+/// The Mac goes down: every process of the host's group is killed, its native Claude included, and
+/// the daemon with them.
+fn kill_host_and_daemon(driver: Driver) {
+    let group = driver.worker.host_group().unwrap();
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    for member in alondra_process_group::members(group).unwrap() {
+        exits.watch(&member).unwrap();
+    }
+    assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
+    exits.wait().unwrap();
+    drop(driver);
+}
+
+impl Slice {
+    /// Each native Claude the hosts started: its session, the session it resumed and how many
+    /// prompts that session's transcript already held.
+    fn starts(&self) -> Vec<serde_json::Value> {
+        let path = PathBuf::from(format!("{}.starts", self.capture.display()));
+        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    fn restart(&self) -> Arc<DomainRuntime> {
+        Arc::new(DomainRuntime::open_at(&self._home, &self.database).unwrap())
+    }
+
+    fn take_over(&self, domain: &Arc<DomainRuntime>) -> Driver {
+        adopt(Arc::clone(domain), &self.backend, TASK.into(), Some(&self.plugin)).unwrap()
+    }
+
+    /// Reads the host until its turn is running.
+    fn until_working(&self, driver: &mut Driver) {
+        while lifecycle(&self.domain).activity() != ActivityView::Working {
+            driver.observe().unwrap();
+        }
+    }
+}
+
+fn lifecycle(domain: &DomainRuntime) -> alondra_domain::TaskLifecycle {
+    let read = domain.read();
+    replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
+}
+
+/// The open card of the task whose id starts with `prefix`.
+fn open_card(domain: &DomainRuntime, prefix: &str) -> Option<Interaction> {
+    domain.read().state().interactions.values()
+        .find(|card| card.id.0.starts_with(prefix) && !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
+        .cloned()
+}
+
+fn answer(domain: &DomainRuntime, card: &InteractionId, option: &str) {
+    let state = domain.state().unwrap();
+    let answer = Command::AnswerQuestion { interaction_id: card.clone(), option_id: option.into(), inputs: BTreeMap::new(), attachments: vec![] };
+    assert!(domain.execute_with(&user(), &envelope(&state, &format!("client-{option}"), answer), None, None, || Ok(())).unwrap().changed);
+}
+
+// R1: the Mac shuts down after the first turn's card: host, Claude and daemon are gone. The daemon
+// that comes back finds no process holding the host's lock, launches a fresh host for the same
+// execution with the next owner generation, and «Carry on» resumes the same native session with its
+// transcript: one more Claude starts, with --resume of the stored session.
+#[test]
+fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
+    assert_eq!(slice.starts().len(), 1, "no Claude starts before the user answers");
+    let node = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(!crate::node_revival::needed(&restarted, &node.0), "no claude respawn, and no card about it, for a node of the SDK");
+    carry_on(&restarted, "Add the tests first");
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    assert_eq!(starts[1]["history"], 1, "with the transcript of the first turn");
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the resumed turn ended with its own card");
+    resumed.stop().unwrap();
+}
+
+// R2: the Mac shuts down mid-turn. The ended host's turn ended with it: the task asks how to go
+// on instead of staying «working» forever, and the answer goes to the resumed session.
+#[test]
+fn a_turn_cut_by_the_end_of_its_host_asks_how_to_go_on_and_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert_eq!(lifecycle(&restarted).activity(), ActivityView::Resting, "nothing of the ended host runs");
+    let card = open_card(&restarted, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
+    answer(&restarted, &card.id, CARRY_ON);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "{starts:?}");
+    assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
+    resumed.stop().unwrap();
+}
+
+// R3: a normal shutdown stops the host (5d) mid-turn: what the stopping host wrote after the last
+// acknowledgement (its Claude's exit, the end of its SDK iterator) is committed as evidence, and
+// the task asks how to go on.
+#[test]
+fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_commits() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let mut owner = Owner::spawn(driver);
+    owner.stop().unwrap();
+    drop(owner);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert!(open_card(&restarted, SESSION_ENDED_PREFIX).is_some(), "the interrupted task asks the user");
+    resumed.stop().unwrap();
+}
+
+/// The first turn ended, the user answered `note` and the host offered it to a Claude whose
+/// session then ended before it showed it read it; the Mac went down before the receipt was kept.
+fn doubtful(slice: &Slice) -> (Arc<DomainRuntime>, Driver, Interaction) {
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first unread");
+    assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    let card = open_card(&restarted, HANDOFF_DOUBT_PREFIX).expect("the doubtful answer asks the user");
+    assert!(!resumed.waits_for_host(), "the replacement host runs no Claude yet: its owner waits for what the user decides, not on the host");
+    (restarted, resumed, card)
+}
+
+// R4a: the doubtful answer is shown whole and nothing is sent until the user decides; «Send it
+// again» gives the resumed session the same text once.
+#[test]
+fn a_doubtful_answer_is_sent_again_to_the_resumed_session_only_on_the_users_word() {
+    let slice = Slice::new();
+    let (restarted, mut resumed, card) = doubtful(&slice);
+    assert!(card.card.content.as_ref().is_some_and(|content| content.body.ends_with("Add the tests first unread")), "{:?}", card.card.content);
+    assert_eq!(resumed.pending_permits(), 0, "nothing is sent while the user decides");
+    assert_eq!(slice.prompts().len(), 2, "the ended session got it once");
+    answer(&restarted, &card.id, RESEND);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert_eq!(prompts[2], prompts[1], "the same words, once more");
+    assert!(slice.starts()[1]["resume"].is_string(), "to the resumed session");
+    assert_eq!(Slice::read_cards(&restarted).len(), 2, "its turn ended with its own card");
+    resumed.stop().unwrap();
+}
+
+// R4b: «Take it as received» sends nothing and records no consumption; the task asks how to go on.
+#[test]
+fn a_doubtful_answer_taken_as_received_is_not_sent_again() {
+    let slice = Slice::new();
+    let (restarted, mut resumed, card) = doubtful(&slice);
+    answer(&restarted, &card.id, TAKE_AS_RECEIVED);
+    assert_eq!(resumed.pending_permits(), 0, "nothing is sent");
+    assert_eq!(slice.prompts().len(), 2);
+    assert!(lifecycle(&restarted).pending_inputs().is_empty(), "the answer left the queue by the user's word");
+    assert!(open_card(&restarted, SESSION_ENDED_PREFIX).is_some(), "the task asks how to go on");
+    resumed.stop().unwrap();
+}
+
+// R5: the answer was claimed and recorded, and the Mac went down before the host got it. The ended
+// host's journal shows it never took the command, so it goes once to the resumed session, unasked.
+#[test]
+fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first");
+    assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none(), "nothing to ask: the journal proves it never left");
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    assert!(slice.starts()[1]["resume"].is_string());
+    resumed.stop().unwrap();
 }

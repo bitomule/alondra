@@ -808,6 +808,7 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| pace_text(interaction, domain, lang))
         .or_else(|| unheard_text(interaction, domain, lang))
         .or_else(|| turn_ended_text(interaction, domain, lang))
+        .or_else(|| session_ended_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
 }
 
@@ -902,6 +903,36 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
         "Su turno terminó sin nada que explique qué hace después. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
+}
+
+/// The cards about a task whose SDK session closed mid-way: how it goes on, and whether a message
+/// it may not have read is sent again, in the viewer's language.
+fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System {
+        return None;
+    }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {
+        let need = tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
+            "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir");
+        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+            "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.",
+            "Su sesión se cerró a medias, como al apagar el Mac. Retoma con todo su contexto; lo que corría en segundo plano se paró.").into()));
+    }
+    if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
+        return None;
+    }
+    let need = tf!(lang, "“{title}” may not have got your message: send it again?", "«{title}» quizá no recibió tu mensaje: ¿se lo reenvío?");
+    let launch = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == crate::domain::CANCEL_TASK));
+    let why = if launch {
+        t!(lang, "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.",
+            "Su sesión se cerró antes de empezar la tarea, justo después de entregarle el mensaje. No se envía nada hasta que decidas.")
+    } else {
+        t!(lang, "Its session closed right after the message was handed over and before it showed it had read it. Nothing is sent until you decide.",
+            "Su sesión se cerró justo después de entregarle el mensaje y antes de mostrar que lo leyó. No se envía nada hasta que decidas.")
+    };
+    Some((clip(&need, CardSpec::NEED_MAX), why.into()))
 }
 
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
@@ -1001,6 +1032,15 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             t!(lang, "Carry on", "Que siga"),
             Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
                 "Sigue con su tarea y te pregunta con una tarjeta cuando te necesite")),
+        ),
+        (crate::domain::RESEND, crate::domain::RESEND_LABEL) => (
+            t!(lang, "Send it again", "Reenviar"),
+            Some(t!(lang, "It gets the message again; if it had read it, it sees it twice",
+                "Lo recibe otra vez; si ya lo había leído, lo verá dos veces")),
+        ),
+        (crate::domain::TAKE_AS_RECEIVED, crate::domain::TAKE_AS_RECEIVED_LABEL) => (
+            t!(lang, "Take it as received", "Darlo por recibido"),
+            Some(t!(lang, "The message is not sent again and the task goes on", "No se reenvía y la tarea sigue")),
         ),
         (crate::domain::CANCEL_TASK, crate::domain::CANCEL_TASK_LABEL) => (
             t!(lang, "Cancel the task", "Cancelar la tarea"),
@@ -1410,6 +1450,11 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             t!(lang, "Write it here or attach the file…", "Escríbelo aquí o adjunta el archivo…").into(),
+        )
+    } else if interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
+        (
+            action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
+            t!(lang, "Write what to send instead…", "Escribe qué enviarle en su lugar…").into(),
         )
     } else if matches!(interaction.scope, Scope::Task { .. }) {
         (

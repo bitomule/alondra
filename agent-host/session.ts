@@ -15,6 +15,8 @@ export type Configuration = {
   observe: (observation: Observation) => void;
   beforeSpawn?: () => void;
   sessionId?: string;
+  /** The native session `sessionId` already exists: resume it rather than start it. */
+  resume?: boolean;
   /** One turn of Alondra's orchestrator: its own tools, MCP and permissions, and nothing after its result. */
   orchestrator?: OrchestratorProfile;
   /** Alondra's plugins and launch settings for a task, on top of the user's own settings sources. */
@@ -164,7 +166,7 @@ export class Session {
           extraArgs: { restricted: null },
         }
       : {
-          sessionId,
+          ...(config.resume ? { resume: sessionId } : { sessionId }),
           tools: { type: 'preset', preset: 'claude_code' },
           permissionMode: 'default',
           permissionPrompts: 'host',

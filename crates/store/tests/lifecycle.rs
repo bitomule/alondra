@@ -2643,6 +2643,109 @@ fn the_journal_reads_every_task_with_its_events() {
     assert!(task.texts.is_empty(), "the claude --bg input has no text");
 }
 
+/// A launch whose host ended after taking it: its send is uncertain and its input pending.
+fn uncertain_launch(fixture: &mut Fixture) -> ExecutionStamp {
+    let owner = crashed_claim(fixture, b"framed command");
+    let stamp = owner.execution().clone();
+    let intent = fixture.transaction().unresolved_commands(&"task".into()).unwrap()[0].intent_id;
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 1).unwrap();
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.resolve_dispatch(&stamp, intent, adopted.generation(), DispatchReceipt::Uncertain).unwrap();
+    tx.commit().unwrap();
+    stamp
+}
+fn decide(fixture: &mut Fixture, command: &str, event: Event) -> Committed {
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.apply(&"task".into(), revision, command, event).unwrap();
+    tx.commit().unwrap()
+}
+
+#[test]
+fn a_doubtful_send_holds_every_later_send_until_the_user_sends_the_same_text_again() {
+    let mut fixture = Fixture::new();
+    uncertain_launch(&mut fixture);
+    fixture.card("task", "doubt");
+    let committed = decide(&mut fixture, "doubt", Event::DoubtHandoff { card: "doubt".into(), input: id("initial") });
+    assert!(committed.permits.is_empty(), "nothing goes while the user decides");
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.put_input(&"task".into(), InputPayload::new(id("again"), "Fixture prompt").unwrap()).unwrap();
+    tx.apply(&"task".into(), revision, "settle", Event::SettleHandoff { card: "doubt".into(), resend: Some(id("again")), unheard_card: "unheard".into() }).unwrap();
+    tx.settle_card(&"task".into(), &"doubt".into(), CardSettlement::Answer(CardAnswer(r#"{"option_id":"resend"}"#.into()))).unwrap();
+    tx.stage_input(&"task".into(), &id("again")).unwrap();
+    let committed = tx.commit().unwrap();
+    assert_eq!(committed.permits.iter().map(|permit| permit.input().clone()).collect::<Vec<_>>(), [id("again")],
+        "the message sent again starts the session the ended host never reported");
+    assert!(fixture.transaction().unresolved(&"task".into()).unwrap().is_empty(), "the uncertain send no longer holds the task");
+}
+
+#[test]
+fn only_a_handed_or_uncertain_send_can_be_doubted_and_only_the_users_word_releases_it() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    fixture.launch("task");
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    assert!(matches!(
+        tx.apply(&"task".into(), revision, "doubt", Event::DoubtHandoff { card: "doubt".into(), input: id("initial") }),
+        Err(Error::InvalidInput)
+    ), "a send that never left is not in doubt");
+    drop(tx);
+
+    let mut fixture = Fixture::new();
+    uncertain_launch(&mut fixture);
+    fixture.card("task", "doubt");
+    decide(&mut fixture, "doubt", Event::DoubtHandoff { card: "doubt".into(), input: id("initial") });
+    assert_eq!(fixture.transaction().unresolved(&"task".into()).unwrap().len(), 1, "a doubt alone settles nothing");
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.apply(&"task".into(), revision, "cancel", Event::Finish { intent: FinishIntent::Cancel, cleanup: OperationId::new("cleanup").unwrap(), post_merge: None }).unwrap();
+    tx.settle_card(&"task".into(), &"doubt".into(), CardSettlement::Withdraw).unwrap();
+    tx.commit().unwrap();
+    assert!(fixture.transaction().unresolved(&"task".into()).unwrap().is_empty(), "cancelling is the user's word on it");
+}
+
+// A later reply never overtakes one whose handoff is in doubt: while the user decides about the
+// first, the second gets no permit; once the first is taken as received, the second goes.
+#[test]
+fn a_later_reply_waits_behind_a_doubtful_one_until_the_user_settles_it() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    drop(fixture.launch("task"));
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    fixture.runtime("task", RuntimeFact::TurnStarted { turn: TurnId::new("turn").unwrap(), trigger: Trigger::Input(id("initial")) });
+    for card in ["question-first", "question-second", "doubt"] {
+        fixture.card("task", card);
+    }
+    let task = TaskId::from("task");
+    let mut tx = fixture.transaction();
+    tx.apply(&task, 3, "ask-first", Event::Ask { card: "question-first".into() }).unwrap();
+    tx.apply(&task, 4, "ask-second", Event::Ask { card: "question-second".into() }).unwrap();
+    for (revision, card, input) in [(5, "question-first", "reply-first"), (6, "question-second", "reply-second")] {
+        tx.put_input(&task, payload(input)).unwrap();
+        tx.apply(&task, revision, input, Event::Answer { card: card.into(), input: id(input) }).unwrap();
+        tx.settle_card(&task, &card.into(), CardSettlement::Answer(CardAnswer::from_object(serde_json::Map::new()).unwrap())).unwrap();
+    }
+    tx.stage_input(&task, &id("reply-first")).unwrap();
+    tx.stage_input(&task, &id("reply-second")).unwrap();
+    let first = tx.commit().unwrap().permits.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.claim(first).unwrap();
+    let first = tx.commit().unwrap().attempts.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_receipt(first, DispatchReceipt::Handed).unwrap();
+    tx.apply(&task, 7, "doubt", Event::DoubtHandoff { card: "doubt".into(), input: id("reply-first") }).unwrap();
+    assert!(tx.commit().unwrap().permits.is_empty(), "the second reply waits while the first is in doubt");
+    let mut tx = fixture.transaction();
+    tx.apply(&task, 8, "settle", Event::SettleHandoff { card: "doubt".into(), resend: None, unheard_card: "unheard".into() }).unwrap();
+    tx.settle_card(&task, &"doubt".into(), CardSettlement::Answer(CardAnswer::from_object(serde_json::Map::new()).unwrap())).unwrap();
+    let permits = tx.commit().unwrap().permits;
+    assert_eq!(permits.iter().map(|permit| permit.input().clone()).collect::<Vec<_>>(), [id("reply-second")]);
+}
+
 #[test]
 fn a_transaction_replays_each_task_once_and_reads_its_own_applies() {
     let mut fixture = Fixture::new();
