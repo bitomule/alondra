@@ -9,7 +9,7 @@ use alondra_core::Event;
 use alondra_core::delivery::State;
 use alondra_core::views::{self, Lang};
 use anyhow::Result;
-use alondra_core::domain::{InteractionId, InteractionPayload, ReadSnapshot};
+use alondra_core::domain::{AgentId, InteractionId, InteractionPayload, ReadSnapshot, TaskId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -65,7 +65,12 @@ pub(crate) async fn deliver_from_runtime(
     message: OutboxMessage,
     waited: Duration,
 ) -> Result<()> {
-    if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") {
+    let to_sdk_node = message.recipient_kind == "agent" && domain.state().is_ok_and(|state| {
+        message.agent_id.as_ref().is_some_and(|agent| crate::sdk_owner::runs_through_sdk(&state, &AgentId(agent.clone())))
+    });
+    // A node of `claude --bg` takes its messages through its mod's connection, and the orchestrator
+    // through its own delivery.
+    if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") && !to_sdk_node {
         return Ok(());
     }
     let claim = {
@@ -75,6 +80,7 @@ pub(crate) async fn deliver_from_runtime(
     let Some(claim) = claim else { return Ok(()) };
     let outcome = match claim.message.recipient_kind.as_str() {
         "user" => deliver_user_runtime(domain, home, push, service, Some(client), &claim.message, waited).await,
+        "agent" => tell_sdk_node(domain, &claim.message),
         _ => Err((State::Uncertain, "unknown_recipient")),
     };
     let (state, reason) = match outcome {
@@ -87,6 +93,29 @@ pub(crate) async fn deliver_from_runtime(
     };
     anyhow::ensure!(finished, "domain delivery claim changed while finishing");
     Ok(())
+}
+
+/// What Alondra tells the node of an SDK task becomes an input of its lifecycle, kept before it
+/// leaves for the host. A retry after a crash finds the same command already told.
+fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result::Result<(), (State, &'static str)> {
+    let state = domain.state().map_err(|_| (State::Retryable, "domain_unavailable"))?;
+    let agent = message.agent_id.clone().ok_or((State::Discarded, "no_agent"))?;
+    let task = message.task_id.clone().map(TaskId::from)
+        .or_else(|| state.tasks.values().find(|t| t.agent_id.as_ref().is_some_and(|node| node.0 == agent) && !t.state.terminal()).map(|t| t.id.clone()))
+        .ok_or((State::Discarded, "no_task"))?;
+    let text = crate::domain_transport::render(&state, message);
+    match crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, &text, &format!("tell-outbox-{}", message.id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code == "idempotency_conflict" => Ok(()),
+        Err(error) if matches!(error.code.as_str(), "storage_unavailable" | "stale_revision") => {
+            log!("could not tell the node of {task} message {} yet: {error}", message.id);
+            Err((State::Retryable, "domain_unavailable"))
+        }
+        Err(error) => {
+            log!("the node of {task} cannot be told message {}: {error}", message.id);
+            Err((State::Discarded, "node_gone"))
+        }
+    }
 }
 
 /// User hints and producer messages are limited separately, so a backlog of
@@ -928,7 +957,7 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
         });
         let options = vec![
             QuestionOption {

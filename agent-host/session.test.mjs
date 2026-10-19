@@ -64,7 +64,7 @@ try {
   }
   const callbackEvents = [];
   const callbacks = new PermissionCallbacks((event) => { callbackEvents.push(event); return callbackEvents.length; });
-  const identity = (event, epoch) => ({ request_id: event.request_id, epoch, kind: event.kind, tool_use_id: event.tool_use_id ?? null });
+  const identity = (event, epoch) => ({ request_id: event.request_id, epoch, kind: event.kind, tool_use_id: event.tool_use_id ?? null, asked: event.payload });
   const oldAbort = new AbortController();
   const request = { signal: oldAbort.signal, requestId: 'duplicate', toolUseID: 'fixture-tool' };
   const first = callbacks.request('Bash', {}, request);
@@ -75,6 +75,7 @@ try {
   assert.equal(callbacks.respond({ ...identity(callbackEvents[0], 1), kind: 'question' }, { behavior: 'allow', updated_input: {} }), false, 'another kind reaches nothing');
   assert.equal(callbacks.respond({ ...identity(callbackEvents[0], 1), tool_use_id: 'other-tool' }, { behavior: 'allow', updated_input: {} }), false, 'another tool use reaches nothing');
   assert.equal(callbacks.respond(identity(callbackEvents[0], 1), { behavior: 'accept' }), false, 'an elicitation answer never answers a permission');
+  assert.equal(callbacks.respond({ ...identity(callbackEvents[0], 1), asked: { ...callbackEvents[0].payload, input: { command: 'rm -rf build' } } }, { behavior: 'allow', updated_input: {} }), false, 'an answer to another request reaches nothing');
   assert.equal(callbackEvents.length, 1, 'a refused answer settles nothing');
   assert.equal(callbacks.respond(identity(callbackEvents[0], 1), { behavior: 'allow', updated_input: { command: 'ls' } }), true);
   assert.deepEqual(await first, { behavior: 'allow', updatedInput: { command: 'ls' } });
@@ -103,11 +104,11 @@ try {
   const form = { serverName: 'fixture-server', message: 'Which name?', mode: 'form', requestedSchema: { type: 'object' } };
   const accepted = elicitations.elicitation(form, { signal: new AbortController().signal, requestId: 'accept' });
   assert.deepEqual(elicited[0], { type: 'decision_requested', request_id: 'accept', kind: 'elicitation', payload: form }, 'an elicitation names no tool use');
-  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null }, { behavior: 'allow', updated_input: {} }), false);
-  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null }, { behavior: 'accept', content: { name: 'Ada' } }), true);
+  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null, asked: form }, { behavior: 'allow', updated_input: {} }), false);
+  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null, asked: form }, { behavior: 'accept', content: { name: 'Ada' } }), true);
   assert.deepEqual(await accepted, { action: 'accept', content: { name: 'Ada' } });
   const declined = elicitations.elicitation(form, { signal: new AbortController().signal, requestId: 'decline' });
-  assert.equal(elicitations.respond({ request_id: 'decline', epoch: 3, kind: 'elicitation', tool_use_id: null }, { behavior: 'decline' }), true);
+  assert.equal(elicitations.respond({ request_id: 'decline', epoch: 3, kind: 'elicitation', tool_use_id: null, asked: form }, { behavior: 'decline' }), true);
   assert.deepEqual(await declined, { action: 'decline' });
   const aborted = new AbortController();
   const withdrawn = elicitations.elicitation(form, { signal: aborted.signal, requestId: 'withdrawn' });
@@ -187,7 +188,7 @@ try {
   }
   let asked;
   const permission = await run('permission', (session, observation, epoch) => {
-    asked = { request_id: observation.request_id, epoch, kind: observation.kind, tool_use_id: observation.tool_use_id };
+    asked = { request_id: observation.request_id, epoch, kind: observation.kind, tool_use_id: observation.tool_use_id, asked: observation.payload };
     assert.equal(observation.request_id, 'permission-request');
     assert.equal(observation.tool_use_id, 'fixture-tool');
     assert.deepEqual(observation.payload.request.mcpServer, { name: 'fixture-server', source: 'project' });

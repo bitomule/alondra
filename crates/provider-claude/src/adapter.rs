@@ -45,6 +45,14 @@ pub struct ClaudeConfiguration {
 pub struct WorkerProfile {
     pub plugins: Vec<PathBuf>,
     pub settings: serde_json::Map<String, serde_json::Value>,
+    /// The model, effort and denied tools the task was launched with, as `claude --bg` gets them
+    /// in its flags; absent, Claude's own defaults apply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
 }
 
 /// Opaque technical worker. The application owns SQL, policy and publication.
@@ -161,6 +169,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
         },
         tool_use_id: request.tool_use_id().map(str::to_owned),
         decision,
+        asked: payload.as_object().cloned().ok_or(AdapterError::InvalidObservation)?,
     })
 }
 fn decoded(bytes: &[u8]) -> Option<alondra_agent_protocol::Frame> {
@@ -1063,7 +1072,7 @@ mod respond_tests {
         DecisionRequest::new("decision-1".into(), tool_use, kind, serde_json::to_vec(&payload).unwrap()).unwrap()
     }
     fn decided(action: Action) -> (u64, WireKind, Option<String>, WireDecision) {
-        let Action::Respond { request_id, epoch, kind, tool_use_id, decision } = action else { panic!("{action:?}") };
+        let Action::Respond { request_id, epoch, kind, tool_use_id, decision, .. } = action else { panic!("{action:?}") };
         assert_eq!(request_id.0, "decision-1");
         (epoch, kind, tool_use_id, decision)
     }

@@ -35,6 +35,11 @@ pub fn node() -> Option<PathBuf> {
     NODE_PLUGIN.get().cloned()
 }
 
+/// The node plugin this daemon installed, else the copy in `home` an earlier start left.
+pub fn node_in(home: &Path) -> Option<PathBuf> {
+    node().or_else(|| Some(home.join(NODE)).filter(|plugin| plugin.is_dir()))
+}
+
 /// Claude Code loads a mod from the folder a session was started with and drops it for good when
 /// that folder is replaced, as `brew upgrade` replaces its keg. So sessions load a copy this
 /// daemon owns, `<home>/plugin`, which every start brings up to date file by file: a running

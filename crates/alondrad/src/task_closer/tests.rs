@@ -151,7 +151,7 @@ impl Rig {
 
     fn confirm(&self) {
         let id = format!("confirm-{}", crate::auth::random_hex(6));
-        command(&self.domain, agent(), &id, Command::ConfirmCleanup { task_id: "t".into() });
+        command(&self.domain, agent(), &id, Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() });
     }
 
     async fn pass(&self, now: i64) {
@@ -761,6 +761,57 @@ async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go()
     rig.pass(T0 + 5 * MINUTE).await;
     assert!(!dir.exists(), "the next attempt deletes it although the session is already gone");
     assert_eq!(rig.task().state, TaskState::Done);
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+// David's rule, 19 October: a task owns every worktree its node's subagents make. One with work
+// not committed and one with a commit no remote has hold the close, and the node is told which
+// and what to do; a clean one goes. The one the node gives up goes as it is, the one it pushes
+// goes once pushed, and only then is the task done.
+#[tokio::test]
+async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let own = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), own.to_str().unwrap()).unwrap();
+    let repo = root.join("repo");
+    let subagent = |name: &str| {
+        let dir = repo.join(".claude/worktrees").join(name);
+        git(&repo, &["worktree", "add", "-q", "-b", &format!("worktree-{name}"), dir.to_str().unwrap()]);
+        command(&rig.domain, Actor::System, &format!("record-{name}"), Command::RecordTaskWorktree {
+            task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Subagent, branch: None,
+        });
+        dir
+    };
+    let given_up = subagent("agent-a0000000000000001");
+    let unpushed = subagent("agent-a0000000000000002");
+    let clean = subagent("agent-a0000000000000003");
+    std::fs::write(given_up.join("draft.txt"), "x").unwrap();
+    git(&unpushed, &["commit", "-q", "--allow-empty", "-m", "fix"]);
+    rig.confirm();
+    rig.pass(T0).await;
+    assert_eq!(rig.task().state, TaskState::Closing, "a task with work left in a worktree of its own does not close");
+    let told = rig.told().join("\n");
+    for dir in [&given_up, &unpushed] {
+        assert!(told.contains(dir.to_str().unwrap()), "the node is told which worktree holds work: {told}");
+    }
+    assert!(!told.contains(clean.to_str().unwrap()), "a clean worktree is not named: {told}");
+    assert!(told.contains("discard"), "and how to give one up: {told}");
+    assert!(given_up.join("draft.txt").exists() && unpushed.exists(), "nothing with work is deleted");
+
+    git(&unpushed, &["push", "-q", "origin", "worktree-agent-a0000000000000002"]);
+    command(&rig.domain, agent(), "give-up", Command::ConfirmCleanup { task_id: "t".into(), discard: vec![given_up.to_str().unwrap().into()] });
+    rig.pass(T0 + 5 * MINUTE).await;
+    for dir in [&own, &given_up, &unpushed, &clean] {
+        assert!(!dir.exists(), "{} is deleted once nothing in it is lost", dir.display());
+    }
+    let task = rig.task();
+    assert_eq!(task.state, TaskState::Done);
+    assert!(task.worktrees.values().all(|worktree| worktree.end == Some(alondra_core::domain::WorktreeEnd::Removed)), "{:?}", task.worktrees);
 }
 
 fn pr() -> Vec<DeliveryTarget> {

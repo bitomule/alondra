@@ -277,6 +277,11 @@ for raw in sys.stdin:
             result(message, failed=True)
         elif text == 'consume-and-hold':
             consume(message)
+        elif text.startswith('[From ') and len(pending) > 1:
+            # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is
+            # taken into that same turn, which then ends.
+            consume(message)
+            result(message)
         elif text.startswith('decide:'):
             scenario, _, argument = text[len('decide:'):].partition(' ')
             decide(message, scenario, argument)

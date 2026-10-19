@@ -105,6 +105,9 @@ fn due(state: &DomainState, task: &Task) -> Option<Due> {
 /// the closer, which releases worktrees.
 pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
     for task in state.tasks.values().filter(|task| matches!(due(state, task), Some(Due::Unattended))) {
+        if task.open_worktrees().next().is_some() {
+            continue;
+        }
         match domain.task_worktree(&task.id) {
             Ok(None) => {}
             Ok(Some(_)) => continue,
@@ -130,7 +133,12 @@ pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
 /// Nothing of a task that ends without a node stays behind: not its worktree, not its launch.
 /// The receipt makes the task done or cancelled.
 async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
-    if let Some(dir) = domain.task_worktree(&task.id)? {
+    let left = crate::task_worktrees::release_all(domain, task).await?;
+    if !left.is_empty() {
+        let list: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
+        anyhow::bail!("the worktrees of {} hold work that is not saved: {}", task.id, list.join("; "));
+    }
+    if let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(_) => {}
@@ -283,6 +291,10 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !ready || (now < row.next_attempt && !confirmed) {
         return Ok(());
     }
+    let left = crate::task_worktrees::leftovers(task).await;
+    if !left.is_empty() {
+        return hold_for_worktrees(domain, timing, now, task, &agent, row, &left, matches!(kind, Due::Cleanup));
+    }
     let node = domain.live.node(&agent.0);
     if node.as_ref().is_some_and(|node| node.waiting_permission) || crate::domain_holds::waits_on_user(&state, &agent.0) {
         return Ok(());
@@ -367,6 +379,17 @@ async fn close_sdk_node(
     row: TaskClosing, owned: bool,
 ) -> Result<()> {
     let cleanup = matches!(kind, Due::Cleanup);
+    if !owned && sdk_working(state, task) {
+        // Its lifecycle still says it works, but no host of this daemon runs it: the facts of what
+        // became of that host are in its journal, which the take-over commits.
+        return match take_over(domain, task) {
+            Ok(()) => Ok(()),
+            Err(why) => {
+                let why = format!("no host could take over its session: {why}");
+                failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup)
+            }
+        };
+    }
     if cleanup {
         let working = sdk_working(state, task);
         let user_closed = matches!(post_merge_answer(domain, state, &task.id)?, Some(Card::Retry));
@@ -374,12 +397,27 @@ async fn close_sdk_node(
             let Some(work) = &task.wrap_up.post_merge_work else {
                 return hold_while_working_after_merge(domain, now, row);
             };
-            if let Watch::Hold = watch_post_merge_work(domain, state, timing, now, task, agent, work, working, None)? {
+            let ask = |text: &str| tell_node(domain, state, task, agent, text);
+            if let Watch::Hold = watch_post_merge_work(domain, state, timing, now, task, agent, work, working, Some(&ask))? {
                 return hold_while_working_after_merge(domain, now, row);
             }
         } else if working && task.wrap_up.cleaned_at.is_none() && !user_closed {
             return hold_while_working_after_merge(domain, now, row);
+        } else if task.wrap_up.cleaned_at.is_none() && !user_closed && !timing.wait.is_some_and(|wait| now >= row.since + millis(wait)) {
+            // The node was asked to clean up: it closes once it says it did, or after the same
+            // wait as a node of `claude --bg`.
+            return Ok(());
         }
+    }
+    if now < row.next_attempt {
+        return Ok(());
+    }
+    let left = crate::task_worktrees::leftovers(task).await;
+    if !left.is_empty() {
+        if !owned && let Err(why) = take_over(domain, task) {
+            log!("no host could resume the session of {} to settle its worktrees: {why}", task.id);
+        }
+        return hold_for_worktrees(domain, timing, now, task, agent, row, &left, cleanup);
     }
     forget_post_merge_check(domain, &task.id)?;
     let stopped = if owned { blocking(|| domain.stop_sdk_host(agent)) } else { Ok(()) };
@@ -392,8 +430,23 @@ async fn close_sdk_node(
     }
 }
 
+/// No owner of this daemon holds the host of a closing SDK task: it takes the execution as a daemon
+/// that comes back does (`adopt`). A host that still runs is adopted; one that ended leaves the
+/// facts of its end in its journal, which are committed, and a host that resumes the same Claude
+/// session takes its place, so the node can still be told to settle its worktrees. Nothing is
+/// guessed about a host this daemon cannot see.
+fn take_over(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
+    let (backend, runtime) = domain.sdk().ok_or("this daemon runs no Agent SDK host")?;
+    let backend = backend.clone();
+    let plugin = crate::plugins::node_in(domain.home());
+    let driver = blocking(|| crate::sdk_owner::adopt(Arc::clone(&runtime), &backend, task.id.clone(), plugin.as_deref()))
+        .map_err(|crate::sdk_owner::Failed(why)| why)?;
+    domain.sdk_owners.lock().expect("SDK owners poisoned").push(crate::sdk_owner::Owner::spawn(driver));
+    Ok(())
+}
+
 /// Runs `wait`, which waits for processes to exit, without stalling the runtime's other tasks.
-fn blocking<T>(wait: impl FnOnce() -> T) -> T {
+pub(crate) fn blocking<T>(wait: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
         _ => wait(),
@@ -423,7 +476,15 @@ fn post_merge_answer(domain: &DomainRuntime, state: &DomainState, task: &TaskId)
 async fn finish_with_worktree(
     domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
 ) -> Result<()> {
-    let Some(dir) = domain.task_worktree(&task.id)? else { return finish(domain, &row, Some(agent), end) };
+    let left = crate::task_worktrees::release_all(domain, task).await?;
+    if !left.is_empty() {
+        let detail: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
+        let reason = format!("its session is closed, but worktrees of the task hold work that is not saved: {}", detail.join("; "));
+        return failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &detail.join("\n")), cleanup);
+    }
+    let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) else {
+        return finish(domain, &row, Some(agent), end);
+    };
     match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
         Ok(TaskWorktree::Unsaved(left)) => {
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
@@ -565,13 +626,49 @@ fn failure(
     row.rm_started_at = None;
     if cleanup {
         let text = close_failed_text(reason, &task.id, timing.retry.as_secs() / 60);
-        let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, &text, false);
+        if let Ok(state) = domain.state() {
+            tell_node(domain, &state, task, agent, &text);
+        }
     }
+    count_failure(domain, task, row, stop, detail, cleanup)
+}
+
+/// The task cannot close while one of its worktrees holds work no remote has: its node, which
+/// keeps running, is told which and how to settle each, and the close is tried again later.
+#[allow(clippy::too_many_arguments)]
+fn hold_for_worktrees(
+    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, mut row: TaskClosing, left: &[(String, String)], cleanup: bool,
+) -> Result<()> {
+    let detail: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
+    row.failures += 1;
+    row.last_error = Some(format!("worktrees of the task hold work that is not saved: {}", detail.join("; ")));
+    row.next_attempt = now + millis(timing.retry);
+    row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
+    row.rm_started_at = None;
+    let state = domain.state()?;
+    tell_node(domain, &state, task, agent, &crate::task_worktrees::settle_text(&task.id, left));
+    count_failure(domain, task, row, CloseStop::Unsaved, &detail.join("\n"), cleanup)
+}
+
+fn count_failure(domain: &DomainRuntime, task: &Task, mut row: TaskClosing, stop: CloseStop, detail: &str, cleanup: bool) -> Result<()> {
     if row.failures >= MAX_FAILURES && row.problem_id.is_none() {
         row.problem_id = raise_card(domain, task, stop, detail, cleanup);
     }
     domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
     Ok(())
+}
+
+/// Tells the task's node `text`: through its lifecycle when it runs through the Agent SDK, down
+/// its connection otherwise.
+fn tell_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &AgentId, text: &str) {
+    if crate::sdk_owner::runs_through_sdk(state, agent) {
+        let id = format!("closer-{}-{}", task.id, crate::auth::random_hex(8));
+        if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &task.id, crate::node_push::ALONDRA, text, &id) {
+            log!("could not tell the node of {} why its task does not close: {error}", task.id);
+        }
+    } else {
+        let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, text, false);
+    }
 }
 
 fn close_failed_text(reason: &str, task: &TaskId, minutes: u64) -> String {

@@ -12,8 +12,10 @@ turn once they are all made. Auto mode's safety check of an action (it stops at 
 answered with an allow. A task's request whose prompt holds the `when` text of a call scripted in
 `model-tools/*.json` next to <log> ({"when", "id", "name", "input"}) and that offers its tool gets
 that tool call, once per prompt; the request after its result is logged with it. `{plan_file}` in
-a scripted input becomes the plan file Claude Code's plan mode named in the request. Any other
-request gets one text reply.
+a scripted input becomes the plan file Claude Code's plan mode named in the request, and
+`"{listed_worktrees}"` the worktree paths the prompt lists as holding work. A tool's refusal in
+the last message counts as prompt too: a node reads why it was refused. Any other request gets
+one text reply.
 """
 import glob
 import http.server
@@ -38,6 +40,30 @@ def last_user_text(body):
         if isinstance(content, str):
             return content
         return '\n'.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text')
+    return ''
+
+
+def refused_text(body):
+    """The refusals the tools hand back in the last message: a node reads why it was refused and acts.
+    Claude Code 2.1.300 may follow that message with a system one, such as its token reminder."""
+    messages = [message for message in body.get('messages', []) if message.get('role') != 'system']
+    if not messages or messages[-1].get('role') != 'user' or isinstance(messages[-1].get('content'), str):
+        return ''
+    texts = []
+    for part in messages[-1].get('content') or []:
+        if not (isinstance(part, dict) and part.get('type') == 'tool_result' and part.get('is_error')):
+            continue
+        content = part.get('content')
+        texts.append(content if isinstance(content, str) else '\n'.join(block.get('text', '') for block in content or [] if isinstance(block, dict)))
+    return '\n'.join(texts)
+
+
+def last_user_raw(body):
+    """The last user message as the model got it, whatever its blocks: a message Claude Code
+    queued while a turn ran may come in a block that holds no plain text."""
+    for message in reversed(body.get('messages', [])):
+        if message.get('role') == 'user':
+            return json.dumps(message.get('content'))[:20000]
     return ''
 
 
@@ -105,6 +131,16 @@ def with_plan_file(value, body):
     return json.loads(json.dumps(value).replace('{plan_file}', found.group(1)))
 
 
+LISTED_WORKTREE = re.compile(r'^- (/\S+): ', re.MULTILINE)
+
+
+def with_listed_worktrees(value, text):
+    """`value` with `"{listed_worktrees}"` replaced by the worktrees Alondra lists in the prompt as
+    holding work no remote has: what a node that gives them up names in cleanup_done."""
+    listed = LISTED_WORKTREE.findall(text)
+    return json.loads(json.dumps(value).replace('"{listed_worktrees}"', json.dumps(listed)))
+
+
 def task_calls(log, body, text):
     """The scripted tool calls whose `when` the prompt holds and whose tool the request offers."""
     offered = {tool.get('name') for tool in body.get('tools', [])}
@@ -112,7 +148,7 @@ def task_calls(log, body, text):
     for path in sorted(Path(log).with_name('model-tools').glob('*.json')):
         call = json.loads(path.read_text())
         if call['when'] in text and call['name'] in offered:
-            calls.append((call['id'], call['name'], with_plan_file(call['input'], body)))
+            calls.append((call['id'], call['name'], with_listed_worktrees(with_plan_file(call['input'], body), text)))
     return calls
 
 
@@ -203,7 +239,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.served += 1
             served = self.server.served
             with open(self.server.log, 'a') as stream:
-                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
+                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'raw_user': last_user_raw(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
                                          'tools': [tool.get('name') for tool in body.get('tools', [])], 'results': tool_results(body), 'context': context_text(body)}) + '\n')
         if not orchestrator and Path(self.server.log).with_name('model-hold').exists():
             # Held unanswered, as when the Mac shuts down before the model replies.
@@ -214,7 +250,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if orchestrator:
             calls = [(use, ORCHESTRATOR + tool, arguments) for use, tool, arguments in orchestrator_calls(self.server.scripts, batch_text(body))] if self.server.scripts else []
         else:
-            calls = task_calls(self.server.log, body, batch_text(body))
+            calls = task_calls(self.server.log, body, batch_text(body) + '\n' + refused_text(body))
         pending = [call for call in calls if call[0] not in made]
         stop_sequence = None
         if '</block>' in (body.get('stop_sequences') or []):

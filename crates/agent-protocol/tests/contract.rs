@@ -80,7 +80,7 @@ fn digest_covers_original_bytes_not_a_receivers_json_serialization() {
     assert_ne!(reordered_digest, original_digest);
     assert_eq!(
         original_digest,
-        "778955c28992fd6bb29680689c3263b453895736be4422d713f9404ae1c7a8eb"
+        "670845a722a6d297426d0ba0394d339ff07a200fc42319ba08af82fc53a5d38f"
     );
 }
 
@@ -284,7 +284,7 @@ fn handshake_requires_owned_host_sdk_version_and_every_capability() {
         _ => panic!(),
     };
     let expected_fence = hello.fence.clone();
-    let required = ["streaming_input", "decisions"];
+    let required = ["streaming_input", "exact_decisions"];
     let expected = HostExpectation {
         fence: &expected_fence,
         host_release: "fixture-release",
@@ -883,6 +883,7 @@ fn outgoing_depth_is_bounded_before_transport_or_correlation_mutation() {
         decision: Decision::Allow {
             updated_input: json!({"nested": nested}).as_object().unwrap().clone(),
         },
+        asked: serde_json::Map::new(),
     };
     let candidates = [
         ("sdk payload", Frame::new(Body::Event(sdk))),
@@ -1542,6 +1543,7 @@ fn an_answer_names_its_request_and_only_answers_its_kind() {
         kind,
         tool_use_id: tool_use_id.map(Into::into),
         decision,
+        asked: serde_json::Map::new(),
     };
     let allow = || Decision::Allow {
         updated_input: serde_json::Map::new(),
@@ -1583,7 +1585,7 @@ fn an_answer_names_its_request_and_only_answers_its_kind() {
     assert!(encode(&Frame::new(Body::Command(respond))).is_err());
     assert_eq!(
         serde_json::to_value(answer(DecisionKind::Elicitation, None, Decision::Decline {})).unwrap(),
-        json!({"type":"respond","request_id":"request-test","epoch":42,"kind":"elicitation","tool_use_id":null,"decision":{"behavior":"decline"}})
+        json!({"type":"respond","request_id":"request-test","epoch":42,"kind":"elicitation","tool_use_id":null,"decision":{"behavior":"decline"},"asked":{}})
     );
 
     let mut requested = event();

@@ -2248,3 +2248,72 @@ fn a_policy_decision_needs_an_available_execution() {
         Err(Refusal::InvalidState)
     );
 }
+
+#[test]
+fn a_replacement_settles_the_card_an_ended_host_left_but_never_an_open_question() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut task, Event::ExecutionReleased { input: input("replace") });
+    admit(&mut task, "replacement");
+    assert!(task.cards().is_empty(), "the new execution is how the task goes on");
+    assert_eq!(task.activity(), ActivityView::Starting);
+    assert_eq!(task.generation(), 2);
+
+    let mut asked = running();
+    apply(&mut asked, Event::Ask { card: card("question") });
+    fact(&mut asked, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    fact(&mut asked, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut asked, Event::ExecutionReleased { input: input("replace") });
+    let admitted = asked.apply(asked.revision(), Event::Admit {
+        node: AgentId::from("node"),
+        conversation: ConversationId::new("conversation").unwrap(),
+        instance: InstanceId::new("replacement").unwrap(),
+        host: HostId::new("host").unwrap(),
+    });
+    assert_eq!(admitted, Err(Refusal::InvalidState), "a question the user has not answered still holds the task");
+}
+
+#[test]
+fn what_someone_tells_the_node_joins_the_running_turn_or_waits_for_the_next_host() {
+    let mut task = running();
+    apply(&mut task, Event::Tell { input: input("told") });
+    assert_eq!(task.pending_inputs(), [&input("told")], "it waits in the inbox of the turn that runs");
+    assert_eq!(task.apply(task.revision(), Event::Tell { input: input("told") }), Err(Refusal::DuplicateObligation), "told once");
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("told") });
+    assert!(task.pending_inputs().is_empty(), "and that same turn takes it");
+
+    let mut ended = running();
+    fact(&mut ended, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    fact(&mut ended, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut ended, Event::Tell { input: input("later") });
+    assert_eq!(ended.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
+
+    let mut cancelled = running();
+    apply(&mut cancelled, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    apply(&mut cancelled, Event::Tell { input: input("clean") });
+    assert_eq!(cancelled.pending_inputs(), [&input("clean")], "a cancelled task's node can still be told to settle its worktrees");
+}
+
+#[test]
+fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_question() {
+    let mut rested = running();
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    assert_eq!(rested.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
+    apply(&mut rested, Event::Tell { input: input("deliver") });
+    assert!(rested.cards().is_empty(), "being told how to go on is the answer the card waited for");
+    assert_eq!(rested.pending_inputs(), [&input("deliver")]);
+    assert_eq!(rested.activity(), ActivityView::Starting, "the node takes it in its next turn");
+
+    let mut gone = running();
+    fact(&mut gone, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    fact(&mut gone, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    apply(&mut gone, Event::Tell { input: input("later") });
+    assert!(gone.cards().is_empty());
+    assert_eq!(gone.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
+
+    let mut asking = running();
+    apply(&mut asking, Event::Ask { card: card("question") });
+    apply(&mut asking, Event::Tell { input: input("aside") });
+    assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
+    assert_eq!(asking.pending_inputs(), [&input("aside")]);
+}

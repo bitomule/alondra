@@ -314,6 +314,12 @@ pub enum Event {
     WaitForDependencies {
         dependencies: Vec<TaskId>,
     },
+    /// Someone tells the task's node something outside a card: the input reaches its execution
+    /// as it is, inside the turn that runs or as a turn of its own, and waits for the host that
+    /// resumes the session when the execution has none.
+    Tell {
+        input: InputId,
+    },
     DependenciesResolved {
         input: InputId,
     },
@@ -865,10 +871,11 @@ impl TaskLifecycle {
                 Progress::Waiting { session, .. } | Progress::Dependency { session, .. },
             ) => Some(session),
             State::Delivered(delivered) => Some(&delivered.session),
+            State::Finishing(finishing) => Some(&finishing.session),
             State::InProgress(Progress::Executing { execution, .. }) => {
                 return execution_pending(&execution.0);
             }
-            State::Finishing(_) | State::Completed | State::Cancelled => None,
+            State::Completed | State::Cancelled => None,
         };
         match session {
             Some(Session::Absent(pending)) => pending.iter().collect(),
@@ -977,6 +984,16 @@ fn progress_with_input(
                 stage,
                 execution: ActiveExecution::new(execution.clone())?,
             }))
+        }
+    }
+}
+
+fn tell(session: &mut Session, input: InputId) -> Result<(), Refusal> {
+    match session {
+        Session::Present(execution) => queue_input(execution, input),
+        Session::Absent(pending) => {
+            pending.push_back(input);
+            Ok(())
         }
     }
 }

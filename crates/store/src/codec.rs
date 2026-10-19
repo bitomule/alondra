@@ -653,6 +653,9 @@ pub(super) enum EventRecord {
     DependenciesResolved {
         input: String,
     },
+    Tell {
+        input: String,
+    },
     Pause {
         card: String,
     },
@@ -781,6 +784,9 @@ impl From<&Event> for EventRecord {
                 dependencies: dependencies.iter().map(|value| value.0.clone()).collect(),
             },
             Event::DependenciesResolved { input } => Self::DependenciesResolved {
+                input: input.as_str().to_owned(),
+            },
+            Event::Tell { input } => Self::Tell {
                 input: input.as_str().to_owned(),
             },
             Event::Pause { card } => Self::Pause {
@@ -930,6 +936,9 @@ impl EventRecord {
                 dependencies: dependencies.into_iter().map(TaskId).collect(),
             },
             EventRecord::DependenciesResolved { input } => Event::DependenciesResolved {
+                input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::Tell { input } => Event::Tell {
                 input: InputId::new(input).map_err(Error::from)?,
             },
             EventRecord::Pause { card } => Event::Pause {
@@ -1159,6 +1168,12 @@ mod tests {
         roundtrip(
             &current,
             Event::DependenciesResolved {
+                input: InputId::new("input").unwrap(),
+            },
+        );
+        roundtrip(
+            &current,
+            Event::Tell {
                 input: InputId::new("input").unwrap(),
             },
         );

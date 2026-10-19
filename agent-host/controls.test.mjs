@@ -15,7 +15,7 @@ try {
     const host = startHost('full');
     const owner = await own(host);
     assert.deepEqual(owner.hello.capabilities, [...HOST_CAPABILITIES]);
-    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status']);
+    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status']);
 
     assert.deepEqual((await owner.command({ type: 'mcp_status' })).outcome, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' }, 'a control before the launch is refused');
     assert.deepEqual(controls(host), [], 'and never reaches Claude');
@@ -69,7 +69,7 @@ try {
     const host = startHost('batch', { fence: batch.fence, execution: batch.execution, profile: orchestrator });
     const owner = await own(host);
     const single = { status: 'rejected', code: 'single_turn', message: 'An orchestrator batch is one turn: a later input waits for the next batch' };
-    for (const action of [{ type: 'set_model', model: 'fixture-model' }, { type: 'set_permission_mode', mode: 'plan' }, { type: 'mcp_status' }, { type: 'respond', request_id: 'decision-1', epoch: 1, kind: 'permission', tool_use_id: 'toolu_fixture_1', decision: { behavior: 'deny', message: 'No' } }]) {
+    for (const action of [{ type: 'set_model', model: 'fixture-model' }, { type: 'set_permission_mode', mode: 'plan' }, { type: 'mcp_status' }, { type: 'respond', request_id: 'decision-1', epoch: 1, kind: 'permission', tool_use_id: 'toolu_fixture_1', decision: { behavior: 'deny', message: 'No' }, asked: { tool: 'Bash', input: { command: 'make' } } }]) {
       assert.deepEqual((await owner.command(action)).outcome, single, action.type);
     }
     assert.deepEqual(controls(host), []);

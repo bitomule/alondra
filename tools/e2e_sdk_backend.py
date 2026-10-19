@@ -19,6 +19,10 @@ import subprocess
 import sys
 
 REPO = Path(__file__).resolve().parent.parent
+# The git of the Command Line Tools itself, not the /usr/bin shim that goes through xcrun.
+TOOLS = Path('/Library/Developer/CommandLineTools')
+GIT = TOOLS / 'usr/bin/git'
+GIT_CORE = TOOLS / 'usr/libexec/git-core'
 
 
 def fixture():
@@ -44,17 +48,21 @@ def profile(runtime, home, tmp, state, work, port, orchestrator):
     """`orchestrator` is what the Mac's orchestrator turn needs besides a task's: its folder, the
     plugins and the alondra CLI their MCP server runs, the Mac's home and its daemon's port."""
     folder, plugins, cli, mac, daemon = orchestrator
-    reads = [runtime, home, tmp, state, work, folder, cli, mac] + plugins
+    reads = [runtime, home, tmp, state, work, folder, cli, mac, GIT] + plugins
     parents = sorted({str(parent) for path in reads for parent in path.parents})
     return '\n'.join([
         '(version 1)', '(deny default)', '(deny mach-lookup)',
         '(allow process-fork)', '(allow signal (target same-sandbox))',
         '(allow process-info* (target self))', '(allow sysctl-read)',
-        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + ') (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/usr/bin/dirname") (literal ' + quote(cli) + ') ' + ' '.join('(literal ' + quote(plugin / 'bin' / 'alondra') + ')' for plugin in plugins) + ')',
+        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + ') (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/usr/bin/dirname") (literal ' + quote(GIT) + ') (subpath ' + quote(GIT_CORE) + ') (literal ' + quote(cli) + ') ' + ' '.join('(literal ' + quote(plugin / 'bin' / 'alondra') + ')' for plugin in plugins) + ')',
         '(allow file-read-data (literal "/"))',
         '(allow file-read-metadata ' + ' '.join('(literal ' + quote(parent) + ')' for parent in parents) + ')',
         '(allow file-read* (subpath ' + quote(runtime) + ') (subpath ' + quote(work) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom") (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/private/var/select/sh") (literal "/usr/bin/dirname") (literal ' + quote(cli) + ') (subpath ' + quote(mac) + ') ' + ' '.join('(subpath ' + quote(plugin) + ')' for plugin in plugins) + ')',
-        '(allow file-read* file-write* (subpath ' + quote(folder) + '))',
+        '(allow file-read* (subpath ' + quote(TOOLS) + '))',
+        # git looks for the system's configuration before the repository's.
+        '(allow file-read-metadata (literal "/etc") (literal "/private/etc") (literal "/private/etc/gitconfig"))',
+        # The task's worktrees and its subagents' are made with git in the sandbox's own repository.
+        '(allow file-read* file-write* (subpath ' + quote(folder) + ') (subpath ' + quote(work) + '))',
         '(allow file-read* file-write* (subpath ' + quote(home) + ') (subpath ' + quote(tmp) + ') (subpath ' + quote(state) + ') (literal "/dev/null"))',
         '(allow network-bind network-inbound (local unix-socket (subpath ' + quote(state) + ')))',
         '(allow network-outbound (remote ip "localhost:' + str(port) + '") (remote ip "localhost:' + str(daemon) + '"))',
@@ -88,7 +96,7 @@ def main():
     orchestrator = (Path(os.path.realpath(folder)), plugins, Path(os.path.realpath(sandbox / 'bin' / 'alondra')), Path(os.path.realpath(mac)), daemon)
     (root / 'host.sb').write_text(profile(runtime, home, tmp, state, work, port, orchestrator))
     synthetic = {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
-    native = dict(synthetic, TMPDIR=str(tmp), CLAUDE_CODE_TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC',
+    native = dict(synthetic, PATH=str(GIT.parent) + ':/usr/bin:/bin', TMPDIR=str(tmp), CLAUDE_CODE_TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC',
                   ANTHROPIC_API_KEY='sk-ant-public-loopback-fixture-only', ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(port),
                   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1', CLAUDE_CODE_MAX_RETRIES='1')
     backend = {

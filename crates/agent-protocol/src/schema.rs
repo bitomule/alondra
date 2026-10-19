@@ -212,6 +212,10 @@ pub enum Action {
         #[serde(deserialize_with = "required_nullable")]
         tool_use_id: Option<String>,
         decision: Decision,
+        /// The request as the domain kept it from the host's `decision_requested`: the host applies
+        /// the decision only to the pending request it equals.
+        #[serde(deserialize_with = "crate::json::object")]
+        asked: serde_json::Map<String, Value>,
     },
     SetModel {
         model: String,
@@ -721,8 +725,12 @@ impl Command {
                 kind,
                 tool_use_id,
                 decision,
+                asked,
             } => {
                 text(&request_id.0, 256)?;
+                if serde_json::to_vec(asked).map_or(true, |bytes| bytes.len() > MAX_FRAME_BYTES) {
+                    return Err(Error::Invalid("asked"));
+                }
                 positive(*epoch)?;
                 tool_use(*kind, tool_use_id.as_deref())?;
                 if !decision.answers(*kind) {

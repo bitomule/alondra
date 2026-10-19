@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -359,6 +359,25 @@ fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
         )?,
         None => exec(c, "DELETE FROM task_post_merge_work WHERE task_id=?1", [&t.id.0])?,
     };
+    Ok(())
+}
+fn save_worktrees(c: &Connection, t: &Task) -> Result<()> {
+    for (path, w) in &t.worktrees {
+        let text = |value: Value| value.as_str().map(str::to_owned).context("a worktree field is a string");
+        exec(
+            c,
+            "INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES(?1,?2,?3,?4,?5,?6) \
+             ON CONFLICT(task_id,path) DO UPDATE SET origin=excluded.origin,branch=excluded.branch,discard=excluded.discard,end=excluded.end",
+            params![
+                t.id.0,
+                path,
+                text(serde_json::to_value(w.origin)?)?,
+                w.branch,
+                w.discard as i64,
+                w.end.map(|end| serde_json::to_value(end).map_err(anyhow::Error::from).and_then(text)).transpose()?
+            ],
+        )?;
+    }
     Ok(())
 }
 /// Dependencies and document links; stacks follow the interactions they reference.
@@ -750,6 +769,9 @@ pub(super) fn save_changes(
         }
         if prior.is_none_or(|p| p.wrap_up != x.wrap_up) {
             save_wrap_up(c, x)?;
+        }
+        if prior.map_or(!x.worktrees.is_empty(), |p| p.worktrees != x.worktrees) {
+            save_worktrees(c, x)?;
         }
         if prior.map_or(
             !x.delivered_dependencies.is_empty() || !x.blocks.is_empty() || x.verdict.is_some() || x.review_rounds != 0,
@@ -1191,6 +1213,20 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             post_merge_work: None,
         };
         state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
+    }
+    drop(stored);
+    let mut worktrees = c.prepare("SELECT task_id, path, origin, branch, discard, end FROM task_worktree_records")?;
+    let mut stored = worktrees.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let end: Option<String> = row.get(5)?;
+        let worktree = TaskWorktree {
+            origin: decode(Value::String(row.get(2)?))?,
+            branch: row.get(3)?,
+            discard: row.get::<_, i64>(4)? != 0,
+            end: end.map(|end| decode(Value::String(end))).transpose()?,
+        };
+        state.tasks.get_mut(&TaskId::from(id)).context("worktree task missing")?.worktrees.insert(row.get(1)?, worktree);
     }
     drop(stored);
     let mut post_merge = c.prepare("SELECT task_id, reason, declared_at FROM task_post_merge_work")?;

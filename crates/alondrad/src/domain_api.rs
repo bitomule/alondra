@@ -947,12 +947,26 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
-        if let (Principal::Agent { session_id, .. }, Command::PresentResult { interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
+        if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
             && !checklist.is_empty()
-            && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
-            && let Some(refusal) = crate::worktree::evidence_refusal(session_id, checklist).await
+            && let Ok(state) = host.domain().state()
+            && !state.interactions.contains_key(interaction_id)
+            && let Some(refusal) = crate::worktree::evidence_refusal(&state, session_id, task_id, checklist).await
         {
             return domain_error(refusal);
+        }
+        if let (Principal::Agent { .. }, Command::ConfirmCleanup { task_id, discard }) = (&principal, &envelope.command)
+            && let Ok(state) = host.domain().state()
+            && let Some(task) = state.tasks.get(task_id)
+        {
+            let left: Vec<(String, String)> = crate::task_worktrees::leftovers(task).await.into_iter()
+                .filter(|(path, _)| !discard.contains(path))
+                .collect();
+            if !left.is_empty() {
+                let mut refusal = DomainError::new("worktree_not_clean", crate::task_worktrees::settle_text(task_id, &left));
+                refusal.subject = Some("discard".into());
+                return domain_error(refusal);
+            }
         }
         if let (Principal::Agent { .. }, Command::PresentResult { targets, is_final: true, .. }) = (&principal, &envelope.command)
             && let Ok(state) = host.domain().state()
@@ -1442,7 +1456,7 @@ mod tests {
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/assignee", assign).unwrap();
         assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into(), model: None });
         let adapted = resource_envelope_from_path("POST", "/tasks/task-1/cleanup", meta.clone()).unwrap();
-        assert_eq!(adapted.command, Command::ConfirmCleanup { task_id: "task-1".into() });
+        assert_eq!(adapted.command, Command::ConfirmCleanup { task_id: "task-1".into(), discard: Vec::new() });
         let mut declare = meta.clone();
         declare["reason"] = json!("release.sh");
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", declare).unwrap();

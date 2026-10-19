@@ -397,13 +397,40 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_some() {
-        if replaced.is_some() {
-            return Err(DomainError::new("unsupported", format!("{} runs through the Agent SDK, whose nodes cannot be replaced yet", task.id)));
+        if let Some(old) = &replaced {
+            let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
+            let backend = backend.clone();
+            crate::task_closer::blocking(|| {
+                domain.stop_sdk_host(old)?;
+                crate::sdk_owner::end_stopped_host(runtime, &backend, task.id.clone())
+            })
+            .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
         }
         if let Some(checked) = checked {
             checked();
         }
-        return crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt, plugin }).await;
+        let options = crate::sdk_owner::LaunchOptions {
+            model: resolved.flags.model.clone(),
+            effort: resolved.flags.effort.clone(),
+            disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
+        };
+        let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt, plugin, options }).await?;
+        if origin == Origin::Auto {
+            let _ = domain.store.lock().expect("domain store poisoned")
+                .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
+        }
+        record(domain, Decision {
+            task_id: task.id.0.clone(), request_id: task.request_id.0.clone(),
+            agent_id: launched["agent_id"].as_str().map(str::to_owned), at: alondra_core::now_millis(),
+            kind: if body.relaunch_model.is_some() { DecisionKind::Relaunch } else { DecisionKind::Launch },
+            model: resolved.flags.model.as_deref().map(alondra_core::model_label::model_family),
+            effort: resolved.flags.effort.clone(),
+            approach: Some(body.approach.unwrap_or_default()),
+            chosen_by: resolved.launch_model().map_or_else(|| chooser(auto), |launched| launched.chosen_by),
+            reason, title: task.title.clone(),
+        });
+        crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
+        return Ok(launched);
     }
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)

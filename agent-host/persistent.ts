@@ -8,11 +8,11 @@ import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-export const HOST_CAPABILITIES = ['streaming_input', 'decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status'] as const;
+export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status'] as const;
 export type Capability = typeof HOST_CAPABILITIES[number];
 type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
 const REQUIRED: Record<Action['type'], Capability | undefined> = {
-  start: 'streaming_input', offer: 'streaming_input', respond: 'decisions', interrupt: 'interrupt', close: undefined,
+  start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', close: undefined,
   set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
 };
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
@@ -172,8 +172,8 @@ export class PersistentHost {
           this.receipt(record, { status: 'accepted', phase: 'offered' }); break;
         case 'respond': {
           this.current(lane);
-          const { request_id, epoch, kind, tool_use_id, decision } = command.action;
-          if (!this.session?.respond({ request_id, epoch, kind, tool_use_id }, decision)) {
+          const { request_id, epoch, kind, tool_use_id, decision, asked } = command.action;
+          if (!this.session?.respond({ request_id, epoch, kind, tool_use_id, asked }, decision)) {
             this.receipt(record, { status: 'rejected', code: 'stale_request', message: 'Claude is not waiting for this request' }); break;
           }
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;

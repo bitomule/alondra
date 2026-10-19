@@ -36,6 +36,19 @@ pub(crate) fn origin_in(claude_home: &Path, session_id: &str) -> Option<Worktree
     cwd.join(".git").is_file().then_some(WorktreeOrigin::LaunchedIn(cwd))
 }
 
+/// Where Claude Code puts the worktree of a subagent `agent` that the node working in `own`
+/// launched: `agent-<agent>` in the `.claude/worktrees` of the repository `own` belongs to.
+pub(crate) fn subagent_worktree(own: &Path, agent: &str) -> Option<PathBuf> {
+    let worktrees = own.parent().filter(|dir| dir.file_name().is_some_and(|name| name == "worktrees"))?;
+    let repository = worktrees.parent().filter(|dir| dir.file_name().is_some_and(|name| name == ".claude"))?.parent()?;
+    let common = std::process::Command::new("git").arg("-C").arg(own)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()
+        .filter(|out| out.status.success())
+        .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()));
+    let repository = common.as_deref().and_then(Path::parent).unwrap_or(repository);
+    Some(repository.join(".claude").join("worktrees").join(format!("agent-{agent}")))
+}
+
 /// The branch checked out in `dir`.
 pub(crate) async fn branch_in(dir: &Path) -> Option<String> {
     git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await.filter(|branch| branch != "HEAD")
@@ -125,7 +138,16 @@ fn listed(files: &[String]) -> String {
 /// has, or work that is neither on the default branch nor in the PR registered for its Task.
 /// Nothing when the node has no worktree of its own, or when git cannot tell.
 pub(crate) async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
-    final_refusal_in(state, &worktree_of(session_id)?, task, targets).await
+    final_refusal_in(state, &node_worktree(state, session_id, task)?, task, targets).await
+}
+
+/// The worktree the node of `task` works in: the one its `claude --bg` job names, else the one the
+/// task recorded as its own, where a node of the Agent SDK, which has no job, works.
+pub(crate) fn node_worktree(state: &DomainState, session_id: &str, task: &TaskId) -> Option<PathBuf> {
+    worktree_of(session_id).or_else(|| {
+        let task = state.tasks.get(task)?;
+        task.open_worktrees().find(|(_, worktree)| worktree.origin == alondra_core::domain::WorktreeOrigin::Task).map(|(path, _)| PathBuf::from(path))
+    })
 }
 
 pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
@@ -178,8 +200,8 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
 
 /// Why the commits a final delivery cites as evidence cannot be taken: one its worktree does not
 /// have in the history of its HEAD. Nothing when the node has no worktree of its own.
-pub(crate) async fn evidence_refusal(session_id: &str, checklist: &[ChecklistMark]) -> Option<DomainError> {
-    evidence_refusal_in(&worktree_of(session_id)?, checklist).await
+pub(crate) async fn evidence_refusal(state: &DomainState, session_id: &str, task: &TaskId, checklist: &[ChecklistMark]) -> Option<DomainError> {
+    evidence_refusal_in(&node_worktree(state, session_id, task)?, checklist).await
 }
 
 pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark]) -> Option<DomainError> {
@@ -258,6 +280,17 @@ pub(crate) enum TaskWorktree {
 /// git ignores goes with it, as with `git worktree remove`: the node was asked to clean up first.
 /// With `remove` false it only says what it would do.
 pub(crate) async fn release_task_worktree(dir: &Path, slug: &str, remove: bool) -> Result<TaskWorktree, String> {
+    release(dir, |top| top.file_name().is_some_and(|name| name == slug), false, remove).await
+}
+
+/// Deletes a worktree a closing task recorded as its own, its node's or one of its subagents',
+/// all in a repository's `.claude/worktrees`. One the node gave up (`give_up`) goes as it is;
+/// any other only with nothing left in it. Its branch stays.
+pub(crate) async fn release_recorded_worktree(dir: &Path, give_up: bool) -> Result<TaskWorktree, String> {
+    release(dir, |_| true, give_up, true).await
+}
+
+async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remove: bool) -> Result<TaskWorktree, String> {
     if !dir.exists() {
         return Ok(TaskWorktree::Absent);
     }
@@ -265,26 +298,13 @@ pub(crate) async fn release_task_worktree(dir: &Path, slug: &str, remove: bool) 
         return Ok(TaskWorktree::NotAlondras);
     };
     let alondras = top.join(".git").is_file()
-        && top.file_name().is_some_and(|name| name == slug)
+        && named(&top)
         && top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"));
     if !alondras {
         return Ok(TaskWorktree::NotAlondras);
     }
-    let status = git(&top, &["status", "--porcelain", "--untracked-files=all"]).await;
-    let unpushed = git(&top, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await.and_then(|count| count.parse::<usize>().ok());
-    let (Some(status), Some(unpushed)) = (status, unpushed) else {
-        return Err(format!("git could not tell whether {} holds work not saved", top.display()));
-    };
-    let changed = status.lines().filter(|line| !line.trim().is_empty()).count();
-    let mut parts = vec![];
-    if changed > 0 {
-        parts.push(format!("{changed} uncommitted file(s)"));
-    }
-    if unpushed > 0 {
-        parts.push(format!("{unpushed} commit(s) not pushed"));
-    }
-    if !parts.is_empty() {
-        return Ok(TaskWorktree::Unsaved(format!("{} in {}", parts.join(" and "), top.display())));
+    if !give_up && let Some(left) = unsaved(&top).await? {
+        return Ok(TaskWorktree::Unsaved(left));
     }
     if !remove {
         return Ok(TaskWorktree::Removed);
@@ -299,6 +319,24 @@ pub(crate) async fn release_task_worktree(dir: &Path, slug: &str, remove: bool) 
         return Err(format!("{} is still there after git deleted it", top.display()));
     }
     Ok(TaskWorktree::Removed)
+}
+
+/// The work `top` holds that no remote has: uncommitted files and commits not pushed.
+pub(crate) async fn unsaved(top: &Path) -> Result<Option<String>, String> {
+    let status = git(top, &["status", "--porcelain", "--untracked-files=all"]).await;
+    let unpushed = git(top, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await.and_then(|count| count.parse::<usize>().ok());
+    let (Some(status), Some(unpushed)) = (status, unpushed) else {
+        return Err(format!("git could not tell whether {} holds work not saved", top.display()));
+    };
+    let changed = status.lines().filter(|line| !line.trim().is_empty()).count();
+    let mut parts = vec![];
+    if changed > 0 {
+        parts.push(format!("{changed} uncommitted file(s)"));
+    }
+    if unpushed > 0 {
+        parts.push(format!("{unpushed} commit(s) not pushed"));
+    }
+    Ok((!parts.is_empty()).then(|| format!("{} in {}", parts.join(" and "), top.display())))
 }
 
 /// What a build regenerates, which a deleted worktree can lose: anything else git ignores, such as
@@ -503,6 +541,32 @@ mod tests {
         assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
         assert!(leftovers_in(&dir).await.is_some_and(|left| left.contains("1 uncommitted file(s)")), "closing it keeps the work");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A node of the Agent SDK has no `claude --bg` job: its final delivery is checked in the
+    /// worktree its task recorded as its own.
+    #[tokio::test]
+    async fn an_sdk_final_delivery_with_a_dirty_worktree_is_refused() {
+        use alondra_core::domain::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION, WorktreeOrigin};
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t");
+        let mut state = DomainState::new("e");
+        let mut run = |actor: Actor, command: Command| {
+            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+                command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command };
+            state.execute(&actor, &envelope).unwrap();
+        };
+        run(Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(),
+            title: "Task".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
+        run(Actor::System, Command::RecordTaskWorktree { task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
+        let session = "sdk-0123abcd";
+        assert_eq!(worktree_of(session), None, "an SDK node has no job");
+        assert_eq!(final_refusal(&state, session, &TaskId::from("t"), &[]).await.map(|refusal| refusal.code), None, "clean and pushed");
+        std::fs::write(dir.join("tokens.swift"), b"let accent = 1").unwrap();
+        let refused = final_refusal(&state, session, &TaskId::from("t"), &[]).await.expect("a dirty worktree is refused");
+        assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
+        assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
     }
 
     /// Pushed is not enough to close a node: its commits must be on the remote's default branch.

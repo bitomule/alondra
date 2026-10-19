@@ -176,7 +176,7 @@ fn a_task_completes_only_once_its_cleanup_and_its_node_are_drained() {
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("presented"), "no acceptance is recorded that feedback could undo");
     assert_aggregate_rules(&s);
 
-    must(&mut s, node("a"), Command::ConfirmCleanup { task_id: "t".into() });
+    must(&mut s, node("a"), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() });
     assert_eq!(lifecycle(&s, "t").0, TaskState::Closing, "the node's session is still open");
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Done, true, Some("a".into()), None));
@@ -268,7 +268,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
+        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
     };
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
     assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");
@@ -485,6 +485,54 @@ fn work_that_ends_inside_its_turn_is_continued_by_it_and_the_turn_ends_on_one_ca
     assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkContinued { continuation: "decision-1-7".into() },
     ] }).unwrap_err().code, "invalid_input", "a decision's continuation is the domain's to consume");
+    assert_aggregate_rules(&s);
+}
+
+// A background subagent that ends after its turn wakes Claude, which takes it up in a turn of its
+// own: that turn, not the one the subagent outlived, rests on the task's one card.
+#[test]
+fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:agent".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
+    ] });
+    assert!(holds_slot(&s, "t"), "the continuation Claude still owes keeps the slot");
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:other".into() },
+    ] }).unwrap_err().code, "conflict", "a turn takes up only a continuation the task owes");
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "decision-1-7".into() },
+    ] }).unwrap_err().code, "invalid_input", "a decision's continuation is the domain's to consume");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:agent".into() },
+    ] });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
+        [format!("{TURN_ENDED_PREFIX}t-1-turn-2")], "one card, from the turn that rested");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_eq!(kinds(&s, "t")[4..], ["work_started", "turn_ended", "work_ended", "turn_resumed", "turn_ended"]);
+    let journal = s.lifecycle_journal[&TaskId::from("t")].clone();
+    assert!(replay(&TaskId::from("t"), &journal).is_ok(), "the journal replays");
+    assert_aggregate_rules(&s);
+}
+
+// The user writes to the node instead of answering the card its ended turn left: that card asked
+// how the task goes on, and it is answered, so the delivery that follows is not held behind it.
+#[test]
+fn telling_a_resting_node_how_to_go_on_retires_the_card_that_asked_it() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Deliver the parser split".into() });
+    assert!(s.interactions[&InteractionId::from(card.as_str())].withdrawn, "the card no longer waits on the user");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_aggregate_rules(&s);
 }
 

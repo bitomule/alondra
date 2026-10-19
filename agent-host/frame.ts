@@ -44,7 +44,7 @@ const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('start'), cwd: text(4096).refine((s) => s.startsWith('/')), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
   z.strictObject({ type: z.literal('offer'), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
   z.strictObject({ type: z.literal('interrupt') }), z.strictObject({ type: z.literal('close') }),
-  z.strictObject({ type: z.literal('respond'), request_id: text(), epoch: positive, kind: decisionKind, tool_use_id: text().nullable(), decision })
+  z.strictObject({ type: z.literal('respond'), request_id: text(), epoch: positive, kind: decisionKind, tool_use_id: text().nullable(), decision, asked: object })
     .refine((respond) => hasToolUse(respond.kind) === (respond.tool_use_id !== null) && answers(respond.kind, respond.decision.behavior)),
   z.strictObject({ type: z.literal('set_model'), model: text(MAX_MODEL_BYTES).refine((s) => !/\p{Cc}/u.test(s) && s.trim().length > 0) }),
   z.strictObject({ type: z.literal('set_permission_mode'), mode: z.enum(PERMISSION_MODES) }),

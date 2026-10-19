@@ -639,12 +639,23 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
         Some("PostToolUse") => {
             // PR detection reads only the last stdout line. Complete tool output can be
             // megabytes and is never otherwise persisted by the daemon.
+            // A worktree a subagent or EnterWorktree made is the task's: its path, branch and the
+            // subagent's id stay for Alondra to record.
             if let Some(map) = payload.as_object_mut() {
                 if let Some(response) = map.remove("tool_response") {
                     let stdout = response.get("stdout").and_then(serde_json::Value::as_str)
                         .or_else(|| response.as_str());
+                    let mut kept = serde_json::Map::new();
                     if let Some(last) = stdout.and_then(|s| s.lines().map(str::trim).rfind(|s| !s.is_empty())) {
-                        map.insert("tool_response".into(), json!({"stdout": last}));
+                        kept.insert("stdout".into(), last.into());
+                    }
+                    for key in ["worktreePath", "worktreeBranch", "agentId", "status", "action"] {
+                        if let Some(value) = response.get(key).filter(|value| value.is_string()) {
+                            kept.insert(key.into(), value.clone());
+                        }
+                    }
+                    if !kept.is_empty() {
+                        map.insert("tool_response".into(), serde_json::Value::Object(kept));
                     }
                 }
             }
@@ -713,6 +724,24 @@ fn keys_probe() -> anyhow::Result<()> {
     result
 }
 
+
+#[cfg(test)]
+mod hook_payload_tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_response_keeps_its_last_line_and_the_worktree_it_names() {
+        let mut agent = json!({"hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"isolation": "worktree"},
+            "tool_response": {"status": "completed", "agentId": "a9e1782746c156d58", "content": [{"type": "text", "text": "long report"}],
+                "worktreePath": "/repo/.claude/worktrees/agent-a9e1782746c156d58", "worktreeBranch": "worktree-agent-a9e1782746c156d58"}});
+        compact_hook_payload(&mut agent);
+        assert_eq!(agent["tool_response"], json!({"status": "completed", "agentId": "a9e1782746c156d58",
+            "worktreePath": "/repo/.claude/worktrees/agent-a9e1782746c156d58", "worktreeBranch": "worktree-agent-a9e1782746c156d58"}));
+        let mut bash = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_response": {"stdout": "a\nhttps://github.com/o/r/pull/1\n", "stderr": "noise"}});
+        compact_hook_payload(&mut bash);
+        assert_eq!(bash["tool_response"], json!({"stdout": "https://github.com/o/r/pull/1"}));
+    }
+}
 
 #[cfg(test)]
 mod mcp_entrypoint_tests {

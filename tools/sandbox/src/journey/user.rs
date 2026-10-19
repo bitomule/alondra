@@ -73,6 +73,16 @@ impl<'a> User<'a> {
         Ok(body)
     }
 
+    /// Presses an action and returns the Mac's answer whatever it is: for an action that must be
+    /// refused.
+    pub fn try_press(&self, action_id: &str, option_id: Option<&str>) -> Result<(u16, Value)> {
+        let epoch = self.view("home")?["data_epoch"].as_str().context("home has no data_epoch")?.to_owned();
+        self.send("POST", "/actions", Some(json!({
+            "protocol": 1, "command_id": uuid()?, "data_epoch": epoch, "client": "ios", "lang": "en",
+            "action_id": action_id, "option_id": option_id, "input": {},
+        })))
+    }
+
     /// The ids of the cards waiting in Inbox.
     pub fn inbox(&self) -> Result<Vec<String>> {
         let home = self.view("home")?;

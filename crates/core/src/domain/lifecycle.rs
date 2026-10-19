@@ -176,6 +176,8 @@ pub struct ExecutionIdentity {
 pub enum RuntimeObservation {
     ResourceAvailable,
     TurnStarted { turn: String, input: String },
+    /// Work that outlived its turn woke Claude, which took it up in a root turn of its own.
+    TurnResumed { turn: String, continuation: String },
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
@@ -197,6 +199,9 @@ pub enum LifecycleRecord {
     },
     ResourceAvailable,
     TurnStarted { turn: String, input: String },
+    /// A root turn Claude opened by itself to take up the `continuation` of work that outlived
+    /// its turn.
+    TurnResumed { turn: String, continuation: String },
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
@@ -214,6 +219,8 @@ pub enum LifecycleRecord {
         text: Option<String>,
     },
     ExecutionReleased { input: String },
+    /// Someone told the task's node `text` outside a card, as `input`.
+    Told { input: String, text: String },
     Presented { delivery: InteractionId },
     HandedBack { delivery: InteractionId, input: String },
     Accepted { delivery: InteractionId },
@@ -405,8 +412,18 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             trigger: Trigger::Input(input_id(task, input)?),
         })?,
+        LifecycleRecord::TurnResumed { turn, continuation } => {
+            if is_decision(lifecycle.generation(), continuation) {
+                return Err(corrupt(task, format!("{continuation} is a decision's continuation, not work's")));
+            }
+            runtime(RuntimeFact::TurnStarted {
+                turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+                trigger: Trigger::OwnedContinuation(ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?),
+            })?
+        }
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
+        LifecycleRecord::Told { input, .. } => Event::Tell { input: input_id(task, input)? },
         LifecycleRecord::Presented { delivery } => Event::Present { delivery: delivery.clone() },
         LifecycleRecord::HandedBack { delivery, input } => Event::HandBack { delivery: delivery.clone(), input: input_id(task, input)? },
         LifecycleRecord::Accepted { delivery } => Event::Accept { delivery: delivery.clone(), merge: None },
@@ -533,6 +550,7 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::HandedBack { input, .. }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
         LifecycleRecord::Compacted { input } => Some((input, Some(COMPACT))),
+        LifecycleRecord::Told { input, text } => Some((input, Some(text.as_str()))),
         LifecycleRecord::Answered { input, text, .. } | LifecycleRecord::Resumed { input, text, .. } => Some((input, text.as_deref())),
         LifecycleRecord::HandoffSettled { resent: Some(input), text, .. } | LifecycleRecord::HandoffResent { resent: input, text, .. } => {
             Some((input, text.as_deref()))
@@ -597,6 +615,10 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::TurnEnded { turn, unheard_card }, .. } => {
             LifecycleRecord::TurnEnded { turn: turn.as_str().into(), unheard_card: unheard_card.clone() }
         }
+        Event::Tell { input } => LifecycleRecord::Told {
+            input: input.as_str().into(),
+            text: texts.get(input).cloned().ok_or_else(|| corrupt(task, format!("what it was told as {input:?} has no text")))?,
+        },
         Event::Answer { card, input } => LifecycleRecord::Answered {
             card: card.clone(),
             input: input.as_str().into(),
@@ -627,6 +649,9 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::ResourceAvailable, .. } => LifecycleRecord::ResourceAvailable,
         Event::Runtime { fact: RuntimeFact::TurnStarted { turn, trigger: Trigger::Input(input) }, .. } => {
             LifecycleRecord::TurnStarted { turn: turn.as_str().into(), input: input.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::TurnStarted { turn, trigger: Trigger::OwnedContinuation(continuation) }, .. } => {
+            LifecycleRecord::TurnResumed { turn: turn.as_str().into(), continuation: continuation.as_str().into() }
         }
         Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
@@ -1120,7 +1145,12 @@ impl DomainState {
             let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
             self.decide(lifecycles, task, record)?;
         }
-        self.decide(lifecycles, task, LifecycleRecord::Admitted { node: node.clone(), execution: Some(identity) })
+        let held: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
+        self.decide(lifecycles, task, LifecycleRecord::Admitted { node: node.clone(), execution: Some(identity) })?;
+        for card in &held {
+            self.retire(card);
+        }
+        Ok(())
     }
 
     /// What the SDK observed of the task's execution of `generation`, applied in order. Facts about
@@ -1138,6 +1168,12 @@ impl DomainState {
                 }
                 RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,
                 RuntimeObservation::TurnStarted { turn, input } => LifecycleRecord::TurnStarted { turn, input },
+                RuntimeObservation::TurnResumed { turn, continuation } => {
+                    if is_decision(generation, &continuation) {
+                        return Err(DomainError::new("invalid_input", "A decision's turn goes on only when its decision reaches Claude"));
+                    }
+                    LifecycleRecord::TurnResumed { turn, continuation }
+                }
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
                 RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
                 RuntimeObservation::WorkEnded { work, continuation } => LifecycleRecord::WorkEnded { work, continuation },
@@ -1195,12 +1231,16 @@ impl DomainState {
     }
 
     /// A receipt of an ending task discharges what its ending still owes among `which`. A task
-    /// that is not ending owes nothing yet.
+    /// that is not ending owes nothing yet, and its cleanup is owed while one of its worktrees is
+    /// still there.
     pub(super) fn drain(&mut self, task: &TaskId, lifecycles: &mut Lifecycles, which: impl Fn(&Drained) -> bool) -> Result<()> {
         if !self.tasks[task].ending() {
             return Ok(());
         }
-        let owed: Vec<Drained> = owed(self.lifecycle(lifecycles, task)?).into_iter().filter(|owed| which(owed)).collect();
+        let worktrees_left = self.tasks[task].open_worktrees().next().is_some();
+        let owed: Vec<Drained> = owed(self.lifecycle(lifecycles, task)?).into_iter()
+            .filter(|owed| which(owed) && !(worktrees_left && matches!(owed, Drained::Cleanup { .. })))
+            .collect();
         for obligation in owed {
             self.decide(lifecycles, task, LifecycleRecord::Drained { obligation })?;
         }
@@ -1489,7 +1529,7 @@ enum TurnEnd<'a> {
 /// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
 fn interrupted(journal: &[LifecycleRecord], turn: &str) -> bool {
     journal.iter().rev()
-        .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } if started == turn))
+        .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } | LifecycleRecord::TurnResumed { turn: started, .. } if started == turn))
         .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: Some(stopped) }, .. } if stopped == turn))
 }
 

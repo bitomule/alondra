@@ -407,9 +407,33 @@ pub enum Command {
     ReopenTask {
         task_id: TaskId,
     },
-    /// The node says it deleted what it generated for its closing Task.
+    /// The node says it deleted what it generated for its closing Task, and which of the task's
+    /// worktrees still hold work it gives up: Alondra deletes those as they are.
     ConfirmCleanup {
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        discard: Vec<String>,
+    },
+    /// Someone tells the node of an SDK task `text` outside a card: the orchestrator, the user, or
+    /// Alondra itself. It reaches the node's Claude inside the turn that runs, or as a turn of its own.
+    TellNode {
+        task_id: TaskId,
+        text: String,
+    },
+    /// Alondra saw the task's node, or a subagent it launched, make or take the git worktree at
+    /// `path`.
+    RecordTaskWorktree {
+        task_id: TaskId,
+        path: String,
+        origin: WorktreeOrigin,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// A worktree of the task ended.
+    ReleaseTaskWorktree {
+        task_id: TaskId,
+        path: String,
+        end: WorktreeEnd,
     },
     /// The node says it is still working on something after its PR merged (a deploy, a release);
     /// Alondra does not close its session while it says so. No reason ends it.

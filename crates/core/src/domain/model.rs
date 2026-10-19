@@ -142,6 +142,49 @@ pub struct Task {
     /// Done or Cancelled back until every receipt of the ending is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<TaskEnding>,
+    /// Every git worktree the task made or took, by path: its node's own and those of the
+    /// subagents it launched. A task ends only once each of them has ended.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub worktrees: BTreeMap<String, TaskWorktree>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskWorktree {
+    pub origin: WorktreeOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The node said in its cleanup that what is left in it can go.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discard: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<WorktreeEnd>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeOrigin {
+    /// The worktree Alondra made for the task.
+    Task,
+    /// A worktree the task's node took over from an earlier node.
+    Inherited,
+    /// Made by a subagent its node launched with an isolated worktree.
+    Subagent,
+    /// Made by its node with EnterWorktree.
+    Entered,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeEnd {
+    /// It no longer exists: Alondra or Claude Code removed it.
+    Removed,
+    /// The user chose to keep the task's node, and with it what the node has on disk.
+    KeptByUser,
+    /// It is a folder of the user's that the node was launched in, which Alondra never deletes.
+    UsersOwn,
+}
+impl Task {
+    /// The worktrees that have not ended yet.
+    pub fn open_worktrees(&self) -> impl Iterator<Item = (&String, &TaskWorktree)> {
+        self.worktrees.iter().filter(|(_, w)| w.end.is_none())
+    }
 }
 /// Higher priorities start before lower ones when nodes wait for a free slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

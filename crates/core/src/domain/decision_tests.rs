@@ -292,3 +292,55 @@ fn only_alondra_records_decisions_of_the_tasks_current_sdk_execution() {
     assert_eq!(refused_unchanged(&mut s, Actor::System, bg), "invalid_input");
     assert!(exec(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "missing".into(), generation: 1, epoch: 1 }).is_err());
 }
+
+/// The notification of an SDK permission card answers the same request the card does: its buttons
+/// are the card's own options, bound to the card's id and revision, which carry the request's
+/// generation and epoch.
+#[test]
+fn the_push_of_an_sdk_permission_card_offers_its_answers_bound_to_the_same_request() {
+    use crate::views::{Client, Lang, LiveSnapshot, RenderContext, Transport, build, push_actions};
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, bash(7, "make test"));
+    let card = card_of(7);
+    let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
+    let pushed = push_actions(&read, &card, Lang::En).unwrap();
+    let options: Vec<&str> = pushed.iter().filter_map(|action| action.option.as_deref()).collect();
+    assert_eq!(options, ["allow", "always", "deny"], "{pushed:?}");
+    let view = build(&format!("card:{card}"), RenderContext {
+        domain: &s, index: read.index(), live: &LiveSnapshot::default(), client: Client::Ios, lang: Lang::En,
+        transport: Transport::Relay, cursor: "", rendered_at: "",
+    }).unwrap();
+    let rendered = serde_json::to_string(&view).unwrap();
+    for action in pushed.iter().filter(|action| action.option.is_some()) {
+        assert!(action.id.starts_with(&format!("ans:{card}@")), "bound to the card and its revision: {}", action.id);
+        assert!(rendered.contains(&action.id), "the card offers the same action: {}", action.id);
+    }
+}
+
+// What the native Claude 2.1.300 did with a background subagent: it asks for a permission, its
+// root turn ends, the user allows it, the subagent goes on with the answer and ends, and Claude
+// takes up its notification in a turn of its own, which rests on the task's one card.
+#[test]
+fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wakes_ends_on_one_card() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:agent".into() },
+    ] });
+    must(&mut s, Actor::System, bash(7, "echo draft > parser-draft.txt"));
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, user(), answer(&card_of(7), Hold::ALLOW, None));
+    must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
+    assert_eq!(kinds(&s, "t").iter().rev().take(2).cloned().collect::<Vec<_>>(), ["decision_continued", "decision_settled"],
+        "the subagent that asked goes on with the answer: no root turn owes it");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
+        RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:agent".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
+        [format!("{TURN_ENDED_PREFIX}t-1-turn-2")]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "the task waits on the user, not on a turn that never comes");
+    assert_aggregate_rules(&s);
+}

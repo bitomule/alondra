@@ -78,6 +78,7 @@ mod node_push;
 mod node_reports;
 mod node_work;
 mod task_closer;
+mod task_worktrees;
 mod workflow_state;
 mod node_revival;
 mod notices;

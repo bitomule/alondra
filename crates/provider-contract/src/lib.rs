@@ -142,6 +142,12 @@ pub enum Observation {
         input: InputId,
         turn: TurnId,
     },
+    /// Work that outlived its turn woke Claude, which took up its `continuation` in a root turn of
+    /// its own, with no input of Alondra's.
+    TurnResumed {
+        continuation: ContinuationId,
+        turn: TurnId,
+    },
     InputConsumed {
         input: InputId,
     },
@@ -176,6 +182,18 @@ pub enum Observation {
         kind: DecisionKind,
         tool_use: Option<String>,
         payload: Vec<u8>,
+    },
+    /// Claude Code made or entered the git worktree at `path`: with EnterWorktree, or for a
+    /// subagent (`subagent`) launched with an isolated worktree that it kept.
+    WorktreeMade {
+        path: String,
+        branch: Option<String>,
+        subagent: bool,
+    },
+    /// A subagent with an isolated worktree went on in the background: Claude Code names its
+    /// worktree `agent-<agent>` in the repository's `.claude/worktrees`.
+    SubagentWorktree {
+        agent: String,
     },
     /// The request at `epoch` is over: `answered` when a decision resolved it, otherwise it was
     /// aborted, closed or its decision could not be delivered. `continued` when the root turn that

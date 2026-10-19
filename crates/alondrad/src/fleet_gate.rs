@@ -774,8 +774,10 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key))
         .map(|(key, _)| task_of(state, key))
         .filter(|task| task.as_ref().is_none_or(|task| !busy.contains(task) && !paused(task)
-            && state.tasks.get(task).is_none_or(|task| !task.over())))
+            && state.tasks.get(task).is_none_or(|task| !task.over() && task.agent_id.is_none())))
         .collect();
+    // A start counts until its task has a node; from then on the node's own phase says whether it
+    // takes a slot, as a node of the Agent SDK that ends its first turn on a card within seconds.
     let working = busy.len() + in_flight.len();
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
     let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();

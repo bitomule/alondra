@@ -55,15 +55,17 @@ done
 stop "$dir/relay.pid"
 stop "$dir/issuer.pid"
 stop "$dir/sdk/model.pid"
+state=
 if [ -f "$dir/sdk/state-root" ]; then
 	state=$(cat "$dir/sdk/state-root")
-	case $state in /private/tmp/as-sdk-*) rm -rf "$state" ;; esac
+	case $state in /private/tmp/as-sdk-*) ;; *) state= ;; esac
 fi
 
 if [ "${KEEP:-0}" = 1 ]; then
 	rm -f "$dir/sandbox.json"
-	echo "Sandbox stopped; files kept in $dir."
+	echo "Sandbox stopped; files kept in $dir${state:+, and the state of its SDK hosts in $state}."
 else
+	[ -n "$state" ] && rm -rf "$state"
 	rm -rf "$dir"
 	echo "Sandbox stopped and $dir removed."
 fi

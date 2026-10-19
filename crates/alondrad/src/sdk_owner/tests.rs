@@ -17,6 +17,33 @@ fn runfile(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
+/// The pinned Node host with the official SDK and a fake native Claude that records what it is
+/// launched with in the returned capture, its hosts' folders under `state`.
+pub(crate) fn fixture_backend(home: &Path, state: &Path) -> (SdkBackend, PathBuf) {
+    let native = home.join("native");
+    std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let capture = home.join("native-capture.json");
+    let environment = BTreeMap::from([("HOME".to_owned(), home.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+    let mut native_environment = environment.clone();
+    native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
+    let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
+    let backend = SdkBackend {
+        node_sha256: backend::digest(&node).unwrap(),
+        host_sha256: backend::digest(&host).unwrap(),
+        native_sha256: backend::digest(&native).unwrap(),
+        node,
+        host,
+        native,
+        host_environment: environment,
+        native_environment,
+        confinement: None,
+        state_root: state.join("h"),
+        io_timeout_seconds: 30,
+    };
+    (backend, capture)
+}
+
 struct Slice {
     domain: Arc<DomainRuntime>,
     database: PathBuf,
@@ -45,27 +72,7 @@ impl Slice {
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let plugin = home.join("plugin");
         std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
-        let native = home.join("native");
-        std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
-        std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let capture = home.join("native-capture.json");
-        let environment = BTreeMap::from([("HOME".to_owned(), home.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
-        let mut native_environment = environment.clone();
-        native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
-        let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
-        let backend = SdkBackend {
-            node_sha256: backend::digest(&node).unwrap(),
-            host_sha256: backend::digest(&host).unwrap(),
-            native_sha256: backend::digest(&native).unwrap(),
-            node,
-            host,
-            native,
-            host_environment: environment,
-            native_environment,
-            confinement: None,
-            state_root: state.join("h"),
-            io_timeout_seconds: 30,
-        };
+        let (backend, capture) = fixture_backend(&home, &state);
         let database = home.join("domain.sqlite");
         let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
         let slice = Self { domain, database, capture, worktree, plugin, backend, _home: home, _state: state };
@@ -116,6 +123,7 @@ impl Slice {
             directory: self.worktree.to_str().unwrap().into(),
             prompt: prompt.into(),
             plugin: self.plugin.clone(),
+            options: LaunchOptions::default(),
         }, capabilities)
         .unwrap()
     }
@@ -318,11 +326,44 @@ fn carrying_on_from_a_client_commits_and_reaches_the_sdk() {
     slice.settle(&mut driver);
     assert_eq!(slice.prompts().last().map(String::as_str), Some("Write the changelog too"), "it reaches the host's Claude as written");
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Also update the changelog"})).unwrap();
-    let refused = tokio::runtime::Runtime::new().unwrap()
+    let told = tokio::runtime::Runtime::new().unwrap()
         .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
-        .unwrap_err();
-    assert_eq!(refused.code, "unsupported", "a message outside its cards is refused with its reason: {refused:?}");
-    assert_eq!(slice.prompts().len(), 3, "nothing more reached the host's Claude");
+        .unwrap();
+    assert_eq!(told["delivery_state"], "dispatching", "{told}");
+    assert_eq!(driver.pending_permits(), 1, "what the user told the resting node left for its host");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let last = slice.prompts().last().cloned().unwrap();
+    assert!(last.starts_with("[From David · ") && last.ends_with("Also update the changelog"), "it reaches the host's Claude as a turn of its own, saying who sent it: {last}");
+    driver.stop().unwrap();
+}
+
+// A message goes into the running turn when the provider can, and starts a turn when the
+// turn just closed. Here what someone tells the node while its turn runs reaches the same native
+// turn: the host takes it into its streaming input and Claude consumes it in that turn, which then
+// ends with one card.
+#[test]
+fn a_message_mid_turn_reaches_claude_inside_the_turn() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let turns = |domain: &DomainRuntime| {
+        let read = domain.read();
+        read.state().lifecycle_journal[&TaskId::from(TASK)].iter()
+            .filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { .. })).count()
+    };
+    assert_eq!(turns(&slice.domain), 1);
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .unwrap();
+    assert_eq!(driver.pending_permits(), 1, "it leaves while the turn runs, without waiting for the turn to end");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert!(prompts.last().is_some_and(|last| last.ends_with("Rebase on main before you push")), "{prompts:?}");
+    assert_eq!(turns(&slice.domain), 1, "Claude took it inside the turn that ran");
+    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "the turn ends with one card");
     driver.stop().unwrap();
 }
 
@@ -478,6 +519,96 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     let left: Vec<String> =
         processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
+}
+
+// The node delivers, its host dies with nothing left in its worktrees, and the user accepts the
+// result: the task closes without the session, which is gone, with its node's end as the fact.
+#[tokio::test]
+async fn accepting_a_task_whose_host_died_closes_it() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    kill_host_and_daemon(driver);
+    slice.domain.enable_sdk(slice.backend.clone());
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    assert!(!slice.domain.owns_sdk_host(&agent), "no host of this daemon is left for the node");
+    let timing = crate::task_closer::Timing::new(Some(std::time::Duration::ZERO));
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "the end of the host its journal kept is committed: nothing runs");
+    assert!(slice.domain.owns_sdk_host(&agent), "a host that resumes the session took the execution");
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the accepted task closes although its session had ended");
+    assert!(!slice.domain.owns_sdk_host(&agent), "and the host that took over is stopped");
+}
+
+// The node delivers inside its turn and the user accepts: Alondra's request to clean up, a message
+// of its outbox, is what the node's Claude is told next. A node of `claude --bg` takes it through its
+// mod; nothing took it for a node of the SDK.
+#[tokio::test(flavor = "multi_thread")]
+async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    let pending: Vec<_> = slice.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(agent.0.as_str())).collect();
+    assert_eq!(pending.len(), 1, "Alondra asks the node to clean up: {pending:?}");
+    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let push = crate::push::Push::open(&slice._home).unwrap();
+    crate::domain_delivery::deliver_from_runtime(&slice.domain, &slice._home, &push, None, &client, pending[0].clone(), std::time::Duration::ZERO).await.unwrap();
+    assert!(slice.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|message| message.id != pending[0].id), "the message is handed");
+    assert_eq!(driver.pending_permits(), 1, "it leaves for the node's host");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let last = slice.prompts().last().cloned().unwrap();
+    assert!(last.starts_with("[From Alondra · ") && last.contains("is finished and is closing"), "{last}");
+    driver.stop().unwrap();
+}
+
+// The node was asked to clean up and its turn with that request ended: its host stays until the
+// node says it cleaned up. Before, the closer stopped it as soon as the task rested, while the node
+// was still answering the request.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    let pending = slice.domain.store.lock().unwrap().pending_messages().unwrap().into_iter().find(|message| message.recipient_kind == "agent").unwrap();
+    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let push = crate::push::Push::open(&slice._home).unwrap();
+    crate::domain_delivery::deliver_from_runtime(&slice.domain, &slice._home, &push, None, &client, pending, std::time::Duration::ZERO).await.unwrap();
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "the turn with the request ended");
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    let timing = crate::task_closer::Timing::new(None);
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    assert!(slice.domain.owns_sdk_host(&agent), "the host stays until the node says it cleaned up");
+    assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Closing);
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)));
+    assert!(!slice.domain.owns_sdk_host(&agent));
 }
 
 #[tokio::test]
@@ -707,12 +838,146 @@ fn a_second_task_starts_through_the_same_sdk_host() {
         directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the upgrade guide".into(),
         plugin: slice.plugin.clone(),
+        options: LaunchOptions::default(),
     })
     .expect("the second task starts too");
     slice.settle(&mut second);
     assert_eq!(slice.prompts(), ["Write the release notes", "Write the upgrade guide"]);
     first.stop().unwrap();
     second.stop().unwrap();
+}
+
+// `claude --bg` gets the model, effort and denied tools of its launch as flags. Through the SDK the
+// host gives them to its Claude, and a host that resumes the session after the first ended gives
+// them again: they are kept beside the execution.
+#[test]
+fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_session() {
+    let slice = Slice::new();
+    let options = LaunchOptions { model: Some("fixture-model".into()), effort: Some("high".into()), disallowed_tools: vec!["WebFetch".into()] };
+    let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
+        prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
+    }, capabilities()).unwrap();
+    slice.settle(&mut driver);
+    let launched = |slice: &Slice| -> Vec<String> {
+        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+        capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect()
+    };
+    let has = |args: &[String], flag: &str, value: &str| {
+        args.windows(2).any(|pair| pair[0] == flag && pair[1].contains(value)) || args.iter().any(|arg| arg.strip_prefix(&format!("{flag}=")).is_some_and(|v| v.contains(value)))
+    };
+    let args = launched(&slice);
+    assert!(has(&args, "--model", "fixture-model"), "{args:?}");
+    assert!(has(&args, "--effort", "high"), "{args:?}");
+    assert!(has(&args, "--disallowedTools", "WebFetch"), "{args:?}");
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    carry_on(&restarted, "Add the tests first");
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let args = launched(&slice);
+    assert!(args.iter().any(|arg| arg.starts_with("--resume")), "the resumed session: {args:?}");
+    assert!(has(&args, "--model", "fixture-model") && has(&args, "--effort", "high") && has(&args, "--disallowedTools", "WebFetch"), "{args:?}");
+    resumed.stop().unwrap();
+}
+
+// Replacing a session interrupts the old turn, detaches the old session and starts the
+// new one, and interrupts the old runtime only for the exact committed replacement. Here
+// «Replace» stops the node's host through its owner and starts the task on a new execution: its
+// first generation's open request is withdrawn with it, and an answer to that card is refused.
+#[test]
+fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() {
+    let slice = Slice::new();
+    let (driver, card) = slice.asked("decide:bash make test");
+    let old = driver.agent().clone();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.domain.stop_sdk_host(&old).unwrap();
+    end_stopped_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
+    assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
+    let mut replacement = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
+        prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(),
+    }).unwrap();
+    slice.settle(&mut replacement);
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].agent_id.as_ref(), Some(replacement.agent()), "the task is the new node's");
+    assert_ne!(replacement.agent(), &old);
+    assert_eq!(lifecycle(&slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
+    assert!(slice.answer(&card, Hold::ALLOW, None).is_err(), "the old generation's card takes no answer");
+    replacement.stop().unwrap();
+}
+
+struct NoClaude(PathBuf);
+impl crate::orchestrate::Launcher for NoClaude {
+    async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+        panic!("a task of a daemon with the Agent SDK never starts as claude --bg")
+    }
+    async fn stop(&self, _: &str) {}
+    fn plugin(&self) -> Option<PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+// The orchestrator's replace goes through the launch every source uses: the owner stops the old
+// host, its open request is closed with its card, and a new generation runs the task.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_before_a_new_generation_runs() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let (driver, card) = slice.asked("decide:bash make test");
+    let old = driver.agent().clone();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    let body = serde_json::from_value(serde_json::json!({"task": TASK, "replace": true, "model": "sonnet", "effort": "high", "reason": "Release notes are short prose"})).unwrap();
+    let launched = crate::domain_orchestrator_tools::launch(&slice.domain, &slice._home, &Actor::Orchestrator { generation: 0 }, body, |_| None, &NoClaude(slice.plugin.clone())).await;
+    assert!(launched.is_ok(), "{launched:?}");
+    assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
+    assert!(!slice.domain.owns_sdk_host(&old), "the old host is stopped");
+    let new = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().expect("the task has a node");
+    assert_ne!(new, old);
+    assert_eq!(lifecycle(&slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
+    assert!(slice.answer(&card, Hold::ALLOW, None).is_err(), "the old generation's card takes no answer");
+    slice.domain.stop_sdk_host(&new).unwrap();
+}
+
+// A cancelled SDK task whose subagent left work in its worktree keeps its host: the node is told
+// which worktree holds what, and the task ends only once the node gave it up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_sdk_task_with_work_left_in_a_subagents_worktree_keeps_its_host_until_the_node_settles_it() {
+    let slice = Slice::new();
+    let root = Directory::new();
+    let own = crate::worktree::testing::task_worktree(&root, TASK);
+    slice.domain.set_task_worktree(&TaskId::from(TASK), own.to_str().unwrap()).unwrap();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let agent = driver.agent().clone();
+    let repo = root.join("repo");
+    let subagent = repo.join(".claude/worktrees/agent-a0000000000000001");
+    let added = std::process::Command::new("git").current_dir(&repo)
+        .args(["worktree", "add", "-q", "-b", "worktree-agent-a0000000000000001", subagent.to_str().unwrap()]).status().unwrap();
+    assert!(added.success());
+    slice.run(&Actor::System, "subagent", Command::RecordTaskWorktree {
+        task_id: TASK.into(), path: subagent.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Subagent, branch: None,
+    });
+    std::fs::write(subagent.join("draft.txt"), "x").unwrap();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    let timing = crate::task_closer::Timing::new(None);
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    assert!(slice.domain.owns_sdk_host(&agent), "the host stays so the node can settle its worktree");
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Closing);
+    let told = state.lifecycle_journal[&TaskId::from(TASK)].iter().rev()
+        .find_map(|record| match record { alondra_core::domain::LifecycleRecord::Told { text, .. } => Some(text.clone()), _ => None })
+        .expect("the node is told what holds the close");
+    assert!(told.contains(subagent.to_str().unwrap()) && told.contains("discard"), "{told}");
+    assert!(subagent.join("draft.txt").exists(), "nothing with work is deleted");
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "give-up", Command::ConfirmCleanup { task_id: TASK.into(), discard: vec![subagent.to_str().unwrap().into()] });
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis() + 10 * 60_000).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
+    assert!(!subagent.exists() && !own.exists(), "both worktrees are deleted once nothing in them is lost");
+    assert!(!slice.domain.owns_sdk_host(&agent));
 }
 
 // The task's native Claude loads every settings source of the user's default profile, with no
@@ -851,6 +1116,42 @@ fn a_turn_cut_by_the_end_of_its_host_asks_how_to_go_on_and_resumes_the_session()
     slice.settle(&mut resumed);
     let starts = slice.starts();
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "{starts:?}");
+    assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
+    resumed.stop().unwrap();
+}
+
+// A session whose event stream fails ends as `runtime_error`, and a new one opens on the
+// next command. Here the host dies while this daemon runs (its Node crashed mid-turn): its owner
+// puts a host that resumes the same Claude session in its place, the task asks how to go on
+// instead of staying «working», and what the user says reaches that session. A replacement that
+// ends before it was handed anything is not replaced again: it would only end again.
+#[test]
+fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let group = driver.worker.host_group().unwrap();
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    for member in alondra_process_group::members(group).unwrap() {
+        exits.watch(&member).unwrap();
+    }
+    assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
+    exits.wait().unwrap();
+    while driver.observe().is_ok() {}
+    assert!(driver.host_to_replace(), "the owner saw its host close");
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended host runs");
+    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
+    resumed.host_closed = true;
+    assert!(!resumed.host_to_replace(), "a replacement handed nothing yet is not replaced again");
+    resumed.host_closed = false;
+    answer(&slice.domain, &card.id, CARRY_ON);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
     assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
     resumed.stop().unwrap();
 }

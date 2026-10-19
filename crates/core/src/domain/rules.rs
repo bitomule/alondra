@@ -266,17 +266,28 @@ pub fn merge_failure(body: &str) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, reason.split_once(MERGE_FAILED_FIX).map_or(reason, |(reason, _)| reason)))
 }
 /// What a node is told when its task is finished and Alondra is about to close its session.
-pub fn cleanup_request(title: &str, task: &TaskId) -> String {
+pub fn cleanup_request(title: &str, task: &TaskId, worktrees: &[&str]) -> String {
     format!("Your task “{title}” is finished and is closing. Before Alondra closes this session and \
-deletes its worktree, remove what you generated for this task outside the worktree that would \
-otherwise stay on this Mac (build caches, temporary files), with the project's own tools (its clean \
-commands, scripts or build targets). Do not delete files or links inside the worktree: Alondra \
-deletes the whole worktree. If nothing was generated outside it, delete nothing. Do not change, \
-commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
-not, Alondra closes the session after a while anyway. If something you started for this task is \
-still running after the merge (a deploy, a release script), call post_merge_work with task_id {task} \
-and what it is first: Alondra keeps the session open until you call it again without reason or call \
-cleanup_done.", task = task.0)
+deletes its worktrees, remove what you generated for this task outside them that would otherwise \
+stay on this Mac (build caches, temporary files), with the project's own tools (its clean commands, \
+scripts or build targets). Do not delete files or links inside a worktree: Alondra deletes each \
+worktree of the task. If nothing was generated outside them, delete nothing.{worktrees} Then call \
+cleanup_done with task_id {task}. If something you started for this task is still running after \
+the merge (a deploy, a release script), call post_merge_work with task_id {task} and what it is \
+first: Alondra keeps the session open until you call it again without reason or call cleanup_done.",
+        task = task.0, worktrees = worktrees_to_settle(worktrees))
+}
+/// The worktrees a closing task still has, and what the node does with work left in one: Alondra
+/// deletes only a worktree with nothing left in it, or one the node gives up.
+pub fn worktrees_to_settle(worktrees: &[&str]) -> String {
+    if worktrees.is_empty() {
+        return String::new();
+    }
+    let list = worktrees.iter().map(|path| format!("\n- {path}")).collect::<String>();
+    format!(" The task's worktrees, yours and those of the subagents you launched:{list}\nAlondra closes \
+the task only once none of them has uncommitted changes or commits no remote has. For each one with \
+work left, commit it and push it to its branch, or give it up: list its path in cleanup_done's \
+discard and Alondra deletes it as it is.")
 }
 /// What a node that declared work after the merge before delivering is told once its delivery
 /// settles: the task stays in progress until that work ends.
@@ -366,6 +377,13 @@ impl DomainState {
         match self.task(task)?.ending {
             Some(TaskEnding::Cancelling) => fail("task_ending", &format!("Task {task} is being cancelled: once it is closed, reopen it")),
             Some(TaskEnding::Completing) => fail("task_ending", &format!("Task {task} is closing as done: once it is closed, reopen it")),
+            None => Ok(()),
+        }
+    }
+    /// A task ends only once every worktree it made or took has ended.
+    fn no_open_worktrees(&self, task: &TaskId) -> Result<()> {
+        match self.task(task)?.open_worktrees().next() {
+            Some((path, _)) => fail("worktrees_open", &format!("Task {task} still has its worktree {path}: it ends only once each of its worktrees is removed")),
             None => Ok(()),
         }
     }
@@ -1729,7 +1747,7 @@ impl DomainState {
                 let agent_id = t.agent_id.clone().expect("a task that wraps up has a node");
                 let message = match &t.wrap_up.post_merge_work {
                     Some(work) => post_merge_reminder(&t.title, &t.id, &work.reason),
-                    None => cleanup_request(&t.title, &t.id),
+                    None => cleanup_request(&t.title, &t.id, &t.open_worktrees().map(|(path, _)| path.as_str()).collect::<Vec<_>>()),
                 };
                 self.tasks.get_mut(&id).unwrap().wrap_up.asked_at = Some(revision);
                 effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id), interaction_id: None, message });
@@ -1917,7 +1935,9 @@ impl DomainState {
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
-            | Command::ConfirmCleanup { task_id }
+            | Command::ConfirmCleanup { task_id, .. }
+            | Command::RecordTaskWorktree { task_id, .. }
+            | Command::ReleaseTaskWorktree { task_id, .. }
             | Command::DeclarePostMergeWork { task_id, .. }
             | Command::RecordNodeEnd { task_id, .. }
             | Command::RecordTaskCleanup { task_id }
@@ -1931,6 +1951,7 @@ impl DomainState {
             | Command::SetPermissionMode { task_id, .. }
             | Command::ReadMcpStatus { task_id }
             | Command::CompactConversation { task_id }
+            | Command::TellNode { task_id, .. }
             | Command::RecordDecisionRequest { task_id, .. }
             | Command::RecordDecisionSettled { task_id, .. }
             | Command::RecordDecisionAborted { task_id, .. }
@@ -2508,7 +2529,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
                     },
                 );
                 self.dependency_graph()?;
@@ -3890,14 +3911,22 @@ impl DomainState {
                     self.decide(lifecycles, task_id, LifecycleRecord::ResourceAvailable)?;
                 }
             }
-            Command::ConfirmCleanup { task_id } => {
+            Command::ConfirmCleanup { task_id, discard } => {
                 let t = self.assigned(actor, task_id)?;
-                if t.wrap_up.asked_at.is_none() {
+                if t.wrap_up.asked_at.is_none() && !(t.ending() && t.open_worktrees().next().is_some()) {
                     return fail("not_closing", &format!(
                         "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
                 }
+                if let Some(path) = discard.iter().find(|path| t.worktrees.get(*path).is_none_or(|w| w.end.is_some())) {
+                    return fail("not_found", &format!(
+                        "{path} is not a worktree of task {} that still exists: discard only the worktrees Alondra named.", task_id.0));
+                }
                 let revision = self.revision + 1;
-                let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
+                let task = self.tasks.get_mut(task_id).unwrap();
+                for path in discard {
+                    task.worktrees.get_mut(path).unwrap().discard = true;
+                }
+                let wrap_up = &mut task.wrap_up;
                 wrap_up.cleaned_at = Some(revision);
                 self.end_post_merge(task_id, PostMergeEnd::Cleanup, lifecycles)?;
                 self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. }))?;
@@ -3948,8 +3977,17 @@ impl DomainState {
                         PostMergeEnd::SessionOver
                     }
                 };
+                if matches!(end, NodeEnd::Closed | NodeEnd::Gone) {
+                    self.no_open_worktrees(task_id)?;
+                }
                 self.end_post_merge(task_id, fact, lifecycles)?;
-                self.tasks.get_mut(task_id).unwrap().wrap_up.node = Some(*end);
+                let task = self.tasks.get_mut(task_id).unwrap();
+                if matches!(end, NodeEnd::KeptByUser | NodeEnd::UsersOwn) {
+                    for worktree in task.worktrees.values_mut().filter(|w| w.end.is_none()) {
+                        worktree.end = Some(WorktreeEnd::KeptByUser);
+                    }
+                }
+                task.wrap_up.node = Some(*end);
                 if self.tasks[task_id].ending() {
                     self.drain(task_id, lifecycles, |_| true)?;
                 } else if self.lifecycle(lifecycles, task_id)?.execution().is_some() {
@@ -4043,6 +4081,26 @@ impl DomainState {
                 let record = self.compact_guard(actor, task_id)?;
                 self.decide(lifecycles, task_id, record)?;
             }
+            Command::TellNode { task_id, text } => {
+                system(actor)?;
+                nonempty(text)?;
+                if self.task(task_id)?.state.terminal() {
+                    return fail("task_not_active", &format!("Task {task_id} has ended: its node is gone"));
+                }
+                if self.lifecycle(lifecycles, task_id)?.execution().is_none_or(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
+                    return fail("conflict", &format!("Task {task_id} has no node running through the Agent SDK"));
+                }
+                let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
+                let record = LifecycleRecord::Told { input: self.next_input(task_id), text: text.clone() };
+                self.decide(lifecycles, task_id, record)?;
+                let answered: Vec<InteractionId> = {
+                    let still = self.lifecycle(lifecycles, task_id)?.cards();
+                    held.into_iter().filter(|card| !still.iter().any(|(held, _)| *held == card)).collect()
+                };
+                for card in &answered {
+                    self.retire(card);
+                }
+            }
             Command::RecordDecisionRequest { task_id, generation, epoch, hold, tool, input, mcp_server, prompt } => {
                 self.record_decision_request(actor, task_id, *generation, *epoch, *hold, tool.as_deref(), input,
                     mcp_server.as_ref(), prompt, effects, created, lifecycles)?;
@@ -4062,7 +4120,40 @@ impl DomainState {
                 if self.wraps_up(t) {
                     return fail("conflict", "The task still has its node: its end is the receipt");
                 }
+                self.no_open_worktrees(task_id)?;
                 self.drain(task_id, lifecycles, |_| true)?;
+            }
+            Command::RecordTaskWorktree { task_id, path, origin, branch } => {
+                system(actor)?;
+                nonempty(path)?;
+                if !path.starts_with('/') {
+                    return fail("invalid_input", "A worktree path is absolute");
+                }
+                if self.task(task_id)?.state.terminal() {
+                    return fail("task_not_active", &format!("Task {} has ended", task_id.0));
+                }
+                let worktrees = &mut self.tasks.get_mut(task_id).unwrap().worktrees;
+                match worktrees.get_mut(path) {
+                    Some(known) if known.end.is_none() => {
+                        if known.branch.is_none() {
+                            known.branch = branch.clone();
+                        }
+                    }
+                    _ => {
+                        worktrees.insert(path.clone(), TaskWorktree { origin: *origin, branch: branch.clone(), discard: false, end: None });
+                    }
+                }
+            }
+            Command::ReleaseTaskWorktree { task_id, path, end } => {
+                system(actor)?;
+                let t = self.task(task_id)?;
+                match t.worktrees.get(path) {
+                    None => return fail("not_found", &format!("{path} is not a worktree of task {}", task_id.0)),
+                    Some(known) if known.end == Some(*end) => return Ok(()),
+                    Some(known) if known.end.is_some() => return fail("conflict", "The worktree already ended"),
+                    Some(_) => {}
+                }
+                self.tasks.get_mut(task_id).unwrap().worktrees.get_mut(path).unwrap().end = Some(*end);
             }
             Command::ArchiveTask { task_id, archived } => {
                 self.archive_guard(actor, task_id, *archived)?;
@@ -4208,6 +4299,9 @@ impl DomainState {
         };
         self.schedule.validate()?;
         self.validate_plan_reviews()?;
+        if let Some(t) = self.tasks.values().find(|t| t.state.terminal() && t.open_worktrees().next().is_some()) {
+            return fail("invalid_input", &format!("Task {} ended with a worktree of its own still there", t.id));
+        }
         for run in self.schedule.runs.values() {
             if let (Some(request_id), Some(task_id)) = (&run.request_id, &run.task_id) {
                 if !self.requests.contains_key(request_id)

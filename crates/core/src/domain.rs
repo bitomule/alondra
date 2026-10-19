@@ -35,6 +35,8 @@ mod merged_close_tests;
 #[cfg(test)]
 mod post_merge_tests;
 #[cfg(test)]
+mod worktree_close_tests;
+#[cfg(test)]
 mod proposed_plan_tests;
 #[cfg(test)]
 mod plan_phases_tests;

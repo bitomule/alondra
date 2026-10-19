@@ -535,6 +535,11 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
         start_assigned(domain, &agent_id)?;
     }
+    if event == "PostToolUse"
+        && let Err(error) = crate::task_worktrees::record_from_hook(domain, &agent_id, payload)
+    {
+        log!("could not record the worktree {session_id}'s tool made: {error:#}");
+    }
     if event == "PreToolUse"
         && let Some(reason) = forbidden_for_nodes(tool.as_deref(), payload.get("tool_input"))
     {
@@ -1672,6 +1677,26 @@ mod tests {
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
             "tool_name": "mcp__plugin_alondra_alondra__publish_information"}), Some(6)).await;
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
+
+    #[tokio::test]
+    async fn the_worktree_a_nodes_isolated_subagent_kept_becomes_its_tasks() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
+        command(&domain, Actor::User { user_id: "u".into() }, "request",
+            Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("session-a".into()), review_prs: false,
+            dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        let path = "/repo/.claude/worktrees/agent-a9e1782746c156d58";
+        hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Agent",
+            "tool_input": {"isolation": "worktree", "prompt": "Fix it"},
+            "tool_response": {"status": "completed", "agentId": "a9e1782746c156d58", "worktreePath": path, "worktreeBranch": "worktree-agent-a9e1782746c156d58"}}), Some(6)).await.1.unwrap();
+        let worktrees = domain.state().unwrap().tasks[&"task".into()].worktrees.clone();
+        assert_eq!(worktrees.keys().collect::<Vec<_>>(), [path]);
+        assert_eq!(worktrees[path].origin, alondra_core::domain::WorktreeOrigin::Subagent);
     }
 
     #[tokio::test]

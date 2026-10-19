@@ -120,7 +120,9 @@ impl DomainState {
             LifecycleRecord::DecisionAborted { epoch, unheard_card: unheard.clone() }
         }];
         self.judge(task, &mut lifecycle, &records[0])?;
-        if answered && lifecycle.activity() == alondra_domain::ActivityView::Working {
+        // A root turn never ends while it waits on a decision: one answered after it ended was asked
+        // by the turn's own work, a background subagent, which goes on with it.
+        if answered && matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork) {
             records.push(LifecycleRecord::DecisionContinued { epoch });
             self.judge(task, &mut lifecycle, &records[1])?;
         }

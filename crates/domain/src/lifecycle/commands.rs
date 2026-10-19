@@ -30,10 +30,19 @@ impl TaskLifecycle {
                     }) if !matches!(gate, DeliveryGate::Blocked(_)) => {
                         pending.front().cloned().ok_or(Refusal::EmptyObligation)?
                     }
+                    // A released execution left only cards that ask how to go on: the new
+                    // execution is how it goes on, and those cards end with its admission.
+                    State::InProgress(Progress::Waiting {
+                        cards,
+                        session: Session::Absent(pending),
+                        ..
+                    }) if cards.iter().all(|card| matches!(card.reason, WaitReason::Unheard | WaitReason::Recovery)) => {
+                        pending.front().cloned().ok_or(Refusal::EmptyObligation)?
+                    }
                     _ => return Err(Refusal::InvalidState),
                 };
                 let stage = match &self.state {
-                    State::InProgress(Progress::Queued { stage, .. }) => *stage,
+                    State::InProgress(Progress::Queued { stage, .. } | Progress::Waiting { stage, .. }) => *stage,
                     State::Delivered(_) => WorkStage::Implement,
                     _ => WorkStage::Plan,
                 };
@@ -59,6 +68,10 @@ impl TaskLifecycle {
                     inbox: match &self.state {
                         State::InProgress(Progress::Queued { remaining, .. }) => remaining.clone(),
                         State::Delivered(Delivered {
+                            session: Session::Absent(pending),
+                            ..
+                        })
+                        | State::InProgress(Progress::Waiting {
                             session: Session::Absent(pending),
                             ..
                         }) => pending.iter().skip(1).cloned().collect(),
@@ -122,6 +135,32 @@ impl TaskLifecycle {
                     _ => return Err(Refusal::InvalidState),
                 };
                 replace_handoff(execution, &input, Some(resend))?;
+            }
+            Event::Tell { input } => {
+                if self.pending_inputs().contains(&&input) || self.settled.contains(&input) {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                match &mut self.state {
+                    // Cards that only ask how the task goes on are answered by what the node is told.
+                    State::InProgress(Progress::Waiting { stage, cards, session }) if cards.iter().all(|card| card.reason == WaitReason::Unheard) => {
+                        let (stage, mut session) = (*stage, session.clone());
+                        tell(&mut session, input)?;
+                        self.state = State::InProgress(match session {
+                            Session::Absent(mut pending) => Progress::Queued {
+                                stage,
+                                input: pending.pop_front().ok_or(Refusal::EmptyObligation)?,
+                                remaining: pending,
+                            },
+                            Session::Present(execution) => Progress::Executing { stage, execution: ActiveExecution::new(execution)? },
+                        });
+                    }
+                    State::InProgress(Progress::Executing { execution, .. }) => queue_input(&mut execution.0, input)?,
+                    State::InProgress(Progress::Queued { remaining, .. }) => remaining.push_back(input),
+                    State::InProgress(Progress::Waiting { session, .. } | Progress::Dependency { session, .. }) => tell(session, input)?,
+                    State::Delivered(delivered) => tell(&mut delivered.session, input)?,
+                    State::Finishing(finishing) => tell(&mut finishing.session, input)?,
+                    State::Unstarted(_) | State::Completed | State::Cancelled => return Err(Refusal::InvalidState),
+                }
             }
             Event::Answer { card, input } => self.answer(card, Reply::Input(input), false)?,
             Event::Resume { card, input } => self.answer(card, Reply::Input(input), true)?,

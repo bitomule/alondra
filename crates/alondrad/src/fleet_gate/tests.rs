@@ -500,3 +500,26 @@ fn setting_the_priority_a_task_already_has_is_refused() {
     assert!(error.message.contains("already high"), "{}", error.message);
     assert_eq!(domain.state().unwrap().revision, state.revision);
 }
+
+#[test]
+fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_admitted_a_moment_ago() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    let now = alondra_core::now_millis();
+    for id in ["t1", "t2"] {
+        create(&domain, id);
+    }
+    let t1 = Waiting { key: Key::Task("t1".into()), priority: TaskPriority::Normal, resuming: false, since: now };
+    assert_eq!(gate.ask(&domain, t1, now), Ok(()));
+    start(&domain, "t1", now);
+    run(&domain, Actor::Agent { agent_id: "agent-t1".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "question".into(), scope: alondra_core::domain::Scope::Task { task_id: "t1".into() },
+        recipient: alondra_core::domain::Recipient::User, body: "Which format?".into(), blocking: true,
+        options: ["plain", "markdown"].map(|id| alondra_core::domain::QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec(),
+        card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose the format"),
+    });
+    assert_eq!(gate.snapshot(&domain, now).unwrap().working, 0, "t1's node waits on the user, a second after its admission");
+    let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
+    assert_eq!(gate.ask(&domain, t2, now), Ok(()), "its slot goes to the queue");
+}

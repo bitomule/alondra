@@ -39,7 +39,12 @@ impl Report {
     }
 
     /// Runs one case; a failed step ends the case, not the run.
+    /// Runs the case, unless `JOURNEY_CASES` names others: a comma-separated list of case ids to
+    /// run alone while working on them.
     pub fn case(&mut self, id: &str, title: &str, body: impl FnOnce(&mut Self) -> Result<()>) {
+        if std::env::var("JOURNEY_CASES").is_ok_and(|only| !only.split(',').any(|case| case.trim() == id)) {
+            return;
+        }
         println!("== {id} · {title}");
         self.current = Some(CaseReport { id: id.into(), title: title.into(), ok: true, steps: vec![] });
         self.snapshots = 0;

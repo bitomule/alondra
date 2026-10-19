@@ -58,7 +58,7 @@ pub enum Refusal {
 /// Every code the domain gives a refusal with no context of its own. The test of this module
 /// holds the list to the codes `rules.rs` can produce.
 pub const INTERNAL_CODES: &[&str] = &[
-    "invalid_input", "not_found", "forbidden", "post_merge_running", "conflict", "invalid_action_for_kind", "acceptance_stale",
+    "invalid_input", "not_found", "forbidden", "post_merge_running", "worktrees_open", "conflict", "invalid_action_for_kind", "acceptance_stale",
     "stack_not_ready", "dependency_cycle", "task_not_active", "question_already_answered", "stale_revision",
     "stale_head", "stale_generation", "pr_mismatch", "payload_too_large", "not_assigned", "dependency_not_done",
     "unknown_target", "task_already_has_pr", "not_closing", "merge_not_confirmed", "idempotency_conflict",

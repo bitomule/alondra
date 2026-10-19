@@ -382,8 +382,12 @@ impl DomainRuntime {
     pub(crate) fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
         self.store.lock().expect("domain store poisoned").task_worktree(task)
     }
+    /// The worktree the task's node works in, kept for its next launch and recorded as the
+    /// task's own, which it ends only once that worktree is gone.
     pub(crate) fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").set_task_worktree(task, dir, alondra_core::now_millis())
+        self.store.lock().expect("domain store poisoned").set_task_worktree(task, dir, alondra_core::now_millis())?;
+        let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
+        crate::domain_github::execute_system(self, command).map_err(|error| anyhow::anyhow!("{error}"))
     }
     /// What Alondra kept about a session only while it lives: the worktree it inherited and why
     /// its replacement stopped short.
@@ -600,7 +604,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::CompleteTask { task_id, .. }
         | Command::CancelTask { task_id }
         | Command::ReopenTask { task_id }
-        | Command::ConfirmCleanup { task_id }
+        | Command::ConfirmCleanup { task_id, .. }
+        | Command::RecordTaskWorktree { task_id, .. }
+        | Command::ReleaseTaskWorktree { task_id, .. }
         | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }
         | Command::RecordTaskCleanup { task_id }
@@ -614,6 +620,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::SetPermissionMode { task_id, .. }
         | Command::ReadMcpStatus { task_id }
         | Command::CompactConversation { task_id }
+        | Command::TellNode { task_id, .. }
         | Command::RecordDecisionRequest { task_id, .. }
         | Command::RecordDecisionSettled { task_id, .. }
         | Command::RecordDecisionAborted { task_id, .. }

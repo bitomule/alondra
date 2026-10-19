@@ -24,7 +24,7 @@ async function session(name, options) {
     const frame = await owner.event('decision_requested', (_, candidate) => !seen.has(candidate.body.cursor));
     seen.add(frame.body.cursor);
     const { request_id, kind, tool_use_id, payload } = frame.body.observation;
-    return { input: id, payload, frame, identity: { request_id, epoch: frame.body.cursor, kind, tool_use_id: tool_use_id ?? null } };
+    return { input: id, payload, frame, identity: { request_id, epoch: frame.body.cursor, kind, tool_use_id: tool_use_id ?? null, asked: payload } };
   };
   owner.settled = (epoch) => owner.event('decision_settled', (observation) => observation.epoch === epoch);
   owner.finished = (id) => owner.sdk('result', (payload) => payload.user_message_uuid === id);
@@ -37,8 +37,8 @@ async function session(name, options) {
 try {
   {
     const { host, owner } = await session('full');
-    assert(owner.hello.capabilities.includes('decisions'));
-    assert.deepEqual((await owner.respond({ request_id: 'decision-1', epoch: 1, kind: 'permission', tool_use_id: 'toolu_fixture_1' }, { behavior: 'allow', updated_input: {} })).outcome, stale, 'nothing pending: an answer reaches nothing');
+    assert(owner.hello.capabilities.includes('exact_decisions'));
+    assert.deepEqual((await owner.respond({ request_id: 'decision-1', epoch: 1, kind: 'permission', tool_use_id: 'toolu_fixture_1', asked: {} }, { behavior: 'allow', updated_input: {} })).outcome, stale, 'nothing pending: an answer reaches nothing');
 
     const bash = await owner.ask('decide:bash git status');
     assert.deepEqual([bash.identity.request_id, bash.identity.kind, bash.identity.tool_use_id], ['decision-1', 'permission', 'toolu_fixture_1']);
@@ -52,6 +52,9 @@ try {
       ['another tool use', { ...bash.identity, tool_use_id: 'toolu_other' }, { behavior: 'allow', updated_input: { command: 'git status' } }],
       ['an unknown request', { ...bash.identity, request_id: 'decision-9' }, { behavior: 'allow', updated_input: { command: 'git status' } }],
       ['an elicitation answer', { ...bash.identity, kind: 'elicitation', tool_use_id: null }, { behavior: 'accept' }],
+      ['the answer to another command', { ...bash.identity, asked: { ...bash.payload, input: { command: 'rm -rf build' } } }, { behavior: 'allow', updated_input: { command: 'git status' } }],
+      ['a denial of another command', { ...bash.identity, asked: { ...bash.payload, input: { command: 'rm -rf build' } } }, { behavior: 'deny', message: 'No' }],
+      ['an answer that names no request', { ...bash.identity, asked: {} }, { behavior: 'allow', updated_input: { command: 'git status' } }],
     ]) assert.deepEqual((await owner.respond(identity, decision)).outcome, stale, why);
     assert.deepEqual(answered(host), [], 'a refused answer never reaches Claude');
     assert(!owner.frames.some((frame) => frame.body.type === 'event' && frame.body.observation.type === 'decision_settled'), 'and settles nothing');
@@ -96,7 +99,7 @@ try {
     }
 
     const accept = await owner.ask('decide:elicitation');
-    assert.deepEqual(accept.identity, { request_id: accept.identity.request_id, epoch: accept.identity.epoch, kind: 'elicitation', tool_use_id: null });
+    assert.deepEqual(accept.identity, { request_id: accept.identity.request_id, epoch: accept.identity.epoch, kind: 'elicitation', tool_use_id: null, asked: accept.payload });
     assert.equal('tool_use_id' in accept.frame.body.observation, false, 'an elicitation names no tool use');
     assert.deepEqual(accept.payload, { serverName: 'fixture-server', message: 'Which fixture name?', mode: 'form', requestedSchema: { type: 'object', properties: { name: { type: 'string', title: 'Name' } }, required: ['name'] } });
     assert.deepEqual((await owner.respond({ ...accept.identity, kind: 'permission', tool_use_id: 'toolu_fixture_1' }, { behavior: 'allow', updated_input: {} })).outcome, stale, 'a permission answer never answers an elicitation');
@@ -133,7 +136,7 @@ try {
     assert.deepEqual(settlements, requested, 'exactly one settlement per request, in order');
   }
   {
-    const declared = HOST_CAPABILITIES.filter((capability) => capability !== 'decisions');
+    const declared = HOST_CAPABILITIES.filter((capability) => capability !== 'exact_decisions');
     const { host, owner } = await session('undeclared', { capabilities: declared });
     assert.deepEqual(owner.hello.capabilities, declared);
     const bash = await owner.ask('decide:bash git status');

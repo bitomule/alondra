@@ -296,8 +296,8 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "cleanup_done",
             "cleanup_done",
-            "Say that you deleted what you generated for your task, after Alondra told you the task is closing. Alondra then closes this session and its worktree. Call it again after fixing what Alondra said stopped it from closing the session.",
-            json!({"task_id":{"type":"string"}}),
+            "Say that you deleted what you generated for your task, after Alondra told you the task is closing. Alondra then closes this session and every worktree of the task, yours and those of the subagents you launched, once none has uncommitted changes or unpushed commits. In discard, list the paths of the task's worktrees whose remaining work you give up: Alondra deletes them as they are. Call it again after fixing what Alondra said stopped it from closing the session.",
+            json!({"task_id":{"type":"string"},"discard":{"type":"array","items":{"type":"string"}}}),
             vec!["task_id"],
         ),
         (

@@ -79,12 +79,26 @@ fn node_waiting<'a>(agent: &AgentId, context: &'a RenderContext<'_>) -> impl Ite
     context.index.node(agent).into_iter().flat_map(|node| &node.waiting).filter_map(|id| context.index.waiting_card(id))
 }
 
+/// The phase of a node that runs through the Agent SDK, read from its task and its execution: the
+/// session phase `claude --bg` reports never moves for it. `None` while it starts.
+fn sdk_phase(agent: &AgentId, context: &RenderContext<'_>) -> Option<NodePhase> {
+    let node = context.index.node(agent).filter(|node| node.through_sdk)?;
+    let task = context.node_task(agent)?;
+    Some(match task.state {
+        TaskState::ForYourReview => NodePhase::Delivered { in_turn: node.sdk_running },
+        TaskState::Closing => NodePhase::Closing,
+        TaskState::NeedsYou => NodePhase::WaitingUser { in_turn: node.sdk_running },
+        _ if node.sdk_running => NodePhase::Working,
+        _ => return None,
+    })
+}
+
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
     let lang = context.lang;
     let waiting = |kinds: &[&str]| node_waiting(agent, context).any(|item| kinds.contains(&item.kind.as_str()));
     let tasks: Vec<TaskState> = node_tasks(agent, context).map(|task| task.state).collect();
     let merging = context.index.node(agent).is_some_and(|node| node.merging);
-    let phase = context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed);
+    let phase = sdk_phase(agent, context).unwrap_or_else(|| context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed));
     if !merging && let Some(halted) = common::halted(agent, context) {
         return halted;
     }
@@ -341,11 +355,15 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
     let title = common::current_task(context, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
     let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, title, None);
     row.badges.push(node_state(&agent.id, context));
+    let through_sdk = context.index.node(&agent.id).is_some_and(|node| node.through_sdk);
     if context.client == super::Client::Ios {
         row.actions.extend(interrupt_action(&agent.id.0, context));
         row.actions.extend(super::pacing::node_actions(&agent.id, context));
+    } else if through_sdk && context.client == super::Client::Tui {
+        row.actions.extend(interrupt_action(&agent.id.0, context));
     }
-    if context.client != super::Client::Mac {
+    // A node of the Agent SDK is Alondra's own process: it ends with its task, never by hand.
+    if context.client != super::Client::Mac && !through_sdk {
         row.actions.extend(close_action(&agent.id.0, context));
     }
     row

@@ -19,6 +19,10 @@ hosts() {
 }
 running=$(hosts)
 detail=$(ps -axo pid=,ppid=,pgid=,command= | awk -v node="$dir/sdk/runtime/node" -v claude="$dir/sdk/runtime/claude" '$4 == node || $4 == claude')
+if [ -z "$running" ] && [ -n "${JOURNEY_CASES:-}" ]; then
+	echo "The cases $JOURNEY_CASES left no SDK host running: the daemon's shutdown is not checked"
+	exit 0
+fi
 [ -n "$running" ] || { echo "the sdk journey left no SDK host running to stop" >&2; exit 1; }
 daemon=$(cat "$dir"/mac-1/alondrad.pid)
 # Every exit is registered before the SIGTERM: the hosts must exit before the daemon does, not

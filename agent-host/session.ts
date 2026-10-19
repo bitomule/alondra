@@ -1,6 +1,7 @@
 import { query, type CanUseTool, type ElicitationResult, type OnElicitation, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
 import { hasToolUse, type Decision, type DecisionKind } from './frame.js';
 
@@ -11,7 +12,8 @@ export type Observation =
   | { type: 'decision_settled'; request_id: string; epoch: number; outcome: 'answered' | 'cancelled' }
   | { type: 'process_exited'; exit_code: number | null; signal: string | null };
 /** A request as the owner names it: the epoch is the cursor the host gave its `decision_requested` event. */
-export type DecisionRequest = { request_id: string; epoch: number; kind: DecisionKind; tool_use_id: string | null };
+/** The request a decision answers, `asked` as the domain kept it from this host's report of it. */
+export type DecisionRequest = { request_id: string; epoch: number; kind: DecisionKind; tool_use_id: string | null; asked: Record<string, unknown> };
 export type Configuration = {
   executable: string;
   cwd: string;
@@ -114,7 +116,7 @@ const elicitationResult = (outcome: Outcome): ElicitationResult => {
   if (outcome.behavior === 'accept') return outcome.content ? { action: 'accept', content: outcome.content as ElicitationResult['content'] } : { action: 'accept' };
   return outcome.behavior === 'decline' ? { action: 'decline' } : { action: 'cancel' };
 };
-type Pending = { kind: DecisionKind; toolUseId: string | null; epoch?: number; outcome?: 'answered' | 'cancelled'; settled: boolean; finish: (outcome: Outcome) => void };
+type Pending = { kind: DecisionKind; toolUseId: string | null; asked: unknown; epoch?: number; outcome?: 'answered' | 'cancelled'; settled: boolean; finish: (outcome: Outcome) => void };
 
 export class PermissionCallbacks {
   private pending = new Map<string, Pending>();
@@ -133,7 +135,7 @@ export class PermissionCallbacks {
     if (this.pending.has(requestId)) return Promise.resolve(answer('Duplicate permission request'));
     if (this.pending.size >= MAX_PENDING_DECISIONS) return Promise.resolve(answer('Permission request capacity exceeded'));
     return new Promise<T>((resolve) => {
-      const entry: Pending = { kind, toolUseId, settled: false, finish: (outcome) => {
+      const entry: Pending = { kind, toolUseId, asked: JSON.parse(JSON.stringify(payload)), settled: false, finish: (outcome) => {
         if (this.pending.get(requestId) !== entry) return;
         signal.removeEventListener('abort', cancel);
         this.pending.delete(requestId);
@@ -160,6 +162,7 @@ export class PermissionCallbacks {
   respond(request: DecisionRequest, decision: Decision): boolean {
     const entry = this.pending.get(request.request_id);
     if (!entry || entry.epoch === undefined || entry.epoch !== request.epoch || entry.kind !== request.kind || entry.toolUseId !== request.tool_use_id) return false;
+    if (!isDeepStrictEqual(entry.asked, request.asked)) return false;
     if (hasToolUse(entry.kind) !== (decision.behavior === 'allow' || decision.behavior === 'deny')) return false;
     entry.finish(decision);
     return true;
@@ -214,6 +217,9 @@ export class Session {
           ...(config.worker && {
             plugins: config.worker.plugins.map((path) => ({ type: 'local' as const, path })),
             settings: config.worker.settings as Options['settings'],
+            ...(config.worker.model && { model: config.worker.model }),
+            ...(config.worker.effort && { effort: config.worker.effort }),
+            ...(config.worker.disallowed_tools?.length && { disallowedTools: config.worker.disallowed_tools }),
           }),
         };
     const options: Options = {

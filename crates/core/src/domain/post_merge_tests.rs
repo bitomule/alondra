@@ -98,7 +98,7 @@ fn apply(s: &mut DomainState, step: &Step, n: usize) {
         Step::Declare(declared) => exec(s, node(), Command::DeclarePostMergeWork {
             task_id: TASK.into(), reason: declared.then(|| "publish the release".to_owned()),
         }),
-        Step::CleanedUp => exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into() }),
+        Step::CleanedUp => exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() }),
         Step::Card(option) => answer_card(s, option, n),
         Step::ClosedByAlondra => exec(s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(AGENT.into()) }),
         Step::SessionOver => exec(s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Gone, agent_id: Some(AGENT.into()) }),

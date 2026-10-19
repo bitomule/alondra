@@ -136,30 +136,7 @@ async fn invoke_claimed(
     key: &str,
     launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<(String, PathBuf, Workplace), crate::orchestrate::Refusal> {
-    if !Path::new(&launch.cwd).is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "schedule project directory does not exist".into(),
-        ));
-    }
-    let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
-    if let Some(repository) = crate::claude_trust::ensure(Path::new(&launch.cwd), projects_root.as_deref()) {
-        return Err((
-            StatusCode::CONFLICT,
-            crate::claude_trust::instructions(&repository),
-        ));
-    }
-    let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
-        .await
-        .map_err(|why| (StatusCode::CONFLICT, why))?;
-    let Some(plugin) = launcher.plugin() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Alondra's Claude plugin is unavailable".into(),
-        ));
-    };
-    let resolved: Resolved = serde_json::from_str(&launch.options_json)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, launcher).await?;
     let settings =
         crate::domain_sessions::prepare(home, key).map_err(|error| {
             (
@@ -187,6 +164,69 @@ async fn invoke_claimed(
             Err(refusal)
         }
     }
+}
+
+/// The same claimed launch through the daemon's Agent SDK host: the same checks and worktree, and
+/// the denied tools of the scheduled Request given to the host. It never falls back to
+/// `claude --bg`. The node the host runs is the task's own from its admission.
+async fn launch_through_sdk(
+    domain: &DomainRuntime,
+    launch: &ScheduleLaunchIntent,
+    task: &TaskId,
+    disallowed_tools: &[String],
+    home: &Path,
+    launcher: &impl crate::orchestrate::Launcher,
+) -> Result<String, String> {
+    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, launcher).await.map_err(|(_, reason)| reason)?;
+    let options = crate::sdk_owner::LaunchOptions {
+        model: resolved.flags.model.clone(),
+        effort: resolved.flags.effort.clone(),
+        disallowed_tools: disallowed_tools.to_vec(),
+    };
+    let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch {
+        task: task.clone(),
+        name: launch.name.clone(),
+        directory: workplace.dir().to_string_lossy().into_owned(),
+        prompt: producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo),
+        plugin,
+        options,
+    })
+    .await
+    .map_err(|error| error.message)?;
+    launched["agent_id"].as_str().map(str::to_owned).ok_or_else(|| "the SDK launch named no node".into())
+}
+
+async fn prepare_claimed(
+    launch: &ScheduleLaunchIntent,
+    task: &TaskId,
+    home: &Path,
+    launcher: &impl crate::orchestrate::Launcher,
+) -> Result<(Workplace, PathBuf, Resolved), crate::orchestrate::Refusal> {
+    if !Path::new(&launch.cwd).is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "schedule project directory does not exist".into(),
+        ));
+    }
+    let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    if let Some(repository) = crate::claude_trust::ensure(Path::new(&launch.cwd), projects_root.as_deref()) {
+        return Err((
+            StatusCode::CONFLICT,
+            crate::claude_trust::instructions(&repository),
+        ));
+    }
+    let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
+        .await
+        .map_err(|why| (StatusCode::CONFLICT, why))?;
+    let Some(plugin) = launcher.plugin() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Alondra's Claude plugin is unavailable".into(),
+        ));
+    };
+    let resolved: Resolved = serde_json::from_str(&launch.options_json)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok((workplace, plugin, resolved))
 }
 
 fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
@@ -244,7 +284,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
     };
     (request, task)
 }
@@ -378,6 +418,23 @@ async fn dispatch_pending(
         Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
+    }
+    if domain.sdk().is_some() {
+        let agent = match launch_through_sdk(domain, &intent, &task, &policy, home, launcher).await {
+            Ok(agent) => agent,
+            Err(reason) => return fail_run(domain, run_id, reason),
+        };
+        let handed = execute_system(domain, Command::RecordScheduleLaunchHanded {
+            run_id: run_id.clone(),
+            session_id: Some(agent),
+            agent_id: None,
+            finished_at: alondra_core::now_millis(),
+        });
+        return match handed {
+            Ok(_) => Ok(()),
+            Err(error) if ordinary_conflict(&error) => Ok(()),
+            Err(error) => Err(error.into()),
+        };
     }
     let (output, settings, workplace) =
         match invoke_claimed(&intent, &task, &policy, home, &run_id.0, launcher).await {
@@ -1095,7 +1152,7 @@ mod tests {
     struct Fixture {
         root: crate::test_support::Directory,
         home: PathBuf,
-        domain: DomainRuntime,
+        domain: std::sync::Arc<DomainRuntime>,
     }
     impl Fixture {
         fn new() -> Self {
@@ -1109,7 +1166,7 @@ mod tests {
                 format!("projects_root = {:?}\n", projects.to_str().unwrap()),
             )
             .unwrap();
-            let domain = DomainRuntime::open(&home).unwrap();
+            let domain = std::sync::Arc::new(DomainRuntime::open(&home).unwrap());
             execute_system(
                 &domain,
                 Command::CreateSchedule {
@@ -1332,6 +1389,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
+    }
+
+    // A scheduled run of a daemon with the Agent SDK host starts its task through that host, with
+    // the same checks, and is handed to the node the host runs: `claude --bg` is never run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_scheduled_task_runs_through_the_sdk_host() {
+        let fixture = Fixture::new();
+        let state_root = crate::test_support::Directory::for_unix_socket();
+        let (backend, _) = crate::sdk_owner::tests::fixture_backend(&fixture.home, &state_root);
+        fixture.domain.enable_sdk(backend);
+        fixture.claim("sdk-run");
+        let launcher = CountingLauncher { calls: Mutex::new(0), fail: false };
+        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
+        assert_eq!(*launcher.calls.lock().unwrap(), 0, "a scheduled task never starts as claude --bg");
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("sdk-run")];
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+        let task = state.tasks.values().next().unwrap();
+        let lifecycle = alondra_core::domain::replay(&task.id, &state.lifecycle_journal[&task.id]).unwrap();
+        assert_eq!(lifecycle.execution().map(|stamp| stamp.host().as_str().to_owned()).as_deref(), Some("alondra-sdk"));
+        assert!(task.agent_id.as_ref().is_some_and(|agent| fixture.domain.owns_sdk_host(agent)), "the host's owner runs its node");
+        fixture.domain.stop_sdk_owners();
     }
 
     #[tokio::test]

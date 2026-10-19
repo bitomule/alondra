@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -6896,4 +6896,70 @@ fn a_working_node_that_runs_through_the_sdk_offers_no_pause() {
             assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} {key} offers pause to an SDK node: {:?}", action_ids(&view));
         }
     }
+}
+
+#[test]
+fn a_node_that_runs_through_the_sdk_offers_only_interrupt_in_fleet() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
+    let live = pacing_live(vec![], vec![], None);
+    for client in [Client::Tui, Client::Ios] {
+        assert!(action_ids(&render(&state, &live, client, Lang::En, "fleet", "")).iter().any(|id| id.starts_with("close:a-1")),
+            "{client:?}: the same node through claude --bg offers close");
+    }
+    state.lifecycle_journal.insert("t-1".into(), vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+    ]);
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        for key in ["node:a-1", "fleet"] {
+            let ids = action_ids(&render(&state, &live, client, Lang::En, key, ""));
+            assert!(!ids.iter().any(|id| id.starts_with("close:") || id.starts_with("msg:") || id.starts_with("pause:")),
+                "{client:?} {key} offers more than Interrupt to an SDK node: {ids:?}");
+        }
+    }
+    for client in [Client::Tui, Client::Ios] {
+        let ids = action_ids(&render(&state, &live, client, Lang::En, "fleet", ""));
+        assert!(ids.iter().any(|id| id.starts_with("interrupt:a-1")), "{client:?}: a working SDK node offers Interrupt: {ids:?}");
+    }
+}
+
+// The phase `claude --bg` reports never moves for a node that runs through the SDK: Fleet reads its
+// state from its task and execution, never «Starting» while its turn runs.
+#[test]
+fn an_sdk_nodes_state_in_fleet_reads_its_execution() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
+    state.agents.get_mut(&crate::domain::AgentId::from("a-1")).unwrap().phase = crate::domain::NodePhase::Starting { reviving: false, idle_since: None };
+    state.lifecycle_journal.insert("t-1".into(), vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+    ]);
+    let live = pacing_live(vec![], vec![], None);
+    let label = |state: &DomainState, lang| {
+        let view = render(state, &live, Client::Ios, lang, "fleet", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
+        }).unwrap()
+    };
+    assert_eq!(label(&state, Lang::En), "Working", "its turn runs");
+    assert_eq!(label(&state, Lang::Es), "Trabajando");
+    state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().state = TaskState::NeedsYou;
+    assert_eq!(label(&state, Lang::En), "Waiting for an answer", "a card of its task waits on the user");
 }

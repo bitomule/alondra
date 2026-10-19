@@ -25,6 +25,9 @@ const shape = z.strictObject({
   worker: z.strictObject({
     plugins: z.array(absolute).max(8),
     settings: z.record(z.string(), z.json()),
+    model: z.string().min(1).max(128).optional(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    disallowed_tools: z.array(z.string().min(1).max(128)).max(16).optional(),
   }).optional(),
 }).refine((config) => !(config.orchestrator && config.worker), 'A host runs the orchestrator or a task, never both');
 export type OrchestratorProfile = NonNullable<z.infer<typeof shape>['orchestrator']>;

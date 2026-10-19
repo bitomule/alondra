@@ -26,7 +26,7 @@ pub fn record_facts(
     for (index, fact) in pending.facts().iter().enumerate() {
         let fact = match fact {
             ObservedFact::Runtime(fact) => fact,
-            ObservedFact::ModelAnswered => continue,
+            ObservedFact::ModelAnswered | ObservedFact::Worktree { .. } | ObservedFact::SubagentWorktree { .. } => continue,
             ObservedFact::TurnEnded { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
                 return Err(Error::RequiresDomainCommand);
             }

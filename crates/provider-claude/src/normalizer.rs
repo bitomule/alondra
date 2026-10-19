@@ -37,6 +37,19 @@ struct Checkpoint {
     /// The decisions Claude asked for and still waits on: the request id of each, by epoch.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     asked: BTreeMap<u64, String>,
+    /// The Agent calls with an isolated worktree whose result is still to come, by tool use id.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    isolated: BTreeSet<String>,
+    /// Work that ended after its turn, oldest first: its notification wakes a root turn of
+    /// Claude's own, whose result names the run it took up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    woken: Vec<Woken>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Woken {
+    run: String,
+    continuation: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +63,9 @@ struct LogicalTurn {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resets_at: Option<u64>,
+    /// The run of the work whose notification opened this turn, when no input of Alondra's did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    woken_by: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +135,7 @@ impl ObservationNormalizer for Normalizer {
         if self.first_cursor == Some(batch.cursor) {
             checkpoint.turn = None;
             checkpoint.work.clear();
+            checkpoint.woken.clear();
         }
         let session = self
             .session
@@ -215,7 +232,7 @@ fn fold(
             return Ok(vec![Observation::DecisionSettled {
                 epoch: *epoch,
                 answered: *outcome == DecisionOutcome::Answered,
-                continued: state.turn.is_some(),
+                continued: state.turn.is_some() || !state.work.is_empty(),
             }]);
         }
         _ => {}
@@ -339,6 +356,8 @@ fn fold(
                 // wakes another.
                 if state.turn.is_some() {
                     facts.push(Observation::ContinuationConsumed { continuation });
+                } else if let Some(run) = run {
+                    state.woken.push(Woken { run, continuation: continuation.as_str().into() });
                 }
             }
             Some("conversation_reset") => return Err(AdapterError::Unsupported),
@@ -354,6 +373,12 @@ fn fold(
             }
         }
         return Ok(facts);
+    }
+    if kind == "assistant" {
+        note_isolated_agents(payload, state)?;
+    }
+    if kind == "user" {
+        return worktree_facts(payload, state);
     }
     if kind != "assistant" && kind != "result" && kind != "stream_event" {
         return Ok(facts);
@@ -373,6 +398,22 @@ fn fold(
             return Err(AdapterError::Unsupported);
         }
         return Ok(facts);
+    }
+    if kind == "assistant" && state.turn.is_none() && payload.get("user_message_uuids").is_none() && !state.woken.is_empty() {
+        let woken = state.woken.remove(0);
+        let logical = format!("claude-message:{}", native_uuid(payload, "uuid")?.as_str());
+        facts.push(Observation::TurnResumed {
+            continuation: ContinuationId::new(woken.continuation).map_err(|_| AdapterError::InvalidObservation)?,
+            turn: TurnId::new(logical.clone()).map_err(|_| AdapterError::InvalidObservation)?,
+        });
+        state.turn = Some(LogicalTurn {
+            id: logical,
+            consumed: BTreeSet::new(),
+            answered: false,
+            error: None,
+            resets_at: None,
+            woken_by: Some(woken.run),
+        });
     }
     let mut consumed = Vec::new();
     if let Some(list) = payload.get("user_message_uuids") {
@@ -407,6 +448,7 @@ fn fold(
                 answered: false,
                 error: None,
                 resets_at: None,
+                woken_by: None,
             });
         }
         let turn = state
@@ -440,9 +482,21 @@ fn fold(
         // A singular failed-delivery echo alone cannot prove input consumption or a turn.
         let turn = state.turn.as_ref().ok_or(AdapterError::Unsupported)?;
         if consumed.is_empty() {
-            let singular = native_uuid(payload, "user_message_uuid")?;
-            if !turn.consumed.contains(&singular) {
-                return Err(AdapterError::Unsupported);
+            match &turn.woken_by {
+                Some(run) => {
+                    let origin = payload.get("origin");
+                    if origin.and_then(|origin| origin.get("kind")).and_then(Value::as_str) != Some("task-notification")
+                        || origin.and_then(|origin| origin.get("runId")).and_then(Value::as_str) != Some(run.as_str())
+                    {
+                        return Err(AdapterError::Unsupported);
+                    }
+                }
+                None => {
+                    let singular = native_uuid(payload, "user_message_uuid")?;
+                    if !turn.consumed.contains(&singular) {
+                        return Err(AdapterError::Unsupported);
+                    }
+                }
             }
         }
         let failure = match &turn.error {
@@ -466,6 +520,54 @@ fn fold(
             failure,
         });
         state.turn = None;
+    }
+    Ok(facts)
+}
+/// Most Agent calls with an isolated worktree that can wait on their result at once.
+const MAX_ISOLATED: usize = 64;
+/// Remembers each Agent call, of the node or of a subagent, that asks for an isolated worktree.
+fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) -> Result<(), AdapterError> {
+    let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return Ok(()) };
+    for block in content {
+        let is_agent = block.get("type").and_then(Value::as_str) == Some("tool_use")
+            && matches!(block.get("name").and_then(Value::as_str), Some("Agent" | "Task"));
+        if is_agent && block.pointer("/input/isolation").and_then(Value::as_str) == Some("worktree") {
+            let id = block.get("id").and_then(Value::as_str).ok_or(AdapterError::InvalidObservation)?;
+            if state.isolated.len() >= MAX_ISOLATED {
+                return Err(AdapterError::InvalidObservation);
+            }
+            state.isolated.insert(id.to_owned());
+        }
+    }
+    Ok(())
+}
+/// What a tool result says about a worktree: EnterWorktree's and a kept isolated subagent's
+/// `worktreePath`, or the id of an isolated subagent that went on in the background, whose
+/// worktree outlives this result. ExitWorktree's result says nothing settled: its `remove` can
+/// keep the worktree, so only the disk tells whether it is gone.
+fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Result<Vec<Observation>, AdapterError> {
+    let mut facts = Vec::new();
+    let Some(result) = payload.get("tool_use_result").filter(|result| result.is_object()) else { return Ok(facts) };
+    let ids: Vec<&str> = payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
+        .collect();
+    let isolated = ids.iter().any(|id| state.isolated.remove(*id));
+    if let Some(path) = result.get("worktreePath").and_then(Value::as_str).filter(|_| result.get("action").is_none()) {
+        if !path.starts_with('/') || path.len() > 4096 {
+            return Err(AdapterError::InvalidObservation);
+        }
+        facts.push(Observation::WorktreeMade {
+            path: path.to_owned(),
+            branch: optional_string(result, "worktreeBranch")?,
+            subagent: result.get("agentId").is_some(),
+        });
+    } else if isolated && result.get("status").and_then(Value::as_str) == Some("async_launched") {
+        let agent = string(result, "agentId")?;
+        if !(agent.len() == 17 || agent.len() == 8) || !agent.starts_with('a') || !agent[1..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err(AdapterError::InvalidObservation);
+        }
+        facts.push(Observation::SubagentWorktree { agent: agent.to_owned() });
     }
     Ok(facts)
 }
@@ -515,6 +617,8 @@ mod tests {
     const SECOND: &str = "10000000-0000-4000-8000-000000000003";
     const REPLY: &str = "10000000-0000-4000-8000-000000000004";
     const NOTIFIED: &str = "10000000-0000-4000-8000-000000000005";
+    const THIRD: &str = "10000000-0000-4000-8000-000000000006";
+    const FOURTH: &str = "10000000-0000-4000-8000-000000000007";
     fn event(mut payload: Value) -> Event {
         payload["session_id"] = json!(SESSION);
         Event {
@@ -574,6 +678,53 @@ mod tests {
         let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
         fold(&assistant, &session(), &mut state, input).unwrap();
         assert!(matches!(fold(&init, &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "never inside a turn");
+    }
+    fn tool_result(id: &str, result: Value) -> Event {
+        event(json!({"type":"user","uuid":NOTIFIED,"parent_tool_use_id":null,
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":"done"}]},"tool_use_result":result}))
+    }
+    fn agent_call(id: &str, isolation: Option<&str>) -> Event {
+        let mut input = json!({"description":"Fix the parser","prompt":"Fix it","subagent_type":"general-purpose"});
+        if let Some(isolation) = isolation {
+            input["isolation"] = json!(isolation);
+        }
+        event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,
+            "message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":"Agent","input":input}]}}))
+    }
+    // The shapes Claude Code's own tools give their results (2.1.291 and the SDK reference): a
+    // kept isolated subagent and EnterWorktree name the worktree; a background isolated subagent
+    // names only its id; ExitWorktree's `remove` can keep the worktree, so it settles nothing.
+    #[test]
+    fn worktrees_a_node_or_its_subagents_make_are_facts_of_its_task() {
+        let mut state = state();
+        fold(&agent_call("toolu_kept", Some("worktree")), &session(), &mut state, input).unwrap();
+        let kept = tool_result("toolu_kept", json!({"status":"completed","agentId":"a9e1782746c156d58",
+            "worktreePath":"/repo/.claude/worktrees/agent-a9e1782746c156d58","worktreeBranch":"worktree-agent-a9e1782746c156d58"}));
+        assert_eq!(fold(&kept, &session(), &mut state, input).unwrap(), vec![Observation::WorktreeMade {
+            path: "/repo/.claude/worktrees/agent-a9e1782746c156d58".into(), branch: Some("worktree-agent-a9e1782746c156d58".into()), subagent: true,
+        }]);
+        assert!(state.isolated.is_empty(), "the call is settled");
+
+        fold(&agent_call("toolu_background", Some("worktree")), &session(), &mut state, input).unwrap();
+        let launched = tool_result("toolu_background", json!({"status":"async_launched","agentId":"abd91aef2f770f04e","description":"Fix","prompt":"Fix it","outputFile":"/tmp/out"}));
+        assert_eq!(fold(&launched, &session(), &mut state, input).unwrap(), vec![Observation::SubagentWorktree { agent: "abd91aef2f770f04e".into() }]);
+
+        fold(&agent_call("toolu_shared", None), &session(), &mut state, input).unwrap();
+        let shared = tool_result("toolu_shared", json!({"status":"async_launched","agentId":"a0000000000000001","description":"Look","prompt":"Look","outputFile":"/tmp/out"}));
+        assert_eq!(fold(&shared, &session(), &mut state, input).unwrap(), vec![], "a subagent without an isolated worktree makes none");
+
+        fold(&agent_call("toolu_clean", Some("worktree")), &session(), &mut state, input).unwrap();
+        let clean = tool_result("toolu_clean", json!({"status":"completed","agentId":"a0000000000000002","content":[]}));
+        assert_eq!(fold(&clean, &session(), &mut state, input).unwrap(), vec![], "Claude Code removed a worktree with no changes");
+
+        let entered = tool_result("toolu_enter", json!({"worktreePath":"/repo/.claude/worktrees/spike","worktreeBranch":"worktree-spike","message":"Created worktree at /repo/.claude/worktrees/spike"}));
+        assert_eq!(fold(&entered, &session(), &mut state, input).unwrap(), vec![Observation::WorktreeMade {
+            path: "/repo/.claude/worktrees/spike".into(), branch: Some("worktree-spike".into()), subagent: false,
+        }]);
+        let exited = tool_result("toolu_exit", json!({"action":"remove","worktreePath":"/repo/.claude/worktrees/spike","worktreeBranch":"worktree-spike","message":"Exited worktree but could not remove it"}));
+        assert_eq!(fold(&exited, &session(), &mut state, input).unwrap(), vec![]);
+        let relative = tool_result("toolu_enter_2", json!({"worktreePath":"spike","message":"Created"}));
+        assert!(matches!(fold(&relative, &session(), &mut state, input), Err(AdapterError::InvalidObservation)));
     }
     #[test]
     fn result_only_plural_preserves_consumption_and_pending_terminal_boundary() {
@@ -665,6 +816,7 @@ mod tests {
             answered: false,
             error: None,
             resets_at: None,
+            woken_by: None,
         });
         let started = event(
             json!({"type":"system","subtype":"task_started","uuid":REPLY,"task_id":"task-native","run_id":"run-first"}),
@@ -737,6 +889,35 @@ mod tests {
             continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
         }]);
     }
+    // What the native Claude 2.1.300 sends when a background subagent ends after its turn: the
+    // notification names the run, Claude answers it with no input of Alondra's, and the result
+    // names the same run as its origin.
+    #[test]
+    fn work_that_ends_after_its_turn_wakes_a_turn_that_takes_up_its_continuation() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"agent-1","tool_use_id":"toolu_1","run_id":"run-1"}));
+        fold(&started, &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST})), &session(), &mut state, input).unwrap();
+        let ended = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"agent-1","tool_use_id":"toolu_1","run_id":"run-1","status":"completed"}));
+        let continuation = ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap();
+        fold(&ended, &session(), &mut state, input).unwrap();
+        let woken = event(json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null}));
+        let turn = TurnId::new(format!("claude-message:{THIRD}")).unwrap();
+        assert_eq!(
+            fold(&woken, &session(), &mut state, |_| panic!("no input of Alondra's opened this turn")).unwrap(),
+            vec![Observation::TurnResumed { continuation, turn: turn.clone() }, Observation::ModelAnswered],
+        );
+        let mut other = serde_json::from_slice::<Checkpoint>(&serde_json::to_vec(&state).unwrap()).unwrap();
+        let elsewhere = event(json!({"type":"result","uuid":FOURTH,"origin":{"kind":"task-notification","runId":"run-2"}}));
+        assert!(matches!(fold(&elsewhere, &session(), &mut other, input), Err(AdapterError::Unsupported)), "a result that names another run ends nothing");
+        let unnamed = event(json!({"type":"result","uuid":FOURTH}));
+        assert!(matches!(fold(&unnamed, &session(), &mut other, input), Err(AdapterError::Unsupported)), "nor one that names none");
+        let result = event(json!({"type":"result","uuid":FOURTH,"subtype":"success","origin":{"kind":"task-notification","producer":"session-task","runId":"run-1"}}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+        assert!(state.turn.is_none() && state.woken.is_empty());
+    }
     #[test]
     fn a_control_result_is_evidence_without_facts_and_carries_no_failure() {
         let mut result = event(json!({"control":"mcp_status","command_id":"lifecycle-control-1","servers":[{"name":"fixture","status":"connected"}]}));
@@ -802,6 +983,10 @@ mod tests {
         fold(&requested(10, "decision-2"), &session(), &mut state, input).unwrap();
         assert_eq!(fold(&settled(11, "decision-2", 10, DecisionOutcome::Cancelled), &session(), &mut state, input).unwrap(),
             vec![Observation::DecisionSettled { epoch: 10, answered: false, continued: false }]);
+        state.work.insert("agent-1".into(), LogicalWork { run: Some("run-1".into()), id: "claude-task:agent".into() });
+        fold(&requested(12, "decision-3"), &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&settled(13, "decision-3", 12, DecisionOutcome::Answered), &session(), &mut state, input).unwrap(),
+            vec![Observation::DecisionSettled { epoch: 12, answered: true, continued: true }], "the background work that asked goes on with it");
     }
     #[test]
     fn a_settlement_of_an_unknown_epoch_or_another_request_and_a_repeated_request_are_refused() {

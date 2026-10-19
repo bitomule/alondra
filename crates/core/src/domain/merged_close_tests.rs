@@ -110,7 +110,7 @@ fn apply(s: &mut DomainState, step: &Step, at: Millis) {
             let _ = exec(s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason });
         }
         Step::CleanedUp => {
-            let _ = exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into() });
+            let _ = exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
         }
         Step::Closer => {
             let task = &s.tasks[&TASK.into()];

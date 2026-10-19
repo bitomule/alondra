@@ -229,6 +229,17 @@ pub enum ObservedFact {
         tool_use: Option<String>,
         payload: Vec<u8>,
     },
+    /// A worktree of the task, made or entered by its node or a subagent: evidence for the
+    /// task's cleanup, its runtime does not move.
+    Worktree {
+        path: String,
+        branch: Option<String>,
+        subagent: bool,
+    },
+    /// The worktree Claude Code names after a subagent that went on in the background.
+    SubagentWorktree {
+        agent: String,
+    },
     /// The request at `epoch` is over. An answered one that `continued` lets the turn that asked
     /// go on: the domain records that too.
     Settled {
@@ -241,7 +252,7 @@ impl ObservedFact {
     /// How far the task's runtime moves when the domain records this fact.
     fn runtime_moves(&self) -> usize {
         match self {
-            Self::ModelAnswered => 0,
+            Self::ModelAnswered | Self::Worktree { .. } | Self::SubagentWorktree { .. } => 0,
             Self::Settled { answered: true, continued: true, .. } => 2,
             _ => 1,
         }
@@ -254,6 +265,10 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
         Observation::TurnStarted { input, turn } => RuntimeFact::TurnStarted {
             turn: turn.clone(),
             trigger: Trigger::Input(input.clone()),
+        },
+        Observation::TurnResumed { continuation, turn } => RuntimeFact::TurnStarted {
+            turn: turn.clone(),
+            trigger: Trigger::OwnedContinuation(continuation.clone()),
         },
         Observation::InputConsumed { input } => RuntimeFact::InputConsumed {
             input: input.clone(),
@@ -285,6 +300,10 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
                 payload: payload.clone(),
             });
         }
+        Observation::WorktreeMade { path, branch, subagent } => {
+            return Ok(ObservedFact::Worktree { path: path.clone(), branch: branch.clone(), subagent: *subagent });
+        }
+        Observation::SubagentWorktree { agent } => return Ok(ObservedFact::SubagentWorktree { agent: agent.clone() }),
         Observation::DecisionSettled { epoch, answered, continued } => {
             return Ok(ObservedFact::Settled { epoch: *epoch, answered: *answered, continued: *continued });
         }

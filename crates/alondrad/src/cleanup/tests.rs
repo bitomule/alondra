@@ -458,7 +458,8 @@ async fn cleanup_deletes_the_worktrees_of_closed_tasks_whose_session_is_gone_and
         let session = rig.session(task, true);
         let id = format!("t{}", rig.count);
         let dir = crate::worktree::testing::task_worktree(&worktrees.join(&id), &id);
-        rig.domain.set_task_worktree(&id.as_str().into(), dir.to_str().unwrap()).unwrap();
+        // Kept in the store alone, as tasks that ended before the domain recorded their worktrees.
+        rig.domain.store.lock().unwrap().set_task_worktree(&id.as_str().into(), dir.to_str().unwrap(), 0).unwrap();
         if gone {
             rig.sessions.listed.lock().unwrap().retain(|short| !session.starts_with(short.as_str()));
         }

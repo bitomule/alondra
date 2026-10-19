@@ -111,7 +111,7 @@ async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_only_asked_to
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
-    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into())]);
+    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into(), &[])]);
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1, "a merged PR is not merged again");
 }
@@ -145,7 +145,7 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     assert!(state.pull_requests[&PrId::from("pr")].review.as_ref().unwrap().decisions.is_empty(), "no review is made up");
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
-    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into())]);
+    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into(), &[])]);
 }
 
 /// PR #765 was accepted and never merged: its task waited on another one only to commit, and

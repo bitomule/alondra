@@ -88,6 +88,9 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         RuntimeFact::TurnStarted { turn, trigger: Trigger::Input(input) } => {
             RuntimeObservation::TurnStarted { turn: turn.as_str().into(), input: input.as_str().into() }
         }
+        RuntimeFact::TurnStarted { turn, trigger: Trigger::OwnedContinuation(continuation) } => {
+            RuntimeObservation::TurnResumed { turn: turn.as_str().into(), continuation: continuation.as_str().into() }
+        }
         RuntimeFact::InputConsumed { input } => RuntimeObservation::InputConsumed { input: input.as_str().into() },
         RuntimeFact::WorkStarted { turn, work } => RuntimeObservation::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() },
         RuntimeFact::WorkEnded { work, continuation } => {
@@ -219,6 +222,28 @@ impl<'connection> OwnerTransaction<'connection> {
                         prompt: asked.prompt,
                     });
                 }
+                ObservedFact::Worktree { path, branch, subagent } => {
+                    flush(&mut commands, &mut technical);
+                    let origin = if *subagent { WorktreeOrigin::Subagent } else { WorktreeOrigin::Entered };
+                    commands.push(Command::RecordTaskWorktree { task_id: task_id.clone(), path: path.clone(), origin, branch: branch.clone() });
+                }
+                ObservedFact::SubagentWorktree { agent } => {
+                    flush(&mut commands, &mut technical);
+                    let conn = self.conn;
+                    let own = self.journal.inspect(|| {
+                        conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task_id.0], |row| row.get::<_, String>(0))
+                            .optional()
+                            .map_err(|error| StoreError::Storage(error.into()))
+                    })?;
+                    let path = own.as_deref().and_then(|own| crate::worktree::subagent_worktree(std::path::Path::new(own), agent));
+                    let path = path.ok_or_else(|| StoreError::Storage(anyhow::anyhow!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
+                    commands.push(Command::RecordTaskWorktree {
+                        task_id: task_id.clone(),
+                        path: path.display().to_string(),
+                        origin: WorktreeOrigin::Subagent,
+                        branch: None,
+                    });
+                }
                 ObservedFact::Settled { epoch, answered, .. } => {
                     flush(&mut commands, &mut technical);
                     commands.push(if *answered {
@@ -270,6 +295,16 @@ impl<'connection> OwnerTransaction<'connection> {
             .map_err(application_error)?;
         self.journal.stage_launch(task, &Placement::LocalDirectory(directory.to_owned()), binding)?;
         self.journal.reserve_owner(&execution, 0)?;
+        if std::path::Path::new(directory).join(".git").is_file() {
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: self.draft.state.data_epoch.clone(),
+                command_id: format!("launch-worktree:{task}:{}", execution.generation()).as_str().into(),
+                expected_revision: 0,
+                command: Command::RecordTaskWorktree { task_id: task.clone(), path: directory.to_owned(), origin: WorktreeOrigin::Task, branch: None },
+            };
+            self.stage_command(&Actor::System, &envelope, Attached::None)?;
+        }
         Ok(execution)
     }
 

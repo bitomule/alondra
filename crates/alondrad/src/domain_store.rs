@@ -234,6 +234,16 @@ const INHERITED_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS inherited_worktree
  at INTEGER NOT NULL);";
 /// The worktree a task's nodes work in, kept after they end so the next node of the task starts
 /// there instead of the repository's main checkout.
+/// Every worktree a task made or took, its node's and its subagents', and how each ended; created
+/// on every open like task_relations.
+const TASK_WORKTREE_RECORDS: &str = "CREATE TABLE IF NOT EXISTS task_worktree_records(\
+ task_id TEXT NOT NULL REFERENCES tasks(id),\
+ path TEXT NOT NULL CHECK(substr(path,1,1)='/'),\
+ origin TEXT NOT NULL CHECK(origin IN('task','inherited','subagent','entered')),\
+ branch TEXT,\
+ discard INTEGER NOT NULL CHECK(discard IN(0,1)),\
+ end TEXT CHECK(end IS NULL OR end IN('removed','kept_by_user','users_own')),\
+ PRIMARY KEY(task_id,path));";
 const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
  task_id TEXT PRIMARY KEY CHECK(length(task_id)>0),\
  dir TEXT NOT NULL CHECK(length(dir)>0),\
@@ -592,6 +602,7 @@ impl DomainStore {
         tx.execute_batch(LAUNCH_REFUSALS)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
+        tx.execute_batch(TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(EVENTS_VIEW)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;

@@ -200,7 +200,7 @@ impl TaskLifecycle {
                 };
             }
             RuntimeFact::ContinuationConsumed { continuation } => {
-                let Activity::Turn { continuations, .. } = &mut execution.activity else {
+                let (Activity::Turn { continuations, .. } | Activity::OwnWork { continuations, .. }) = &mut execution.activity else {
                     return Err(Refusal::InvalidState);
                 };
                 if !continuations.remove(&Wake::Owned(continuation)) {

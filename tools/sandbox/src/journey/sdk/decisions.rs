@@ -181,7 +181,7 @@ fn guarded_command() -> String {
 }
 
 /// The model double answers a task's prompt that holds `when` with this tool call.
-fn script_tool(sandbox: &Sandbox, when: &str, id: &str, name: &str, input: Value) -> Result<()> {
+pub(super) fn script_tool(sandbox: &Sandbox, when: &str, id: &str, name: &str, input: Value) -> Result<()> {
     let folder = sandbox.dir.join("sdk/model-tools");
     std::fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let path = folder.join(format!("{id}.json"));
@@ -189,14 +189,14 @@ fn script_tool(sandbox: &Sandbox, when: &str, id: &str, name: &str, input: Value
 }
 
 /// What the model got back for its tool call `id`.
-fn tool_result(sandbox: &Sandbox, id: &str) -> Result<Option<Value>> {
+pub(super) fn tool_result(sandbox: &Sandbox, id: &str) -> Result<Option<Value>> {
     Ok(model_requests(sandbox)?.into_iter()
         .flat_map(|request| request["results"].as_array().cloned().unwrap_or_default())
         .find(|result| result["tool_use_id"] == id))
 }
 
 /// The enabled action of `view` that picks `option`.
-fn option_action(view: &Value, option: &str) -> Option<Value> {
+pub(super) fn option_action(view: &Value, option: &str) -> Option<Value> {
     let mut found = vec![];
     collect(view, &mut |item| {
         item.get("option_id").and_then(Value::as_str) == Some(option) && item.get("id").is_some() && item.get("enabled") != Some(&Value::Bool(false))
@@ -204,13 +204,13 @@ fn option_action(view: &Value, option: &str) -> Option<Value> {
     found.into_iter().next()
 }
 
-fn choose(report: &mut Report, user: &User, view: &Value, option: &str, what: &str) -> Result<()> {
+pub(super) fn choose(report: &mut Report, user: &User, view: &Value, option: &str, what: &str) -> Result<()> {
     let action = option_action(view, option).with_context(|| format!("the card offers no «{option}»: {view}"))?;
     report.step(what, || user.press(action["id"].as_str().unwrap_or_default(), Some(option), None)).map(drop)
 }
 
 /// The decision card left Inbox and the turn ended with the card that asks how to go on.
-fn turn_ended(report: &mut Report, user: &User, task: &str, card: &str) -> Result<()> {
+pub(super) fn turn_ended(report: &mut Report, user: &User, task: &str, card: &str) -> Result<()> {
     let prefix = format!("turn-ended-{task}-");
     wait(report, "the turn ends: the decision card is gone and the turn's card asks how to go on", || {
         let inbox = user.inbox()?;
@@ -219,7 +219,7 @@ fn turn_ended(report: &mut Report, user: &User, task: &str, card: &str) -> Resul
 }
 
 /// The «Interrupt» of the Fleet row that names `title`.
-fn interrupt_of(fleet: &Value, title: &str) -> Option<Value> {
+pub(super) fn interrupt_of(fleet: &Value, title: &str) -> Option<Value> {
     let mut rows = vec![];
     collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
     rows.into_iter().rev().find_map(|row| {

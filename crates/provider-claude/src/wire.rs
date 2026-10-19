@@ -49,7 +49,7 @@ impl HostOwner for OwnerGrant {
 /// only a host which can carry them may hold; an orchestrator batch asks for none.
 fn required_capabilities(execution: &Execution) -> &'static [&'static str] {
     match execution {
-        Execution::Task(_) => &["streaming_input", "owner_attach", "commit_ack", "decisions"],
+        Execution::Task(_) => &["streaming_input", "owner_attach", "commit_ack", "exact_decisions"],
         Execution::Orchestrator(_) => &["streaming_input", "owner_attach", "commit_ack"],
     }
 }
@@ -603,7 +603,7 @@ mod tests {
         });
         assert!(matches!(expect(&hello, &task), Err(alondra_agent_protocol::Error::MissingCapability)));
         assert!(expect(&hello, &orchestrator).is_ok());
-        hello.capabilities.push("decisions".into());
+        hello.capabilities.push("exact_decisions".into());
         assert!(expect(&hello, &task).is_ok());
     }
     #[test]

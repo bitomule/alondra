@@ -144,7 +144,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
     };
     (request, task)
 }
@@ -867,7 +867,7 @@ fn a_pr_merged_outside_alondra_while_in_review_closes_the_task_and_tells_the_nod
     end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the user does not have to accept a merged delivery");
     assert_eq!(out.effects, vec![
-        DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: cleanup_request("Result", &"t".into()) },
+        DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: cleanup_request("Result", &"t".into(), &[]) },
     ]);
     assert_eq!(merged_notice(1, 0), "Pull request #1 is merged; no pull request of this task is left to merge.");
 }
@@ -1462,7 +1462,7 @@ fn accepting_a_text_delivery_moves_the_task_to_closing_and_asks_its_node_to_clea
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Closing);
     assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at, Some(state.revision));
     assert_eq!(accepted.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
-        interaction_id: None, message: cleanup_request("Result", &"t".into()) }]);
+        interaction_id: None, message: cleanup_request("Result", &"t".into(), &[]) }]);
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
@@ -1491,7 +1491,7 @@ fn an_accepted_text_delivery_whose_registered_pr_merged_closes_its_node() {
     assert!(state.finished(task), "the accepted delivery is settled");
     assert_eq!((task.state, task.wrap_up.asked_at), (TaskState::Closing, Some(state.revision)));
     assert_eq!(accepted.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
-        interaction_id: None, message: cleanup_request("Result", &"t".into()) }]);
+        interaction_id: None, message: cleanup_request("Result", &"t".into(), &[]) }]);
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
@@ -2923,9 +2923,12 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordDecisionRequest { .. } => 77,
         Command::RecordDecisionSettled { .. } => 78,
         Command::RecordDecisionAborted { .. } => 79,
+        Command::RecordTaskWorktree { .. } => 80,
+        Command::ReleaseTaskWorktree { .. } => 81,
+        Command::TellNode { .. } => 82,
     }
 }
-const COMMAND_KINDS: usize = 80;
+const COMMAND_KINDS: usize = 83;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3039,7 +3042,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SettleSuggestion { interaction_id: ids.interaction.into(), decision: SuggestionDecision::Discard { reason: "Covered".into() } }, false),
         (Command::SettlePlanReview { review_id: ids.interaction.into(), task_id: ids.task.into(), outcome: PlanReviewOutcome::Unchanged { reason: "Same plan".into() } }, false),
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
-        (Command::ConfirmCleanup { task_id: ids.task.into() }, false),
+        (Command::ConfirmCleanup { task_id: ids.task.into(), discard: Vec::new() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
@@ -3065,6 +3068,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
         (Command::RecordDecisionSettled { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
         (Command::RecordDecisionAborted { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
+        (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),
+        (Command::ReleaseTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), end: WorktreeEnd::Removed }, false),
+        (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3492,7 +3498,7 @@ fn accepting_and_merging_a_pr_wakes_the_node_only_to_clean_up() {
     assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_none(), "merge pending: no cleanup yet");
     assert!(sent_to_node(&accepted).is_empty(), "nothing for the node to do while Alondra merges");
     let merged = merge_observed(&mut s);
-    assert_eq!(sent_to_node(&merged), vec![cleanup_request("Result", &"t".into())]);
+    assert_eq!(sent_to_node(&merged), vec![cleanup_request("Result", &"t".into(), &[])]);
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
 }
 #[test]
@@ -3553,13 +3559,13 @@ fn the_same_node_end_twice_changes_nothing_and_another_is_a_conflict() {
 fn only_the_tasks_node_confirms_its_cleanup_and_only_while_it_closes() {
     let mut s = fixture();
     register_b(&mut s);
-    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }, "not_closing");
+    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }, "not_closing");
     accept_text(&mut s);
-    reject_unchanged(&mut s, agent_b(), Command::ConfirmCleanup { task_id: "t".into() }, "not_assigned");
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    reject_unchanged(&mut s, agent_b(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }, "not_assigned");
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].wrap_up.cleaned_at, Some(s.revision));
     end_node(&mut s, "t");
-    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }, "task_not_active");
+    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }, "task_not_active");
 }
 fn post_merge_work(reason: Option<&str>) -> Command {
     Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned) }
@@ -3577,7 +3583,7 @@ fn only_the_tasks_node_declares_work_after_the_merge_and_cleanup_done_ends_it() 
     assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None, "a blank reason ends it");
     exec(&mut s, agent(), post_merge_work(Some(&"x".repeat(500)))).unwrap();
     assert!(s.tasks[&"t".into()].wrap_up.post_merge_work.as_ref().unwrap().reason.chars().count() <= rules::POST_MERGE_WORK_MAX);
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
     end_node(&mut s, "t");
     reject_unchanged(&mut s, agent(), post_merge_work(Some("release.sh")), "task_not_active");
@@ -3594,7 +3600,7 @@ fn work_declared_before_delivering_keeps_the_merged_task_in_progress_until_it_en
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running, "accepting the PR does not close a task with work left");
     exec(&mut s, agent(), post_merge_work(None)).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
@@ -3605,7 +3611,7 @@ fn work_declared_while_closing_takes_the_task_back_to_in_progress() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
     exec(&mut s, agent(), post_merge_work(Some("release.sh"))).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
 }
 #[test]
@@ -3624,9 +3630,9 @@ fn alondra_closing_the_node_never_ends_its_work_after_the_merge_but_the_session_
 fn a_second_cleanup_confirmation_moves_its_revision() {
     let mut s = fixture();
     accept_text(&mut s);
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     let first = s.tasks[&"t".into()].wrap_up.cleaned_at.unwrap();
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     assert!(s.tasks[&"t".into()].wrap_up.cleaned_at.unwrap() > first);
 }
 #[test]
@@ -3653,7 +3659,7 @@ fn the_cleanup_request_is_sent_once_even_when_a_blocking_question_interrupts_it(
 fn feedback_on_an_accepted_text_delivery_during_cleanup_takes_the_task_back_and_forgets_the_cleanup() {
     let mut s = fixture();
     accept_text(&mut s);
-    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
     exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
         targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
     let t = &s.tasks[&"t".into()];
@@ -3661,7 +3667,7 @@ fn feedback_on_an_accepted_text_delivery_during_cleanup_takes_the_task_back_and_
     assert!(t.wrap_up.asked_at.is_none() && t.wrap_up.cleaned_at.is_none());
     present(&mut s, "final2", text());
     let again = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "final2".into(), targets: text() }).unwrap();
-    assert_eq!(sent_to_node(&again), vec![cleanup_request("Result", &"t".into())]);
+    assert_eq!(sent_to_node(&again), vec![cleanup_request("Result", &"t".into(), &[])]);
 }
 #[test]
 fn feedback_on_a_merged_delivery_during_cleanup_is_refused() {
