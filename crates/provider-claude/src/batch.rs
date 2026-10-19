@@ -15,10 +15,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The Claude an orchestrator batch runs: its model, its tools and MCP server and nothing else,
-/// its plugins and settings, and whether it resumes the conversation of the previous batch.
+/// its plugins and settings. Every batch is a new conversation: no field resumes another.
 #[derive(Clone, Debug, Serialize)]
 pub struct OrchestratorProfile {
-    pub resume: bool,
     pub model: String,
     pub tools: Vec<String>,
     pub disallowed_tools: Vec<String>,

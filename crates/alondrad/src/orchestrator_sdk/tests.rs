@@ -171,8 +171,44 @@ async fn a_batch_through_the_sdk_is_one_turn_and_is_handed_once() {
     f.tick().await;
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 2);
-    assert!(prompts[1].contains("Where do I put change 3?") && !prompts[1].contains("Where do I put change 1?") && !prompts[1].contains("new conversation"), "{}", prompts[1]);
-    assert!(f.arguments().contains(&format!("--resume={session}")), "the conversation is resumed: {:?}", f.arguments());
+    assert!(prompts[1].contains("Where do I put change 3?") && !prompts[1].contains("Where do I put change 1?"), "{}", prompts[1]);
+}
+
+/// The context of a batch is what Alondra writes in its prompt: each starts its own conversation,
+/// with the note the previous one left and the questions the orchestrator still waits on, and
+/// nothing of the conversations before it.
+#[tokio::test]
+async fn every_batch_is_a_new_conversation_and_carries_what_the_next_needs() {
+    let f = fixture();
+    let mut sessions = vec![];
+    for n in 1..=5 {
+        f.tell(&format!("m-{n}"), &format!("Where do I put change {n}?"));
+        f.tick().await;
+        let arguments = f.arguments();
+        assert!(!arguments.iter().any(|argument| argument.starts_with("--resume")), "batch {n} resumes a conversation: {arguments:?}");
+        let session = load(&f.executor.home).unwrap().session_id.unwrap();
+        assert!(arguments.contains(&format!("--session-id={session}")), "{arguments:?}");
+        sessions.push(session);
+        if n == 1 {
+            f.run(Actor::Orchestrator { generation: 0 }, "question", Command::AskQuestion {
+                attachments: vec![], interaction_id: "q-waits".into(), scope: Scope::Orchestrator { request_id: None },
+                recipient: Recipient::User, body: "Which repository is change 1 for?".into(), blocking: false,
+                options: vec![QuestionOption { id: "web".into(), label: "Web".into(), description: None }, QuestionOption { id: "ios".into(), label: "iOS".into(), description: None }],
+                card: CardSpec::derived(CardKind::Decide, "Choose the repository"),
+            });
+        }
+    }
+    assert_eq!(sessions.iter().collect::<BTreeSet<_>>().len(), 5, "five batches, five conversations: {sessions:?}");
+    let prompts = f.prompts();
+    assert_eq!(prompts.len(), 5, "{prompts:?}");
+    for prompt in &prompts[1..] {
+        assert!(prompt.contains("YOUR NOTE FROM THE PREVIOUS BATCH:\nBatch handled\n"), "the note of the batch before: {prompt}");
+        assert!(prompt.contains("your question q-waits, still unanswered: Which repository is change 1 for?"), "{prompt}");
+    }
+    let lengths: Vec<usize> = prompts[1..].iter().map(String::len).collect();
+    assert!(lengths.windows(2).all(|pair| pair[0] == pair[1]), "a batch does not grow with the batches before it: {lengths:?}");
+    let context = load(&f.executor.home).unwrap().last_context;
+    assert_eq!(context, Some(crate::domain_orchestrator::BatchContext { first: 25, last: 25, window: None }), "each batch records the context it read");
 }
 
 #[tokio::test]
@@ -216,7 +252,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
     let batch = Batch {
         owner, backend: backend.clone(), home: f.executor.home.clone(), directory,
         node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
-        projects_root: None, capability: "c".repeat(64), session: session.into(), resume: false, prompt: String::new(),
+        projects_root: None, capability: "c".repeat(64), session: session.into(), prompt: String::new(),
     };
     let (configuration, profile) = (configuration(&batch).unwrap(), profile(&batch));
     let mut host = BatchHost::start(batch.owner, &configuration, session, &profile, "fixture:hold the first batch").unwrap();
@@ -321,22 +357,6 @@ async fn a_batch_that_ran_out_of_usage_before_answering_pauses_and_waits_without
     assert!(runtime.active_run.is_none() && runtime.failure.is_none(), "{runtime:?}");
     assert_eq!(f.attempts(), ["retryable"]);
     assert!(f.cards("problem-orchestrator-").is_empty());
-}
-
-#[tokio::test]
-async fn a_lost_conversation_starts_a_new_one() {
-    let f = fixture();
-    f.tell("m-1", "Where do I put change 1?");
-    f.tick().await;
-    f.tell("m-2", "fixture:no-conversation Where do I put change 2?");
-    f.tick().await;
-    let runtime = load(&f.executor.home).unwrap();
-    assert_eq!(runtime.failure, Some(Failure::SessionMissing), "{runtime:?}");
-    assert_eq!(runtime.session_id, None);
-    assert_eq!(f.attempts(), ["handed", "retryable"]);
-    f.tick().await;
-    assert!(f.arguments().iter().any(|argument| argument.starts_with("--session-id=")), "{:?}", f.arguments());
-    assert_eq!(f.attempts(), ["handed", "retryable", "handed"]);
 }
 
 #[tokio::test]

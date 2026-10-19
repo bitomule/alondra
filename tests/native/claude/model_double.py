@@ -7,8 +7,8 @@ each request's last user text, its tools' names and its context to <log>, one JS
 
 A request that offers the orchestrator's create_task is an orchestrator batch: for each request the
 user created in that batch with a script in <request scripts> (the sandbox's `fakes/scripts`), it
-calls create_task and then launch for every scripted task, one tool call per reply, and ends the
-turn once they are all made. Auto mode's safety check of an action (it stops at `</block>`) is
+calls create_task and then launch for every scripted task, or close_request with the script's
+`answer`, one tool call per reply, and ends the turn once they are all made. Auto mode's safety check of an action (it stops at `</block>`) is
 answered with an allow. A task's request whose prompt holds the `when` text of a call scripted in
 `model-tools/*.json` next to <log> ({"when", "id", "name", "input"}) and that offers its tool gets
 that tool call, once per prompt; the request after its result is logged with it. `{plan_file}` in
@@ -160,6 +160,8 @@ def orchestrator_calls(scripts, text):
         request = script['request_id']
         if not re.search(r'The user created Request ' + re.escape(request) + r'\b', text):
             continue
+        if script.get('answer') is not None:
+            calls.append(('toolu_close_' + request, 'close_request', {'request_id': request, 'answer': script['answer']}))
         for task in script['tasks']:
             launch = {'name': 'sandbox/' + task['task_id'], 'cwd': os.path.join(os.path.dirname(os.path.dirname(scripts)), 'repo'), 'model': 'sonnet', 'reason': 'A scripted sandbox node'}
             calls.append(('toolu_create_' + task['task_id'], 'create_task', {
@@ -240,7 +242,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             served = self.server.served
             with open(self.server.log, 'a') as stream:
                 stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'raw_user': last_user_raw(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
-                                         'tools': [tool.get('name') for tool in body.get('tools', [])], 'results': tool_results(body), 'context': context_text(body)}) + '\n')
+                                         'tools': [tool.get('name') for tool in body.get('tools', [])], 'results': tool_results(body), 'context': context_text(body),
+                                         'bytes': length}) + '\n')
         if not orchestrator and Path(self.server.log).with_name('model-hold').exists():
             # Held unanswered, as when the Mac shuts down before the model replies.
             threading.Event().wait()

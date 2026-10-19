@@ -195,7 +195,7 @@ export class Session {
     const profile = config.orchestrator;
     const permissions: Options = profile
       ? {
-          ...(profile.resume ? { resume: sessionId } : { sessionId }),
+          sessionId,
           model: profile.model,
           tools: profile.tools,
           disallowedTools: profile.disallowed_tools,

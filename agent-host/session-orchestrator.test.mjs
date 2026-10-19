@@ -8,8 +8,7 @@ const fixture = fileURLToPath(new URL('./fake-claude.mjs', import.meta.url));
 const root = mkdtempSync(join(process.env.TEST_TMPDIR, 'sdk-orchestrator-'));
 const input = '00000000-0000-4000-8000-0000000000a1';
 const session = '00000000-0000-4000-8000-0000000000b2';
-const profile = (resume) => ({
-  resume,
+const profile = () => ({
   model: 'opus',
   tools: ['Skill', 'Read', 'Glob', 'Grep'],
   disallowed_tools: ['AskUserQuestion', 'ExitPlanMode'],
@@ -42,7 +41,7 @@ try {
     return { args: JSON.parse(readFileSync(capture)).args, observations, run };
   }
 
-  const fresh = await turn('fresh', profile(false));
+  const fresh = await turn('fresh', profile());
   assert.equal(fresh.observations.filter((o) => o.type === 'sdk' && o.kind === 'result').length, 1);
   assert(fresh.observations.some((o) => o.type === 'process_exited'), 'the turn ends the native process without being told to close');
   assert(!fresh.observations.some((o) => o.type === 'sdk' && o.kind === 'diagnostic'), JSON.stringify(fresh.observations));
@@ -61,9 +60,6 @@ try {
   assert.equal(value(args, '--resume'), undefined);
   assert.equal(value(args, '--permission-prompt-tool'), undefined, 'nobody answers a prompt in an orchestrator turn');
 
-  const resumed = await turn('resumed', profile(true));
-  assert.equal(value(resumed.args, '--resume'), session, resumed.args.join(' '));
-  assert.equal(value(resumed.args, '--session-id'), undefined, resumed.args.join(' '));
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

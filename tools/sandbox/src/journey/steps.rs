@@ -37,6 +37,7 @@ pub fn task_script(request: &str, task: &str, title: &str) -> RequestScript {
     RequestScript {
         request_id: request.into(),
         tasks: vec![TaskScript { task_id: task.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true }],
+        answer: None,
     }
 }
 

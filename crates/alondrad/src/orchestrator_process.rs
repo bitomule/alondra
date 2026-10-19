@@ -168,8 +168,12 @@ pub struct Stream {
     pub result: bool,
     pub success: bool,
     pub error: Option<String>,
+    /// The context of the batch's first model call, and of its latest one.
+    pub first_input_tokens: Option<u64>,
     pub input_tokens: Option<u64>,
     pub window: Option<u64>,
+    /// What Claude said at the end of a successful turn.
+    pub note: Option<String>,
     pub model: Option<String>,
     pub compacted: bool,
     pub post_compact_tokens: Option<u64>,
@@ -188,6 +192,10 @@ impl Stream {
     /// The parser of a batch run through the Agent SDK host, whose prompt the SDK calls `input`.
     pub fn for_input(input: &str) -> Self {
         Self { restricted: true, input: Some(input.to_owned()), ..Self::default() }
+    }
+    /// The context the batch read, once the model answered at least once.
+    pub fn context(&self) -> Option<crate::domain_orchestrator::BatchContext> {
+        Some(crate::domain_orchestrator::BatchContext { first: self.first_input_tokens?, last: self.input_tokens?, window: self.window })
     }
     /// Whether usage ran out, with the reset Claude reported if it did.
     pub fn limit(&self, diagnostic: &str) -> Option<Option<i64>> {
@@ -309,7 +317,9 @@ impl Stream {
                 if let Some(u) = v.pointer("/message/usage").filter(|u| u.is_object()) {
                     // Latest main-agent call only; aggregate result usage can include many calls.
                     if let Some(input) = u["input_tokens"].as_u64() {
-                        self.input_tokens = Some(input.saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)).saturating_add(u["cache_read_input_tokens"].as_u64().unwrap_or(0)));
+                        let context = input.saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)).saturating_add(u["cache_read_input_tokens"].as_u64().unwrap_or(0));
+                        self.first_input_tokens.get_or_insert(context);
+                        self.input_tokens = Some(context);
                     }
                 }
                 if let Some(model) = v.pointer("/message/model").and_then(Value::as_str) { self.model = Some(model.into()); }
@@ -328,6 +338,9 @@ impl Stream {
                     && v["num_turns"] == 0 && v["duration_api_ms"] == 0
                     && v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));
                 self.success = v["subtype"] == "success" && v["is_error"] == false;
+                if self.success {
+                    self.note = v["result"].as_str().map(str::to_owned);
+                }
                 // A refused optional tool is one Claude worked around; only Alondra's own
                 // tools are required for a batch to be handled.
                 if v["permission_denials"].as_array().is_some_and(|denials| denials.iter()

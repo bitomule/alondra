@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::{Report, User, steps::*};
-use crate::{fake::Fakes, sandbox::Sandbox};
+use crate::{fake::{Fakes, script::RequestScript}, sandbox::Sandbox};
 
 const NOTE: &str = "Add the tests first";
 const WRITTEN: &str = "Write the changelog too";
@@ -214,7 +214,32 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         report.snapshot("card-session-ended", &user.view(&format!("card:{ended}"))?)?;
         report.snapshot("fleet", &user.view("fleet")?)
     });
+    report.case("S12", "Five messages, five batches: each is a new conversation of the orchestrator's native Claude, and what it sends the model does not grow", |report| {
+        let mut batches = vec![];
+        for n in 1..=CONTEXT_BATCHES {
+            let request_id = format!("req-ctx-{n}");
+            let script = RequestScript { request_id: request_id.clone(), tasks: vec![], answer: Some(format!("Noted: message {n} needs no task")) };
+            request(report, fakes, &user, &script, &format!("Message {n} for the orchestrator"))?;
+            let batch = wait(report, &format!("the orchestrator closes {request_id} and its turn ends"), || {
+                let requests = orchestrator_requests(sandbox)?;
+                let ours: Vec<&Value> = requests.iter().filter(|request| request["user"].as_str().is_some_and(|text| text.contains(&format!("The user created Request {request_id}")))).collect();
+                let closed = requests.iter().any(|request| request["results"].as_array().is_some_and(|results| results.iter().any(|result| result["tool_use_id"] == format!("toolu_close_{request_id}"))));
+                let first = ours.first().map(|request| serde_json::json!({"request": request_id, "messages": request["messages"], "bytes": request["bytes"]}));
+                Ok((first.filter(|_| closed), format!("{} requests of this batch, closed {closed}", ours.len())))
+            })?;
+            batches.push(batch);
+        }
+        report.snapshot("orchestrator-context", &serde_json::json!(batches))?;
+        report.step("each batch starts with the same context: none carries the conversations before it", || {
+            let messages: Vec<u64> = batches.iter().map(|batch| batch["messages"].as_u64().unwrap_or(0)).collect();
+            anyhow::ensure!(messages.iter().all(|count| *count == messages[0]), "messages the first request of each batch carried: {messages:?} ({batches:?})");
+            Ok(())
+        })
+    });
 }
+
+/// How many batches S12 measures.
+const CONTEXT_BATCHES: usize = 5;
 
 /// Three tasks whose mission Claude had not shown it read when the Mac shut down.
 const DOUBTFUL: [(&str, &str, &str); 3] = [

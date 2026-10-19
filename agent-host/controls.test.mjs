@@ -4,7 +4,7 @@ import { HOST_CAPABILITIES } from './persistent.js';
 
 const { wire, startHost, own, lines, cleanup, stderr } = ownedHosts('ct-');
 const batch = wire('attach-orchestrator');
-const orchestrator = { resume: false, model: 'opus', tools: ['Read'], disallowed_tools: [], mcp_servers: {}, plugins: [], settings: {} };
+const orchestrator = { model: 'opus', tools: ['Read'], disallowed_tools: [], mcp_servers: {}, plugins: [], settings: {} };
 const controls = (host) => lines(host.capture + '.controls');
 const sdk = (owner, kind, predicate) => owner.sdk(kind, predicate);
 const applied = { status: 'accepted', phase: 'applied' };

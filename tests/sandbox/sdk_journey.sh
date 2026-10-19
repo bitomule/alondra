@@ -31,7 +31,16 @@ python3 -I -c '
 import os, select, signal, sys
 daemon, hosts = int(sys.argv[1]), [int(pid) for pid in sys.argv[2:]]
 queue = select.kqueue()
-queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT) for pid in [daemon, *hosts]], 0, 0)
+watched = []
+for pid in [daemon, *hosts]:
+    # An orchestrator batch host ends with its turn: one already gone ended before the SIGTERM.
+    try:
+        queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 0, 0)
+        watched.append(pid)
+    except ProcessLookupError:
+        if pid == daemon:
+            raise
+hosts = watched[1:]
 os.kill(daemon, signal.SIGTERM)
 order = []
 while len(order) < 1 + len(hosts):

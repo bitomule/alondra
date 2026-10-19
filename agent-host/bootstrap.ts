@@ -14,7 +14,6 @@ const shape = z.strictObject({
   native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()), resume: z.boolean().optional() }),
   journal_base: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   orchestrator: z.strictObject({
-    resume: z.boolean(),
     model: z.string().min(1).max(64),
     tools: z.array(z.string().min(1).max(128)).max(16),
     disallowed_tools: z.array(z.string().min(1).max(128)).max(16),

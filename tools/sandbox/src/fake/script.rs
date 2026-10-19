@@ -11,6 +11,9 @@ use super::{Checks, Fakes, read_lines};
 pub struct RequestScript {
     pub request_id: String,
     pub tasks: Vec<TaskScript>,
+    /// An answer the orchestrator closes the request with, for a request that needs no task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

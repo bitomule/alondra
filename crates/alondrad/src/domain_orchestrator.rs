@@ -7,7 +7,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, BatchEnd, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
+use alondra_core::domain::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
 use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 use alondra_core::orchestrator_cards::{STUCK_AFTER, STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
@@ -24,9 +24,12 @@ pub(crate) const FILE: &str = "orchestrator.json";
 pub(crate) const PREVIOUS_FILE: &str = "orchestrator-v2.json";
 const SUMMARY_LINE: usize = 200;
 const MAX_SUMMARY_BYTES: usize = 32 * 1024;
+/// The most of its final words a batch hands to the next one.
+const MAX_NOTE_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Runtime {
+    /// The conversation of the latest batch. Every batch starts its own: none is resumed.
     pub session_id: Option<String>,
     pub active_run: Option<Run>,
     pub last_run_id: Option<String>,
@@ -43,6 +46,22 @@ pub(crate) struct Runtime {
     /// The Problem that tells the user Claude does not start, while it is open.
     #[serde(default)]
     pub stuck_problem: Option<String>,
+    /// What the last handled batch said at its end, for the next batch, which starts a new
+    /// conversation and has only what Alondra hands it.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// The context the latest batch read.
+    #[serde(default)]
+    pub last_context: Option<BatchContext>,
+}
+
+/// Tokens the model read in a batch's first call and in its last one: its context at the start
+/// of the turn and at its end.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BatchContext {
+    pub first: u64,
+    pub last: u64,
+    pub window: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,7 +75,8 @@ pub(crate) enum Failure {
     Denied,
     /// The user stopped the run.
     Cancelled,
-    /// Its saved conversation was gone; the next run starts a new one.
+    /// Its saved conversation was gone; the next run starts a new one. Only a daemon that
+    /// resumed conversations wrote it.
     SessionMissing,
 }
 
@@ -241,14 +261,15 @@ impl Executor {
         save(&self.home, &runtime)
     }
 
-    fn prompt(&self, runtime: &Runtime, resume: bool, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
+    fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
-        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below with no Task of its own leaves this batch with its Tasks, an answer given with close_request, or a question to the user: an answer written only in this conversation reaches nobody. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
+        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below with no Task of its own leaves this batch with its Tasks, an answer given with close_request, or a question to the user: an answer written only in this conversation reaches nobody. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
+        text.push_str("This is a new conversation, as every batch is: nothing of an earlier batch is in it but what Alondra writes below, which is current. Call fleet or node only for what it does not say; do not infer that existing tasks need to be started again. End with a short note, a few sentences at most, of what the next batch needs that Alondra does not already hold: it reaches the next batch and nobody else.\n");
+        if let Some(note) = &runtime.note {
+            text.push_str(&format!("\nYOUR NOTE FROM THE PREVIOUS BATCH:\n{note}\n"));
+        }
         if !runtime.pending_resolutions.is_empty() {
             text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded. An open Request below with no Task of its own was not turned into work: handle it now, unless fleet shows an open question about it.\n");
-        }
-        if !resume {
-            text.push_str("This is a new conversation. Call fleet before acting; do not infer that existing tasks need to be started again.\n");
         }
         if let Some(root) = projects_root {
             text.push_str(&format!("Projects root, readable with Read, Glob and Grep: {}\n", root.display()));
@@ -303,11 +324,7 @@ impl Executor {
             bail!("Required Alondra plugins are not installed; run alondra doctor --fix");
         };
         let run_id = process::uuid()?;
-        let resume = runtime.session_id.is_some();
-        let session = match runtime.session_id.clone() {
-            Some(session) => session,
-            None => process::uuid()?,
-        };
+        let session = process::uuid()?;
         let state = self.domain.state()?;
         let epoch = state.data_epoch.clone();
         let asked = crate::orchestrator_inbox::asked(&state);
@@ -335,7 +352,7 @@ impl Executor {
             .filter(|root| root.is_dir());
         let prepared = self.domain.bind_orchestrator(&run_id)
             .map_err(|error| anyhow::anyhow!("cannot bind the execution's capability: {error}"))
-            .and_then(|capability| Ok((capability, self.prompt(&runtime, resume, projects_root.as_deref(), &claimed)?)));
+            .and_then(|capability| Ok((capability, self.prompt(&runtime, projects_root.as_deref(), &claimed)?)));
         let (capability, prompt) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => return self.failed(runtime, &run, format!("{error:#}"), None),
@@ -358,7 +375,7 @@ impl Executor {
                 owner, backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
                 node_plugin, orchestrator_plugin, projects_root: projects_root.clone(),
                 capability: capability.expose_for_child_environment().to_owned(),
-                session: session.clone(), resume, prompt,
+                session: session.clone(), prompt,
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
@@ -368,7 +385,7 @@ impl Executor {
                     plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
                     domain: true, projects_root: projects_root.as_deref(),
                     capability: Some(capability.expose_for_child_environment()),
-                    session: &session, resume, execution: &run_id, prompt: &prompt, ownership,
+                    session: &session, resume: false, execution: &run_id, prompt: &prompt, ownership,
                 }, |_| mark_spawned.take().map_or(Ok(()), |mark| mark()), || Ok(()), cancel).await
             }
         };
@@ -377,7 +394,12 @@ impl Executor {
         }
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
-        let end = output.end(&session, resume, runtime.cancel_requested);
+        let end = output.end(&session, false, runtime.cancel_requested);
+        if let Some(context) = output.stream.context() {
+            log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
+                run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));
+            runtime.last_context = Some(context);
+        }
         if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
             && let Some(reset) = output.stream.limit(&output.diagnostic)
         {
@@ -420,7 +442,10 @@ impl Executor {
                 runtime.retry_at = None;
                 save(&self.home, &runtime)
             }
-            BatchEnd::Handled => self.handled(runtime, &run, &asked),
+            BatchEnd::Handled => {
+                runtime.note = output.stream.note.as_deref().map(|note| bounded_note(note, MAX_NOTE_BYTES)).filter(|note| !note.is_empty());
+                self.handled(runtime, &run, &asked)
+            }
             BatchEnd::NotStarted { why } => self.failed(runtime, &run, why, None),
             BatchEnd::Interrupted { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Interrupted, calls))),
             BatchEnd::Denied { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Denied, calls))),
@@ -583,8 +608,9 @@ impl Executor {
     }
 }
 
-/// The durable domain as the orchestrator needs it to act on a batch: its MCP has no read
-/// tool, so every open Request and every Task not archived travels in the prompt.
+/// The durable domain as the orchestrator needs it to act on a batch, which starts a new
+/// conversation: every open Request, every question it asked that waits for its answer, and
+/// every Task not archived travel in the prompt.
 fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestId) -> Option<String>) -> String {
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
@@ -602,6 +628,18 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestI
             text.push('\n');
         }
     }
+    for card in state.interactions.values().filter(|card| matches!(card.author, Author::Orchestrator { .. }) && !card.withdrawn) {
+        let open = matches!(&card.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. });
+        if !open {
+            continue;
+        }
+        let about = match &card.scope {
+            Scope::Orchestrator { request_id: Some(request) } => format!(" about request {request}"),
+            Scope::Task { task_id } => format!(" about task {task_id}"),
+            _ => String::new(),
+        };
+        text.push_str(&format!("your question {}{about}, still unanswered: {}\n", card.id, one_line(&card.body)));
+    }
     for task in state.tasks.values().filter(|task| !task.archived) {
         let agent = task.agent_id.as_ref().map_or("none".to_owned(), |agent| agent.0.clone());
         let pr = task.pr_id.as_ref().map(|pr| format!(" pr={pr}")).unwrap_or_default();
@@ -614,6 +652,13 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestI
         }
     }
     text
+}
+
+/// At most `limit` bytes of `note`, cut at a character.
+fn bounded_note(note: &str, limit: usize) -> String {
+    let note = note.trim();
+    let end = note.char_indices().map(|(at, c)| at + c.len_utf8()).take_while(|end| *end <= limit).last().unwrap_or(0);
+    note[..end].to_owned()
 }
 
 /// The orchestrator phase and the actions available to the user.
@@ -724,7 +769,7 @@ test "$ALONDRA_DOMAIN_PROTOCOL" = 2 || exit 89
 test -n "$ALONDRA_DOMAIN_CAPABILITY" || exit 88
 printf '%s\n' "$ALONDRA_DOMAIN_CAPABILITY" >> capabilities
 while [ "$#" -gt 0 ]; do
-case "$1" in --session-id|--resume) shift; session="$1";; esac
+case "$1" in --session-id|--resume) printf '%s %s\n' "$1" "$2" >> sessions; shift; session="$1";; esac
 shift
 done
 cat > received-prompt
@@ -871,9 +916,52 @@ exit 1"#;
         ask_orchestrator(domain, 3);
         f.executor.tick(&f.ownership).await.unwrap();
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
-        assert!(!prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
+        assert!(prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
             && !prompt.contains("Where do I put change 1?") && !prompt.contains("inbox message"), "{prompt}");
-        assert_eq!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "the conversation is resumed");
+        assert_ne!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "every batch is a conversation of its own");
+    }
+
+    const NOTE_AND_CONTEXT: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":3,"cache_read_input_tokens":40000}}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":5,"cache_creation_input_tokens":200,"cache_read_input_tokens":40000}}}'
+printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"result":"PR 12 waits for its review.","modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
+
+    /// The context of a batch is what Alondra writes in its prompt: each starts its own
+    /// conversation, with the note the previous one left and the questions the orchestrator
+    /// still waits on, and nothing of the conversations before it.
+    #[tokio::test]
+    async fn every_batch_is_a_new_conversation_and_carries_what_the_next_needs() {
+        let f = fixture(NOTE_AND_CONTEXT);
+        let domain = &f.executor.domain;
+        let dir = f.executor.home.join("runtime/orchestrator");
+        let mut prompts = vec![];
+        for n in 1..=5 {
+            command(domain, Actor::User { user_id: "u".into() }, &format!("m-{n}"), Command::CreateRequest {
+                request_id: format!("m-{n}").into(), body: format!("Where do I put change {n}?"), auto_merge: false, maintenance: false, message: true,
+            });
+            f.executor.tick(&f.ownership).await.unwrap();
+            prompts.push(std::fs::read_to_string(dir.join("received-prompt")).unwrap());
+            if n == 1 {
+                command(domain, Actor::Orchestrator { generation: 0 }, "question", Command::AskQuestion {
+                    attachments: vec![], interaction_id: "q-waits".into(), scope: Scope::Orchestrator { request_id: None },
+                    recipient: Recipient::User, body: "Which repository is change 1 for?".into(), blocking: false,
+                    options: vec![QuestionOption { id: "web".into(), label: "Web".into(), description: None }, QuestionOption { id: "ios".into(), label: "iOS".into(), description: None }],
+                    card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose the repository"),
+                });
+            }
+        }
+        let sessions = std::fs::read_to_string(dir.join("sessions")).unwrap();
+        let sessions: Vec<&str> = sessions.lines().collect();
+        assert_eq!(sessions.len(), 5, "{sessions:?}");
+        assert!(sessions.iter().all(|line| line.starts_with("--session-id ")), "no batch resumes a conversation: {sessions:?}");
+        assert_eq!(sessions.iter().collect::<BTreeSet<_>>().len(), 5, "five batches, five conversations: {sessions:?}");
+        for prompt in &prompts[1..] {
+            assert!(prompt.contains("YOUR NOTE FROM THE PREVIOUS BATCH:\nPR 12 waits for its review.\n"), "the note of the batch before: {prompt}");
+            assert!(prompt.contains("your question q-waits, still unanswered: Which repository is change 1 for?"), "{prompt}");
+        }
+        let lengths: Vec<usize> = prompts[1..].iter().map(String::len).collect();
+        assert!(lengths.windows(2).all(|pair| pair[0] == pair[1]), "a batch does not grow with the batches before it: {lengths:?}");
+        assert_eq!(load(&f.executor.home).unwrap().last_context, Some(BatchContext { first: 40003, last: 40205, window: Some(1000000) }),
+            "each batch records the context it read");
     }
 
     /// Recorded from the 2026-10-03 run e8ab8f90: Read on the projects root was refused, the
@@ -1045,10 +1133,9 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
     }
 
     #[tokio::test]
-    async fn a_resumed_run_that_changed_nothing_runs_the_batch_again_with_its_prompt_and_asks_nobody() {
+    async fn a_run_that_changed_nothing_runs_the_batch_again_with_its_prompt_and_asks_nobody() {
         let f = fixture(NO_DEFERRED_MARKER);
         let domain = &f.executor.domain;
-        save(&f.executor.home, &Runtime { session_id: Some("saved".into()), ..Runtime::default() }).unwrap();
         ask_orchestrator(domain, 1);
         f.executor.tick(&f.ownership).await.unwrap();
         assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)),
@@ -1066,9 +1153,9 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         save(&f.executor.home, &runtime).unwrap();
         f.executor.tick(&f.ownership).await.unwrap();
         let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
-        assert!(prompt.contains("Where do I put change 1?") && !prompt.contains("new conversation"), "{prompt}");
+        assert!(prompt.contains("Where do I put change 1?"), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
-        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.session_id.as_deref() == Some("saved"), "{runtime:?}");
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
         assert!(unhandled(domain).is_empty());
     }
 

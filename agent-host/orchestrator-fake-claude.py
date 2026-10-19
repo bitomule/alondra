@@ -9,7 +9,6 @@ records its arguments and every prompt it gets, and answers each prompt as its f
   fixture:tool-then-exit    calls an Alondra tool that changes something, then dies without a result
   fixture:denied            calls an Alondra tool and ends with it refused
   fixture:limited           usage runs out before it answers
-  fixture:no-conversation   the resumed conversation does not exist
   fixture:exit-before-init  dies before it initializes
   fixture:another-input     ends with the result of a prompt that is not this one
 
@@ -33,8 +32,7 @@ def flag(name):
     return None
 
 
-resumed = flag('--resume')
-session_id = resumed or flag('--session-id')
+session_id = flag('--session-id')
 serial = 0
 server = 'alondra-orchestrator'
 tools = ['Skill', 'Read', 'Glob', 'Grep'] + ['mcp__%s__%s' % (server, name) for name in ('fleet', 'ask', 'create_task', 'close_request', 'settle_suggestion')]
@@ -101,11 +99,6 @@ for raw in sys.stdin:
         sys.exit(3)
     for state in ('queued', 'started'):
         lifecycle(message, state)
-    if 'fixture:no-conversation' in text and resumed:
-        send(dict(type='result', subtype='error_during_execution', is_error=True, session_id=session_id, uuid=uuid(),
-                  duration_ms=0, duration_api_ms=0, num_turns=0, total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
-                  errors=['No conversation found with session ID: %s' % session_id]))
-        sys.exit(1)
     init()
     if 'fixture:limited' in text:
         send(dict(type='rate_limit_event', session_id=session_id, uuid=uuid(),

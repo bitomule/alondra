@@ -27,7 +27,6 @@ pub(crate) struct Batch {
     pub(crate) projects_root: Option<PathBuf>,
     pub(crate) capability: String,
     pub(crate) session: String,
-    pub(crate) resume: bool,
     pub(crate) prompt: String,
 }
 
@@ -169,7 +168,6 @@ fn profile(batch: &Batch) -> OrchestratorProfile {
         }
     }
     OrchestratorProfile {
-        resume: batch.resume,
         model: "opus".into(),
         tools: process::RESTRICTED_TOOLS.split(',').map(str::to_owned).collect(),
         disallowed_tools: vec!["AskUserQuestion".into(), "ExitPlanMode".into()],
