@@ -878,3 +878,29 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
     assert!(slice.starts()[1]["resume"].is_string());
     resumed.stop().unwrap();
 }
+
+// The daemon dies and the host's state folder goes with it, as when a sandbox or a test fixture is
+// removed: no owner can adopt that host any more, so it ends its whole group, Claude included.
+#[test]
+fn a_host_whose_state_folder_is_removed_ends_its_group() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let group = driver.worker.host_group().expect("the driver has its host");
+    let processes = alondra_process_group::members(group).unwrap();
+    assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
+    drop(driver);
+    std::fs::remove_dir_all(&slice.backend.state_root).unwrap();
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    for process in &processes {
+        exits.watch(process).unwrap();
+    }
+    exits.wait().unwrap();
+    let left: Vec<String> = alondra_process_group::members(group)
+        .unwrap()
+        .iter()
+        .filter(|member| !member.zombie)
+        .map(ToString::to_string)
+        .collect();
+    assert!(left.is_empty(), "the unadoptable host's group survived: {left:?}");
+}
