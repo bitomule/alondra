@@ -26,7 +26,7 @@
 use alondra_domain::{RuntimeFact, Trigger, TurnId};
 use alondra_foundation::{ExecutionStamp, InputId};
 use alondra_provider_contract::{
-    Adapter, AdapterError, Invocation, Observation, Operation, OrderedObservation,
+    Adapter, AdapterError, DecisionKind, Invocation, Observation, Operation, OrderedObservation,
 };
 use alondra_store::{
     AdapterInputMetadata, AdapterState, CommandEvidence, DispatchAttempt, DispatchKind,
@@ -220,10 +220,31 @@ pub enum ObservedFact {
     },
     /// Evidence about Claude itself, not about the task: its runtime does not move.
     ModelAnswered,
+    /// Claude asks for the decision its host persisted at `epoch`: the domain asks the user or
+    /// decides it by its own rules.
+    Asked {
+        request: String,
+        epoch: u64,
+        kind: DecisionKind,
+        tool_use: Option<String>,
+        payload: Vec<u8>,
+    },
+    /// The request at `epoch` is over. An answered one that `continued` lets the turn that asked
+    /// go on: the domain records that too.
+    Settled {
+        epoch: u64,
+        answered: bool,
+        continued: bool,
+    },
 }
 impl ObservedFact {
-    fn moves_runtime(&self) -> bool {
-        !matches!(self, Self::ModelAnswered)
+    /// How far the task's runtime moves when the domain records this fact.
+    fn runtime_moves(&self) -> usize {
+        match self {
+            Self::ModelAnswered => 0,
+            Self::Settled { answered: true, continued: true, .. } => 2,
+            _ => 1,
+        }
     }
 }
 
@@ -245,6 +266,9 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             work: work.clone(),
             continuation: continuation.clone(),
         },
+        Observation::ContinuationConsumed { continuation } => RuntimeFact::ContinuationConsumed {
+            continuation: continuation.clone(),
+        },
         Observation::TurnEnded { turn, failure } => {
             return Ok(ObservedFact::TurnEnded {
                 turn: turn.clone(),
@@ -252,6 +276,18 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             });
         }
         Observation::ModelAnswered => return Ok(ObservedFact::ModelAnswered),
+        Observation::Asked { request, epoch, kind, tool_use, payload } => {
+            return Ok(ObservedFact::Asked {
+                request: request.clone(),
+                epoch: *epoch,
+                kind: *kind,
+                tool_use: tool_use.clone(),
+                payload: payload.clone(),
+            });
+        }
+        Observation::DecisionSettled { epoch, answered, continued } => {
+            return Ok(ObservedFact::Settled { epoch: *epoch, answered: *answered, continued: *continued });
+        }
         Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
     }))
 }
@@ -287,7 +323,7 @@ impl PendingObservation {
     /// The domain recorded every fact: the task's runtime moved by exactly that many.
     pub fn settle(self, transaction: &mut LifecycleTransaction<'_>) -> Result<ObservationAcceptance> {
         if self.acceptance == ObservationAcceptance::Accepted {
-            let moved = self.facts.iter().filter(|fact| fact.moves_runtime()).count();
+            let moved = self.facts.iter().map(ObservedFact::runtime_moves).sum();
             transaction.settle_observation(&self.execution, self.cursor, moved)?;
         }
         Ok(self.acceptance)

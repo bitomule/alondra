@@ -1,7 +1,8 @@
 //! «Allow always» on this Mac: which repo a node's prompt belongs to, the rules its card offers,
 //! and the repo's `.claude/settings.local.json` in its main checkout, where Claude Code keeps
-//! them. Claude Code writes a rule when the user chooses it; Alondra only reads the file and
-//! takes out exactly the rule the user removes, leaving every other byte as it was.
+//! them. Claude Code writes a rule a held hook's card allowed always; for a decision asked through
+//! the SDK Alondra adds it, and it takes out exactly the rule the user removes, leaving every
+//! other byte as it was.
 
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -149,6 +150,25 @@ const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 #[cfg(test)]
 const WRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Each rule chosen for the repo `cwd` belongs to, remembered as pending; the repo's settings file,
+/// or `None` outside a repo that can keep them.
+fn remember(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, offered: &[String], task_id: Option<&str>, interaction_id: &str) -> Option<PathBuf> {
+    let repo = cwd.and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| repo_of(&cwd))?;
+    let settings = repo.settings();
+    let now = alondra_core::now_millis();
+    let recorded: Vec<AllowedRule> = offered.iter().map(|rule| AllowedRule {
+        id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
+        added_at: now, task_id: task_id.map(str::to_owned), interaction_id: interaction_id.to_owned(), machine: machine(), state: RuleState::Pending,
+    }).collect();
+    let store = domain.store.lock().expect("domain store poisoned");
+    for rule in &recorded {
+        if let Err(error) = store.record_allowed_rule(rule) {
+            log!("allow always: could not remember {}: {error:#}", rule.rule);
+        }
+    }
+    Some(settings)
+}
+
 /// The user chose «allow always»: each rule is remembered, and once Claude Code has had time to
 /// write them, each is active if the repo's settings file has it, or missing if not.
 pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
@@ -157,23 +177,7 @@ pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::Domain
     let offered = rules.to_vec();
     let task_id = task_id.map(str::to_owned);
     let interaction_id = interaction_id.to_owned();
-    let settings = domain.hook_work.run(move || {
-        let Some(repo) = cwd.and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| repo_of(&cwd)) else { return None };
-        let settings = repo.settings();
-        let now = alondra_core::now_millis();
-        let recorded: Vec<AllowedRule> = offered.iter().map(|rule| AllowedRule {
-            id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
-            added_at: now, task_id: task_id.clone(), interaction_id: interaction_id.clone(), machine: machine(), state: RuleState::Pending,
-        }).collect();
-        let domain = recording;
-        let store = domain.store.lock().expect("domain store poisoned");
-        for rule in &recorded {
-            if let Err(error) = store.record_allowed_rule(rule) {
-                log!("allow always: could not remember {}: {error:#}", rule.rule);
-            }
-        }
-        Some(settings)
-    }).await?;
+    let settings = domain.hook_work.run(move || remember(&recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
     let Some(settings) = settings else { return Ok(()) };
     let started = std::time::Instant::now();
     while started.elapsed() < WRITE_WAIT {
@@ -188,6 +192,16 @@ pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::Domain
     }
     let recording = domain.clone();
     domain.hook_work.run(move || reconcile(&recording)).await?;
+    Ok(())
+}
+
+/// The user chose «allow always» on a decision Claude asked for through the SDK, which never widens
+/// Claude's permissions itself: Alondra writes each rule into the repo's settings file, where
+/// Claude Code reads it for the next call, and remembers it as `chosen` does.
+pub(crate) fn chosen_through_sdk(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
+    let Some(settings) = remember(domain, cwd, rules, task_id, interaction_id) else { return Ok(()) };
+    add(&settings, &rules.iter().map(|rule| rules::settings_entry(rule)).collect::<Vec<_>>())?;
+    reconcile(domain);
     Ok(())
 }
 
@@ -259,10 +273,10 @@ pub(crate) fn allowed(settings: &Path) -> Result<Vec<String>> {
         Err(error) => return Err(error).with_context(|| format!("reading {}", settings.display())),
     };
     let value: Value = serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", settings.display()))?;
-    Ok(entries(&value))
+    Ok(entries_of(&value))
 }
 
-fn entries(value: &Value) -> Vec<String> {
+fn entries_of(value: &Value) -> Vec<String> {
     value.pointer("/permissions/allow").and_then(Value::as_array).into_iter().flatten()
         .filter_map(|entry| entry.as_str().map(str::to_owned)).collect()
 }
@@ -285,7 +299,7 @@ pub(crate) fn remove(settings: &Path, entry: &str) -> Result<Removal> {
         Err(error) => return Err(error).with_context(|| format!("reading {}", settings.display())),
     };
     let before: Value = serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", settings.display()))?;
-    if !entries(&before).iter().any(|e| e == entry) {
+    if !entries_of(&before).iter().any(|e| e == entry) {
         return Ok(Removal::Absent);
     }
     let mut expected = before.clone();
@@ -311,11 +325,56 @@ pub(crate) fn remove(settings: &Path, entry: &str) -> Result<Removal> {
     Ok(Removal::Removed)
 }
 
+/// Adds each entry the file's `permissions.allow` lacks, creating the file and its folder when
+/// there is none. The new file replaces the old one in a single rename, so Claude Code never reads
+/// half of it; a file that is not valid JSON is not touched.
+pub(crate) fn add(settings: &Path, entries: &[String]) -> Result<()> {
+    let (mut value, permissions) = match std::fs::read_to_string(settings) {
+        Ok(text) => (
+            serde_json::from_str::<Value>(&text).with_context(|| format!("{} is not valid JSON", settings.display()))?,
+            std::fs::metadata(settings)?.permissions().mode() & 0o7777,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (serde_json::json!({}), 0o600),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", settings.display())),
+    };
+    let present = entries_of(&value);
+    let missing: Vec<&String> = entries.iter().filter(|entry| !present.contains(entry)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let object = value.as_object_mut().with_context(|| format!("{} is not a JSON object", settings.display()))?;
+    let permissions_entry = object.entry("permissions").or_insert_with(|| serde_json::json!({}));
+    let allow = permissions_entry
+        .as_object_mut()
+        .with_context(|| format!("{} has permissions that are not an object", settings.display()))?
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .with_context(|| format!("{} has a permissions.allow that is not a list", settings.display()))?;
+    allow.extend(missing.into_iter().map(|entry| Value::String(entry.clone())));
+    let folder = settings.parent().context("settings file without a folder")?;
+    std::fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
+    let temp = folder.join(format!(".settings.local.json.alondra-{}", crate::auth::random_hex(8)));
+    let written = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(serde_json::to_string_pretty(&value)?.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.set_permissions(std::fs::Permissions::from_mode(permissions))?;
+        file.sync_all()?;
+        std::fs::rename(&temp, settings)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.with_context(|| format!("writing {}", settings.display()))
+}
+
 /// The text without the string literal `entry`, together with the comma that joined it to its
 /// neighbour, tried at each place the literal appears until the result reads as `expected`.
 fn cut(text: &str, entry: &str, expected: &Value) -> Result<String> {
     let literal = serde_json::to_string(entry)?;
-    let left = |value: &Value| entries(value).iter().filter(|e| *e == entry).count();
+    let left = |value: &Value| entries_of(value).iter().filter(|e| *e == entry).count();
     let mut current = text.to_owned();
     let mut remaining = left(&serde_json::from_str(text)?);
     while remaining > 0 {
@@ -371,6 +430,33 @@ mod tests {
         let path = dir.join("settings.local.json");
         std::fs::write(&path, text).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn adding_rules_keeps_every_other_setting_and_never_repeats_one() {
+        let (_dir, path) = file(CLAUDE_CODE);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        add(&path, &["Bash(make build *)".into(), "Bash(make test *)".into()]).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut expected: Value = serde_json::from_str(CLAUDE_CODE).unwrap();
+        expected["permissions"]["allow"].as_array_mut().unwrap().push("Bash(make test *)".into());
+        assert_eq!(after, expected);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o640);
+        let written = std::fs::read(&path).unwrap();
+        add(&path, &["Bash(make test *)".into()]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), written, "a rule already there changes nothing");
+    }
+
+    #[test]
+    fn adding_a_rule_where_there_are_no_settings_creates_them() {
+        let dir = scratch();
+        let path = dir.join(".claude/settings.local.json");
+        add(&path, &["Bash(make build *)".into()]).unwrap();
+        assert_eq!(allowed(&path).unwrap(), ["Bash(make build *)"]);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o600);
+        std::fs::write(&path, "not json").unwrap();
+        assert!(add(&path, &["Bash(make test *)".into()]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json", "a file Alondra cannot read is not touched");
     }
 
     #[test]

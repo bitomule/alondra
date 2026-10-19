@@ -11,9 +11,10 @@ use crate::domain_runtime::DomainRuntime;
 use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
-    ContentKind, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload, QuestionGroup,
-    QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
+    ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,
+    McpServerOrigin, QuestionGroup, QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
 };
+use alondra_provider_contract::DecisionKind;
 use alondra_core::allow_always::AllowAlways;
 use anyhow::Result;
 use serde::Deserialize;
@@ -285,6 +286,81 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
         interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold, body, options, card,
     })?;
     Ok(Some(Held { id, hold, input }))
+}
+
+/// What the domain is told of a decision Claude asks for through a task's SDK execution: the call
+/// it is about and the card the user would answer, built exactly as a held hook's card.
+pub(crate) struct SdkDecision {
+    pub hold: Hold,
+    pub tool: Option<String>,
+    pub input: Value,
+    pub mcp_server: Option<McpServerOrigin>,
+    pub prompt: DecisionPrompt,
+}
+
+/// The decision the host persisted with `payload`, for a task that works in `worktree`: a tool call
+/// is `{tool, input, request}` with the SDK's options in `request`; an MCP server's request for
+/// input is its form. «Allow always» is offered as for a held permission prompt.
+pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option<&str>, home: &Path) -> SdkDecision {
+    let hold = match kind {
+        DecisionKind::Permission => Hold::Permission,
+        DecisionKind::Question => Hold::Question,
+        DecisionKind::Plan => Hold::Plan,
+        DecisionKind::Elicitation => Hold::Elicitation,
+    };
+    let tool = (hold != Hold::Elicitation).then(|| str_field(payload, "tool")).flatten();
+    let input = if hold == Hold::Elicitation { Value::Null } else { payload.get("input").cloned().unwrap_or(Value::Null) };
+    let request = payload.get("request").unwrap_or(&Value::Null);
+    let mcp_server = request.get("mcpServer").and_then(|server| Some(McpServerOrigin {
+        name: str_field(server, "name")?,
+        source: str_field(server, "source")?,
+    }));
+    let titled = |title: String, detail: Option<String>| match detail {
+        Some(detail) => format!("{title}\n\n{detail}"),
+        None => title,
+    };
+    let card = |body: String, options: Vec<QuestionOption>, recommended: Option<String>, title: Option<&str>, allow: Option<AllowAlways>| {
+        let mut card = hold_card(hold, &body, &options, recommended, title);
+        card.allow_always = allow;
+        DecisionPrompt::Card { body, options, card }
+    };
+    let prompt = match hold {
+        Hold::Permission => {
+            let allow = crate::allow_always::assess(tool.as_deref(), &input, worktree, None, request.get("suggestions").unwrap_or(&Value::Null), home);
+            let summary = tool_summary(tool.as_deref(), Some(&input));
+            let need = permission_title(tool.as_deref(), &input, summary.as_deref());
+            let body = titled(need.clone(), permission_detail(&input, summary.as_deref()));
+            card(body, hold.options_offering(allow.as_ref().is_some_and(|allow| allow.rules().is_some())), None, Some(&need), allow)
+        }
+        Hold::Plan => {
+            let plan = str_field(&input, "plan").unwrap_or_default();
+            let whole = include_cited_files(&plan, |path| read_cited_file(worktree.map(Path::new), path)).unwrap_or(plan);
+            card(whole, hold.options_offering(false), None, None, None)
+        }
+        Hold::Question => {
+            let mut questions = questions_of(&input);
+            match questions.len() {
+                0 => card("?".into(), vec![], None, None, None),
+                1 => {
+                    let only = questions.pop().expect("one question");
+                    let body = input.pointer("/questions/0/question").and_then(Value::as_str).unwrap_or("?").to_owned();
+                    card(body, only.options, only.recommended, None, None)
+                }
+                _ => DecisionPrompt::Questions { questions },
+            }
+        }
+        Hold::Elicitation => {
+            let form = json!({
+                "mcp_server_name": payload.get("serverName"), "message": payload.get("message"),
+                "requested_schema": payload.get("requestedSchema"), "url": payload.get("url"),
+            });
+            let (title, detail, card_options) = elicitation_card(&form);
+            let mut options = hold.options_offering(false);
+            options[0].description = card_options.into_iter().next().and_then(|option| option.description);
+            card(titled(title, detail), options, None, None, None)
+        }
+    };
+    SdkDecision { hold, tool, input, mcp_server, prompt }
 }
 
 /// A card Alondra itself puts to the user about the session's open task, with the options it

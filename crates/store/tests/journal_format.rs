@@ -244,6 +244,7 @@ fn missing_or_changed_owned_trigger_is_refused_before_attach_without_repairs() {
         ("lifecycle_event_immutable", false),
         ("execution_owner_monotonic", false),
         ("lifecycle_required_card_stays_actionable", false),
+        ("lifecycle_control_transition", false),
         ("lifecycle_event_immutable", true),
     ] {
         let mut database = Database::domain();
@@ -271,6 +272,59 @@ fn missing_or_changed_owned_trigger_is_refused_before_attach_without_repairs() {
             ),
             "untrusted owned trigger: {trigger}, replacement: {replace}"
         );
+        assert_eq!(schema_snapshot(&database.connection), before);
+    }
+}
+
+/// A journal installed before the controls existed: its own schema and format marker, nothing else.
+fn journal_before_controls() -> Database {
+    let database = Database::domain();
+    database.connection.execute_batch(include_str!("../src/schema.sql")).unwrap();
+    database.connection.execute_batch("CREATE TABLE lifecycle_journal_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1),format TEXT NOT NULL); INSERT INTO lifecycle_journal_format VALUES(1,'alondra-task-resources-v1');").unwrap();
+    database
+}
+fn controls_installed(connection: &Connection) -> bool {
+    connection.query_row("SELECT count(*)=4 FROM sqlite_master WHERE type='table' AND name IN('provider_binding_controls','lifecycle_decision_requests','lifecycle_controls','provider_control_commands')", [], |row| row.get(0)).unwrap()
+}
+#[test]
+fn a_journal_from_before_the_controls_gets_their_tables_and_opens() {
+    for install in [true, false] {
+        let mut database = journal_before_controls();
+        let raw = database.connection.transaction().unwrap();
+        assert!(matches!(LifecycleTransaction::attach(raw, AuthorityScope::new("epoch".into()).unwrap()), Err(Error::UnsupportedJournalFormat)));
+        let mut tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        if install {
+            LifecycleTransaction::install(&mut tx).unwrap();
+        } else {
+            LifecycleTransaction::upgrade(&mut tx).unwrap();
+        }
+        tx.commit().unwrap();
+        assert!(controls_installed(&database.connection));
+        let tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()).unwrap().commit().unwrap();
+        let before = schema_snapshot(&database.connection);
+        let mut tx = database.connection.transaction().unwrap();
+        LifecycleTransaction::upgrade(&mut tx).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(schema_snapshot(&database.connection), before, "upgrading twice changes nothing");
+    }
+}
+#[test]
+fn upgrading_installs_no_journal_and_repairs_no_partial_addition() {
+    let mut database = Database::domain();
+    let before = schema_snapshot(&database.connection);
+    let mut tx = database.connection.transaction().unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(schema_snapshot(&database.connection), before, "a database without a journal stays without one");
+    let mut database = journal_before_controls();
+    database.connection.execute_batch("CREATE TABLE provider_binding_controls(binding_id TEXT PRIMARY KEY REFERENCES provider_bindings(id), capabilities INTEGER NOT NULL CHECK(capabilities BETWEEN 1 AND 31));").unwrap();
+    let before = schema_snapshot(&database.connection);
+    for install in [true, false] {
+        let mut tx = database.connection.transaction().unwrap();
+        let result = if install { LifecycleTransaction::install(&mut tx) } else { LifecycleTransaction::upgrade(&mut tx) };
+        assert!(matches!(result, Err(Error::UnsupportedJournalFormat)));
+        tx.commit().unwrap();
         assert_eq!(schema_snapshot(&database.connection), before);
     }
 }

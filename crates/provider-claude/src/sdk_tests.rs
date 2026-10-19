@@ -1160,3 +1160,133 @@ fn actual_facade_refuses_configured_workspace_different_from_the_claimed_owned_d
     assert!(!fixture.capture.with_file_name("native-capture.json.starts").exists());
     fixture.stop().unwrap();
 }
+
+fn control_binding() -> ProviderBinding {
+    use alondra_provider_contract::Capability;
+    ProviderBinding::new(
+        "sdk-control-binding".into(),
+        "claude-agent-sdk".into(),
+        "sdk-instance".into(),
+        "sdk-fixture".into(),
+        1,
+        2,
+        BTreeSet::from([Capability::OfferInput, Capability::Interrupt, Capability::SetModel, Capability::SetPermissionMode, Capability::McpStatus]),
+        "fixture-no-login".into(),
+        1,
+    )
+    .unwrap()
+}
+impl FacadeFixture {
+    fn transaction(&self) -> alondra_store::LifecycleTransaction<'_> {
+        let raw = rusqlite::Transaction::new_unchecked(&self.connection, rusqlite::TransactionBehavior::Immediate).unwrap();
+        alondra_store::LifecycleTransaction::attach(raw, self.scope.clone()).unwrap()
+    }
+    /// A launched turn the fake Claude holds open, with every host event committed and acknowledged.
+    fn working() -> Self {
+        let (mut fixture, owner, state, permit) = Self::staged_runtime("sdk-epoch", "sdk-execution", control_binding(), "workspace");
+        fixture.worker.install_owner(owner, state).unwrap();
+        let mut tx = fixture.transaction();
+        tx.claim(permit).unwrap();
+        let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+        let prepared = fixture.prepare(&attempt);
+        let committed = fixture.commit_command(attempt, prepared.bytes().to_vec());
+        assert_eq!(fixture.worker.submit(&committed).unwrap(), Handoff::Offered);
+        let mut tx = fixture.transaction();
+        tx.record_committed_receipt(committed, alondra_store::DispatchReceipt::Handed).unwrap();
+        tx.commit().unwrap();
+        while fixture.transaction().load(&"sdk-task".into()).unwrap().activity() != ActivityView::Working {
+            let received = fixture.worker.poll().unwrap().unwrap();
+            let mut tx = fixture.transaction();
+            let pending = alondra_agent_application::stage_observation(
+                &mut tx,
+                fixture.worker.binding(),
+                fixture.worker.owner_generation().unwrap(),
+                &received,
+                fixture.worker.normalizer(),
+            )
+            .unwrap();
+            fixture_controller::record_facts(&mut tx, pending).unwrap();
+            let committed = tx.commit().unwrap().observations.pop().unwrap();
+            fixture.worker.acknowledge(&committed).unwrap();
+        }
+        fixture
+    }
+    /// The domain asks for `kind`; the commit issues its permit and the claim its attempt.
+    fn claimed_control(&mut self, id: &str, kind: alondra_store::Control) -> alondra_store::ControlAttempt {
+        let task: alondra_foundation::TaskId = "sdk-task".into();
+        let control = alondra_foundation::OperationId::new(id).unwrap();
+        let mut tx = self.transaction();
+        let revision = tx.load(&task).unwrap().revision();
+        tx.apply(&task, revision, id, alondra_domain::Event::RequestControl { control: control.clone(), kind: kind.clone() }).unwrap();
+        tx.stage_control(&task, &control, &kind).unwrap();
+        let permit = tx.commit().unwrap().control_permits.into_iter().find(|permit| permit.control() == &control).unwrap();
+        let mut tx = self.transaction();
+        assert!(tx.claim_control(permit).unwrap());
+        tx.commit().unwrap().control_attempts.pop().unwrap()
+    }
+    fn commit_control(&mut self, attempt: alondra_store::ControlAttempt, bytes: Vec<u8>) -> alondra_store::CommittedControl {
+        let mut tx = self.transaction();
+        tx.record_owned_control(attempt, self.worker.owner_generation().unwrap(), alondra_store::CommandEvidence::new(bytes).unwrap()).unwrap();
+        tx.commit().unwrap().control_commands.pop().unwrap()
+    }
+    fn received_controls(&self) -> Vec<Value> {
+        fs::read_to_string(self.capture.with_file_name("native-capture.json.controls"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+}
+fn action_of(prepared: &PreparedCommand) -> (alondra_foundation::CommandId, Action) {
+    let frame = FramedReader::new(Cursor::new(prepared.bytes().to_vec())).read().unwrap().unwrap();
+    let Body::Command(command) = frame.body else { panic!("a prepared control is a command") };
+    (command.command_id, command.action)
+}
+
+// Each control of the domain is prepared as its own host action under the committed attempt's
+// command id, sent only with its exact committed bytes, and reaches the native Claude.
+#[test]
+fn actual_facade_prepares_and_submits_each_control_as_its_host_action() {
+    use alondra_agent_protocol::PermissionMode as WireMode;
+    use alondra_store::{Control, PermissionMode};
+    let mut fixture = FacadeFixture::working();
+    let turn = fixture.transaction().load(&"sdk-task".into()).unwrap().turn().cloned();
+    for (id, kind, action) in [
+        ("control-model", Control::SetModel { model: "fixture-model".into() }, Action::SetModel { model: "fixture-model".into() }),
+        ("control-mode", Control::SetPermissionMode { mode: PermissionMode::DontAsk }, Action::SetPermissionMode { mode: WireMode::DontAsk }),
+        ("control-mcp", Control::ReadMcpStatus, Action::McpStatus),
+        ("control-interrupt", Control::Interrupt { turn: turn.clone() }, Action::Interrupt),
+    ] {
+        let attempt = fixture.claimed_control(id, kind);
+        let prepared = fixture.worker.prepare_control(&attempt).unwrap();
+        assert_eq!(action_of(&prepared), (attempt.command_id(), action), "{id}");
+        assert!(matches!(fixture.worker.prepare_control(&attempt), Err(AdapterError::InvalidObservation)), "one prepared control at a time");
+        let committed = fixture.commit_control(attempt, prepared.bytes().to_vec());
+        assert_eq!(fixture.worker.submit_control(&committed).unwrap(), Handoff::Offered, "{id}");
+        assert!(matches!(fixture.worker.submit_control(&committed), Err(AdapterError::InvalidObservation)), "a control is sent once");
+        let mut tx = fixture.transaction();
+        tx.record_control_receipt(committed, alondra_store::DispatchReceipt::Handed).unwrap();
+        tx.commit().unwrap();
+    }
+    let received = fixture.received_controls();
+    let subtypes: Vec<&str> = received.iter().map(|control| control["subtype"].as_str().unwrap()).collect();
+    assert_eq!(subtypes, ["set_model", "set_permission_mode", "mcp_status", "interrupt"]);
+    assert_eq!((received[0]["model"].as_str(), received[1]["mode"].as_str()), (Some("fixture-model"), Some("dontAsk")));
+    fixture.stop().unwrap();
+}
+
+// The committed evidence must be exactly what the worker prepared: a substituted action is
+// refused before anything is written to the host.
+#[test]
+fn actual_facade_refuses_a_committed_control_that_differs_from_its_preparation() {
+    let mut fixture = FacadeFixture::working();
+    let attempt = fixture.claimed_control("control-model", alondra_store::Control::SetModel { model: "fixture-model".into() });
+    let prepared = fixture.worker.prepare_control(&attempt).unwrap();
+    let mut frame = FramedReader::new(Cursor::new(prepared.bytes().to_vec())).read().unwrap().unwrap();
+    let Body::Command(command) = &mut frame.body else { panic!("prepared command frame required") };
+    command.action = Action::SetPermissionMode { mode: alondra_agent_protocol::PermissionMode::DontAsk };
+    let committed = fixture.commit_control(attempt, alondra_agent_protocol::encode(&frame).unwrap());
+    assert!(matches!(fixture.worker.submit_control(&committed), Err(AdapterError::InvalidObservation)));
+    assert!(fixture.received_controls().is_empty(), "nothing reached Claude");
+    fixture.stop().unwrap();
+}

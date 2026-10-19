@@ -92,23 +92,78 @@ impl Slice {
     }
 
     fn run(&self, actor: &Actor, id: &str, command: Command) {
+        self.try_run(actor, id, command).unwrap();
+    }
+
+    fn try_run(&self, actor: &Actor, id: &str, command: Command) -> Result<CommandOutcome, StoreError> {
         let state = self.domain.state().unwrap();
-        self.domain.execute_with(actor, &envelope(&state, id, command), None, None, || Ok(())).unwrap();
+        self.domain.execute_with(actor, &envelope(&state, id, command), None, None, || Ok(()))
     }
 
     fn launch(&self) -> Driver {
-        self.launch_with("Write the release notes")
+        self.launch_told("Write the release notes", capabilities())
     }
 
     fn launch_with(&self, prompt: &str) -> Driver {
-        start(Arc::clone(&self.domain), &self.backend, Launch {
+        self.launch_told(prompt, capabilities())
+    }
+
+    /// Launches the task told `prompt`, on a binding that permits `capabilities`.
+    fn launch_told(&self, prompt: &str, capabilities: BTreeSet<Capability>) -> Driver {
+        start_bound(Arc::clone(&self.domain), &self.backend, Launch {
             task: TASK.into(),
             name: "Release notes".into(),
             directory: self.worktree.to_str().unwrap().into(),
             prompt: prompt.into(),
             plugin: self.plugin.clone(),
-        })
+        }, capabilities)
         .unwrap()
+    }
+
+    /// Launches a turn that the fake Claude holds open, and reads the host until it runs.
+    fn launch_working(&self) -> Driver {
+        let mut driver = self.launch_told("consume-and-hold", capabilities());
+        while Self::lifecycle(&self.domain).activity() != ActivityView::Working {
+            driver.observe().unwrap();
+        }
+        driver
+    }
+
+    fn lifecycle(domain: &DomainRuntime) -> alondra_domain::TaskLifecycle {
+        let read = domain.read();
+        replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
+    }
+
+    /// Every control request the fake Claude received, as it got it.
+    fn controls(&self) -> Vec<serde_json::Value> {
+        let path = PathBuf::from(format!("{}.controls", self.capture.display()));
+        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    /// The task's controls in the store: kind, argument and status, in order.
+    fn control_rows(&self) -> Vec<(String, Option<String>, String)> {
+        let observer = self.observer();
+        let mut statement = observer.prepare("SELECT kind,argument,status FROM lifecycle_controls WHERE task_id=?1 ORDER BY id").unwrap();
+        statement.query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn journal_events(&self) -> i64 {
+        self.observer().query_row("SELECT count(*) FROM lifecycle_events WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap()
+    }
+
+    /// The raw host events kept for the task that carry `text`.
+    fn observations_with(&self, text: &str) -> usize {
+        let observer = self.observer();
+        let mut statement = observer.prepare("SELECT bytes FROM provider_observations WHERE task_id=?1").unwrap();
+        statement.query_map([TASK], |row| row.get::<_, Vec<u8>>(0)).unwrap().map(Result::unwrap)
+            .filter(|bytes| String::from_utf8_lossy(bytes).contains(text)).count()
+    }
+
+    /// Reads the host until Claude's turn has its result, whatever the lifecycle then waits for.
+    fn read_turn_result(&self, driver: &mut Driver) {
+        while self.observations_with("\"type\":\"result\"") == 0 {
+            driver.observe().unwrap();
+        }
     }
 
     /// Reads the host until the task's lifecycle no longer waits for it.
@@ -136,6 +191,14 @@ impl Slice {
             .filter(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
             .map(|card| (card.id.0.clone(), matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. })))
             .collect()
+    }
+
+    /// What the turn-end card of the task asks the user.
+    fn turn_end_need(domain: &DomainRuntime) -> String {
+        let read = domain.read();
+        let state = read.state();
+        let card = state.interactions.values().find(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-"))).expect("a turn-end card");
+        card.card.need.replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
     }
 
     fn stored_cards(&self) -> i64 {
@@ -903,4 +966,711 @@ fn a_host_whose_state_folder_is_removed_ends_its_group() {
         .map(ToString::to_string)
         .collect();
     assert!(left.is_empty(), "the unadoptable host's group survived: {left:?}");
+}
+
+fn system() -> Actor {
+    Actor::System
+}
+
+fn subtypes(controls: &[serde_json::Value]) -> Vec<&str> {
+    controls.iter().map(|control| control["subtype"].as_str().unwrap()).collect()
+}
+
+/// The user presses «Interrupt» on `agent` in Fleet, through the action path the clients use.
+fn press_interrupt(slice: &Slice, agent: &AgentId) -> serde_json::Value {
+    let state = slice.domain.state().unwrap();
+    let action = alondra_core::views::action_id::ActionId::new(alondra_core::views::action_id::Verb::Interrupt, &agent.0, state.revision, None).unwrap();
+    let request = crate::views::actions::ActionRequest {
+        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        command_id: "0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f".into(),
+        data_epoch: state.data_epoch.0.clone(),
+        client: "ios".into(),
+        lang: "en".into(),
+        action_id: action.to_string(),
+        option_id: None,
+        input: Default::default(),
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+        crate::views::actions::execute_action(&slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await.unwrap()
+    })
+}
+
+// C1: the user presses Interrupt on a working SDK node in Fleet. The control commits with the
+// domain's decision, the owner sends it, the host hands it to Claude, and the interrupted turn
+// ends with one card.
+#[test]
+fn interrupting_a_working_sdk_node_from_fleet_reaches_claude_and_its_turn_ends_with_one_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let offered = node_offers(&slice.domain, driver.agent());
+    assert!(offered.iter().any(|offer| offer.starts_with("interrupt:")), "a working SDK node offers Interrupt: {offered:?}");
+    for claude_bg in ["attach", "msg:", "close:"] {
+        assert!(!offered.iter().any(|offer| offer.starts_with(claude_bg)), "an SDK node offers no {claude_bg}: {offered:?}");
+    }
+    let reply = press_interrupt(&slice, driver.agent());
+    assert_eq!(reply["outcome"], "applied", "{reply}");
+    let turn = Slice::lifecycle(&slice.domain).turn().unwrap().as_str().to_owned();
+    assert_eq!(slice.control_rows(), [("interrupt".to_owned(), Some(turn), "prepared".to_owned())], "the interrupt committed with the decision");
+    assert!(slice.controls().is_empty(), "nothing reached Claude before the owner sends it");
+    assert_eq!(driver.pending_controls(), 1, "its permit reached the owner");
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
+    assert_eq!(slice.control_rows()[0].2, "handed");
+    slice.settle(&mut driver);
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
+    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on", "the card says the user stopped the turn");
+    assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
+    let again = slice.try_run(&user(), "interrupt-again", Command::InterruptTurn { agent_id: driver.agent().clone() }).unwrap_err();
+    let StoreError::Domain(refusal) = again else { panic!("{again:?}") };
+    assert_eq!(alondra_core::views::refusal_text(&refusal.why(), alondra_core::views::text::Lang::En), "This node isn't running anything to interrupt.");
+    driver.stop().unwrap();
+}
+
+// Claude Code tracks a foreground command that runs for seconds as its own work, which ends
+// inside the turn that waits for it: that turn goes on with it and ends on one card.
+#[test]
+fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_with_one_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("foreground-command");
+    slice.read_turn_result(&mut driver);
+    assert_eq!(slice.observations_with("\"subtype\":\"task_notification\""), 1, "the command's work ended");
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing waits for the command any more");
+    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
+    assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
+    driver.stop().unwrap();
+}
+
+// The user interrupts from Fleet while such a command runs: Claude Code stops it, and the turn
+// that waited for it ends with one card.
+#[test]
+fn interrupting_a_command_claude_code_tracks_as_work_ends_its_turn_with_one_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("foreground-command-hold");
+    while slice.observations_with("\"subtype\":\"task_started\"") == 0 {
+        driver.observe().unwrap();
+    }
+    assert!(node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "the running command offers Interrupt");
+    let reply = press_interrupt(&slice, driver.agent());
+    assert_eq!(reply["outcome"], "applied", "{reply}");
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
+    slice.read_turn_result(&mut driver);
+    assert_eq!(slice.observations_with("\"status\":\"stopped\""), 1, "Claude Code stopped the command");
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
+    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on", "the card says the user stopped the turn");
+    assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
+    driver.stop().unwrap();
+}
+
+// C2: Alondra sets the model and the permission mode and reads the MCP status. Each control reaches
+// Claude with the host's receipt, and the MCP status comes back as kept host evidence.
+#[test]
+fn model_permission_mode_and_mcp_status_controls_reach_claude_and_the_status_is_kept() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    slice.run(&system(), "set-model", Command::SetModel { task_id: TASK.into(), model: "fixture-model".into() });
+    driver.step(&|| false).unwrap();
+    slice.run(&system(), "set-mode", Command::SetPermissionMode { task_id: TASK.into(), mode: PermissionModeRecord::DontAsk });
+    driver.step(&|| false).unwrap();
+    slice.run(&system(), "mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
+    driver.step(&|| false).unwrap();
+    assert!(driver.waits_for_host(), "the owner reads the host until the status it asked for is kept");
+    slice.settle(&mut driver);
+    let controls = slice.controls();
+    assert_eq!(subtypes(&controls), ["set_model", "set_permission_mode", "mcp_status"]);
+    assert_eq!((controls[0]["model"].as_str(), controls[1]["mode"].as_str()), (Some("fixture-model"), Some("dontAsk")));
+    let statuses: Vec<String> = slice.control_rows().into_iter().map(|(_, _, status)| status).collect();
+    assert_eq!(statuses, ["handed", "handed", "handed"]);
+    assert_eq!(slice.observations_with("control_result"), 1, "the MCP status is kept as the host's evidence");
+    assert_eq!(slice.observations_with("\"status\":\"connected\""), 1, "with the servers Claude listed");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "no control adds a card");
+    driver.stop().unwrap();
+}
+
+// C3: refusal without effect. The execution's binding does not permit setting the model: the
+// command is refused with the capability error, and nothing of it is kept or sent.
+#[test]
+fn a_control_the_binding_does_not_permit_is_refused_with_no_effect() {
+    let slice = Slice::new();
+    let mut without = capabilities();
+    without.remove(&Capability::SetModel);
+    let mut driver = slice.launch_told("Write the release notes", without);
+    slice.settle(&mut driver);
+    let (revision, events) = (slice.domain.state().unwrap().revision, slice.journal_events());
+    let refused = slice.try_run(&system(), "set-model", Command::SetModel { task_id: TASK.into(), model: "fixture-model".into() }).unwrap_err();
+    let StoreError::Storage(error) = &refused else { panic!("{refused:?}") };
+    assert!(matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::UnsupportedCapability)), "{error:#}");
+    assert_eq!(slice.domain.state().unwrap().revision, revision, "the domain did not change");
+    assert_eq!(slice.journal_events(), events, "no journal event");
+    assert!(slice.control_rows().is_empty(), "no control row");
+    assert_eq!(driver.pending_controls(), 0, "no permit");
+    assert!(slice.controls().is_empty(), "the host got nothing");
+    driver.stop().unwrap();
+}
+
+// C4: refusal by the host. Claude does not offer the model: the host refuses before touching it,
+// the control is recorded rejected, and Claude never got a request to change its model.
+#[test]
+fn a_model_claude_does_not_offer_is_rejected_by_the_host_and_never_reaches_claude() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    slice.run(&system(), "set-model", Command::SetModel { task_id: TASK.into(), model: "unlisted-model".into() });
+    driver.step(&|| false).unwrap();
+    assert_eq!(slice.control_rows(), [("set_model".to_owned(), Some("unlisted-model".to_owned()), "rejected".to_owned())]);
+    assert!(slice.controls().is_empty(), "Claude got no request: {:?}", slice.controls());
+    assert!(!driver.waits_for_host());
+    driver.stop().unwrap();
+}
+
+// C5: Alondra compacts a resting SDK task that waits on its card: `/compact` reaches Claude, the
+// compaction turn runs and ends, and the task rests again on the same single card.
+#[test]
+fn compacting_a_resting_task_runs_a_compaction_turn_and_keeps_its_one_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let before = Slice::read_cards(&slice.domain);
+    assert_eq!(before.len(), 1);
+    slice.run(&system(), "compact", Command::CompactConversation { task_id: TASK.into() });
+    assert_eq!(driver.pending_permits(), 1, "the compaction is an input the owner sends");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(slice.prompts(), ["Write the release notes", "/compact"]);
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting);
+    assert_eq!(Slice::read_cards(&slice.domain), before, "the same card waits, unanswered, and no other");
+    assert_eq!(slice.stored_cards(), 1);
+    driver.stop().unwrap();
+}
+
+// C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
+// fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
+// and its status is kept.
+#[test]
+fn a_control_the_host_never_got_is_sent_once_by_the_adopting_owner() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    slice.run(&system(), "mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
+    assert!(driver.claim_and_record_control_without_sending(), "the owner claimed and recorded the control");
+    drop(driver);
+    assert!(slice.controls().is_empty(), "the host never got it");
+    assert_eq!(slice.control_rows()[0].2, "claimed");
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
+    slice.settle(&mut adopted);
+    assert_eq!(subtypes(&slice.controls()), ["mcp_status"], "Claude got it exactly once");
+    assert_eq!(slice.observations_with("control_result"), 1, "its status is kept");
+    adopted.stop().unwrap();
+}
+
+// C7: an interrupt whose turn ended before the owner claimed it is revoked by the claim and never
+// reaches Claude.
+#[test]
+fn an_interrupt_whose_turn_already_ended_is_revoked_and_never_sent() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    slice.run(&user(), "interrupt-first", Command::InterruptTurn { agent_id: agent.clone() });
+    slice.run(&user(), "interrupt-second", Command::InterruptTurn { agent_id: agent });
+    let statuses = |slice: &Slice| slice.control_rows().into_iter().map(|(_, _, status)| status).collect::<Vec<String>>();
+    assert_eq!(statuses(&slice), ["prepared", "prepared"]);
+    driver.step(&|| false).unwrap();
+    assert_eq!(statuses(&slice), ["handed", "prepared"]);
+    slice.settle(&mut driver);
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the first interrupt ended the turn");
+    while driver.pending_controls() > 0 {
+        driver.step(&|| false).unwrap();
+    }
+    assert_eq!(statuses(&slice), ["handed", "revoked"]);
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "only the first reached Claude");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1);
+    driver.stop().unwrap();
+}
+
+// C8: a quiet turn never holds back a control. With nothing from the host, a step returns to look
+// for what to send instead of blocking on the host, and the interrupt that comes next is sent.
+#[test]
+fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    assert!(driver.waits_for_host(), "the turn runs");
+    driver.step(&|| false).unwrap();
+    slice.run(&user(), "interrupt", Command::InterruptTurn { agent_id: driver.agent().clone() });
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "the interrupt went out on the next step");
+    slice.settle(&mut driver);
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1);
+    driver.stop().unwrap();
+}
+
+const DECISION_CARDS: &str = "decision-sdk-slice-";
+
+/// A task's card that asks the user for a decision Claude waits on.
+#[derive(Debug, PartialEq)]
+struct DecisionCard {
+    id: String,
+    answered: bool,
+    withdrawn: bool,
+}
+
+impl Slice {
+    /// What the fake Claude got for each decision it asked for, in order.
+    fn decisions(&self) -> Vec<serde_json::Value> {
+        let path = PathBuf::from(format!("{}.decisions", self.capture.display()));
+        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    fn decision_cards(domain: &DomainRuntime) -> Vec<DecisionCard> {
+        let read = domain.read();
+        read.state()
+            .interactions
+            .values()
+            .filter(|card| card.id.0.starts_with(DECISION_CARDS))
+            .map(|card| DecisionCard {
+                id: card.id.0.clone(),
+                answered: matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. }),
+                withdrawn: card.withdrawn,
+            })
+            .collect()
+    }
+
+    fn open_decision_cards(domain: &DomainRuntime) -> Vec<String> {
+        Self::decision_cards(domain).into_iter().filter(|card| !card.answered && !card.withdrawn).map(|card| card.id).collect()
+    }
+
+    fn options(&self, card: &str) -> Vec<String> {
+        let state = self.domain.state().unwrap();
+        let InteractionPayload::Question { options, .. } = &state.interactions[&InteractionId(card.into())].payload else { panic!("{card} is no question") };
+        options.iter().map(|option| option.id.clone()).collect()
+    }
+
+    /// Runs the owner one step at a time until `done`; it never waits for a host that has nothing
+    /// the task waits for.
+    fn until(&self, driver: &mut Driver, done: impl Fn(&Slice) -> bool) {
+        while !done(self) {
+            assert!(driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host(),
+                "nothing is left to run and it is not done: {:?}", Slice::lifecycle(&self.domain).activity());
+            driver.step(&|| false).unwrap();
+        }
+    }
+
+    /// Launches the task asking Claude for `scenario` and runs it until the user is asked.
+    fn asked(&self, scenario: &str) -> (Driver, String) {
+        let mut driver = self.launch_with(scenario);
+        self.until(&mut driver, |slice| !Slice::open_decision_cards(&slice.domain).is_empty());
+        let card = Slice::open_decision_cards(&self.domain).remove(0);
+        (driver, card)
+    }
+
+    fn answer(&self, card: &str, option: &str, note: Option<&str>) -> Result<CommandOutcome, StoreError> {
+        let inputs = note.map(|note| BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default();
+        self.try_run(&user(), &format!("answer-{card}"), Command::AnswerQuestion {
+            interaction_id: card.into(),
+            option_id: option.into(),
+            inputs,
+            attachments: vec![],
+        })
+    }
+
+    /// Runs the owner until nothing is left to send and the task, as its owner's daemon reads it,
+    /// rests.
+    fn rest(&self, driver: &mut Driver) {
+        while driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host() {
+            driver.step(&|| false).unwrap();
+        }
+        assert_eq!(Slice::lifecycle(&driver.domain).activity(), ActivityView::Resting);
+    }
+
+    fn decision_requests(&self) -> Vec<(i64, String)> {
+        let observer = self.observer();
+        let mut statement = observer.prepare("SELECT epoch,kind FROM lifecycle_decision_requests WHERE task_id=?1 ORDER BY epoch").unwrap();
+        statement.query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+}
+
+/// Claude got an answer, or the user is asked for one.
+fn decided_or_asked(slice: &Slice) -> bool {
+    !slice.decisions().is_empty() || !Slice::decision_cards(&slice.domain).is_empty()
+}
+
+/// The response the SDK gave Claude for its one decision, as the fake Claude received it.
+fn only_response(slice: &Slice) -> serde_json::Value {
+    let decisions = slice.decisions();
+    assert_eq!(decisions.len(), 1, "Claude got one answer: {decisions:?}");
+    assert_eq!(decisions[0]["cancelled"], false, "{decisions:?}");
+    decisions[0]["response"].clone()
+}
+
+// D1: Claude asks to run a command. Its card and kept request commit with the host's event, and
+// readers see them before the host is acknowledged; the user allows it, the command Claude asked
+// for is what runs, the request settles and no decision card is left waiting.
+#[test]
+fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_claude_asked_for() {
+    let slice = Slice::new();
+    let seen = Arc::new(Mutex::new(vec![]));
+    let (recorded, database, domain) = (Arc::clone(&seen), slice.database.clone(), Arc::downgrade(&slice.domain));
+    slice.domain.on_acknowledge(move || {
+        let observer = Connection::open(&database).unwrap();
+        let count = |sql: &str| observer.query_row(sql, [TASK], |row| row.get::<_, i64>(0)).unwrap();
+        let asked = count("SELECT count(*) FROM provider_observations WHERE task_id=?1 AND CAST(bytes AS TEXT) LIKE '%decision_requested%'");
+        let kept = count("SELECT count(*) FROM lifecycle_decision_requests WHERE task_id=?1");
+        let visible = !Slice::decision_cards(&domain.upgrade().unwrap()).is_empty();
+        recorded.lock().unwrap().push((asked, kept, visible));
+    });
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    let acknowledged = seen.lock().unwrap().clone();
+    assert!(acknowledged.iter().any(|(asked, _, _)| *asked == 1), "the request was acknowledged: {acknowledged:?}");
+    for (asked, kept, visible) in &acknowledged {
+        if *asked == 1 {
+            assert!(*kept == 1 && *visible, "acknowledged before its request was kept and its card published: {acknowledged:?}");
+        }
+    }
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::DENY], "no «allow always» outside a repo");
+    assert!(slice.decisions().is_empty(), "Claude waits for the user");
+    assert!(slice.answer(&card, Hold::ALLOW, None).unwrap().changed);
+    assert_eq!(slice.control_rows()[0].0, "respond", "the answer commits its response");
+    slice.rest(&mut driver);
+    let response = only_response(&slice);
+    assert_eq!(response, serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make test"}}), "the command Claude asked for runs");
+    assert_eq!(slice.control_rows()[0].2, "handed");
+    assert!(Slice::open_decision_cards(&slice.domain).is_empty());
+    assert_eq!(slice.decision_requests().into_iter().map(|(_, kind)| kind).collect::<Vec<_>>(), ["permission"]);
+    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(cards.len(), 1, "the turn ended with its one card: {cards:?}");
+    driver.stop().unwrap();
+}
+
+// D2: the user denies the command with a note: Claude is denied with the user's words.
+#[test]
+fn a_denied_command_reaches_claude_with_the_users_words() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash rm -rf build");
+    slice.answer(&card, Hold::DENY, Some("Keep the build folder")).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": "The user denied it: Keep the build folder"}));
+    assert!(Slice::open_decision_cards(&slice.domain).is_empty());
+    driver.stop().unwrap();
+}
+
+/// Makes the task's worktree a repo of its own, whose settings can keep «allow always».
+fn repo(slice: &Slice) {
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&slice.worktree).args(args).output().unwrap().status.success(), "{args:?}");
+    git(&["init", "-q", "-b", "main"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first"]);
+}
+
+// D3: «Permitir siempre» on a command of a repo: Claude runs it, and the rule is written into the
+// repo's local settings and remembered as active.
+#[test]
+fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
+    let slice = Slice::new();
+    repo(&slice);
+    let (mut driver, card) = slice.asked("decide:bash make build");
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::ALWAYS, Hold::DENY]);
+    slice.answer(&card, Hold::ALWAYS, None).unwrap();
+    let settings = std::fs::canonicalize(&slice.worktree).unwrap().join(crate::allow_always::SETTINGS);
+    assert_eq!(crate::allow_always::allowed(&settings).unwrap(), ["Bash(make build *)"]);
+    let rules = slice.domain.store.lock().unwrap().allowed_rules().unwrap();
+    assert_eq!(rules.iter().map(|rule| (rule.rule.as_str(), rule.state)).collect::<Vec<_>>(), [("make build *", crate::allow_always::RuleState::Active)]);
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make build"}}));
+    driver.stop().unwrap();
+}
+
+// D4: Claude asks one question: the option the user chose reaches Claude under the question's text.
+#[test]
+fn a_question_is_answered_to_claude_by_its_text() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:question");
+    assert_eq!(slice.options(&card), ["o0", "o1"]);
+    slice.answer(&card, "o1", None).unwrap();
+    slice.rest(&mut driver);
+    let response = only_response(&slice);
+    assert_eq!(response["behavior"], "allow");
+    assert_eq!(response["updatedInput"]["answers"], serde_json::json!({"Which fixture color?": "Blue"}));
+    assert_eq!(response["updatedInput"]["questions"].as_array().unwrap().len(), 1);
+    driver.stop().unwrap();
+}
+
+// D5: Claude asks two questions together: a card each, answered in either order, and only once
+// both are answered do the answers reach Claude, each under its question's text.
+#[test]
+fn two_questions_reach_claude_together_once_the_last_is_answered() {
+    for order in [[0, 1], [1, 0]] {
+        let slice = Slice::new();
+        let (mut driver, _) = slice.asked("decide:questions");
+        let mut open = Slice::open_decision_cards(&slice.domain);
+        open.sort();
+        assert_eq!(open.len(), 2, "{open:?}");
+        assert!(open[0].ends_with("-q1") && open[1].ends_with("-q2"), "{open:?}");
+        let option = |at: usize| ["o0", "o1"][at];
+        slice.answer(&open[order[0]], option(order[0]), None).unwrap_or_else(|error| panic!("answering {} first: {error:?}", open[order[0]]));
+        assert!(slice.control_rows().is_empty(), "nothing reaches Claude with one question still open");
+        slice.answer(&open[order[1]], option(order[1]), None).unwrap();
+        slice.rest(&mut driver);
+        let response = only_response(&slice);
+        assert_eq!(response["updatedInput"]["answers"], serde_json::json!({"Which fixture color?": "Red", "Which fixture sizes?": "Large"}), "{order:?}");
+        driver.stop().unwrap();
+    }
+}
+
+// D6: Claude Code asks to leave plan mode with the plan file Claude wrote; its Review card shows
+// that plan, and once it is approved Claude goes on with exactly what it asked with.
+#[test]
+fn an_approved_plan_lets_claude_go_on_with_it() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:plan");
+    assert_eq!(slice.options(&card), [Hold::APPROVE, Hold::REQUEST_CHANGES]);
+    let shown = slice.domain.state().unwrap().interactions[&InteractionId(card.clone())].shown_content().map(|content| content.body.clone());
+    assert!(shown.as_deref().is_some_and(|plan| plan.contains("- [ ] Change the fixture")), "the card shows the plan: {shown:?}");
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    slice.rest(&mut driver);
+    let plan_file = format!("{}.plan.md", slice.capture.display());
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1",
+        "updatedInput": {"plan": "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture", "planFilePath": plan_file}}));
+    driver.stop().unwrap();
+}
+
+// D16: Claude asks to leave plan mode before it wrote its plan file, so Claude Code sends no plan:
+// Claude is told to write it first, and the user gets no card with nothing to review.
+#[test]
+fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("decide:unwritten-plan");
+    slice.until(&mut driver, decided_or_asked);
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": alondra_core::domain::UNWRITTEN_PLAN}));
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    driver.stop().unwrap();
+}
+
+// D7: the user asks for changes to the plan: Claude is told so with the user's words.
+#[test]
+fn changes_requested_to_a_plan_reach_claude_as_its_denial() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:plan");
+    slice.answer(&card, Hold::REQUEST_CHANGES, Some("Test first")).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": "The user requests changes to the plan: Test first"}));
+    driver.stop().unwrap();
+}
+
+// D8: an MCP server asks for input: the user's accepted answer reaches it as its form's values.
+#[test]
+fn an_accepted_request_for_input_reaches_its_server_as_the_forms_values() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:elicitation");
+    assert_eq!(slice.options(&card), [Hold::ACCEPT, Hold::DECLINE]);
+    slice.answer(&card, Hold::ACCEPT, Some("Ada")).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"action": "accept", "content": {"name": "Ada"}}));
+    driver.stop().unwrap();
+}
+
+// D9: the user declines an MCP server's request for input: the server is told it was declined.
+#[test]
+fn a_declined_request_for_input_reaches_its_server_declined() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:elicitation");
+    slice.answer(&card, Hold::DECLINE, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"action": "decline"}));
+    driver.stop().unwrap();
+}
+
+// D10: Claude calls Alondra's own tool, served by the Alondra plugin: it runs without a card.
+#[test]
+fn alondras_own_tool_runs_without_asking_the_user() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("decide:alondra");
+    slice.until(&mut driver, decided_or_asked);
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"need": "Fixture need"}}));
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    driver.stop().unwrap();
+}
+
+// D11: a tool that only takes the name of Alondra's, from a server the user configured, is asked.
+#[test]
+fn a_tool_that_only_takes_alondras_name_is_put_to_the_user() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:imitation");
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::DENY]);
+    assert!(slice.decisions().is_empty(), "nothing was allowed by its name");
+    slice.answer(&card, Hold::DENY, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice)["behavior"], "deny");
+    driver.stop().unwrap();
+}
+
+// D12: what nodes may never do is denied by Alondra's own rule even when it reaches Claude's
+// permission callback: Claude is told why, and the user is not asked.
+#[test]
+fn a_node_running_a_user_only_command_is_denied_without_a_card() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with(&format!("decide:bash {} 55 yes", ["alondra", "answer"].join(" ")));
+    slice.until(&mut driver, decided_or_asked);
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    slice.rest(&mut driver);
+    let response = only_response(&slice);
+    assert_eq!(response["behavior"], "deny", "{response}");
+    assert!(response["message"].as_str().unwrap().starts_with("Nodes cannot run"), "{response}");
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    driver.stop().unwrap();
+}
+
+// D13: the user interrupts while Claude waits on its card: the request is cancelled, Claude is
+// denied, the card stops waiting and an answer to it is refused; the task waits on one card that
+// says how it goes on.
+#[test]
+fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answer() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    slice.run(&user(), "interrupt", Command::InterruptTurn { agent_id: driver.agent().clone() });
+    slice.rest(&mut driver);
+    let decisions = slice.decisions();
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!((decisions[0]["cancelled"].as_bool(), decisions[0]["response"]["behavior"].as_str()), (Some(true), Some("deny")));
+    assert_eq!(Slice::decision_cards(&slice.domain), [DecisionCard { id: card.clone(), answered: false, withdrawn: true }]);
+    let late = slice.answer(&card, Hold::ALLOW, None).unwrap_err();
+    assert!(matches!(late, StoreError::Domain(_)), "{late:?}");
+    assert!(slice.control_rows().iter().all(|(kind, _, _)| kind != "respond"), "nothing was staged for Claude");
+    let state = slice.domain.state().unwrap();
+    let waiting: Vec<&str> = state.interactions.values()
+        .filter(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == TASK) && !card.withdrawn
+            && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
+        .map(|card| card.id.0.as_str())
+        .collect();
+    assert_eq!(waiting.len(), 1, "one card says how the task goes on: {waiting:?}");
+    driver.stop().unwrap();
+}
+
+// D14: the daemon dies after the user's answer committed and its response was recorded, before the
+// host got it. The adopting owner sends it once: Claude gets the answer a single time.
+#[test]
+fn an_answer_the_host_never_got_is_sent_once_by_the_adopting_owner() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    slice.answer(&card, Hold::ALLOW, None).unwrap();
+    assert!(driver.claim_and_record_control_without_sending(), "the owner recorded the response");
+    drop(driver);
+    assert!(slice.decisions().is_empty(), "the host never got it");
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
+    slice.rest(&mut adopted);
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make test"}}));
+    assert!(Slice::open_decision_cards(&restarted).is_empty());
+    adopted.stop().unwrap();
+}
+
+// D15: a response for a request Claude no longer waits on. The user interrupts, then answers the
+// card; the interrupt reaches the host first and cancels the request there, and once the host has
+// news the owner sends the recorded answer, which names the request's epoch: the host refuses it
+// as stale, the response is recorded rejected and Claude got only the cancellation.
+#[test]
+fn a_response_to_a_request_claude_no_longer_waits_on_is_rejected_and_never_reaches_claude() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    slice.run(&user(), "interrupt", Command::InterruptTurn { agent_id: driver.agent().clone() });
+    slice.answer(&card, Hold::ALLOW, None).unwrap();
+    assert_eq!(slice.control_rows().into_iter().map(|(kind, _, status)| (kind, status)).collect::<Vec<_>>(),
+        [("interrupt".to_owned(), "prepared".to_owned()), ("respond".to_owned(), "prepared".to_owned())]);
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"]);
+    while !driver.worker.readable(Duration::from_secs(1)).unwrap() {}
+    let respond = |slice: &Slice| slice.control_rows().into_iter().find(|(kind, _, _)| kind == "respond").unwrap();
+    while respond(&slice).2 == "prepared" {
+        driver.step(&|| false).unwrap();
+    }
+    let respond = respond(&slice);
+    assert_eq!(respond.2, "rejected", "the host refused the stale response");
+    let epoch = slice.decision_requests()[0].0;
+    let bytes: Vec<u8> = slice.observer().query_row("SELECT c.bytes FROM provider_control_commands c JOIN lifecycle_controls l ON l.id=c.control_id WHERE l.task_id=?1 AND l.kind='respond'", [TASK], |row| row.get(0)).unwrap();
+    let recorded: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
+    assert_eq!(recorded.pointer("/body/action/epoch").and_then(serde_json::Value::as_i64), Some(epoch), "the response names its request's epoch: {recorded}");
+    slice.rest(&mut driver);
+    let decisions = slice.decisions();
+    assert_eq!(decisions.len(), 1, "Claude got only the cancellation: {decisions:?}");
+    assert_eq!((decisions[0]["cancelled"].as_bool(), decisions[0]["response"]["behavior"].as_str()), (Some(true), Some("deny")));
+    driver.stop().unwrap();
+}
+
+/// The user cancels the task from its open turn-end card, through the action path the clients use.
+fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
+    let (card, _) = Slice::read_cards(&slice.domain).into_iter().find(|(_, answered)| !answered).expect("an open turn-end card");
+    let state = slice.domain.state().unwrap();
+    let action = alondra_core::views::action_id::ActionId::new(alondra_core::views::action_id::Verb::Ans, &card, state.revision, None).unwrap();
+    let request = crate::views::actions::ActionRequest {
+        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        command_id: "5d2c8e41-7a93-4f06-b1e8-3c9a0d4f6e27".into(),
+        data_epoch: state.data_epoch.0.clone(),
+        client: "tui".into(),
+        lang: "en".into(),
+        action_id: action.to_string(),
+        option_id: Some(alondra_core::domain::CANCEL_TASK.into()),
+        input: Default::default(),
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+        crate::views::actions::execute_action(&slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await
+    }).unwrap_or_else(|error| panic!("the cancellation failed in the store: {error:#}"))
+}
+
+/// The task is cancelled from its turn-end card, which stays answered with that choice.
+fn assert_cancelled_from_its_card(slice: &Slice, reply: &serde_json::Value) {
+    assert_eq!(reply["outcome"], "applied", "{reply}");
+    let state = slice.domain.state().unwrap();
+    assert!(state.tasks[&TaskId::from(TASK)].cancelled(), "the task is cancelled");
+    let cards: Vec<_> = state.interactions.values()
+        .filter(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
+        .map(|card| (matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == alondra_core::domain::CANCEL_TASK), card.withdrawn))
+        .collect();
+    assert!(cards.contains(&(true, false)), "the card keeps the user's choice: {cards:?}");
+}
+
+#[test]
+fn cancelling_from_the_turn_end_card_of_an_sdk_task_ends_the_task() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let reply = cancel_from_turn_end_card(&slice);
+    assert_cancelled_from_its_card(&slice, &reply);
+    driver.stop().unwrap();
+}
+
+#[test]
+fn cancelling_from_the_turn_end_card_after_an_interrupt_ends_the_task() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(slice.control_rows()[0].2, "handed");
+    let reply = cancel_from_turn_end_card(&slice);
+    assert_cancelled_from_its_card(&slice, &reply);
+    driver.stop().unwrap();
+}
+
+#[test]
+fn cancelling_from_the_turn_end_card_after_an_approved_plan_ends_the_task() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:plan");
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(slice.control_rows()[0].2, "handed");
+    let reply = cancel_from_turn_end_card(&slice);
+    assert_cancelled_from_its_card(&slice, &reply);
+    driver.stop().unwrap();
 }

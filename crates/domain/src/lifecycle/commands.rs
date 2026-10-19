@@ -123,8 +123,16 @@ impl TaskLifecycle {
                 };
                 replace_handoff(execution, &input, Some(resend))?;
             }
-            Event::Answer { card, input } => self.answer(card, input, false)?,
-            Event::Resume { card, input } => self.answer(card, input, true)?,
+            Event::Answer { card, input } => self.answer(card, Reply::Input(input), false)?,
+            Event::Resume { card, input } => self.answer(card, Reply::Input(input), true)?,
+            Event::Decide { card, decision } => {
+                valid_decision(&decision)?;
+                self.answer(card, Reply::Decision(decision), false)?
+            }
+            Event::MoveCard { from, to } => {
+                valid_id(&to.0)?;
+                self.move_card(from, to)?;
+            }
             Event::BlockDelivery {
                 delivery,
                 dependencies,
@@ -501,6 +509,47 @@ impl TaskLifecycle {
                     self.plan_revision = self.plan_revision.checked_add(1).ok_or(Refusal::RevisionExhausted)?;
                 }
             }
+            Event::RequestControl { control, kind } => {
+                valid_id(control.as_str())?;
+                if !matches!(self.state, State::InProgress(_) | State::Delivered(_)) {
+                    return Err(Refusal::InvalidState);
+                }
+                let execution = self.session().ok_or(Refusal::InvalidState)?;
+                if execution.resource != ResourceEvidence::Available {
+                    return Err(Refusal::InvalidState);
+                }
+                match (&kind, &execution.activity) {
+                    (Control::Interrupt { turn: Some(turn) }, Activity::Turn { id, .. }) if turn == id => {}
+                    (Control::Interrupt { turn: None }, Activity::OwnWork { .. }) => {}
+                    (Control::Interrupt { .. }, Activity::Turn { .. } | Activity::OwnWork { .. }) => {
+                        return Err(Refusal::CorrelationMismatch);
+                    }
+                    (Control::Interrupt { .. }, _) => return Err(Refusal::InvalidState),
+                    (Control::SetModel { model }, _) => valid_model(model)?,
+                    (Control::SetPermissionMode { .. } | Control::ReadMcpStatus, _) => {}
+                }
+            }
+            Event::Compact { input } => {
+                if self
+                    .cards()
+                    .iter()
+                    .any(|(_, reason)| *reason == WaitReason::Pause)
+                {
+                    return Err(Refusal::InvalidState);
+                }
+                let session = match &mut self.state {
+                    State::InProgress(Progress::Waiting { session, .. }) => session,
+                    State::Delivered(delivered) => &mut delivered.session,
+                    _ => return Err(Refusal::InvalidState),
+                };
+                let execution = session.execution_mut().ok_or(Refusal::InvalidState)?;
+                if execution.resource != ResourceEvidence::Available
+                    || !matches!(execution.activity, Activity::Resting)
+                {
+                    return Err(Refusal::InvalidState);
+                }
+                queue_input(execution, input)?;
+            }
         }
         Ok(())
     }
@@ -578,7 +627,35 @@ impl TaskLifecycle {
         Ok(())
     }
 
-    fn answer(&mut self, id: InteractionId, input: InputId, resume: bool) -> Result<(), Refusal> {
+    fn move_card(&mut self, from: InteractionId, to: InteractionId) -> Result<(), Refusal> {
+        let (mut cards, session) = match &self.state {
+            State::InProgress(Progress::Waiting { cards, session, .. }) => (cards.map(), session),
+            State::InProgress(Progress::Dependency { decisions, session, .. }) => (decisions.clone(), session),
+            State::Delivered(delivered) => (delivered.decisions.clone(), &delivered.session),
+            _ => return Err(Refusal::InvalidState),
+        };
+        if cards.contains_key(&to) {
+            return Err(Refusal::DuplicateObligation);
+        }
+        let card = cards.remove(&from).ok_or(Refusal::CorrelationMismatch)?;
+        let callback = card.callback.clone().ok_or(Refusal::InvalidState)?;
+        let awaiting = session.execution().is_some_and(|execution| {
+            execution.callbacks.contains(&CallbackState::AwaitingAnswer(callback))
+        });
+        if !awaiting {
+            return Err(Refusal::InvalidState);
+        }
+        cards.insert(to.clone(), Card { id: to, ..card });
+        match &mut self.state {
+            State::InProgress(Progress::Waiting { cards: held, .. }) => *held = Decisions::new(cards)?,
+            State::InProgress(Progress::Dependency { decisions, .. }) => *decisions = cards,
+            State::Delivered(delivered) => delivered.decisions = cards,
+            _ => return Err(Refusal::InvalidState),
+        }
+        Ok(())
+    }
+
+    fn answer(&mut self, id: InteractionId, reply: Reply, resume: bool) -> Result<(), Refusal> {
         let (stage, mut cards, mut session) = match &self.state {
             State::InProgress(Progress::Waiting {
                 stage,
@@ -605,30 +682,46 @@ impl TaskLifecycle {
         if matches!(card.reason, WaitReason::Recovery | WaitReason::Doubt) {
             return Err(Refusal::InvalidState);
         }
-        if let Some(callback) = &card.callback {
-            let execution = session.execution_mut().ok_or(Refusal::InvalidState)?;
-            if execution.resource != ResourceEvidence::Available {
-                return Err(Refusal::InvalidState);
+        let input = match (&card.callback, reply) {
+            (Some(callback), Reply::Decision(decision)) => {
+                if !decides(card.reason, &decision) {
+                    return Err(Refusal::InvalidDecision);
+                }
+                let execution = session.execution_mut().ok_or(Refusal::InvalidState)?;
+                if execution.resource != ResourceEvidence::Available {
+                    return Err(Refusal::InvalidState);
+                }
+                let state = execution
+                    .callbacks
+                    .iter_mut()
+                    .find(|state| callback_id(state) == callback)
+                    .ok_or(Refusal::UnknownObligation)?;
+                if *state != CallbackState::AwaitingAnswer(callback.clone()) {
+                    return Err(Refusal::InvalidState);
+                }
+                *state = CallbackState::Answered(callback.clone());
+                add_callback_wake(&mut execution.activity, callback.clone())?;
+                None
             }
-            let state = execution
-                .callbacks
-                .iter_mut()
-                .find(|state| callback_id(state) == callback)
-                .ok_or(Refusal::UnknownObligation)?;
-            *state = CallbackState::Answered(callback.clone());
-            add_callback_wake(&mut execution.activity, callback.clone())?;
-        } else if let Some(execution) = session.execution_mut() {
-            if cards.values().any(|card| card.reason == WaitReason::Pause)
-                || execution.resource != ResourceEvidence::Available
-            {
-                return Err(Refusal::InvalidState);
+            (None, Reply::Input(input)) => Some(input),
+            (Some(_), Reply::Input(_)) | (None, Reply::Decision(_)) => return Err(Refusal::InvalidState),
+        };
+        match (input, &mut session) {
+            (Some(input), Session::Present(execution)) => {
+                if cards.values().any(|card| card.reason == WaitReason::Pause)
+                    || execution.resource != ResourceEvidence::Available
+                {
+                    return Err(Refusal::InvalidState);
+                }
+                queue_input(execution, input)?;
             }
-            queue_input(execution, input.clone())?;
-        } else if let Session::Absent(pending) = &mut session {
-            if pending.contains(&input) {
-                return Err(Refusal::DuplicateObligation);
+            (Some(input), Session::Absent(pending)) => {
+                if pending.contains(&input) {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                pending.push_back(input);
             }
-            pending.push_back(input.clone());
+            (None, _) => {}
         }
         if let State::Delivered(delivered) = &mut self.state {
             delivered.decisions = cards;
@@ -894,4 +987,10 @@ fn replace_handoff(execution: &mut Execution, input: &InputId, resend: Option<In
         }
     }
     Ok(())
+}
+
+/// What answers a card: the input a task goes on with, or the decision of the callback it waits on.
+enum Reply {
+    Input(InputId),
+    Decision(Decision),
 }

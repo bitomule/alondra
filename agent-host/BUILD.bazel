@@ -66,7 +66,9 @@ js_test(
     data = [
         ":host_lib",
         ":node_modules/zod",
+        "//crates/agent-protocol:fixtures/controls.json",
         "//crates/agent-protocol:fixtures/decision.json",
+        "//crates/agent-protocol:fixtures/decisions.json",
         "//crates/agent-protocol:fixtures/event.json",
         "//crates/agent-protocol:fixtures/hello.json",
         "//crates/agent-protocol:fixtures/integer-tokens.json",
@@ -123,6 +125,18 @@ js_test(
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "host-stop.test.mjs",
     data = [":host_lib", "host-stop-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
+    name = "controls_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "controls.test.mjs",
+    data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", "//crates/agent-protocol:fixtures/attach-orchestrator.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
+    name = "decisions_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "decisions.test.mjs",
+    data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 js_test(
     name = "reconcile_test",

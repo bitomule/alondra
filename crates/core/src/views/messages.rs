@@ -98,6 +98,8 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "Esto es para el orquestador o un nodo, no para ti.").into(),
         Refusal::NodeUnreachable { node } => tf!(lang, "“{node}” isn't connected: its session stopped. Nothing was sent.",
             "«{node}» no está conectado: su sesión se detuvo. No se envió nada.", node = node),
+        Refusal::NothingToInterrupt => t!(lang, "This node isn't running anything to interrupt.",
+            "Este nodo no está haciendo nada que interrumpir.").into(),
         Refusal::DeviceNotApproved => t!(lang, "This device is no longer approved. Approve it again from the Mac.",
             "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac.").into(),
         Refusal::StorageUnavailable => t!(lang, "Alondra couldn't save this. Nothing changed; try again.",
@@ -169,7 +171,7 @@ mod tests {
             Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
             Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
-            Refusal::NodeUnreachable { node: "n".into() }, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,
+            Refusal::NodeUnreachable { node: "n".into() }, Refusal::NothingToInterrupt, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,
             Refusal::GithubUnreachable, Refusal::NoLongerAvailable,
         ];
         for refusal in all {

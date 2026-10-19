@@ -455,8 +455,30 @@ impl DomainRuntime {
         drop(store);
         if !commit.replayed && commit.outcome.changed {
             crate::task_closer::settle_unattended(self, &commit.state);
+            self.allowed_always(&prepared.envelope.command, &commit.state);
         }
         Ok(commit.outcome)
+    }
+
+    /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and
+    /// committed as its decision: the card's rules are written for the task's repo.
+    fn allowed_always(&self, command: &Command, state: &DomainState) {
+        let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
+        if option_id != Hold::ALWAYS {
+            return;
+        }
+        let Some(card) = state.interactions.get(interaction_id) else { return };
+        let Scope::Task { task_id } = &card.scope else { return };
+        let decided = state.lifecycle_journal.get(task_id).is_some_and(|journal| {
+            journal.iter().any(|record| matches!(record, LifecycleRecord::Decided { card, .. } if card == interaction_id))
+        });
+        let Some(rules) = card.card.allow_always.as_ref().and_then(alondra_core::allow_always::AllowAlways::rules).filter(|_| decided) else { return };
+        let written = self.task_worktree(task_id).and_then(|worktree| {
+            crate::allow_always::chosen_through_sdk(self, worktree.as_deref(), rules, Some(&task_id.0), &interaction_id.0)
+        });
+        if let Err(error) = written {
+            log!("allow always: the rules of {interaction_id} were not written: {error:#}");
+        }
     }
 
     /// A system command the domain judges on the state it commits against, as the node machine
@@ -588,6 +610,13 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordHostEnded { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::ResendUntakenInput { task_id, .. }
+        | Command::SetModel { task_id, .. }
+        | Command::SetPermissionMode { task_id, .. }
+        | Command::ReadMcpStatus { task_id }
+        | Command::CompactConversation { task_id }
+        | Command::RecordDecisionRequest { task_id, .. }
+        | Command::RecordDecisionSettled { task_id, .. }
+        | Command::RecordDecisionAborted { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }
@@ -653,7 +682,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::BindOrchestratorSession { .. }
         | Command::HoldHook { .. }
         | Command::HoldQuestions { .. }
-        | Command::ProbeClaudeAccess { .. } => None,
+        | Command::ProbeClaudeAccess { .. }
+        | Command::InterruptTurn { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

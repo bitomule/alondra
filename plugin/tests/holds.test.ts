@@ -102,3 +102,28 @@ test('a helper that fails at once denies the call instead of letting it through'
   expect(question).toHaveProperty('deny')
   expect(held.runs()).toBe(1)
 })
+
+test('under the Agent SDK a question and a plan go to Claude Code, which asks the host, and nothing is held', async ($, on) => {
+  on('tool.call', () => ({ result: 'claude code ran the tool' }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.300' } }))
+  on('env.get', () => ({ value: '1' }))
+  let spawns = 0
+  on('process.spawn', async function* () {
+    spawns += 1
+    await new Promise(() => {})
+  })
+  const runs: string[][] = []
+  on('process.run', async (_$, e) => {
+    runs.push(e.argv)
+    return { value: { exitCode: 0, stdout: JSON.stringify({ held: true, answers: { 'Which colour?': 'Blue' } }), stderr: '' } }
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const question = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu-1', questions } as never)
+  const plan = await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu-2', plan: 'p' } as never)
+  expect(question).toEqual({ result: 'claude code ran the tool' })
+  expect(plan).toEqual({ result: 'claude code ran the tool' })
+  expect(runs).toEqual([])
+  expect(spawns).toBe(0)
+})

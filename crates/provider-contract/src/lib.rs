@@ -25,6 +25,11 @@ pub enum Capability {
     Interrupt,
     BackgroundWork,
     DurableResume,
+    SetModel,
+    SetPermissionMode,
+    Compact,
+    McpStatus,
+    Decisions,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBinding {
@@ -148,6 +153,11 @@ pub enum Observation {
         work: WorkId,
         continuation: ContinuationId,
     },
+    /// The root turn that started the work is still open when it ends: that same turn goes on with
+    /// the work's continuation, so no later turn waits for it.
+    ContinuationConsumed {
+        continuation: ContinuationId,
+    },
     /// The root turn ended; `failure` when a Claude API error ended it.
     TurnEnded {
         turn: TurnId,
@@ -157,6 +167,32 @@ pub enum Observation {
     ModelAnswered,
     TransportLost,
     ResourceReleased,
+    /// Claude asks for a decision. `epoch` is the host's journal cursor of the request, unique in
+    /// its execution; `tool_use` names the tool call it is about, absent for an MCP server's
+    /// request for input; `payload` is the request exactly as the host persisted it.
+    Asked {
+        request: String,
+        epoch: u64,
+        kind: DecisionKind,
+        tool_use: Option<String>,
+        payload: Vec<u8>,
+    },
+    /// The request at `epoch` is over: `answered` when a decision resolved it, otherwise it was
+    /// aborted, closed or its decision could not be delivered. `continued` when the root turn that
+    /// asked is still open, so an answered request lets that same turn go on.
+    DecisionSettled {
+        epoch: u64,
+        answered: bool,
+        continued: bool,
+    },
+}
+/// What Claude asks a decision about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DecisionKind {
+    Permission,
+    Question,
+    Plan,
+    Elicitation,
 }
 /// The Claude API error a root turn ended with, as Claude Code reports it after its own retries.
 #[derive(Clone, Debug, PartialEq, Eq)]

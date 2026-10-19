@@ -111,6 +111,63 @@ fn a_session_through_the_sdk_host_tells_the_daemon_nothing() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The node guards hold under the SDK host too: a node's PreToolUse that would act as the user or
+/// open Alondra's database for writing is refused by the CLI itself, with the reason the daemon
+/// gives a `claude --bg` node, and the daemon hears nothing.
+#[test]
+fn a_node_under_the_sdk_host_is_refused_what_nodes_may_never_do_without_the_daemon() {
+    const DONE: &[u8; 4] = b"DONE";
+    let home = crate::test_support::Directory::for_unix_socket();
+    std::fs::create_dir_all(&*home).unwrap();
+    let socket = home.join("hooks.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let mut contacted = vec![];
+        loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut first = [0; 4];
+            stream.read_exact(&mut first).unwrap();
+            if &first == DONE {
+                return contacted;
+            }
+            let mut body = vec![0; u32::from_be_bytes(first) as usize];
+            stream.read_exact(&mut body).unwrap();
+            contacted.push(String::from_utf8_lossy(&body).into_owned());
+        }
+    });
+    let database = home.join(".alondra").join("domain.db");
+    let decide = |command: String| {
+        let event = serde_json::json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}});
+        let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .arg("hook")
+            .env("ALONDRA_HOME", &*home)
+            .env("ALONDRA_SDK_HOST", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(event.to_string().as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        (!output.stdout.is_empty()).then(|| serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap())
+    };
+    let refusal = |reply: Option<serde_json::Value>| {
+        let reply = reply.expect("refused");
+        assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
+        reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_owned()
+    };
+    let user_only = refusal(decide("alondra answer 55 Merge".into()));
+    assert!(user_only.contains("they act as the user"), "{user_only}");
+    let writable = refusal(decide(format!("sqlite3 {} 'select 1'", database.display())));
+    assert!(writable.contains("sqlite3 -readonly"), "{writable}");
+    assert_eq!(decide(format!("sqlite3 -readonly {} .tables", database.display())), None);
+    assert_eq!(decide("make test".into()), None);
+    std::os::unix::net::UnixStream::connect(&socket).unwrap().write_all(DONE).unwrap();
+    assert_eq!(daemon.join().unwrap(), Vec::<String>::new(), "the daemon was told");
+}
+
 #[test]
 fn intermediate_message_batch_does_not_contact_daemon() {
     let scratch_directory = crate::test_support::Directory::new();

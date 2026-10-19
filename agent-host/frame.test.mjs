@@ -18,7 +18,7 @@ for (const name of ['start', 'decision', 'hello', 'receipt', 'event']) {
   assert.throws(() => decode(encoded.subarray(0, -1)));
 }
 assert.equal(commandDigest(fixture('start')), JSON.parse(fixture('receipt')).body.command_sha256);
-for (const name of ['integer-tokens', 'opaque-objects', 'nesting-depth']) {
+for (const name of ['integer-tokens', 'opaque-objects', 'nesting-depth', 'controls', 'decisions']) {
   const corpus = JSON.parse(fixture(name));
   for (const entry of corpus) {
     if (entry.accepted) {
@@ -71,7 +71,7 @@ try {
   assert.throws(() => encode(oversized), /Frame size/);
 } finally { JSON.stringify = stringify; }
 const nestedOversize = structuredClone(start);
-nestedOversize.body.action = { type: 'respond', request_id: 'fixture', decision: { behavior: 'allow', updated_input: { nested: Array.from({ length: 1000 }, () => 'x'.repeat(2000)) } } };
+nestedOversize.body.action = { type: 'respond', request_id: 'fixture', epoch: 1, kind: 'permission', tool_use_id: 'toolu-fixture', decision: { behavior: 'allow', updated_input: { nested: Array.from({ length: 1000 }, () => 'x'.repeat(2000)) } } };
 assert.throws(() => encode(nestedOversize), /Frame size/);
 let getterCalled = false;
 const accessor = structuredClone(start);

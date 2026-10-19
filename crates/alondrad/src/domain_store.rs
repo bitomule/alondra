@@ -609,6 +609,7 @@ impl DomainStore {
         // never dispatches the same run again solely because the daemon reopened.
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
+        alondra_store::LifecycleTransaction::upgrade(&mut tx)?;
         if version == PREVIOUS_SCHEMA_VERSION {
             lifecycle_migration::migrate(&conn, tx)
                 .with_context(|| format!("the domain database at {} keeps schema {version}: moving its tasks into the lifecycle journal failed", path.display()))?;

@@ -80,7 +80,7 @@ fn digest_covers_original_bytes_not_a_receivers_json_serialization() {
     assert_ne!(reordered_digest, original_digest);
     assert_eq!(
         original_digest,
-        "13006b5591b8e74e08b1203f5bcfc93497f678701ee837b392e4ea25ac8a0039"
+        "778955c28992fd6bb29680689c3263b453895736be4422d713f9404ae1c7a8eb"
     );
 }
 
@@ -284,7 +284,7 @@ fn handshake_requires_owned_host_sdk_version_and_every_capability() {
         _ => panic!(),
     };
     let expected_fence = hello.fence.clone();
-    let required = ["streaming_input", "permission_decisions"];
+    let required = ["streaming_input", "decisions"];
     let expected = HostExpectation {
         fence: &expected_fence,
         host_release: "fixture-release",
@@ -594,7 +594,7 @@ fn empty_ids_unsafe_numbers_and_nonobject_decisions_are_rejected() {
     zero.cursor = 0;
     assert!(encode(&Frame::new(Body::Event(zero))).is_err());
     let mut invalid = serde_json::from_slice::<Value>(START).unwrap();
-    invalid["body"]["action"] = json!({"type":"respond","request_id":"request","decision":{"behavior":"allow","updated_input":[]}});
+    invalid["body"]["action"] = json!({"type":"respond","request_id":"request","epoch":1,"kind":"permission","tool_use_id":"toolu","decision":{"behavior":"allow","updated_input":[]}});
     assert!(
         FramedReader::new(Cursor::new(raw_frame(
             &serde_json::to_vec(&invalid).unwrap()
@@ -870,13 +870,16 @@ fn outgoing_depth_is_bounded_before_transport_or_correlation_mutation() {
     let mut decision = event();
     decision.observation = Observation::DecisionRequested {
         request_id: "request-depth".into(),
-        tool_use_id: "tool-depth".into(),
+        tool_use_id: Some("tool-depth".into()),
         kind: DecisionKind::Permission,
         payload: json!({"nested": nested.clone()}),
     };
     let mut tool = command();
     tool.action = Action::Respond {
         request_id: "request-depth".into(),
+        epoch: 1,
+        kind: DecisionKind::Permission,
+        tool_use_id: Some("tool-depth".into()),
         decision: Decision::Allow {
             updated_input: json!({"nested": nested}).as_object().unwrap().clone(),
         },
@@ -1373,4 +1376,240 @@ fn received_frame_captures_exact_sender_payload_and_digest_from_one_read() {
     assert_eq!(following, frame(HELLO));
     assert_eq!(following_digest, format!("{:x}", Sha256::digest(HELLO)));
     assert!(reader.read_received().unwrap().is_none());
+}
+
+#[test]
+fn control_actions_and_results_match_shared_host_corpus() {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/controls.json")).unwrap();
+    for case in cases {
+        let raw = case["json"].as_str().unwrap();
+        let read = FramedReader::new(Cursor::new(raw_frame(raw.as_bytes()))).read();
+        assert_eq!(
+            read.is_ok(),
+            case["accepted"].as_bool().unwrap(),
+            "control case {}",
+            case["name"]
+        );
+        if let Ok(Some(frame)) = read {
+            assert_eq!(
+                serde_json::to_value(&frame).unwrap(),
+                serde_json::from_str::<Value>(raw).unwrap(),
+                "control case {} round trips",
+                case["name"]
+            );
+            if let Body::Event(event) = frame.body {
+                event.validate_for_application().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn control_actions_have_one_wire_spelling() {
+    let mut set_model = command();
+    set_model.action = Action::SetModel {
+        model: "fixture-model".into(),
+    };
+    let wire = serde_json::to_value(&set_model.action).unwrap();
+    assert_eq!(wire, json!({"type":"set_model","model":"fixture-model"}));
+    for (mode, spelling) in [
+        (PermissionMode::Default, "default"),
+        (PermissionMode::Plan, "plan"),
+        (PermissionMode::DontAsk, "dont_ask"),
+    ] {
+        let action = Action::SetPermissionMode { mode };
+        let wire = serde_json::to_value(&action).unwrap();
+        assert_eq!(wire, json!({"type":"set_permission_mode","mode":spelling}));
+        assert_eq!(serde_json::from_value::<Action>(wire).unwrap(), action);
+    }
+    assert_eq!(
+        serde_json::to_value(Action::McpStatus).unwrap(),
+        json!({"type":"mcp_status"})
+    );
+    set_model.validate().unwrap();
+    for model in ["", " \t", "fixture\u{7}", &"m".repeat(MAX_MODEL_BYTES + 1)] {
+        set_model.action = Action::SetModel {
+            model: model.into(),
+        };
+        assert!(set_model.validate().is_err(), "model {model:?}");
+    }
+}
+
+#[test]
+fn no_permission_mode_that_grants_permissions_is_representable() {
+    for mode in [
+        "acceptEdits",
+        "accept_edits",
+        "auto",
+        "bypassPermissions",
+        "bypass_permissions",
+        "dontAsk",
+        "Default",
+    ] {
+        assert!(
+            serde_json::from_value::<PermissionMode>(json!(mode)).is_err(),
+            "{mode} must not deserialize"
+        );
+        assert!(
+            serde_json::from_value::<Action>(json!({"type":"set_permission_mode","mode":mode}))
+                .is_err(),
+            "{mode} must not reach the host"
+        );
+    }
+}
+
+#[test]
+fn control_result_is_typed_bounded_and_applicable() {
+    let result = ControlResult::McpStatus {
+        command_id: CommandId("command-test".into()),
+        servers: vec![McpServer {
+            name: "fixture".into(),
+            status: "failed".into(),
+            error: Some("unreachable".into()),
+        }],
+    };
+    let mut observed = event();
+    observed.observation = Observation::Sdk {
+        kind: SdkEventKind::ControlResult,
+        native: NativeCorrelation::default(),
+        payload: serde_json::to_value(&result).unwrap(),
+        failures: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        json!({"control":"mcp_status","command_id":"command-test","servers":[{"name":"fixture","status":"failed","error":"unreachable"}]})
+    );
+    observed.validate_for_application().unwrap();
+    let encoded = encode(&Frame::new(Body::Event(observed.clone()))).unwrap();
+    assert_eq!(
+        FramedReader::new(Cursor::new(encoded))
+            .read()
+            .unwrap()
+            .unwrap()
+            .body,
+        Body::Event(observed.clone())
+    );
+    if let Observation::Sdk { payload, .. } = &mut observed.observation {
+        payload["servers"] = json!(vec![
+            json!({"name":"s","status":"connected"});
+            MAX_MCP_SERVERS + 1
+        ]);
+    }
+    assert!(observed.validate().is_err());
+    if let Observation::Sdk { payload, .. } = &mut observed.observation {
+        *payload = json!({"type":"result","subtype":"success"});
+    }
+    assert!(
+        observed.validate().is_err(),
+        "a control result is never an untyped SDK object"
+    );
+}
+
+#[test]
+fn decision_answers_and_settlements_match_shared_host_corpus() {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/decisions.json")).unwrap();
+    for case in cases {
+        let raw = case["json"].as_str().unwrap();
+        let read = FramedReader::new(Cursor::new(raw_frame(raw.as_bytes()))).read();
+        assert_eq!(
+            read.is_ok(),
+            case["accepted"].as_bool().unwrap(),
+            "decision case {}",
+            case["name"]
+        );
+        if let Ok(Some(frame)) = read {
+            assert_eq!(
+                serde_json::to_value(&frame).unwrap(),
+                serde_json::from_str::<Value>(raw).unwrap(),
+                "decision case {} round trips",
+                case["name"]
+            );
+            if let Body::Event(event) = frame.body {
+                event.validate_for_application().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn an_answer_names_its_request_and_only_answers_its_kind() {
+    let mut respond = command();
+    let answer = |kind, tool_use_id: Option<&str>, decision| Action::Respond {
+        request_id: "request-test".into(),
+        epoch: 42,
+        kind,
+        tool_use_id: tool_use_id.map(Into::into),
+        decision,
+    };
+    let allow = || Decision::Allow {
+        updated_input: serde_json::Map::new(),
+    };
+    let deny = || Decision::Deny {
+        message: "No".into(),
+    };
+    let accept = || Decision::Accept { content: None };
+    for kind in [
+        DecisionKind::Permission,
+        DecisionKind::Question,
+        DecisionKind::Plan,
+    ] {
+        for decision in [allow(), deny()] {
+            respond.action = answer(kind, Some("toolu-test"), decision.clone());
+            respond.validate().unwrap();
+            respond.action = answer(kind, None, decision);
+            assert!(respond.validate().is_err(), "{kind:?} names its tool use");
+        }
+        for decision in [accept(), Decision::Decline {}] {
+            respond.action = answer(kind, Some("toolu-test"), decision);
+            assert!(respond.validate().is_err(), "{kind:?} is not an elicitation");
+        }
+    }
+    for decision in [accept(), Decision::Decline {}] {
+        respond.action = answer(DecisionKind::Elicitation, None, decision.clone());
+        respond.validate().unwrap();
+        respond.action = answer(DecisionKind::Elicitation, Some("toolu-test"), decision);
+        assert!(respond.validate().is_err(), "an elicitation has no tool use");
+    }
+    for decision in [allow(), deny()] {
+        respond.action = answer(DecisionKind::Elicitation, None, decision);
+        assert!(respond.validate().is_err(), "a tool decision never answers an elicitation");
+    }
+    respond.action = answer(DecisionKind::Permission, Some("toolu-test"), allow());
+    let Action::Respond { epoch, .. } = &mut respond.action else { unreachable!() };
+    *epoch = 0;
+    assert!(respond.validate().is_err(), "an epoch is a host cursor");
+    assert!(encode(&Frame::new(Body::Command(respond))).is_err());
+    assert_eq!(
+        serde_json::to_value(answer(DecisionKind::Elicitation, None, Decision::Decline {})).unwrap(),
+        json!({"type":"respond","request_id":"request-test","epoch":42,"kind":"elicitation","tool_use_id":null,"decision":{"behavior":"decline"}})
+    );
+
+    let mut requested = event();
+    requested.observation = Observation::DecisionRequested {
+        request_id: "request-test".into(),
+        tool_use_id: None,
+        kind: DecisionKind::Elicitation,
+        payload: json!({"serverName":"fixture-server"}),
+    };
+    requested.validate_for_application().unwrap();
+    assert_eq!(
+        serde_json::to_value(&requested.observation).unwrap(),
+        json!({"type":"decision_requested","request_id":"request-test","kind":"elicitation","payload":{"serverName":"fixture-server"}})
+    );
+    let Observation::DecisionRequested { kind, .. } = &mut requested.observation else { unreachable!() };
+    *kind = DecisionKind::Permission;
+    assert!(requested.validate().is_err(), "a permission names its tool use");
+
+    let mut settled = event();
+    settled.observation = Observation::DecisionSettled {
+        request_id: "request-test".into(),
+        epoch: 42,
+        outcome: DecisionOutcome::Cancelled,
+    };
+    settled.validate_for_application().unwrap();
+    let Observation::DecisionSettled { epoch, .. } = &mut settled.observation else { unreachable!() };
+    *epoch = MAX_SAFE_INTEGER + 1;
+    assert!(settled.validate().is_err());
 }

@@ -15,6 +15,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
 
 const TASK: &str = "task-1";
+
+/// No fixture here asks for a decision, so no «allow always» is ever judged under a home.
+fn no_home() -> &'static std::path::Path {
+    std::path::Path::new("/nonexistent")
+}
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
 
 fn agent() -> Actor {
@@ -245,7 +250,7 @@ fn card_raw_observation_journal_and_checkpoint_commit_together_and_publish_befor
     let mut changes = runtime.subscribe();
     let ((acceptance, inside), outcomes) = runtime
         .own(scope_of(&state), |owner| {
-            let acceptance = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+            let acceptance = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
             owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None)?;
             Ok((acceptance, counts(&observer)))
         })
@@ -284,10 +289,10 @@ fn a_caught_step_error_poisons_the_owner_and_nothing_commits_publishes_or_is_ack
         let mut changes = runtime.subscribe();
         let result = runtime.own(scope_of(&state), |owner| {
             if swallowed_by_normalizer {
-                let swallowed = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::SwallowsMetadataError);
+                let swallowed = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::SwallowsMetadataError, no_home());
                 assert!(swallowed.is_err(), "a swallowed metadata error is not accepted");
             } else {
-                owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+                owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
                 owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None)?;
                 let refused = owner.stage_command(&agent(), &envelope(&state, "agent-answer", answer()), Attached::None);
                 assert!(refused.is_err(), "only the card's recipient answers it");
@@ -315,7 +320,7 @@ fn a_first_observation_and_an_exact_command_replay_still_commit() {
     let command = envelope(&state, "owner-ask", ask("owner-card"));
     let (_, first) = runtime
         .own(scope_of(&state), |owner| {
-            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
             owner.stage_command(&agent(), &command, Attached::None).map(|_| ())
         })
         .unwrap();
@@ -342,7 +347,7 @@ fn a_deferred_commit_failure_issues_no_seal_publication_or_cache() {
     let state = Arc::clone(read_before.state());
     let error = runtime
         .own(scope_of(&state), |owner| {
-            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
             owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None).map(|_| ())
         })
         .unwrap_err();
@@ -374,7 +379,7 @@ fn a_released_resource_is_refused_and_nothing_of_its_observation_commits() {
     let before = counts(&observer);
     let state = Arc::clone(runtime.read().state());
     let refused = runtime.own(scope_of(&state), |owner| {
-        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Released)
+        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Released, no_home())
     });
     assert!(refused.is_err(), "a released resource is refused");
     assert_eq!(counts(&observer), before);
@@ -411,7 +416,7 @@ fn publication_follows_the_commit_and_the_acknowledgement_follows_publication() 
         let state = Arc::clone(&state);
         std::thread::spawn(move || {
             let result = runtime.own(scope_of(&state), |owner| {
-                owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+                owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
                 owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None).map(|_| ())
             });
             at_barrier.send(Some(format!("{result:?}"))).unwrap();
@@ -462,7 +467,7 @@ fn a_crash_before_publication_acknowledges_nothing_and_the_replay_acknowledges_o
     let state = Arc::clone(read_before.state());
     let command = envelope(&state, "owner-ask", ask("owner-card"));
     let work = |owner: &mut OwnerTransaction<'_>| {
-        let acceptance = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+        let acceptance = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
         owner.stage_command(&agent(), &command, Attached::None)?;
         Ok(acceptance)
     };
@@ -648,7 +653,7 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
     let state = Arc::clone(runtime.read().state());
     runtime
         .own(scope_of(&state), |owner| {
-            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available)?;
+            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home())?;
             owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None)?;
             owner.stage_command(&orchestrator(), &envelope(&state, "same-title", retitle("Goal")), Attached::None)?;
             Ok(())
@@ -710,7 +715,7 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
     let state = Arc::clone(runtime.read().state());
     let normalizer = Normalizer::Turn { input, work: false };
     let (acceptance, outcomes) = runtime
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer, no_home()))
         .unwrap();
     assert_eq!(acceptance, ObservationAcceptance::Accepted);
     assert_eq!(outcomes.len(), 2, "the technical facts and the end of the turn");
@@ -724,7 +729,7 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
     let committed = counts(&observer);
 
     let (again, replayed) = runtime
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer, no_home()))
         .unwrap();
     assert_eq!(again, ObservationAcceptance::Duplicate);
     assert!(replayed.is_empty(), "a duplicate records nothing");
@@ -741,7 +746,7 @@ fn a_turn_end_behind_work_of_its_own_commits_no_card_and_keeps_the_slot() {
     let runtime = runtime(&fixture, store);
     let state = Arc::clone(runtime.read().state());
     runtime
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: true }))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: true }, no_home()))
         .unwrap();
     assert!(!runtime.read().state().interactions.contains_key(&turn_ended_card()));
     drop(runtime);
@@ -764,7 +769,7 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
     let before = counts(&observer);
     let state = Arc::clone(runtime.read().state());
     let failed = runtime.own(scope_of(&state), |owner| {
-        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false })
+        owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false }, no_home())
     });
     assert!(failed.is_err(), "the turn end is refused");
     assert_eq!(counts(&observer), before);
@@ -780,7 +785,7 @@ fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
     let input = pending_input(&mut store);
     let state = store.load().unwrap();
     store
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false }))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false }, no_home()))
         .unwrap();
     let state = store.load().unwrap();
     let carry_on = Command::AnswerQuestion {
@@ -854,5 +859,5 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
         _ => None,
     }).unwrap()).unwrap();
     let observation = OrderedObservation { owner_generation: 1, execution, cursor: 1, evidence: b"sandbox observation".to_vec() };
-    store.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &observation, &Normalizer::Turn { input, work: false })).unwrap();
+    store.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &observation, &Normalizer::Turn { input, work: false }, no_home())).unwrap();
 }

@@ -1,8 +1,8 @@
 use crate::records::{InputRecord, SessionRecord};
 use alondra_agent_application::{Normalization, ObservationMetadata, ObservationNormalizer};
 use alondra_agent_protocol::{
-    Body, Event, Fence, FramedReader, NativeCorrelation, Observation as WireObservation,
-    SdkEventKind,
+    Body, DecisionKind, DecisionOutcome, Event, Fence, FramedReader, NativeCorrelation,
+    Observation as WireObservation, SdkEventKind,
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{AdapterError, ApiFailure, Observation, OrderedObservation};
@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
 const CHECKPOINT_FORMAT: u16 = 1;
+/// More decisions open at once than the host ever holds pending.
+const MAX_ASKED: usize = 64;
 
 pub(super) struct Normalizer {
     pub session: Option<SessionRecord>,
@@ -32,6 +34,9 @@ struct Checkpoint {
     turn: Option<LogicalTurn>,
     work: BTreeMap<String, LogicalWork>,
     seen_tasks: BTreeSet<String>,
+    /// The decisions Claude asked for and still waits on: the request id of each, by epoch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    asked: BTreeMap<u64, String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,6 +185,41 @@ fn fold(
     state: &mut Checkpoint,
     lookup: impl FnOnce(&[MessageUuid]) -> Result<Vec<alondra_foundation::InputId>, AdapterError>,
 ) -> Result<Vec<Observation>, AdapterError> {
+    match &event.observation {
+        WireObservation::DecisionRequested { request_id, tool_use_id, kind, payload } => {
+            if !state.initialized
+                || state.asked.len() >= MAX_ASKED
+                || state.asked.values().any(|open| *open == request_id.0)
+            {
+                return Err(AdapterError::InvalidObservation);
+            }
+            state.asked.insert(event.cursor, request_id.0.clone());
+            return Ok(vec![Observation::Asked {
+                request: request_id.0.clone(),
+                epoch: event.cursor,
+                kind: match kind {
+                    DecisionKind::Permission => alondra_provider_contract::DecisionKind::Permission,
+                    DecisionKind::Question => alondra_provider_contract::DecisionKind::Question,
+                    DecisionKind::Plan => alondra_provider_contract::DecisionKind::Plan,
+                    DecisionKind::Elicitation => alondra_provider_contract::DecisionKind::Elicitation,
+                },
+                tool_use: tool_use_id.clone(),
+                payload: serde_json::to_vec(payload).map_err(|_| AdapterError::InvalidObservation)?,
+            }]);
+        }
+        WireObservation::DecisionSettled { request_id, epoch, outcome } => {
+            if state.asked.get(epoch) != Some(&request_id.0) {
+                return Err(AdapterError::InvalidObservation);
+            }
+            state.asked.remove(epoch);
+            return Ok(vec![Observation::DecisionSettled {
+                epoch: *epoch,
+                answered: *outcome == DecisionOutcome::Answered,
+                continued: state.turn.is_some(),
+            }]);
+        }
+        _ => {}
+    }
     let WireObservation::Sdk {
         kind,
         native,
@@ -201,6 +241,13 @@ fn fold(
             || native != &NativeCorrelation::default()
             || !failures.is_empty()
         {
+            return Err(AdapterError::InvalidObservation);
+        }
+        return Ok(Vec::new());
+    }
+    if *kind == SdkEventKind::ControlResult {
+        // What a read-only control answered, validated by the protocol: evidence, no fact.
+        if native != &NativeCorrelation::default() || !failures.is_empty() {
             return Err(AdapterError::InvalidObservation);
         }
         return Ok(Vec::new());
@@ -281,14 +328,18 @@ fn fold(
                 }
                 let work = state.work.remove(task).ok_or(AdapterError::Unsupported)?;
                 let basis = native_uuid(payload, "uuid")?;
+                let continuation = ContinuationId::new(format!("claude-notification:{}", basis.as_str()))
+                    .map_err(|_| AdapterError::InvalidObservation)?;
                 facts.push(Observation::WorkEnded {
                     work: WorkId::new(work.id).map_err(|_| AdapterError::InvalidObservation)?,
-                    continuation: ContinuationId::new(format!(
-                        "claude-notification:{}",
-                        basis.as_str()
-                    ))
-                    .map_err(|_| AdapterError::InvalidObservation)?,
+                    continuation: continuation.clone(),
                 });
+                // Claude Code tracks a foreground command that runs for seconds as its own work:
+                // it ends inside the turn that waits for it, and only work that outlives its turn
+                // wakes another.
+                if state.turn.is_some() {
+                    facts.push(Observation::ContinuationConsumed { continuation });
+                }
             }
             Some("conversation_reset") => return Err(AdapterError::Unsupported),
             _ => {}
@@ -463,6 +514,7 @@ mod tests {
     const FIRST: &str = "10000000-0000-4000-8000-000000000002";
     const SECOND: &str = "10000000-0000-4000-8000-000000000003";
     const REPLY: &str = "10000000-0000-4000-8000-000000000004";
+    const NOTIFIED: &str = "10000000-0000-4000-8000-000000000005";
     fn event(mut payload: Value) -> Event {
         payload["session_id"] = json!(SESSION);
         Event {
@@ -638,14 +690,129 @@ mod tests {
         let ended = event(
             json!({"type":"system","subtype":"task_notification","uuid":SECOND,"task_id":"task-native","run_id":"run-first","status":"completed"}),
         );
+        let continuation = ContinuationId::new(format!("claude-notification:{SECOND}")).unwrap();
         assert_eq!(
             fold(&ended, &session(), &mut state, input).unwrap(),
-            vec![Observation::WorkEnded {
-                work: WorkId::new(format!("claude-task:{REPLY}")).unwrap(),
-                continuation: ContinuationId::new(format!("claude-notification:{SECOND}")).unwrap()
-            }]
+            vec![
+                Observation::WorkEnded { work: WorkId::new(format!("claude-task:{REPLY}")).unwrap(), continuation: continuation.clone() },
+                Observation::ContinuationConsumed { continuation },
+            ]
         );
         assert!(state.work.is_empty());
+    }
+    // What the native Claude 2.1.300 sends for a foreground Bash that runs ≈3 s or longer: its own
+    // work, not backgrounded, that ends before the turn's result.
+    #[test]
+    fn foreground_work_that_ends_inside_its_turn_is_consumed_by_that_turn_which_then_ends() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let turn = TurnId::new(format!("claude-message:{REPLY}")).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":false}));
+        let work = WorkId::new(format!("claude-task:{SECOND}")).unwrap();
+        assert_eq!(fold(&started, &session(), &mut state, input).unwrap(), vec![Observation::WorkStarted { turn: turn.clone(), work: work.clone() }]);
+        let ended = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"completed"}));
+        let continuation = ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap();
+        assert_eq!(fold(&ended, &session(), &mut state, input).unwrap(), vec![
+            Observation::WorkEnded { work, continuation: continuation.clone() },
+            Observation::ContinuationConsumed { continuation },
+        ], "the turn that waited for the command goes on with it");
+        let result = event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+    }
+    // Work the turn leaves running ends after the turn's result: its continuation stays, to wake
+    // the turn that takes it.
+    #[test]
+    fn background_work_that_ends_after_its_turn_keeps_its_continuation() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true}));
+        fold(&started, &session(), &mut state, input).unwrap();
+        let result = event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST}));
+        fold(&result, &session(), &mut state, input).unwrap();
+        let ended = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"completed"}));
+        assert_eq!(fold(&ended, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
+            work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(),
+            continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
+        }]);
+    }
+    #[test]
+    fn a_control_result_is_evidence_without_facts_and_carries_no_failure() {
+        let mut result = event(json!({"control":"mcp_status","command_id":"lifecycle-control-1","servers":[{"name":"fixture","status":"connected"}]}));
+        let WireObservation::Sdk { kind, payload, .. } = &mut result.observation else { unreachable!() };
+        *kind = SdkEventKind::ControlResult;
+        payload.as_object_mut().unwrap().remove("session_id");
+        result.validate_for_application().unwrap();
+        let mut state = state();
+        assert_eq!(fold(&result, &session(), &mut state, |_| panic!("a control result consumes no input")).unwrap(), vec![]);
+        let WireObservation::Sdk { failures, .. } = &mut result.observation else { unreachable!() };
+        failures.push(alondra_agent_protocol::SdkFailure { surface: alondra_agent_protocol::FailureSurface::Result, code: "error_during_execution".into(), details: json!({}) });
+        assert!(matches!(fold(&result, &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "a failed control result is not evidence");
+    }
+    // What a `/compact` input produces: the boundary records nothing, and its result ends the
+    // turn it consumed like any other input.
+    #[test]
+    fn a_compaction_turn_records_its_boundary_as_nothing_and_ends_like_any_input_turn() {
+        let mut state = state();
+        for status in [json!({"type":"system","subtype":"status","status":"compacting","uuid":REPLY}),
+            json!({"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":1},"uuid":REPLY})] {
+            assert_eq!(fold(&event(status), &session(), &mut state, input).unwrap(), vec![]);
+        }
+        let result = event(json!({"type":"result","uuid":REPLY,"subtype":"success","is_error":false,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        let turn = TurnId::new(format!("claude-message:{REPLY}")).unwrap();
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![
+            Observation::TurnStarted { input: InputId::new(FIRST).unwrap(), turn: turn.clone() },
+            Observation::TurnEnded { turn, failure: None },
+        ]);
+    }
+    fn decision(cursor: u64, observation: WireObservation) -> Event {
+        let mut decision = event(json!({}));
+        decision.cursor = cursor;
+        decision.observation = observation;
+        decision
+    }
+    fn requested(cursor: u64, request: &str) -> Event {
+        decision(cursor, WireObservation::DecisionRequested {
+            request_id: alondra_foundation::RequestId(request.into()),
+            tool_use_id: Some("toolu_1".into()),
+            kind: DecisionKind::Permission,
+            payload: json!({"tool": "Bash", "input": {"command": "ls"}, "request": {}}),
+        })
+    }
+    fn settled(cursor: u64, request: &str, epoch: u64, outcome: DecisionOutcome) -> Event {
+        decision(cursor, WireObservation::DecisionSettled { request_id: alondra_foundation::RequestId(request.into()), epoch, outcome })
+    }
+    // A decision Claude asks for is asked at the host's cursor of its request, with the payload
+    // the host kept; its settlement says whether the turn that asked goes on with it.
+    #[test]
+    fn a_decision_request_is_asked_at_its_cursor_and_settles_once_with_the_turn_it_continues() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let asked = fold(&requested(7, "decision-1"), &session(), &mut state, input).unwrap();
+        let [Observation::Asked { request, epoch, kind, tool_use, payload }] = asked.as_slice() else { panic!("{asked:?}") };
+        assert_eq!((request.as_str(), *epoch, *kind, tool_use.as_deref()), ("decision-1", 7, alondra_provider_contract::DecisionKind::Permission, Some("toolu_1")));
+        assert_eq!(serde_json::from_slice::<Value>(payload).unwrap(), json!({"tool": "Bash", "input": {"command": "ls"}, "request": {}}));
+        assert_eq!(fold(&settled(8, "decision-1", 7, DecisionOutcome::Answered), &session(), &mut state, input).unwrap(),
+            vec![Observation::DecisionSettled { epoch: 7, answered: true, continued: true }]);
+        assert!(state.asked.is_empty());
+        assert!(matches!(fold(&settled(9, "decision-1", 7, DecisionOutcome::Answered), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "settled once");
+        state.turn = None;
+        fold(&requested(10, "decision-2"), &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&settled(11, "decision-2", 10, DecisionOutcome::Cancelled), &session(), &mut state, input).unwrap(),
+            vec![Observation::DecisionSettled { epoch: 10, answered: false, continued: false }]);
+    }
+    #[test]
+    fn a_settlement_of_an_unknown_epoch_or_another_request_and_a_repeated_request_are_refused() {
+        let mut state = state();
+        fold(&requested(3, "decision-1"), &session(), &mut state, input).unwrap();
+        assert!(matches!(fold(&requested(4, "decision-1"), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "the same request twice");
+        assert!(matches!(fold(&settled(5, "decision-1", 4, DecisionOutcome::Answered), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "an epoch nobody asked at");
+        assert!(matches!(fold(&settled(5, "decision-9", 3, DecisionOutcome::Answered), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "another request at that epoch");
+        assert_eq!(state.asked, BTreeMap::from([(3, "decision-1".to_owned())]));
+        let mut fresh = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        assert!(matches!(fold(&requested(1, "decision-1"), &session(), &mut fresh, input), Err(AdapterError::InvalidObservation)), "nothing is asked before Claude is up");
     }
     #[test]
     fn provider_owned_retry_and_allowed_rate_limit_do_not_end_business_execution() {

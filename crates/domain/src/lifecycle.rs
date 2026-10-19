@@ -119,6 +119,11 @@ pub enum Refusal {
     PlanReviewPending,
     /// Work after the merge ends only with the fact that ended it, never as a bare drain.
     DrainWithoutFact,
+    /// A model name that is empty, blank, longer than 128 bytes or carries control characters.
+    InvalidModel,
+    /// A decision that answers nothing: no answers, a denial without its message, or one that
+    /// does not answer what its card asks.
+    InvalidDecision,
 }
 
 impl From<IdentityError> for Refusal {
@@ -171,6 +176,85 @@ pub enum PlanReviewOutcome {
     KeptByUser,
 }
 
+/// The permission modes an execution can be set to. None grants a permission by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PermissionMode {
+    Default,
+    Plan,
+    DontAsk,
+}
+
+/// An operation on the running execution itself. `Interrupt` names the root turn it interrupts,
+/// or none when only the execution's own work runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Control {
+    Interrupt { turn: Option<TurnId> },
+    SetModel { model: String },
+    SetPermissionMode { mode: PermissionMode },
+    ReadMcpStatus,
+}
+
+/// What an SDK decision of the execution is answered with. Nothing is granted by default: a
+/// request goes on only with `Allow`, `Answers` or `Accept`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    /// Claude's questions answered, one answer for each, in the order it asked them.
+    Answers { answers: Vec<String> },
+    Deny { message: String },
+    /// An MCP server's request for input accepted with what the user wrote.
+    Accept { text: String },
+    Decline,
+}
+
+fn valid_decision(decision: &Decision) -> Result<(), Refusal> {
+    match decision {
+        Decision::Answers { answers } if answers.is_empty() => Err(Refusal::InvalidDecision),
+        Decision::Deny { message } if message.trim().is_empty() => Err(Refusal::InvalidDecision),
+        _ => Ok(()),
+    }
+}
+
+/// Whether `decision` answers a card that waits for `reason`: a permission or a plan is allowed
+/// or denied; a question or an MCP server's request is answered, accepted, declined or denied.
+fn decides(reason: WaitReason, decision: &Decision) -> bool {
+    match decision {
+        Decision::Allow => reason == WaitReason::Permission,
+        Decision::Answers { .. } | Decision::Accept { .. } | Decision::Decline => reason == WaitReason::Question,
+        Decision::Deny { .. } => matches!(reason, WaitReason::Permission | WaitReason::Question),
+    }
+}
+
+/// The callback of the SDK decision its host persisted at `epoch`, in the execution of `generation`.
+pub fn decision_callback(generation: u64, epoch: u64) -> CallbackId {
+    CallbackId::new(format!("decision-{generation}-{epoch}")).expect("a decision callback is never empty")
+}
+/// The continuation the turn of `generation` resumes with once the decision at `epoch` settled.
+pub fn decision_continuation(generation: u64, epoch: u64) -> ContinuationId {
+    ContinuationId::new(format!("decision-{generation}-{epoch}")).expect("a decision continuation is never empty")
+}
+/// The epoch of a decision callback of the execution of `generation`.
+pub fn decision_epoch(generation: u64, callback: &CallbackId) -> Option<u64> {
+    let epoch = callback.as_str().strip_prefix(&format!("decision-{generation}-"))?;
+    let parsed = epoch.parse::<u64>().ok()?;
+    (parsed.to_string() == epoch).then_some(parsed)
+}
+
+/// Where a callback of the current execution stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallbackView {
+    AwaitingAnswer,
+    Answered,
+}
+
+fn valid_model(model: &str) -> Result<(), Refusal> {
+    if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
+        Err(Refusal::InvalidModel)
+    } else {
+        Ok(())
+    }
+}
+
 /// Requests and observations are validated by the aggregate, not assigned as state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -188,9 +272,22 @@ pub enum Event {
     Ask {
         card: InteractionId,
     },
+    /// The user answered a card that waits for no callback: the task goes on with `input`.
     Answer {
         card: InteractionId,
         input: InputId,
+    },
+    /// The user decided the card of a callback the execution waits on. Nothing is queued: the
+    /// execution resumes once its callback settles.
+    Decide {
+        card: InteractionId,
+        decision: Decision,
+    },
+    /// The user answered `from`, the card a callback still awaiting its answer is held by, while
+    /// the decision needs more: `to` holds the callback instead, for the same reason.
+    MoveCard {
+        from: InteractionId,
+        to: InteractionId,
     },
     PlanApproved,
     BlockDelivery {
@@ -288,6 +385,16 @@ pub enum Event {
         resend: Option<InputId>,
         unheard_card: InteractionId,
     },
+    /// The intent to run `kind` on the current execution, recorded before anything reaches it.
+    RequestControl {
+        control: OperationId,
+        kind: Control,
+    },
+    /// A resting execution waiting for the user is asked to compact its conversation with `input`;
+    /// the cards it waits on stay.
+    Compact {
+        input: InputId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -333,6 +440,12 @@ pub enum RuntimeFact {
     CallbackAborted {
         callback: CallbackId,
         unheard_card: InteractionId,
+    },
+    /// A callback Alondra's own rules decided as it was asked: it opens already answered, with no
+    /// card for the user.
+    AnsweredByPolicy {
+        callback: CallbackId,
+        decision: Decision,
     },
     EffectAccepted {
         operation: OperationId,
@@ -658,6 +771,31 @@ impl TaskLifecycle {
                 execution.activity.view()
             }
         })
+    }
+    /// The root turn the execution is running, if it is in one.
+    pub fn turn(&self) -> Option<&TurnId> {
+        match &self.session()?.activity {
+            Activity::Turn { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+    /// Where the callback `id` of the current execution stands, if it waits on it.
+    pub fn callback(&self, id: &CallbackId) -> Option<CallbackView> {
+        self.session()?.callbacks.iter().find_map(|state| match state {
+            CallbackState::AwaitingAnswer(callback) if callback == id => Some(CallbackView::AwaitingAnswer),
+            CallbackState::Answered(callback) if callback == id => Some(CallbackView::Answered),
+            _ => None,
+        })
+    }
+    /// The callback a card the task holds decides, if it decides one.
+    pub fn card_callback(&self, card: &InteractionId) -> Option<&CallbackId> {
+        let held = match &self.state {
+            State::InProgress(Progress::Waiting { cards, .. }) => cards.iter().find(|held| &held.id == card),
+            State::InProgress(Progress::Dependency { decisions, .. }) => decisions.get(card),
+            State::Delivered(delivered) => delivered.decisions.get(card),
+            _ => None,
+        };
+        held?.callback.as_ref()
     }
     pub fn cursor(&self) -> Option<u64> {
         self.session().map(|execution| execution.cursor)

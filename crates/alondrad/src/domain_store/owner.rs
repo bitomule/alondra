@@ -7,14 +7,24 @@ use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
 use alondra_foundation::ExecutionStamp;
 use alondra_provider_contract::{AdapterError, OrderedObservation, Placement, PreparedCommand, ProviderBinding};
 use alondra_store::{
-    AdapterState, AuthorityScope, CommandEvidence, Committed, CommittedCommand, DispatchAttempt, DispatchPermit,
-    DispatchReceipt, InputPayload, LifecycleTransaction, ObservationAcceptance, OwnerGrant,
+    AdapterState, AuthorityScope, CommandEvidence, Committed, CommittedCommand, CommittedControl, ControlAttempt,
+    ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt, InputPayload, LifecycleTransaction,
+    ObservationAcceptance, OwnerGrant, UnresolvedCommand, UnresolvedControl,
 };
 
 /// The provider's part of a dispatch: its metadata for an input, and the exact command it sends.
 pub(crate) trait Preparer {
     fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> std::result::Result<(), AdapterError>;
     fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> std::result::Result<PreparedCommand, AdapterError>;
+}
+
+/// What a daemon adopting a live host takes over: the execution, its worktree, and the dispatches
+/// and controls a crash left claimed, each with the exact bytes to re-send to the host.
+pub(crate) struct Adoption {
+    pub(crate) stamp: ExecutionStamp,
+    pub(crate) directory: String,
+    pub(crate) commands: Vec<UnresolvedCommand>,
+    pub(crate) controls: Vec<UnresolvedControl>,
 }
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
@@ -83,6 +93,7 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         RuntimeFact::WorkEnded { work, continuation } => {
             RuntimeObservation::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
         }
+        RuntimeFact::ContinuationConsumed { continuation } => RuntimeObservation::WorkContinued { continuation: continuation.as_str().into() },
         other => return Err(StoreError::Storage(anyhow::anyhow!("provider observation refused: the domain does not record {other:?} yet"))),
     })
 }
@@ -145,14 +156,17 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// Raw provider evidence and its checkpoint, and the facts it was normalized to, recorded by
     /// the domain's own commands in this same transaction: technical facts by RecordRuntimeFacts,
-    /// the end of the root turn by RecordTurnBoundary. Facts the domain does not record yet (a
-    /// lost connection, a released resource) refuse the whole observation.
+    /// the end of the root turn by RecordTurnBoundary, a decision Claude asks for by
+    /// RecordDecisionRequest once its request is kept, and its end by RecordDecisionSettled or
+    /// RecordDecisionAborted. Facts the domain does not record yet (a lost connection, a released
+    /// resource) refuse the whole observation. `home` is Alondra's, where «allow always» is judged.
     pub(crate) fn stage_observation<N: ObservationNormalizer>(
         &mut self,
         binding: &ProviderBinding,
         owner_generation: u64,
         batch: &OrderedObservation,
         normalizer: &N,
+        home: &std::path::Path,
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
         let pending = alondra_agent_application::stage_observation(
             &mut self.journal,
@@ -163,24 +177,59 @@ impl<'connection> OwnerTransaction<'connection> {
         )
         .map_err(application_error)?;
         let execution = pending.execution().clone();
+        let (task_id, generation) = (execution.task().clone(), execution.generation());
         let mut commands = vec![];
         let mut technical = vec![];
+        let flush = |commands: &mut Vec<Command>, technical: &mut Vec<RuntimeObservation>| {
+            if !technical.is_empty() {
+                commands.push(Command::RecordRuntimeFacts { task_id: task_id.clone(), generation, facts: std::mem::take(technical) });
+            }
+        };
         for fact in pending.facts() {
             match fact {
                 ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
                 ObservedFact::ModelAnswered => technical.push(RuntimeObservation::ModelAnswered),
                 ObservedFact::TurnEnded { turn, failure } => {
-                    if !technical.is_empty() {
-                        commands.push(Command::RecordRuntimeFacts { task_id: execution.task().clone(), generation: execution.generation(), facts: std::mem::take(&mut technical) });
-                    }
+                    flush(&mut commands, &mut technical);
                     let failure = failure.as_ref().map(|failure| SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at });
-                    commands.push(Command::RecordTurnBoundary { task_id: execution.task().clone(), generation: execution.generation(), turn: turn.as_str().into(), failure });
+                    commands.push(Command::RecordTurnBoundary { task_id: task_id.clone(), generation, turn: turn.as_str().into(), failure });
+                }
+                ObservedFact::Asked { request, epoch, kind, tool_use, payload } => {
+                    flush(&mut commands, &mut technical);
+                    let kept = alondra_store::DecisionRequest::new(request.clone(), tool_use.clone(), *kind, payload.clone())?;
+                    self.journal.put_decision_request(&execution, *epoch, &kept)?;
+                    let conn = self.conn;
+                    let (payload, worktree) = self.journal.inspect(|| {
+                        let payload: serde_json::Value = serde_json::from_slice(payload).map_err(|error| StoreError::Storage(error.into()))?;
+                        let worktree = conn
+                            .query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task_id.0], |row| row.get::<_, String>(0))
+                            .optional()
+                            .map_err(|error| StoreError::Storage(error.into()))?;
+                        Ok::<_, StoreError>((payload, worktree))
+                    })?;
+                    let asked = crate::domain_holds::sdk_decision(*kind, &payload, worktree.as_deref(), home);
+                    commands.push(Command::RecordDecisionRequest {
+                        task_id: task_id.clone(),
+                        generation,
+                        epoch: *epoch,
+                        hold: asked.hold,
+                        tool: asked.tool,
+                        input: asked.input,
+                        mcp_server: asked.mcp_server,
+                        prompt: asked.prompt,
+                    });
+                }
+                ObservedFact::Settled { epoch, answered, .. } => {
+                    flush(&mut commands, &mut technical);
+                    commands.push(if *answered {
+                        Command::RecordDecisionSettled { task_id: task_id.clone(), generation, epoch: *epoch }
+                    } else {
+                        Command::RecordDecisionAborted { task_id: task_id.clone(), generation, epoch: *epoch }
+                    });
                 }
             }
         }
-        if !technical.is_empty() {
-            commands.push(Command::RecordRuntimeFacts { task_id: execution.task().clone(), generation: execution.generation(), facts: technical });
-        }
+        flush(&mut commands, &mut technical);
         for (index, command) in commands.into_iter().enumerate() {
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
@@ -229,19 +278,19 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// Takes the task's current execution with the next owner generation, for a daemon that is
-    /// adopting a host a previous one left running. The commit issues the grant; the returned
-    /// dispatches are the ones a crash left claimed, with the exact bytes to re-send to the host.
-    pub(crate) fn adopt(&mut self, task: &TaskId) -> std::result::Result<(ExecutionStamp, String, Vec<alondra_store::UnresolvedCommand>), StoreError> {
+    /// adopting a host a previous one left running. The commit issues the grant.
+    pub(crate) fn adopt(&mut self, task: &TaskId) -> std::result::Result<Adoption, StoreError> {
         let stamp = self.journal.load(task)?.execution().cloned().ok_or(alondra_store::Error::MissingIntent)?;
         let current = self.journal.owner_generation(&stamp)?;
         self.journal.reserve_owner(&stamp, current)?;
-        let unresolved = self.journal.unresolved_commands(task)?;
+        let commands = self.journal.unresolved_commands(task)?;
+        let controls = self.journal.unresolved_controls(task)?;
         let conn = self.conn;
         let directory = self.journal.inspect(|| {
             conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task.0], |row| row.get::<_, String>(0))
                 .map_err(|error| StoreError::Storage(error.into()))
         })?;
-        Ok((stamp, directory, unresolved))
+        Ok(Adoption { stamp, directory, commands, controls })
     }
 
     /// Resolves a claimed dispatch with the host's answer, fenced by the generation it was
@@ -282,6 +331,35 @@ impl<'connection> OwnerTransaction<'connection> {
 
     pub(crate) fn record_receipt(&mut self, command: CommittedCommand, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.record_committed_receipt(command, receipt)?)
+    }
+
+    /// The commit hands back the attempt; `false` when the control was revoked instead, an
+    /// interrupt whose turn or work already ended. A permit some later commit made stale is refused.
+    pub(crate) fn claim_control(&mut self, permit: ControlPermit) -> std::result::Result<bool, StoreError> {
+        Ok(self.journal.claim_control(permit)?)
+    }
+
+    /// The exact command the provider prepares for a claimed control, recorded under the owner's
+    /// generation once the claim still holds. The commit hands back the command.
+    pub(crate) fn record_control(
+        &mut self,
+        attempt: ControlAttempt,
+        owner_generation: u64,
+        prepare: impl FnOnce(&ControlAttempt) -> std::result::Result<PreparedCommand, AdapterError>,
+    ) -> std::result::Result<(), StoreError> {
+        self.journal.fence_control(&attempt)?;
+        let command = prepare(&attempt).map_err(|error| StoreError::Storage(anyhow::anyhow!("the control's command was not prepared: {error:?}")))?;
+        let evidence = CommandEvidence::new(command.bytes().to_vec())?;
+        Ok(self.journal.record_owned_control(attempt, owner_generation, evidence)?)
+    }
+
+    pub(crate) fn record_control_receipt(&mut self, control: CommittedControl, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.record_control_receipt(control, receipt)?)
+    }
+
+    /// Resolves a claimed control with the host's answer, fenced like `resolve`.
+    pub(crate) fn resolve_control(&mut self, stamp: &ExecutionStamp, id: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.resolve_control(stamp, id, owner_generation, receipt)?)
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.

@@ -141,9 +141,9 @@ fn a_human_permission_and_owned_background_work_coexist_without_releasing_the_sl
     );
     apply(
         &mut task,
-        Event::Answer {
+        Event::Decide {
             card: "permission".into(),
-            input: input("unused"),
+            decision: Decision::Allow,
         },
     );
     assert!(task.holds_slot());
@@ -616,9 +616,9 @@ fn concurrent_callbacks_are_answered_independently_and_survive_a_delivery() {
     assert!(task.holds_slot());
     apply(
         &mut task,
-        Event::Answer {
+        Event::Decide {
             card: "second".into(),
-            input: input("unused"),
+            decision: Decision::Allow,
         },
     );
     assert_eq!(
@@ -861,7 +861,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..26, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..34, 1..160)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for action in actions {
             let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -873,7 +873,7 @@ proptest! {
                 4 => runtime(RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") }),
                 5 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() }),
                 6 => runtime(RuntimeFact::Ask { card: "first".into(), callback: CallbackId::new("first").unwrap(), reason: WaitReason::Permission }),
-                7 => Some(Event::Answer { card: "first".into(), input: input("reply") }),
+                7 => Some(Event::Decide { card: "first".into(), decision: Decision::Allow }),
                 8 => Some(Event::Present { delivery: "result".into() }),
                 9 => Some(Event::Accept { delivery: "result".into(), merge: None }),
                 10 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
@@ -891,11 +891,24 @@ proptest! {
                 22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
                 23 => runtime(RuntimeFact::Notification),
                 24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
+                25 => Some(Event::RequestControl { control: operation("interrupt"), kind: Control::Interrupt { turn: task.turn().cloned() } }),
+                26 => Some(Event::RequestControl { control: operation("model"), kind: Control::SetModel { model: "claude-sonnet".into() } }),
+                27 => Some(Event::RequestControl { control: operation("mcp"), kind: Control::ReadMcpStatus }),
+                28 => Some(Event::Compact { input: input("compact") }),
+                29 => runtime(RuntimeFact::AnsweredByPolicy { callback: CallbackId::new("policy").unwrap(), decision: Decision::Deny { message: "Nodes cannot act as the user".into() } }),
+                30 => Some(Event::Decide { card: "second".into(), decision: Decision::Deny { message: "No".into() } }),
+                31 => Some(Event::MoveCard { from: "first".into(), to: "moved".into() }),
+                32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
                 _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
             };
             let Some(event) = event else { continue };
+            let control = matches!(event, Event::RequestControl { .. });
             let before = format!("{task:?}");
+            let observed = (task.phase(), task.activity(), task.cursor(), task.turn().cloned(), task.cards().len(), task.pending_inputs().len(), task.holds_slot());
+            let moved = matches!(event, Event::MoveCard { .. });
             if task.apply(task.revision(), event).is_err() { prop_assert_eq!(format!("{task:?}"), before); }
+            else if moved { prop_assert_eq!((task.phase(), task.activity(), task.cursor(), task.turn().cloned(), task.cards().len(), task.pending_inputs().len(), task.holds_slot()), observed); }
+            else if control { prop_assert_eq!((task.phase(), task.activity(), task.cursor(), task.turn().cloned(), task.cards().len(), task.pending_inputs().len(), task.holds_slot()), observed); }
             if matches!(task.phase(), TaskPhase::Completed | TaskPhase::Cancelled) {
                 prop_assert!(task.execution().is_none());
                 prop_assert!(!task.holds_slot());
@@ -931,9 +944,9 @@ fn abort_after_answer_replaces_the_last_callback_wake_with_an_actionable_card() 
     );
     apply(
         &mut task,
-        Event::Answer {
+        Event::Decide {
             card: "permission".into(),
-            input: input("unused"),
+            decision: Decision::Allow,
         },
     );
     assert_eq!(task.activity(), ActivityView::Continuation);
@@ -975,9 +988,9 @@ fn callbacks_can_settle_in_reverse_answer_order_without_losing_either_wake() {
     for id in ["first", "second"] {
         apply(
             &mut task,
-            Event::Answer {
+            Event::Decide {
                 card: id.into(),
-                input: input("unused"),
+                decision: Decision::Allow,
             },
         );
     }
@@ -1533,9 +1546,9 @@ fn callback_abort_promotes_a_waiting_business_input_instead_of_inventing_unheard
     );
     apply(
         &mut task,
-        Event::Answer {
+        Event::Decide {
             card: "permission".into(),
-            input: input("unused"),
+            decision: Decision::Allow,
         },
     );
     apply(
@@ -1950,5 +1963,288 @@ fn an_input_the_ended_host_never_took_is_sent_again_in_its_place_without_asking(
     assert_eq!(
         task.apply(task.revision(), Event::ResendUntaken { input: input("missing"), resend: input("other") }),
         Err(Refusal::UnknownObligation)
+    );
+}
+
+fn control(task: &mut TaskLifecycle, id: &str, kind: Control) -> Result<(), Refusal> {
+    task.apply(task.revision(), Event::RequestControl { control: operation(id), kind })
+}
+
+#[test]
+fn a_control_is_recorded_on_the_running_execution_and_changes_nothing_else() {
+    let mut task = running();
+    assert_eq!(task.turn(), Some(&turn("root")));
+    let before = (task.phase(), task.activity(), task.cursor(), task.pending_inputs().len(), task.holds_slot());
+    for (id, kind) in [
+        ("interrupt", Control::Interrupt { turn: Some(turn("root")) }),
+        ("model", Control::SetModel { model: "claude-opus-4-1".into() }),
+        ("mode", Control::SetPermissionMode { mode: PermissionMode::Plan }),
+        ("mcp", Control::ReadMcpStatus),
+    ] {
+        let revision = task.revision();
+        control(&mut task, id, kind).unwrap();
+        assert_eq!(task.revision(), revision + 1);
+        assert_eq!((task.phase(), task.activity(), task.cursor(), task.pending_inputs().len(), task.holds_slot()), before);
+        assert_eq!(task.turn(), Some(&turn("root")));
+    }
+}
+
+#[test]
+fn an_interrupt_names_exactly_what_runs_and_a_model_must_be_a_name() {
+    let mut task = running();
+    assert_eq!(control(&mut task, "other", Control::Interrupt { turn: Some(turn("other")) }), Err(Refusal::CorrelationMismatch));
+    assert_eq!(control(&mut task, "none", Control::Interrupt { turn: None }), Err(Refusal::CorrelationMismatch));
+    for model in ["", "   ", "line\nbreak", "tab\tbed", &"m".repeat(129)] {
+        assert_eq!(control(&mut task, "model", Control::SetModel { model: model.into() }), Err(Refusal::InvalidModel), "{model:?}");
+    }
+    control(&mut task, "longest", Control::SetModel { model: "m".repeat(128) }).unwrap();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into() });
+    assert_eq!(task.activity(), ActivityView::OwnWork);
+    assert_eq!(task.turn(), None);
+    assert_eq!(control(&mut task, "ended", Control::Interrupt { turn: Some(turn("root")) }), Err(Refusal::CorrelationMismatch));
+    control(&mut task, "own-work", Control::Interrupt { turn: None }).unwrap();
+}
+
+#[test]
+fn a_control_needs_an_available_execution_of_an_open_task() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    assert_eq!(control(&mut task, "unstarted", Control::ReadMcpStatus), Err(Refusal::InvalidState));
+    admit(&mut task, "instance");
+    assert_eq!(control(&mut task, "reserved", Control::ReadMcpStatus), Err(Refusal::InvalidState));
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    assert_eq!(task.activity(), ActivityView::Resting);
+    assert_eq!(control(&mut task, "resting", Control::Interrupt { turn: None }), Err(Refusal::InvalidState), "nothing runs to interrupt");
+    control(&mut task, "resting-mode", Control::SetPermissionMode { mode: PermissionMode::DontAsk }).unwrap();
+    fact(&mut task, RuntimeFact::ConnectionLost { problem_card: "recovery".into() });
+    assert_eq!(control(&mut task, "lost", Control::ReadMcpStatus), Err(Refusal::InvalidState));
+    let mut task = running();
+    apply(&mut task, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    let before = format!("{task:?}");
+    assert_eq!(control(&mut task, "finishing", Control::Interrupt { turn: Some(turn("root")) }), Err(Refusal::InvalidState));
+    assert_eq!(format!("{task:?}"), before);
+}
+
+#[test]
+fn compacting_queues_its_input_on_a_resting_execution_and_keeps_every_card() {
+    let mut task = running();
+    assert_eq!(task.apply(task.revision(), Event::Compact { input: input("busy") }), Err(Refusal::InvalidState), "a turn runs");
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
+    apply(&mut task, Event::Compact { input: input("compact") });
+    assert_eq!(task.pending_inputs(), vec![&input("compact")]);
+    assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
+    assert_eq!(task.apply(task.revision(), Event::Compact { input: input("again") }), Err(Refusal::InvalidState), "its input is already pending");
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("compaction"), trigger: Trigger::Input(input("compact")) });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("compaction"), unheard_card: "second".into() });
+    assert_eq!(task.activity(), ActivityView::Resting);
+    assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)], "no new card");
+    assert!(task.pending_inputs().is_empty());
+
+    let mut delivered = running();
+    apply(&mut delivered, Event::Present { delivery: "delivery".into() });
+    fact(&mut delivered, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into() });
+    apply(&mut delivered, Event::Compact { input: input("compact") });
+    assert_eq!(delivered.phase(), TaskPhase::Delivered);
+    assert_eq!(delivered.delivery(), Some(&InteractionId::from("delivery")));
+
+    let mut paused = running();
+    fact(&mut paused, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    apply(&mut paused, Event::Pause { card: "pause".into() });
+    assert_eq!(paused.apply(paused.revision(), Event::Compact { input: input("compact") }), Err(Refusal::InvalidState));
+    let mut unstarted = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    apply(&mut unstarted, Event::Ask { card: "question".into() });
+    assert_eq!(unstarted.apply(unstarted.revision(), Event::Compact { input: input("compact") }), Err(Refusal::InvalidState), "no execution to compact");
+}
+
+fn asked(task: &mut TaskLifecycle, card: &str, epoch: u64, reason: WaitReason) -> CallbackId {
+    let callback = decision_callback(task.generation(), epoch);
+    fact(task, RuntimeFact::Ask { card: card.into(), callback: callback.clone(), reason });
+    callback
+}
+
+#[test]
+fn a_decision_callback_names_its_epoch_and_nothing_else() {
+    assert_eq!(decision_epoch(3, &decision_callback(3, 42)), Some(42));
+    assert_eq!(decision_epoch(4, &decision_callback(3, 42)), None);
+    assert_eq!(decision_epoch(3, &CallbackId::new("decision-3-042").unwrap()), None);
+    assert_eq!(decision_epoch(3, &CallbackId::new("decision-3-").unwrap()), None);
+    assert_eq!(decision_epoch(3, &CallbackId::new("permission").unwrap()), None);
+    assert_eq!(decision_continuation(3, 42).as_str(), decision_callback(3, 42).as_str());
+}
+
+/// Every reply to every kind of card: a callback is only decided, a plain card only answered,
+/// and a decision answers only what its card asks.
+#[test]
+fn replies_to_cards_follow_one_table() {
+    #[derive(Clone, Copy, Debug)]
+    enum Held {
+        Plain,
+        Permission,
+        Question,
+    }
+    let replies: Vec<(&str, Box<dyn Fn(&str) -> Event>)> = vec![
+        ("answer", Box::new(|card: &str| Event::Answer { card: card.into(), input: input("reply") })),
+        ("allow", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Allow })),
+        ("answers", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Answers { answers: vec!["Yes".into()] } })),
+        ("no answers", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Answers { answers: vec![] } })),
+        ("deny", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Deny { message: "No".into() } })),
+        ("blank deny", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Deny { message: " ".into() } })),
+        ("accept", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Accept { text: String::new() } })),
+        ("decline", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Decline })),
+    ];
+    let expected = |held: Held, reply: &str| -> Result<(), Refusal> {
+        match (held, reply) {
+            (_, "no answers" | "blank deny") => Err(Refusal::InvalidDecision),
+            (Held::Plain, "answer") => Ok(()),
+            (Held::Plain, _) => Err(Refusal::InvalidState),
+            (Held::Permission | Held::Question, "answer") => Err(Refusal::InvalidState),
+            (Held::Permission, "allow" | "deny") => Ok(()),
+            (Held::Permission, _) => Err(Refusal::InvalidDecision),
+            (Held::Question, "answers" | "deny" | "accept" | "decline") => Ok(()),
+            (Held::Question, _) => Err(Refusal::InvalidDecision),
+        }
+    };
+    for held in [Held::Plain, Held::Permission, Held::Question] {
+        for (name, reply) in &replies {
+            let mut task = running();
+            let callback = match held {
+                Held::Plain => {
+                    apply(&mut task, Event::Ask { card: "card".into() });
+                    None
+                }
+                Held::Permission => Some(asked(&mut task, "card", 7, WaitReason::Permission)),
+                Held::Question => Some(asked(&mut task, "card", 7, WaitReason::Question)),
+            };
+            let before = format!("{task:?}");
+            let outcome = task.apply(task.revision(), reply("card"));
+            assert_eq!(outcome, expected(held, name), "{name} on a {held:?} card");
+            match outcome {
+                Ok(()) => {
+                    assert!(task.cards().is_empty(), "{name} on a {held:?} card leaves it");
+                    if let Some(callback) = &callback {
+                        assert_eq!(task.callback(callback), Some(CallbackView::Answered));
+                        assert!(task.pending_inputs().is_empty(), "a decision queues no input");
+                    }
+                }
+                Err(_) => assert_eq!(format!("{task:?}"), before, "{name} on a {held:?} card changed it"),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_callback_awaiting_its_answer_moves_to_another_card_and_nothing_else_moves() {
+    let mut task = running();
+    let callback = asked(&mut task, "q1", 5, WaitReason::Question);
+    apply(&mut task, Event::Ask { card: "plain".into() });
+    let move_card = |from: &str, to: &str| Event::MoveCard { from: from.into(), to: to.into() };
+    for (event, refusal) in [
+        (move_card("absent", "q2"), Refusal::CorrelationMismatch),
+        (move_card("q1", "q1"), Refusal::DuplicateObligation),
+        (move_card("q1", "plain"), Refusal::DuplicateObligation),
+        (move_card("q1", " "), Refusal::EmptyIdentity),
+        (move_card("plain", "q2"), Refusal::InvalidState),
+    ] {
+        let before = format!("{task:?}");
+        assert_eq!(task.apply(task.revision(), event.clone()), Err(refusal), "{event:?}");
+        assert_eq!(format!("{task:?}"), before, "{event:?} changed the task");
+    }
+    apply(&mut task, move_card("q1", "q2"));
+    assert_eq!(
+        task.cards(),
+        vec![(&InteractionId::from("plain"), WaitReason::Question), (&InteractionId::from("q2"), WaitReason::Question)]
+    );
+    assert_eq!(task.card_callback(&"q2".into()), Some(&callback));
+    assert_eq!(task.card_callback(&"q1".into()), None);
+    assert_eq!(task.callback(&callback), Some(CallbackView::AwaitingAnswer));
+    let answers = Decision::Answers { answers: vec!["Yes".into(), "No".into()] };
+    assert_eq!(
+        task.apply(task.revision(), Event::Decide { card: "q1".into(), decision: answers.clone() }),
+        Err(Refusal::CorrelationMismatch),
+        "the card it moved from decides nothing"
+    );
+    apply(&mut task, Event::Decide { card: "q2".into(), decision: answers });
+    assert_eq!(task.callback(&callback), Some(CallbackView::Answered));
+    assert_eq!(task.apply(task.revision(), move_card("q2", "q3")), Err(Refusal::CorrelationMismatch), "a decided card moves nowhere");
+}
+
+#[test]
+fn a_decided_callback_settles_inside_the_turn_that_asked_it() {
+    let mut task = running();
+    let callback = asked(&mut task, "decision", 5, WaitReason::Permission);
+    assert_eq!(task.callback(&callback), Some(CallbackView::AwaitingAnswer));
+    assert_eq!(task.card_callback(&"decision".into()), Some(&callback));
+    assert_eq!(task.cards(), vec![(&InteractionId::from("decision"), WaitReason::Permission)]);
+    apply(&mut task, Event::Decide { card: "decision".into(), decision: Decision::Allow });
+    assert_eq!(task.callback(&callback), Some(CallbackView::Answered));
+    assert_eq!(task.card_callback(&"decision".into()), None);
+    assert_eq!(task.activity(), ActivityView::Working);
+    assert_eq!(
+        task.apply(task.revision(), Event::Decide { card: "decision".into(), decision: Decision::Allow }),
+        Err(Refusal::InvalidState),
+        "a decided card is decided once"
+    );
+    let continuation = decision_continuation(task.generation(), 5);
+    fact(&mut task, RuntimeFact::CallbackSettled { callback: callback.clone(), continuation: continuation.clone() });
+    fact(&mut task, RuntimeFact::ContinuationConsumed { continuation });
+    assert_eq!(task.callback(&callback), None);
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    assert_eq!(task.activity(), ActivityView::Resting);
+    assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
+}
+
+#[test]
+fn an_aborted_callback_takes_its_card_and_refuses_a_late_decision() {
+    let mut task = running();
+    let callback = asked(&mut task, "decision", 5, WaitReason::Question);
+    fact(&mut task, RuntimeFact::CallbackAborted { callback: callback.clone(), unheard_card: "cancelled".into() });
+    assert!(task.cards().is_empty(), "the turn that asked still runs: nothing else is required");
+    assert_eq!(task.callback(&callback), None);
+    assert_eq!(
+        task.apply(task.revision(), Event::Decide { card: "decision".into(), decision: Decision::Answers { answers: vec!["Yes".into()] } }),
+        Err(Refusal::InvalidState)
+    );
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
+}
+
+#[test]
+fn a_policy_decision_opens_its_callback_answered_without_a_card() {
+    let mut task = running();
+    let callback = decision_callback(task.generation(), 9);
+    fact(&mut task, RuntimeFact::AnsweredByPolicy { callback: callback.clone(), decision: Decision::Allow });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.callback(&callback), Some(CallbackView::Answered));
+    assert_eq!(task.activity(), ActivityView::Working);
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    for refused in [
+        RuntimeFact::AnsweredByPolicy { callback: callback.clone(), decision: Decision::Allow },
+        RuntimeFact::Ask { card: "again".into(), callback: callback.clone(), reason: WaitReason::Permission },
+        RuntimeFact::AnsweredByPolicy { callback: decision_callback(1, 10), decision: Decision::Deny { message: "".into() } },
+    ] {
+        let before = format!("{task:?}");
+        assert!(task.apply(task.revision(), Event::Runtime { stamp: stamp.clone(), cursor, fact: refused.clone() }).is_err(), "{refused:?}");
+        assert_eq!(format!("{task:?}"), before);
+    }
+    let continuation = decision_continuation(task.generation(), 9);
+    fact(&mut task, RuntimeFact::CallbackSettled { callback: callback.clone(), continuation: continuation.clone() });
+    fact(&mut task, RuntimeFact::ContinuationConsumed { continuation });
+    assert_eq!(task.callback(&callback), None);
+    assert_eq!(task.activity(), ActivityView::Working);
+}
+
+#[test]
+fn a_policy_decision_needs_an_available_execution() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::ConnectionLost { problem_card: "recovery".into() });
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    assert_eq!(
+        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::AnsweredByPolicy {
+            callback: decision_callback(1, 3), decision: Decision::Allow } }),
+        Err(Refusal::InvalidState)
     );
 }

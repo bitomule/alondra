@@ -43,6 +43,8 @@ pub enum Refusal {
     /// The action is meant for the orchestrator or a node.
     NotForYou,
     NodeUnreachable { node: String },
+    /// The node runs no turn and no work of its own that an interrupt could stop.
+    NothingToInterrupt,
     DeviceNotApproved,
     StorageUnavailable,
     /// GitHub did not answer, so nothing was done there.

@@ -3,6 +3,8 @@
 //! the SDK host runs the task's native Claude against the local model double. Its first turn
 //! ends with nothing that explains the next step, so one card asks the user; «Carry on» with a
 //! note from the phone commits and reaches Claude, whose next turn ends with a card of its own.
+mod decisions;
+
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -164,7 +166,8 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
-    report.case("S5", "The Mac shuts down before Claude shows it read its mission: each task asks before sending it again", |report| {
+    decisions::run(report, sandbox, fakes, &user);
+    report.case("S11", "The Mac shuts down before Claude shows it read its mission: each task asks before sending it again", |report| {
         hold(sandbox, true)?;
         for (request_id, task, title) in DOUBTFUL {
             request(report, fakes, &user, &task_script(request_id, task, title), title)?;
@@ -211,9 +214,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
 
 /// Three tasks whose mission Claude had not shown it read when the Mac shut down.
 const DOUBTFUL: [(&str, &str, &str); 3] = [
-    ("req-s5", "t-s5", "Write the migration notes"),
-    ("req-s6", "t-s6", "Write the rollout plan"),
-    ("req-s7", "t-s7", "Write the support guide"),
+    ("req-s11", "t-s11", "Write the migration notes"),
+    ("req-s12", "t-s12", "Write the rollout plan"),
+    ("req-s13", "t-s13", "Write the support guide"),
 ];
 
 /// The model double takes the tasks' requests and holds them unanswered while it is set.

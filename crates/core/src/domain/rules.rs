@@ -4,6 +4,9 @@ mod plan_review;
 pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem};
 #[path = "guards.rs"]
 mod guards;
+#[path = "decisions.rs"]
+mod decisions;
+pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNWRITTEN_PLAN, decision_policy};
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
     Err(DomainError::new(code, msg))
@@ -1463,7 +1466,9 @@ impl DomainState {
             self.retire(card);
         }
         self.retire_cards_of(task_id);
-        let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
+        let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone())
+            .filter(|card| !self.interactions.get(card).is_some_and(Self::answered_question))
+            .collect();
         for card in &held {
             self.retire(card);
         }
@@ -1922,6 +1927,13 @@ impl DomainState {
             | Command::RecordHostEnded { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::ResendUntakenInput { task_id, .. }
+            | Command::SetModel { task_id, .. }
+            | Command::SetPermissionMode { task_id, .. }
+            | Command::ReadMcpStatus { task_id }
+            | Command::CompactConversation { task_id }
+            | Command::RecordDecisionRequest { task_id, .. }
+            | Command::RecordDecisionSettled { task_id, .. }
+            | Command::RecordDecisionAborted { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
@@ -3145,7 +3157,7 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
-                if !self.settle_claude_card(interaction_id, lifecycles)? {
+                if !self.settle_claude_card(interaction_id, lifecycles)? && !self.decide_sdk_card(interaction_id, lifecycles)? {
                     self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
                 }
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
@@ -4010,6 +4022,36 @@ impl DomainState {
                 if self.probe_claude(*hold, lifecycles)?.is_none() {
                     return fail("not_found", "No task waits for Claude");
                 }
+            }
+            Command::InterruptTurn { agent_id } => {
+                let (task, record) = self.interrupt_guard(actor, agent_id)?;
+                self.decide(lifecycles, &task, record)?;
+            }
+            Command::SetModel { task_id, model } => {
+                let record = self.control_guard(actor, task_id, ControlRecord::SetModel { model: model.clone() })?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::SetPermissionMode { task_id, mode } => {
+                let record = self.control_guard(actor, task_id, ControlRecord::SetPermissionMode { mode: *mode })?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::ReadMcpStatus { task_id } => {
+                let record = self.control_guard(actor, task_id, ControlRecord::ReadMcpStatus)?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::CompactConversation { task_id } => {
+                let record = self.compact_guard(actor, task_id)?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::RecordDecisionRequest { task_id, generation, epoch, hold, tool, input, mcp_server, prompt } => {
+                self.record_decision_request(actor, task_id, *generation, *epoch, *hold, tool.as_deref(), input,
+                    mcp_server.as_ref(), prompt, effects, created, lifecycles)?;
+            }
+            Command::RecordDecisionSettled { task_id, generation, epoch } => {
+                self.end_decision(actor, task_id, *generation, *epoch, true, effects, lifecycles)?;
+            }
+            Command::RecordDecisionAborted { task_id, generation, epoch } => {
+                self.end_decision(actor, task_id, *generation, *epoch, false, effects, lifecycles)?;
             }
             Command::RecordTaskCleanup { task_id } => {
                 system(actor)?;

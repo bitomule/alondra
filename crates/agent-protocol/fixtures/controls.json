@@ -1,0 +1,172 @@
+[
+  {
+    "name": "set_model",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"fixture-model\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "set_model_at_bound",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "set_permission_mode_default",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"default\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "set_permission_mode_plan",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"plan\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "set_permission_mode_dont_ask",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"dont_ask\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "mcp_status",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_status\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "interrupt",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"interrupt\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"fixture\",\"status\":\"connected\"},{\"name\":\"remote\",\"status\":\"failed\",\"error\":\"unreachable\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_unknown_status",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"fixture\",\"status\":\"future-status\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_no_servers",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_at_bound",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"s0\",\"status\":\"connected\"},{\"name\":\"s1\",\"status\":\"connected\"},{\"name\":\"s2\",\"status\":\"connected\"},{\"name\":\"s3\",\"status\":\"connected\"},{\"name\":\"s4\",\"status\":\"connected\"},{\"name\":\"s5\",\"status\":\"connected\"},{\"name\":\"s6\",\"status\":\"connected\"},{\"name\":\"s7\",\"status\":\"connected\"},{\"name\":\"s8\",\"status\":\"connected\"},{\"name\":\"s9\",\"status\":\"connected\"},{\"name\":\"s10\",\"status\":\"connected\"},{\"name\":\"s11\",\"status\":\"connected\"},{\"name\":\"s12\",\"status\":\"connected\"},{\"name\":\"s13\",\"status\":\"connected\"},{\"name\":\"s14\",\"status\":\"connected\"},{\"name\":\"s15\",\"status\":\"connected\"},{\"name\":\"s16\",\"status\":\"connected\"},{\"name\":\"s17\",\"status\":\"connected\"},{\"name\":\"s18\",\"status\":\"connected\"},{\"name\":\"s19\",\"status\":\"connected\"},{\"name\":\"s20\",\"status\":\"connected\"},{\"name\":\"s21\",\"status\":\"connected\"},{\"name\":\"s22\",\"status\":\"connected\"},{\"name\":\"s23\",\"status\":\"connected\"},{\"name\":\"s24\",\"status\":\"connected\"},{\"name\":\"s25\",\"status\":\"connected\"},{\"name\":\"s26\",\"status\":\"connected\"},{\"name\":\"s27\",\"status\":\"connected\"},{\"name\":\"s28\",\"status\":\"connected\"},{\"name\":\"s29\",\"status\":\"connected\"},{\"name\":\"s30\",\"status\":\"connected\"},{\"name\":\"s31\",\"status\":\"connected\"},{\"name\":\"s32\",\"status\":\"connected\"},{\"name\":\"s33\",\"status\":\"connected\"},{\"name\":\"s34\",\"status\":\"connected\"},{\"name\":\"s35\",\"status\":\"connected\"},{\"name\":\"s36\",\"status\":\"connected\"},{\"name\":\"s37\",\"status\":\"connected\"},{\"name\":\"s38\",\"status\":\"connected\"},{\"name\":\"s39\",\"status\":\"connected\"},{\"name\":\"s40\",\"status\":\"connected\"},{\"name\":\"s41\",\"status\":\"connected\"},{\"name\":\"s42\",\"status\":\"connected\"},{\"name\":\"s43\",\"status\":\"connected\"},{\"name\":\"s44\",\"status\":\"connected\"},{\"name\":\"s45\",\"status\":\"connected\"},{\"name\":\"s46\",\"status\":\"connected\"},{\"name\":\"s47\",\"status\":\"connected\"},{\"name\":\"s48\",\"status\":\"connected\"},{\"name\":\"s49\",\"status\":\"connected\"},{\"name\":\"s50\",\"status\":\"connected\"},{\"name\":\"s51\",\"status\":\"connected\"},{\"name\":\"s52\",\"status\":\"connected\"},{\"name\":\"s53\",\"status\":\"connected\"},{\"name\":\"s54\",\"status\":\"connected\"},{\"name\":\"s55\",\"status\":\"connected\"},{\"name\":\"s56\",\"status\":\"connected\"},{\"name\":\"s57\",\"status\":\"connected\"},{\"name\":\"s58\",\"status\":\"connected\"},{\"name\":\"s59\",\"status\":\"connected\"},{\"name\":\"s60\",\"status\":\"connected\"},{\"name\":\"s61\",\"status\":\"connected\"},{\"name\":\"s62\",\"status\":\"connected\"},{\"name\":\"s63\",\"status\":\"connected\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "permission_mode_accept_edits",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"acceptEdits\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_accept_edits_snake",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"accept_edits\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_auto",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"auto\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_bypass",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"bypass_permissions\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_bypass_native",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"bypassPermissions\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_native_spelling",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\",\"mode\":\"dontAsk\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "permission_mode_missing",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_permission_mode\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_empty",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_whitespace",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"   \"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_control_character",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"fixture\\nmodel\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_over_bound",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_missing",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "model_extra_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"set_model\",\"model\":\"fixture-model\",\"fallback\":\"opus\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "compact_is_not_an_action",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"compact\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_over_bound",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"s0\",\"status\":\"connected\"},{\"name\":\"s1\",\"status\":\"connected\"},{\"name\":\"s2\",\"status\":\"connected\"},{\"name\":\"s3\",\"status\":\"connected\"},{\"name\":\"s4\",\"status\":\"connected\"},{\"name\":\"s5\",\"status\":\"connected\"},{\"name\":\"s6\",\"status\":\"connected\"},{\"name\":\"s7\",\"status\":\"connected\"},{\"name\":\"s8\",\"status\":\"connected\"},{\"name\":\"s9\",\"status\":\"connected\"},{\"name\":\"s10\",\"status\":\"connected\"},{\"name\":\"s11\",\"status\":\"connected\"},{\"name\":\"s12\",\"status\":\"connected\"},{\"name\":\"s13\",\"status\":\"connected\"},{\"name\":\"s14\",\"status\":\"connected\"},{\"name\":\"s15\",\"status\":\"connected\"},{\"name\":\"s16\",\"status\":\"connected\"},{\"name\":\"s17\",\"status\":\"connected\"},{\"name\":\"s18\",\"status\":\"connected\"},{\"name\":\"s19\",\"status\":\"connected\"},{\"name\":\"s20\",\"status\":\"connected\"},{\"name\":\"s21\",\"status\":\"connected\"},{\"name\":\"s22\",\"status\":\"connected\"},{\"name\":\"s23\",\"status\":\"connected\"},{\"name\":\"s24\",\"status\":\"connected\"},{\"name\":\"s25\",\"status\":\"connected\"},{\"name\":\"s26\",\"status\":\"connected\"},{\"name\":\"s27\",\"status\":\"connected\"},{\"name\":\"s28\",\"status\":\"connected\"},{\"name\":\"s29\",\"status\":\"connected\"},{\"name\":\"s30\",\"status\":\"connected\"},{\"name\":\"s31\",\"status\":\"connected\"},{\"name\":\"s32\",\"status\":\"connected\"},{\"name\":\"s33\",\"status\":\"connected\"},{\"name\":\"s34\",\"status\":\"connected\"},{\"name\":\"s35\",\"status\":\"connected\"},{\"name\":\"s36\",\"status\":\"connected\"},{\"name\":\"s37\",\"status\":\"connected\"},{\"name\":\"s38\",\"status\":\"connected\"},{\"name\":\"s39\",\"status\":\"connected\"},{\"name\":\"s40\",\"status\":\"connected\"},{\"name\":\"s41\",\"status\":\"connected\"},{\"name\":\"s42\",\"status\":\"connected\"},{\"name\":\"s43\",\"status\":\"connected\"},{\"name\":\"s44\",\"status\":\"connected\"},{\"name\":\"s45\",\"status\":\"connected\"},{\"name\":\"s46\",\"status\":\"connected\"},{\"name\":\"s47\",\"status\":\"connected\"},{\"name\":\"s48\",\"status\":\"connected\"},{\"name\":\"s49\",\"status\":\"connected\"},{\"name\":\"s50\",\"status\":\"connected\"},{\"name\":\"s51\",\"status\":\"connected\"},{\"name\":\"s52\",\"status\":\"connected\"},{\"name\":\"s53\",\"status\":\"connected\"},{\"name\":\"s54\",\"status\":\"connected\"},{\"name\":\"s55\",\"status\":\"connected\"},{\"name\":\"s56\",\"status\":\"connected\"},{\"name\":\"s57\",\"status\":\"connected\"},{\"name\":\"s58\",\"status\":\"connected\"},{\"name\":\"s59\",\"status\":\"connected\"},{\"name\":\"s60\",\"status\":\"connected\"},{\"name\":\"s61\",\"status\":\"connected\"},{\"name\":\"s62\",\"status\":\"connected\"},{\"name\":\"s63\",\"status\":\"connected\"},{\"name\":\"s64\",\"status\":\"connected\"}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_long_name",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"status\":\"connected\"}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_empty_status",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"fixture\",\"status\":\"\"}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_null_error",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"fixture\",\"status\":\"failed\",\"error\":null}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_server_extra_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"fixture\",\"status\":\"connected\",\"serverInfo\":{\"name\":\"x\",\"version\":\"1\"}}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_extra_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[],\"truncated\":true},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_unknown_control",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"model_list\",\"command_id\":\"command-test\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_missing_command",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_not_a_result",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"type\":\"result\",\"subtype\":\"success\"},\"failures\":[]}}}",
+    "accepted": false
+  }
+]

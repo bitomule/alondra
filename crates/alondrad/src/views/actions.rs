@@ -131,6 +131,7 @@ pub(super) async fn execute(
     let external = action.as_ref().is_some_and(|action| is_external(action.verb));
     let spanish = request.lang == "es";
     let receipt_key = (device.to_owned(), request.command_id.clone());
+    let action_id = request.action_id.clone();
     let body = serde_json::to_vec(&request).unwrap_or_default();
     let gate = if identity.is_none() && external {
         match domain.local_actions.gate(&receipt_key) {
@@ -195,9 +196,12 @@ pub(super) async fn execute(
             }
             (StatusCode::OK, Json(reply)).into_response()
         },
-        Err(_) => error("storage_unavailable", if spanish {
-            "No se pudo completar la acción"
-        } else { "action could not be completed" }),
+        Err(failure) => {
+            log!("the action {action_id} could not be completed: {failure:#}");
+            error("storage_unavailable", if spanish {
+                "No se pudo completar la acción"
+            } else { "action could not be completed" })
+        }
     }
 }
 
@@ -348,7 +352,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule)
 }
 
-async fn execute_action(
+pub(crate) async fn execute_action(
     domain: &crate::domain_runtime::DomainRuntime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
@@ -611,7 +615,19 @@ async fn execute_external(
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             if domain.read().index().node(&agent).is_some_and(|node| node.through_sdk) {
-                return Ok(error_value_lang(lang, "unsupported", "This node runs through the Agent SDK: answer its card, or cancel its task"));
+                let envelope = CommandEnvelope {
+                    protocol_version: 2,
+                    data_epoch: state.data_epoch.clone(),
+                    command_id: CommandId(request.command_id.clone()),
+                    expected_revision: state.revision,
+                    command: Command::InterruptTurn { agent_id: agent },
+                };
+                return match domain.execute(&Actor::User { user_id }, &envelope, transport,
+                    || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
+                    Ok(outcome) => Ok(applied(action.verb, lang, stamp, outcome.revision, 200, json!({"interrupted": action.subject}))),
+                    Err(crate::domain_store::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                    Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
+                };
             }
             match domain.live.pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),

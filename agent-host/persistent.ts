@@ -2,13 +2,30 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
-import { commandDigest, executionSegments, PROTOCOL_VERSION, type Frame } from './frame.js';
+import { commandDigest, executionSegments, MAX_MCP_SERVERS, PROTOCOL_VERSION, type Action, type ControlResult, type Frame } from './frame.js';
 import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void };
+export const HOST_CAPABILITIES = ['streaming_input', 'decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status'] as const;
+export type Capability = typeof HOST_CAPABILITIES[number];
+type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
+const REQUIRED: Record<Action['type'], Capability | undefined> = {
+  start: 'streaming_input', offer: 'streaming_input', respond: 'decisions', interrupt: 'interrupt', close: undefined,
+  set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
+};
+const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
+function bounded(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  let clipped = '';
+  for (const character of value.replace(LONE_SURROGATE, '\uFFFD').replaceAll('\0', '')) {
+    if (Buffer.byteLength(clipped + character) > 256) break;
+    clipped += character;
+  }
+  return clipped || undefined;
+}
 const MAX_CONNECTIONS = 8;
 const MAX_COMMANDS = 256;
 const MAX_QUEUED = 64;
@@ -24,8 +41,10 @@ export class PersistentHost {
   private unavailable = false;
   private stopping = false;
   private stopPromise?: Promise<void>;
+  private capabilities: ReadonlySet<Capability>;
   constructor(private config: Bootstrap, private hooks: Hooks = {}) {
     assertBootstrap(config);
+    this.capabilities = new Set(hooks.capabilities ?? HOST_CAPABILITIES);
     this.journal = new Journal(config.state_dir, (frame) => {
       const body = frame.body;
       if (!('execution' in body)) throw new Error('Journal identity missing');
@@ -67,7 +86,7 @@ export class PersistentHost {
     this.lanes.add(lane);
     socket.on('close', () => { this.lanes.delete(lane); if (this.owner === lane) this.owner = undefined; });
     void (async () => {
-      await channel.write({ protocol_version: PROTOCOL_VERSION, body: { type: 'hello', fence: this.config.fence, protocol_versions: [1], capabilities: ['streaming_input', 'permission_decisions', 'owner_attach', 'commit_ack'], host_release: this.config.manifest.host_release, host_sha256: this.config.manifest.host_sha256, sdk_version: this.config.manifest.sdk_version } });
+      await channel.write({ protocol_version: PROTOCOL_VERSION, body: { type: 'hello', fence: this.config.fence, protocol_versions: [1], capabilities: [...this.capabilities], host_release: this.config.manifest.host_release, host_sha256: this.config.manifest.host_sha256, sdk_version: this.config.manifest.sdk_version } });
       await channel.write({ protocol_version: PROTOCOL_VERSION, body: { type: 'challenge', ...this.identity(), nonce: lane.nonce, executable_sha256: this.config.manifest.executable_sha256 } });
     })().catch(() => socket.destroy());
   }
@@ -127,6 +146,10 @@ export class PersistentHost {
     if (this.config.orchestrator && command.action.type !== 'start' && command.action.type !== 'interrupt' && command.action.type !== 'close') {
       this.receipt(record, { status: 'rejected', code: 'single_turn', message: 'An orchestrator batch is one turn: a later input waits for the next batch' }); return;
     }
+    const required = REQUIRED[command.action.type];
+    if (required && !this.capabilities.has(required)) {
+      this.receipt(record, { status: 'rejected', code: 'unsupported', message: `This host does not support ${command.action.type}` }); return;
+    }
     await this.hooks.beforeEffect?.();
     this.current(lane);
     try {
@@ -147,13 +170,14 @@ export class PersistentHost {
           if (!this.session) throw new Error('Session absent');
           this.current(lane); this.session.offer(command.action.input_id, command.action.prompt);
           this.receipt(record, { status: 'accepted', phase: 'offered' }); break;
-        case 'respond':
-          if (!this.session) throw new Error('Session absent');
+        case 'respond': {
           this.current(lane);
-          this.session.respond(command.action.request_id, command.action.decision.behavior === 'allow'
-            ? { behavior: 'allow', updatedInput: command.action.decision.updated_input }
-            : { behavior: 'deny', message: command.action.decision.message });
+          const { request_id, epoch, kind, tool_use_id, decision } = command.action;
+          if (!this.session?.respond({ request_id, epoch, kind, tool_use_id }, decision)) {
+            this.receipt(record, { status: 'rejected', code: 'stale_request', message: 'Claude is not waiting for this request' }); break;
+          }
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        }
         case 'interrupt':
           if (!this.session) throw new Error('Session absent');
           this.current(lane); await this.session.interrupt();
@@ -162,6 +186,35 @@ export class PersistentHost {
           if (!this.session) throw new Error('Session absent');
           this.current(lane); this.session.close(); await this.session.finished;
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        case 'set_model': {
+          const session = this.controlled(record); if (!session) break;
+          const model = command.action.model;
+          const offered = await session.supportedModels();
+          this.current(lane);
+          if (!offered.some((entry) => entry.value === model)) {
+            this.receipt(record, { status: 'rejected', code: 'unsupported_model', message: 'Claude does not offer this model' }); break;
+          }
+          await session.setModel(model);
+          this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        }
+        case 'set_permission_mode': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane); await session.setPermissionMode(NATIVE_MODES[command.action.mode]);
+          this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        }
+        case 'mcp_status': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane);
+          const servers = (await session.mcpServerStatus()).flatMap((server) => {
+            const name = bounded(server.name); const status = bounded(server.status); const error = bounded(server.error);
+            return name && status ? [{ name, status, ...(error ? { error } : {}) }] : [];
+          }).slice(0, MAX_MCP_SERVERS);
+          this.current(lane);
+          const result: ControlResult = { control: 'mcp_status', command_id: command.command_id, servers };
+          this.observe({ type: 'sdk', kind: 'control_result', native: {}, payload: result, failures: [] });
+          if (this.unavailable) throw new Error('Control result not durable');
+          this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        }
       }
     } catch (error) {
       // Once SDK handoff may have occurred, keep admission as uncertainty rather than fabricate rejection.
@@ -177,16 +230,22 @@ export class PersistentHost {
     void session.finished.catch(() => this.storageUncertain());
     return session;
   }
+  private controlled(record: CommandRecord): Session | undefined {
+    if (!this.session) this.receipt(record, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' });
+    return this.session;
+  }
   private receipt(record: CommandRecord, outcome: Extract<Frame['body'], { type: 'receipt' }>['outcome']): void {
     this.persist({ protocol_version: PROTOCOL_VERSION, body: { type: 'receipt', fence: this.config.fence, execution: this.config.execution, command_id: record.command.command_id, command_sha256: record.digest, outcome } });
     if (this.owner) this.flush(this.owner);
   }
-  private observe(observation: Observation): void {
+  private observe(observation: Observation): number | undefined {
     try {
-      this.persist({ protocol_version: PROTOCOL_VERSION, body: { type: 'event', fence: this.config.fence, execution: this.config.execution, cursor: this.journal.cursor + 1, observation } } as Frame);
+      const cursor = this.journal.cursor + 1;
+      this.persist({ protocol_version: PROTOCOL_VERSION, body: { type: 'event', fence: this.config.fence, execution: this.config.execution, cursor, observation } } as Frame);
       try { this.hooks.observation?.(observation); } catch { this.diagnostic('diagnostic_tap_failed'); }
       if (this.owner) this.flush(this.owner);
-    } catch { this.storageUncertain(); }
+      return cursor;
+    } catch { this.storageUncertain(); return undefined; }
   }
   private persist(frame: Frame, original?: Buffer): void {
     try { this.journal.append(frame, original); } catch { this.storageUncertain(); throw new Error('Technical evidence not durable'); }

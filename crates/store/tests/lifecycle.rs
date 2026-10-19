@@ -184,7 +184,11 @@ impl Fixture {
                 "lifecycle_events",
                 "lifecycle_dispatches",
                 "lifecycle_current_execution",
-                "provider_execution_owners"
+                "provider_execution_owners",
+                "lifecycle_controls",
+                "provider_control_commands",
+                "provider_binding_controls",
+                "lifecycle_decision_requests"
             ]
             .contains(&table)
         );
@@ -2874,4 +2878,472 @@ fn a_journal_row_rewritten_inside_inspect_is_replayed() {
         vec![&id("other")],
         "application work inside inspect must not leave an aggregate replayed before it"
     );
+}
+
+fn control_binding(capabilities: impl IntoIterator<Item = Capability>) -> ProviderBinding {
+    ProviderBinding::new(
+        "control-binding".into(),
+        "fixture-driver".into(),
+        "control-instance".into(),
+        "fixture-config".into(),
+        1,
+        1,
+        capabilities.into_iter().chain([Capability::OfferInput]).collect(),
+        "fixture-credential".into(),
+        1,
+    )
+    .unwrap()
+}
+fn every_control() -> [Capability; 5] {
+    [Capability::Interrupt, Capability::SetModel, Capability::SetPermissionMode, Capability::McpStatus, Capability::Compact]
+}
+fn op(value: &str) -> OperationId {
+    OperationId::new(value).unwrap()
+}
+/// An SDK task whose execution runs its root turn `root` under `binding`.
+fn running_sdk(fixture: &mut Fixture, binding: &ProviderBinding) -> ExecutionStamp {
+    fixture.create("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance")).unwrap();
+    tx.stage_launch(&"task".into(), &local(&path), binding).unwrap();
+    tx.commit().unwrap();
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    fixture.runtime("task", RuntimeFact::TurnStarted { turn: TurnId::new("root").unwrap(), trigger: Trigger::Input(id("initial")) });
+    fixture.transaction().load(&"task".into()).unwrap().execution().unwrap().clone()
+}
+fn request(fixture: &mut Fixture, control: &str, kind: Control) -> alondra_store::Result<Committed> {
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into())?.revision();
+    tx.apply(&"task".into(), revision, &format!("control-{revision}"), Event::RequestControl { control: op(control), kind: kind.clone() })?;
+    tx.stage_control(&"task".into(), &op(control), &kind)?;
+    tx.commit()
+}
+fn control_status(fixture: &Fixture, control: &str) -> String {
+    fixture.connection.query_row("SELECT status FROM lifecycle_controls WHERE control_id=?1", [control], |row| row.get(0)).unwrap()
+}
+fn owner(fixture: &mut Fixture, stamp: &ExecutionStamp) -> OwnerGrant {
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(stamp, 0).unwrap();
+    tx.commit().unwrap().owners.pop().unwrap()
+}
+
+/// The causal test of the controls: an operation the execution's binding does not permit is
+/// refused with no effect at all, not even the domain's record of the request.
+#[test]
+fn a_control_the_binding_does_not_permit_is_refused_and_writes_nothing() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding([]));
+    let before = (fixture.count("lifecycle_events"), fixture.count("lifecycle_controls"), fixture.transaction().load(&"task".into()).unwrap().revision());
+    for (control, kind) in [
+        ("interrupt", Control::Interrupt { turn: Some(TurnId::new("root").unwrap()) }),
+        ("model", Control::SetModel { model: "claude-opus".into() }),
+        ("mode", Control::SetPermissionMode { mode: PermissionMode::Plan }),
+        ("mcp", Control::ReadMcpStatus),
+    ] {
+        let mut tx = fixture.transaction();
+        let revision = tx.load(&"task".into()).unwrap().revision();
+        tx.apply(&"task".into(), revision, control, Event::RequestControl { control: op(control), kind: kind.clone() }).unwrap();
+        assert!(matches!(tx.stage_control(&"task".into(), &op(control), &kind), Err(Error::UnsupportedCapability)), "{kind:?}");
+        assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+        assert_eq!((fixture.count("lifecycle_events"), fixture.count("lifecycle_controls"), fixture.transaction().load(&"task".into()).unwrap().revision()), before, "{kind:?} left a trace");
+    }
+}
+
+#[test]
+fn a_control_is_permitted_claimed_recorded_and_receipted_once() {
+    let mut fixture = Fixture::new();
+    let binding = control_binding(every_control());
+    let stamp = running_sdk(&mut fixture, &binding);
+    let grant = owner(&mut fixture, &stamp);
+    let kind = Control::SetModel { model: "claude-opus".into() };
+    let mut committed = request(&mut fixture, "model", kind.clone()).unwrap();
+    assert_eq!(committed.control_permits.len(), 1);
+    let permit = committed.control_permits.pop().unwrap();
+    assert_eq!((permit.control(), permit.execution()), (&op("model"), &stamp));
+    assert_eq!(control_status(&fixture, "model"), "prepared");
+    let mut tx = fixture.transaction();
+    assert!(tx.claim_control(permit).unwrap());
+    let mut committed = tx.commit().unwrap();
+    assert!(committed.control_permits.is_empty(), "a claimed control is not offered again");
+    let attempt = committed.control_attempts.pop().unwrap();
+    assert_eq!((attempt.operation(), attempt.binding()), (&ControlOperation::Control(kind), &binding));
+    assert_eq!(attempt.command_id(), format!("lifecycle-control-{}", attempt.id()).into());
+    let mut tx = fixture.transaction();
+    tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"set model".to_vec()).unwrap()).unwrap();
+    let control = tx.commit().unwrap().control_commands.pop().unwrap();
+    assert_eq!((control.bytes(), control.owner_generation()), (&b"set model"[..], grant.generation()));
+    assert_eq!(fixture.count("provider_control_commands"), 1);
+    let mut tx = fixture.transaction();
+    tx.record_control_receipt(control, DispatchReceipt::Handed).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(control_status(&fixture, "model"), "handed");
+    let tx = fixture.transaction();
+    assert_eq!(tx.load(&"task".into()).unwrap().turn(), Some(&TurnId::new("root").unwrap()), "a control changes nothing of the execution");
+}
+
+#[test]
+fn the_same_control_is_staged_once_and_other_content_under_its_id_conflicts() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    let kind = Control::SetPermissionMode { mode: PermissionMode::DontAsk };
+    request(&mut fixture, "mode", kind.clone()).unwrap();
+    let mut tx = fixture.transaction();
+    tx.stage_control(&"task".into(), &op("mode"), &kind).unwrap();
+    assert_eq!(tx.commit().unwrap().control_permits.len(), 1, "the prepared control is offered again, once");
+    assert_eq!(fixture.count("lifecycle_controls"), 1);
+    assert!(matches!(request(&mut fixture, "mode", Control::SetPermissionMode { mode: PermissionMode::Plan }), Err(Error::CommandConflict)));
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.stage_control(&"task".into(), &op("never-decided"), &Control::ReadMcpStatus), Err(Error::MissingIntent)), "only what the domain recorded is staged");
+    drop(tx);
+    assert_eq!(fixture.count("lifecycle_controls"), 1);
+}
+
+#[test]
+fn a_new_execution_revokes_prepared_controls_and_waits_for_claimed_ones() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let permit = request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap().control_permits.pop().unwrap();
+    let release = |fixture: &mut Fixture| {
+        let mut tx = fixture.transaction();
+        let revision = tx.load(&"task".into())?.revision();
+        tx.put_input(&"task".into(), payload("requeue"))?;
+        tx.apply(&"task".into(), revision, "release", Event::ExecutionReleased { input: id("requeue") })?;
+        tx.commit()
+    };
+    let interrupt = request(&mut fixture, "interrupt", Control::Interrupt { turn: Some(TurnId::new("root").unwrap()) }).unwrap();
+    let mut tx = fixture.transaction();
+    let interrupt = interrupt.control_permits.into_iter().find(|permit| permit.control() == &op("interrupt")).unwrap();
+    assert!(tx.claim_control(interrupt).unwrap());
+    tx.commit().unwrap();
+    assert!(matches!(release(&mut fixture), Err(Error::UnresolvedDispatch)), "a claimed control is resolved before the execution changes");
+    let attempt_id: i64 = fixture.connection.query_row("SELECT id FROM lifecycle_controls WHERE control_id='interrupt'", [], |row| row.get(0)).unwrap();
+    let grant = owner(&mut fixture, &stamp);
+    let mut tx = fixture.transaction();
+    tx.resolve_control(&stamp, attempt_id, grant.generation(), DispatchReceipt::Rejected).unwrap();
+    tx.commit().unwrap();
+    release(&mut fixture).unwrap();
+    assert_eq!(control_status(&fixture, "mcp"), "revoked");
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.claim_control(permit), Err(Error::StalePermit)));
+}
+
+#[test]
+fn an_interrupt_whose_turn_ended_is_revoked_instead_of_claimed() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    let permit = request(&mut fixture, "interrupt", Control::Interrupt { turn: Some(TurnId::new("root").unwrap()) }).unwrap().control_permits.pop().unwrap();
+    fixture.card("task", "unheard");
+    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+    let mut tx = fixture.transaction();
+    assert!(!tx.claim_control(permit).unwrap(), "nothing runs to interrupt");
+    let committed = tx.commit().unwrap();
+    assert!(committed.control_attempts.is_empty() && committed.control_permits.is_empty());
+    assert_eq!(control_status(&fixture, "interrupt"), "revoked");
+}
+
+#[test]
+fn an_adopting_owner_reconciles_a_recorded_control_under_its_own_generation() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let grant = owner(&mut fixture, &stamp);
+    let permit = request(&mut fixture, "mode", Control::SetPermissionMode { mode: PermissionMode::Default }).unwrap().control_permits.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.claim_control(permit).unwrap();
+    let attempt = tx.commit().unwrap().control_attempts.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"framed control".to_vec()).unwrap()).unwrap();
+    tx.commit().unwrap();
+    let unresolved = fixture.transaction().unresolved_controls(&"task".into()).unwrap();
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].command, b"framed control");
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, grant.generation()).unwrap();
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.resolve_control(&stamp, unresolved[0].id, grant.generation(), DispatchReceipt::Handed), Err(Error::StaleOwner)));
+    drop(tx);
+    let mut tx = fixture.transaction();
+    tx.resolve_control(&stamp, unresolved[0].id, adopted.generation(), DispatchReceipt::Handed).unwrap();
+    tx.commit().unwrap();
+    assert!(fixture.transaction().unresolved_controls(&"task".into()).unwrap().is_empty());
+    assert_eq!(control_status(&fixture, "mode"), "handed");
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.resolve_control(&stamp, unresolved[0].id, adopted.generation(), DispatchReceipt::Handed), Err(Error::StalePermit)));
+}
+
+#[test]
+fn compaction_is_an_input_staged_only_when_the_binding_can_compact() {
+    for (binding, permitted) in [(control_binding([Capability::Interrupt]), false), (control_binding(every_control()), true)] {
+        let mut fixture = Fixture::new();
+        running_sdk(&mut fixture, &binding);
+        fixture.card("task", "unheard");
+        fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+        let before = (fixture.count("lifecycle_events"), fixture.count("lifecycle_dispatches"));
+        let mut tx = fixture.transaction();
+        let revision = tx.load(&"task".into()).unwrap().revision();
+        tx.put_input(&"task".into(), InputPayload::new(id("compact"), "/compact").unwrap()).unwrap();
+        tx.apply(&"task".into(), revision, "compact", Event::Compact { input: id("compact") }).unwrap();
+        if !permitted {
+            assert!(matches!(tx.stage_compaction(&"task".into(), &id("compact")), Err(Error::UnsupportedCapability)));
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+            assert_eq!((fixture.count("lifecycle_events"), fixture.count("lifecycle_dispatches")), before);
+            continue;
+        }
+        tx.stage_compaction(&"task".into(), &id("compact")).unwrap();
+        let committed = tx.commit().unwrap();
+        assert_eq!(committed.permits.iter().map(|permit| permit.input()).collect::<Vec<_>>(), vec![&id("compact")]);
+        let tx = fixture.transaction();
+        assert_eq!(tx.load(&"task".into()).unwrap().cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)], "the card stays");
+    }
+}
+
+#[test]
+fn new_capabilities_survive_registration_and_old_bindings_need_no_extra_row() {
+    let mut fixture = Fixture::new();
+    let binding = control_binding(every_control().into_iter().chain([Capability::Decisions, Capability::BackgroundWork]));
+    let stamp = running_sdk(&mut fixture, &binding);
+    assert_eq!(fixture.transaction().execution_binding(&stamp).unwrap(), binding);
+    assert_eq!(fixture.count("provider_binding_controls"), 1);
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding([Capability::Interrupt]));
+    assert_eq!(fixture.transaction().execution_binding(&stamp).unwrap(), control_binding([Capability::Interrupt]));
+    assert_eq!(fixture.count("provider_binding_controls"), 0);
+}
+
+#[test]
+fn control_evidence_only_moves_forward_and_is_never_deleted() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let grant = owner(&mut fixture, &stamp);
+    let permit = request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap().control_permits.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.claim_control(permit).unwrap();
+    let attempt = tx.commit().unwrap().control_attempts.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"status".to_vec()).unwrap()).unwrap();
+    tx.commit().unwrap();
+    let c = &fixture.connection;
+    for refused in [
+        "UPDATE lifecycle_controls SET status='prepared',claimed_revision=NULL",
+        "UPDATE lifecycle_controls SET status='revoked',claimed_revision=NULL",
+        "UPDATE lifecycle_controls SET kind='interrupt'",
+        "UPDATE lifecycle_controls SET control_id='other'",
+        "DELETE FROM lifecycle_controls",
+        "UPDATE provider_control_commands SET bytes=x'00'",
+        "DELETE FROM provider_control_commands",
+        "UPDATE provider_binding_controls SET capabilities=1",
+        "DELETE FROM provider_binding_controls",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'mode','set_permission_mode','bypass_permissions','prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'mode','set_permission_mode',NULL,'prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'status','mcp_status','x','prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'model','set_model',NULL,'prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status,claimed_revision) VALUES('task',1,'claimed','mcp_status',NULL,'prepared',3)",
+    ] {
+        assert!(c.execute(refused, []).is_err(), "{refused}");
+    }
+    c.execute("UPDATE lifecycle_controls SET status='uncertain'", []).unwrap();
+    assert!(c.execute("UPDATE lifecycle_controls SET status='handed'", []).is_err(), "a receipt is final");
+}
+
+#[test]
+fn a_claude_bg_execution_is_never_controlled() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", claude_bg("task")).unwrap();
+    tx.commit().unwrap();
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    fixture.runtime("task", RuntimeFact::TurnStarted { turn: TurnId::new("root").unwrap(), trigger: Trigger::Input(id("initial")) });
+    assert!(matches!(request(&mut fixture, "mcp", Control::ReadMcpStatus), Err(Error::NotDispatchable)));
+    assert_eq!(fixture.count("lifecycle_controls"), 0);
+    assert!(fixture.connection.execute("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'mcp','mcp_status',NULL,'prepared')", []).is_err());
+}
+
+fn decisions() -> impl Iterator<Item = Capability> {
+    every_control().into_iter().chain([Capability::Decisions])
+}
+fn bash_request(epoch: u64) -> DecisionRequest {
+    DecisionRequest::new(format!("request-{epoch}"), Some(format!("toolu-{epoch}")), DecisionKind::Permission,
+        format!(r#"{{"tool":"Bash","input":{{"command":"make test-{epoch}"}}}}"#).into_bytes()).unwrap()
+}
+/// Claude asks at `epoch`: the request is kept and its card is required, as the owner does it.
+fn ask_decision(fixture: &mut Fixture, stamp: &ExecutionStamp, epoch: u64) -> InteractionId {
+    let card = InteractionId(format!("decision-task-{}-{epoch}", stamp.generation()));
+    fixture.card("task", &card.0);
+    let mut tx = fixture.transaction();
+    tx.put_decision_request(stamp, epoch, &bash_request(epoch)).unwrap();
+    tx.commit().unwrap();
+    fixture.runtime("task", RuntimeFact::Ask { card: card.clone(), callback: decision_callback(stamp.generation(), epoch), reason: WaitReason::Permission });
+    card
+}
+/// The user decides `card` and the response is staged in the same commit.
+fn decide_card(fixture: &mut Fixture, card: &InteractionId, epoch: u64, decision: Decision) -> alondra_store::Result<Committed> {
+    let mut tx = fixture.transaction();
+    let task: TaskId = "task".into();
+    let revision = tx.load(&task)?.revision();
+    tx.apply(&task, revision, &format!("decide-{revision}"), Event::Decide { card: card.clone(), decision: decision.clone() })?;
+    tx.settle_card(&task, card, CardSettlement::Answer(CardAnswer::from_object(serde_json::Map::new()).unwrap()))?;
+    tx.stage_response(&task, epoch, &decision)?;
+    tx.commit()
+}
+
+#[test]
+fn a_decision_request_is_kept_once_and_another_at_its_epoch_conflicts() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(decisions()));
+    let mut tx = fixture.transaction();
+    tx.put_decision_request(&stamp, 3, &bash_request(3)).unwrap();
+    tx.put_decision_request(&stamp, 3, &bash_request(3)).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(fixture.count("lifecycle_decision_requests"), 1);
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.put_decision_request(&stamp, 3, &bash_request(4)), Err(Error::ObservationConflict)));
+    drop(tx);
+    for (tool_use, kind) in [(None, DecisionKind::Permission), (Some("toolu".to_owned()), DecisionKind::Elicitation)] {
+        assert!(matches!(DecisionRequest::new("request".into(), tool_use, kind, b"{}".to_vec()), Err(Error::InvalidInput)), "{kind:?}");
+    }
+    assert!(matches!(DecisionRequest::new("request".into(), None, DecisionKind::Elicitation, vec![]), Err(Error::InvalidInput)));
+    assert!(DecisionRequest::new("request".into(), None, DecisionKind::Elicitation, b"{}".to_vec()).is_ok());
+}
+
+#[test]
+fn a_decided_response_is_staged_claimed_and_carries_its_request() {
+    let mut fixture = Fixture::new();
+    let binding = control_binding(decisions());
+    let stamp = running_sdk(&mut fixture, &binding);
+    let grant = owner(&mut fixture, &stamp);
+    let card = ask_decision(&mut fixture, &stamp, 7);
+    let decision = Decision::Deny { message: "The user denied it".into() };
+    let mut committed = decide_card(&mut fixture, &card, 7, decision.clone()).unwrap();
+    let permit = committed.control_permits.pop().unwrap();
+    assert_eq!(permit.control().as_str(), decision_callback(stamp.generation(), 7).as_str());
+    let mut tx = fixture.transaction();
+    assert!(tx.claim_control(permit).unwrap());
+    let attempt = tx.commit().unwrap().control_attempts.pop().unwrap();
+    let ControlOperation::Respond(response) = attempt.operation() else { panic!("a response: {:?}", attempt.operation()) };
+    assert_eq!((response.epoch(), response.request(), response.decision()), (7, &bash_request(7), &decision));
+    let mut tx = fixture.transaction();
+    tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"respond".to_vec()).unwrap()).unwrap();
+    let control = tx.commit().unwrap().control_commands.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_control_receipt(control, DispatchReceipt::Handed).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(control_status(&fixture, decision_callback(stamp.generation(), 7).as_str()), "handed");
+}
+
+#[test]
+fn a_policy_decision_is_staged_like_the_users() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(decisions()));
+    let mut tx = fixture.transaction();
+    tx.put_decision_request(&stamp, 4, &bash_request(4)).unwrap();
+    tx.commit().unwrap();
+    let decision = Decision::Allow;
+    let callback = decision_callback(stamp.generation(), 4);
+    let mut tx = fixture.transaction();
+    let aggregate = tx.load(&"task".into()).unwrap();
+    let event = Event::Runtime { stamp: stamp.clone(), cursor: aggregate.cursor().unwrap() + 1, fact: RuntimeFact::AnsweredByPolicy { callback, decision: decision.clone() } };
+    tx.apply(&"task".into(), aggregate.revision(), "policy", event).unwrap();
+    tx.stage_response(&"task".into(), 4, &decision).unwrap();
+    assert_eq!(tx.commit().unwrap().control_permits.len(), 1);
+}
+
+/// The causal test of a response's capability: a binding without decisions refuses it before
+/// anything is written, the domain's decision included.
+#[test]
+fn a_response_the_binding_does_not_permit_is_refused_and_writes_nothing() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let card = ask_decision(&mut fixture, &stamp, 2);
+    let before = (fixture.count("lifecycle_events"), fixture.count("lifecycle_controls"));
+    assert!(matches!(decide_card(&mut fixture, &card, 2, Decision::Allow), Err(Error::UnsupportedCapability)));
+    assert_eq!((fixture.count("lifecycle_events"), fixture.count("lifecycle_controls")), before);
+}
+
+/// Only the decision the journal holds, for the request its callback asked at that epoch, is
+/// staged: another decision, a stale epoch or a callback nobody decided write nothing.
+#[test]
+fn a_response_needs_the_decision_the_journal_holds_at_its_epoch() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(decisions()));
+    let first = ask_decision(&mut fixture, &stamp, 5);
+    let _second = ask_decision(&mut fixture, &stamp, 6);
+    let task: TaskId = "task".into();
+    for (epoch, staged) in [(5, Decision::Deny { message: "No".into() }), (6, Decision::Allow), (4, Decision::Allow)] {
+        let mut tx = fixture.transaction();
+        let revision = tx.load(&task).unwrap().revision();
+        tx.apply(&task, revision, "decide", Event::Decide { card: first.clone(), decision: Decision::Allow }).unwrap();
+        assert!(matches!(tx.stage_response(&task, epoch, &staged), Err(Error::MissingIntent)), "epoch {epoch}: {staged:?}");
+        drop(tx);
+    }
+    assert_eq!(fixture.count("lifecycle_controls"), 0);
+    decide_card(&mut fixture, &first, 5, Decision::Allow).unwrap();
+    let mut tx = fixture.transaction();
+    tx.stage_response(&task, 5, &Decision::Allow).unwrap();
+    assert!(matches!(tx.stage_response(&task, 5, &Decision::Deny { message: "No".into() }), Err(Error::MissingIntent)));
+    drop(tx);
+    assert_eq!(fixture.count("lifecycle_controls"), 1);
+}
+
+/// A response is sent only while its callback still waits for it: once the request was aborted
+/// (an interrupt) or settled, the prepared response is revoked and claims nothing.
+#[test]
+fn a_response_whose_callback_is_over_is_revoked_instead_of_claimed() {
+    for over in ["aborted", "settled"] {
+        let mut fixture = Fixture::new();
+        let stamp = running_sdk(&mut fixture, &control_binding(decisions()));
+        let card = ask_decision(&mut fixture, &stamp, 8);
+        let permit = decide_card(&mut fixture, &card, 8, Decision::Allow).unwrap().control_permits.pop().unwrap();
+        let callback = decision_callback(stamp.generation(), 8);
+        match over {
+            "aborted" => fixture.runtime("task", RuntimeFact::CallbackAborted { callback, unheard_card: "unused".into() }),
+            _ => fixture.runtime("task", RuntimeFact::CallbackSettled { callback, continuation: decision_continuation(stamp.generation(), 8) }),
+        };
+        let mut tx = fixture.transaction();
+        assert!(!tx.claim_control(permit).unwrap(), "{over}: nothing waits for the response");
+        let committed = tx.commit().unwrap();
+        assert!(committed.control_attempts.is_empty(), "{over}");
+        assert_eq!(control_status(&fixture, decision_callback(stamp.generation(), 8).as_str()), "revoked", "{over}");
+    }
+}
+
+#[test]
+fn decision_evidence_is_immutable_and_a_response_names_its_request() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(decisions()));
+    let card = ask_decision(&mut fixture, &stamp, 9);
+    decide_card(&mut fixture, &card, 9, Decision::Allow).unwrap();
+    let c = &fixture.connection;
+    for refused in [
+        "UPDATE lifecycle_decision_requests SET payload=x'00'",
+        "DELETE FROM lifecycle_decision_requests",
+        "UPDATE lifecycle_controls SET epoch=10",
+        "UPDATE lifecycle_controls SET argument='{\"kind\":\"deny\",\"data\":{\"message\":\"No\"}}'",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'respond','respond','{}','prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,epoch,status) VALUES('task',1,'mode','set_permission_mode','plan',9,'prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,epoch,status) VALUES('task',1,'other','respond','not json',9,'prepared')",
+        "INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,epoch,status) VALUES('task',1,'other','respond','{}',99,'prepared')",
+        "INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,20,'r','toolu','elicitation',x'7b7d')",
+        "INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,21,'r',NULL,'permission',x'7b7d')",
+        "INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,22,'r','toolu','approval',x'7b7d')",
+    ] {
+        assert!(c.execute(refused, []).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn a_claude_bg_execution_asks_for_no_decision() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let mut tx = fixture.transaction();
+    tx.create_without_text(&"task".into(), id("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", claude_bg("task")).unwrap();
+    tx.commit().unwrap();
+    let stamp = fixture.transaction().load(&"task".into()).unwrap().execution().unwrap().clone();
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.put_decision_request(&stamp, 1, &bash_request(1)), Err(Error::NotDispatchable)));
+    drop(tx);
+    assert!(fixture.connection.execute("INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,1,'r','toolu','permission',x'7b7d')", []).is_err());
 }

@@ -24,6 +24,7 @@ pub mod model;
 pub mod model_label;
 pub mod model_report;
 pub mod mods;
+pub mod node_guard;
 pub mod options;
 pub mod projects_folder;
 pub mod orchestrator;

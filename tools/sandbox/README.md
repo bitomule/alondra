@@ -96,9 +96,11 @@ through `claude --bg`. `tools/e2e_sdk_backend.py` sets it up:
 - copies the pinned Node and `persistent.cjs`, and extracts the native Claude from its npm archive
   (size and SHA256 checked);
 - starts the local model double (`tests/native/claude/model_double.py`), which answers each
-  `/v1/messages` with one text reply and logs the request in `$SANDBOX_DIR/sdk/model-requests.jsonl`;
+  `/v1/messages` with one text reply, or with the tool call `sdk/model-tools` scripts for the task's
+  prompt, and logs the request and the tool results it carries in `$SANDBOX_DIR/sdk/model-requests.jsonl`;
 - writes the Seatbelt profile the whole host runs under (deny default, no mach-lookup, network only
-  to the model double, writes only in the sandbox's SDK folders) and the Mac's `sdk-backend.json`.
+  to the model double, writes only in the sandbox's SDK folders, no programs but the shell, `sleep`
+  and Alondra's CLI) and the Mac's `sdk-backend.json`.
 
 Claude gets a synthetic HOME, configuration and temporary folder and the public fixture key: never
 the real login, Keychain or `~/.claude.json`. A daemon outside a sandbox that finds an
@@ -113,6 +115,12 @@ status: the native Claude's error holds each task on its sign-in or API card, an
 «Try now» lets it go on once the double answers again. Last, a task's native Claude, in a synthetic HOME
 that is its default profile, loads the user's CLAUDE.md, skill and enabled plugin, the project's
 CLAUDE.md, the local CLAUDE.local.md and Alondra's node plugin, whose MCP server connects.
+Then the double answers tasks with tool calls the journey scripts in `sdk/model-tools`: a command
+waits on its permission card and runs once the phone allows it; a question's option reaches Claude
+as its answer; a plan the model writes to plan mode's plan file waits on its Review card and Claude
+goes on with it once the phone approves it; «Interrupt» in Fleet stops a running command and the turn ends with one card; a
+command that acts as the user is refused by the node guard with no card; a command that runs for
+seconds finishes and its turn ends with one card.
 `alondra-sandbox journey sdk` runs it against a sandbox already started with `SDK=1`; `journey all`
 leaves it out.
 

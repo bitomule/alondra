@@ -493,6 +493,75 @@ pub enum Command {
     ProbeClaudeAccess {
         hold: ClaudeHold,
     },
+    /// Stops what the node's SDK task runs now: its root turn, or the work it runs on its own.
+    InterruptTurn {
+        agent_id: AgentId,
+    },
+    /// The model the Task's SDK execution answers with from its next turn on.
+    SetModel {
+        task_id: TaskId,
+        model: String,
+    },
+    SetPermissionMode {
+        task_id: TaskId,
+        mode: PermissionModeRecord,
+    },
+    /// Asks the Task's SDK execution which MCP servers it has and how they are.
+    ReadMcpStatus {
+        task_id: TaskId,
+    },
+    /// The Task's resting SDK execution compacts its conversation; the cards it waits on stay.
+    CompactConversation {
+        task_id: TaskId,
+    },
+    /// Claude asks, through the Task's SDK execution of `generation`, for the decision its host
+    /// persisted at `epoch`. Alondra's own tools are allowed, what nodes may not do and a plan
+    /// without its checklist are denied, all without a card; anything else is put to the user.
+    RecordDecisionRequest {
+        task_id: TaskId,
+        generation: u64,
+        epoch: u64,
+        hold: Hold,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        /// The tool's input as Claude asked to run it.
+        #[serde(default)]
+        input: serde_json::Value,
+        /// The MCP server that serves the tool, as the SDK reports it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_server: Option<McpServerOrigin>,
+        prompt: DecisionPrompt,
+    },
+    /// The decision of the request at `epoch` reached Claude.
+    RecordDecisionSettled {
+        task_id: TaskId,
+        generation: u64,
+        epoch: u64,
+    },
+    /// The request at `epoch` ended without a decision reaching Claude: aborted, closed, or its
+    /// decision could not be delivered.
+    RecordDecisionAborted {
+        task_id: TaskId,
+        generation: u64,
+        epoch: u64,
+    },
+}
+/// The MCP server that serves a tool, as the Agent SDK reports it: `source` says where its
+/// definition came from, and only it is trusted, never the name alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerOrigin {
+    pub name: String,
+    pub source: String,
+}
+/// What the user is asked for a decision Claude waits on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DecisionPrompt {
+    /// One card, as a held hook asks it.
+    Card { body: String, options: Vec<QuestionOption>, card: CardSpec },
+    /// Claude's questions asked together: a card each, decided together once the last is answered.
+    Questions { questions: Vec<GroupQuestion> },
 }
 /// A wire command written before cards existed gets the card its own fields describe; the
 /// optional `need` and `why` fields override what is read from its body.

@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 rust_library(
     name = "store",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/schema.sql"],
+    compile_data = ["src/controls.sql", "src/schema.sql"],
     crate_name = "alondra_store",
     edition = "2024",
     version = "0.1.0",
@@ -39,7 +39,7 @@ rust_test(
     name = "journal_format_test",
     crate_root = "tests/journal_format.rs",
     srcs = ["tests/journal_format.rs", "//crates:test_support.rs"],
-    compile_data = ["fixtures/legacy-journal.sql", "//crates/alondrad:src/domain_store/schema.sql"],
+    compile_data = ["fixtures/legacy-journal.sql", "src/schema.sql", "//crates/alondrad:src/domain_store/schema.sql"],
     edition = "2024",
     env = {"HOME": "."},
     deps = [":store", "//crates/foundation:foundation"] + all_crate_deps(normal = True, normal_dev = True),

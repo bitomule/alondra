@@ -204,11 +204,35 @@ pub enum Action {
     },
     Interrupt,
     Close,
+    /// The answer to the request the host holds pending under this epoch, kind and tool use.
     Respond {
         request_id: RequestId,
+        epoch: u64,
+        kind: DecisionKind,
+        #[serde(deserialize_with = "required_nullable")]
+        tool_use_id: Option<String>,
         decision: Decision,
     },
+    SetModel {
+        model: String,
+    },
+    SetPermissionMode {
+        mode: PermissionMode,
+    },
+    McpStatus,
 }
+
+/// The only permission modes Alondra can ask for: none of them grants a permission by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Default,
+    Plan,
+    DontAsk,
+}
+
+pub const MAX_MODEL_BYTES: usize = 128;
+pub const MAX_MCP_SERVERS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "behavior", rename_all = "snake_case", deny_unknown_fields)]
@@ -220,6 +244,31 @@ pub enum Decision {
     Deny {
         message: String,
     },
+    Accept {
+        #[serde(
+            default,
+            deserialize_with = "present_object",
+            skip_serializing_if = "Option::is_none"
+        )]
+        content: Option<serde_json::Map<String, Value>>,
+    },
+    Decline {},
+}
+
+impl DecisionKind {
+    /// An elicitation comes from an MCP server, not from a tool call; every other request names its tool use.
+    pub fn has_tool_use(self) -> bool {
+        self != Self::Elicitation
+    }
+}
+
+impl Decision {
+    pub fn answers(&self, kind: DecisionKind) -> bool {
+        match self {
+            Self::Allow { .. } | Self::Deny { .. } => kind.has_tool_use(),
+            Self::Accept { .. } | Self::Decline {} => !kind.has_tool_use(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,10 +318,21 @@ pub enum Observation {
     },
     DecisionRequested {
         request_id: RequestId,
-        tool_use_id: String,
+        #[serde(
+            default,
+            deserialize_with = "present_string",
+            skip_serializing_if = "Option::is_none"
+        )]
+        tool_use_id: Option<String>,
         kind: DecisionKind,
         #[serde(deserialize_with = "crate::json::value")]
         payload: Value,
+    },
+    /// The request whose `decision_requested` event has this cursor no longer waits: exactly once.
+    DecisionSettled {
+        request_id: RequestId,
+        epoch: u64,
+        outcome: DecisionOutcome,
     },
     ProcessExited {
         #[serde(deserialize_with = "required_nullable")]
@@ -291,7 +351,56 @@ pub enum SdkEventKind {
     Task,
     Status,
     Diagnostic,
+    ControlResult,
     Unsupported,
+}
+
+/// The payload of a `control_result` observation: what a read-only control answered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "control", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlResult {
+    McpStatus {
+        command_id: CommandId,
+        servers: Vec<McpServer>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    pub name: String,
+    /// Native status retained verbatim, including statuses this release does not know.
+    pub status: String,
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub error: Option<String>,
+}
+
+impl ControlResult {
+    pub fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::McpStatus {
+                command_id,
+                servers,
+            } => {
+                text(&command_id.0, 256)?;
+                if servers.len() > MAX_MCP_SERVERS {
+                    return Err(Error::Invalid("too many MCP servers"));
+                }
+                for server in servers {
+                    text(&server.name, 256)?;
+                    text(&server.status, 256)?;
+                    if let Some(error) = &server.error {
+                        text(error, 256)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +409,16 @@ pub enum DecisionKind {
     Permission,
     Question,
     Plan,
+    Elicitation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionOutcome {
+    /// An answer of the owner resolved Claude's request.
+    Answered,
+    /// Claude withdrew it, or the session ended or failed before an answer reached it: Claude was denied.
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -598,14 +717,31 @@ impl Command {
             }
             Action::Respond {
                 request_id,
+                epoch,
+                kind,
+                tool_use_id,
                 decision,
             } => {
                 text(&request_id.0, 256)?;
+                positive(*epoch)?;
+                tool_use(*kind, tool_use_id.as_deref())?;
+                if !decision.answers(*kind) {
+                    return Err(Error::Invalid("decision does not answer this kind"));
+                }
                 if let Decision::Deny { message } = decision {
                     text(message, MAX_FRAME_BYTES)?;
                 }
             }
-            Action::Interrupt | Action::Close => {}
+            Action::SetModel { model } => {
+                text(model, MAX_MODEL_BYTES)?;
+                if model.chars().any(char::is_control) || model.trim().is_empty() {
+                    return Err(Error::Invalid("model"));
+                }
+            }
+            Action::Interrupt
+            | Action::Close
+            | Action::SetPermissionMode { .. }
+            | Action::McpStatus => {}
         }
         Ok(())
     }
@@ -630,13 +766,18 @@ impl Event {
         positive(self.cursor)?;
         match &self.observation {
             Observation::Sdk {
+                kind,
                 native,
                 payload,
                 failures,
-                ..
             } => {
                 if !payload.is_object() {
                     return Err(Error::Invalid("SDK object required"));
+                }
+                if *kind == SdkEventKind::ControlResult {
+                    ControlResult::deserialize(payload)
+                        .map_err(|_| Error::Invalid("control result"))?
+                        .validate()?;
                 }
                 for field in [
                     &native.message_id,
@@ -661,14 +802,20 @@ impl Event {
             Observation::DecisionRequested {
                 request_id,
                 tool_use_id,
+                kind,
                 payload,
-                ..
             } => {
                 text(&request_id.0, 256)?;
-                text(tool_use_id, 256)?;
+                tool_use(*kind, tool_use_id.as_deref())?;
                 if !payload.is_object() {
                     return Err(Error::Invalid("decision object required"));
                 }
+            }
+            Observation::DecisionSettled {
+                request_id, epoch, ..
+            } => {
+                text(&request_id.0, 256)?;
+                positive(*epoch)?;
             }
             Observation::ProcessExited { signal, .. } => {
                 if let Some(signal) = signal {
@@ -697,6 +844,20 @@ fn present_string<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
+}
+
+fn present_object<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, Value>>, D::Error> {
+    crate::json::object(deserializer).map(Some)
+}
+
+fn tool_use(kind: DecisionKind, tool_use_id: Option<&str>) -> Result<(), Error> {
+    match (kind.has_tool_use(), tool_use_id) {
+        (true, Some(id)) => text(id, 256),
+        (false, None) => Ok(()),
+        _ => Err(Error::Invalid("tool use does not match the decision kind")),
+    }
 }
 
 fn required_nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(

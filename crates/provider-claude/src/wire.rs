@@ -45,6 +45,15 @@ impl HostOwner for OwnerGrant {
     }
 }
 
+/// What a host must declare before an owner attaches: a task's Claude asks for decisions that
+/// only a host which can carry them may hold; an orchestrator batch asks for none.
+fn required_capabilities(execution: &Execution) -> &'static [&'static str] {
+    match execution {
+        Execution::Task(_) => &["streaming_input", "owner_attach", "commit_ack", "decisions"],
+        Execution::Orchestrator(_) => &["streaming_input", "owner_attach", "commit_ack"],
+    }
+}
+
 pub(super) struct ControlIdentity {
     pub profile_id: String,
     pub account_id: String,
@@ -98,7 +107,7 @@ impl Connection {
                 fence: &fence,
                 host_release: &control.host_release,
                 host_sha256: artifact.artifact_sha256(),
-                required_capabilities: &["streaming_input", "owner_attach", "commit_ack"],
+                required_capabilities: required_capabilities(&execution),
             })
             .map_err(protocol)?;
         let challenge = receive(&mut reader, &read_deadline, deadline)?;
@@ -568,6 +577,34 @@ mod tests {
                 self.clock.next().unwrap_or(self.deadline),
             )
         }
+    }
+    #[test]
+    fn a_task_host_that_cannot_carry_decisions_is_refused_and_an_orchestrator_host_needs_none() {
+        let Body::Hello(mut hello) = serde_json::from_slice::<Frame>(include_bytes!("../../agent-protocol/fixtures/hello.json")).unwrap().body else { unreachable!() };
+        hello.capabilities = ["streaming_input", "owner_attach", "commit_ack"].map(String::from).to_vec();
+        let task = Execution::Task(alondra_agent_protocol::TaskExecution {
+            task_id: "task".into(),
+            agent_id: "node".into(),
+            conversation_id: "conversation".into(),
+            process_instance_id: "process".into(),
+            generation: 1,
+        });
+        let orchestrator = Execution::Orchestrator(alondra_agent_protocol::OrchestratorExecution {
+            lane: alondra_agent_protocol::OrchestratorLane::Orchestrator,
+            run_id: "run".into(),
+            conversation_id: "conversation".into(),
+            generation: 1,
+        });
+        let expect = |hello: &alondra_agent_protocol::Hello, execution: &Execution| hello.negotiate(&HostExpectation {
+            fence: &hello.fence,
+            host_release: &hello.host_release,
+            host_sha256: &hello.host_sha256,
+            required_capabilities: required_capabilities(execution),
+        });
+        assert!(matches!(expect(&hello, &task), Err(alondra_agent_protocol::Error::MissingCapability)));
+        assert!(expect(&hello, &orchestrator).is_ok());
+        hello.capabilities.push("decisions".into());
+        assert!(expect(&hello, &task).is_ok());
     }
     #[test]
     fn fragmented_frame_progress_cannot_reset_absolute_deadline() {

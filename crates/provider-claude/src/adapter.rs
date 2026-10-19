@@ -2,16 +2,20 @@ use crate::normalizer::Normalizer;
 use crate::records::{InputRecord, SessionRecord};
 use crate::wire::{Connection, ControlIdentity, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
-use alondra_agent_protocol::{Action, Body, Command, SDK_VERSION};
+use alondra_agent_protocol::{
+    Action, Body, Command, ControlResult, Decision as WireDecision, DecisionKind as WireKind, FramedReader,
+    Observation as WireObservation, PermissionMode as WireMode, SDK_VERSION, SdkEventKind,
+};
 use alondra_agent_runtime::owned_host::{AdoptedHost, EndedHost, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
 use crate::ended::EndedJournal;
-use alondra_foundation::{ExecutionStamp, MessageUuid};
+use alondra_foundation::{CommandId, ExecutionStamp, MessageUuid, RequestId};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
     PreparedCommand, ProviderBinding,
 };
 use alondra_store::{
-    AdapterState, CommittedCommand, CommittedObservation, DispatchAttempt, OwnerGrant,
+    AdapterState, CommittedCommand, CommittedControl, CommittedObservation, Control, ControlAttempt, ControlOperation,
+    Decision, DecisionKind, DecisionRequest, DispatchAttempt, OwnerGrant, PermissionMode,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -57,13 +61,135 @@ pub struct WorkerProfile {
 /// Submission requires actual SQL commit evidence:
 /// ```
 /// use alondra_provider_claude::ClaudeWorker;
-/// use alondra_store::CommittedCommand;
+/// use alondra_store::{CommittedCommand, CommittedControl};
 /// fn submit(worker: &mut ClaudeWorker, value: &CommittedCommand) { let _ = worker.submit(value); }
+/// fn control(worker: &mut ClaudeWorker, value: &CommittedControl) { let _ = worker.submit_control(value); }
 /// ```
 pub struct ClaudeWorker {
     adapter: ClaudeAdapter,
     prepared: Option<PreparedDispatch>,
+    prepared_control: Option<PreparedControl>,
     pending: Option<OrderedObservation>,
+}
+struct PreparedControl {
+    command: PreparedCommand,
+    id: i64,
+    revision: u64,
+    execution: ExecutionStamp,
+    binding: ProviderBinding,
+    owner_generation: u64,
+    control: alondra_foundation::OperationId,
+    operation: ControlOperation,
+}
+impl PreparedControl {
+    fn validate(&self, committed: &CommittedControl) -> Result<(), AdapterError> {
+        let attempt = committed.attempt();
+        if committed.bytes() != self.command.bytes()
+            || committed.owner_generation() != self.owner_generation
+            || attempt.id() != self.id
+            || attempt.revision() != self.revision
+            || attempt.execution() != &self.execution
+            || attempt.binding() != &self.binding
+            || attempt.control() != &self.control
+            || attempt.operation() != &self.operation
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        Ok(())
+    }
+}
+/// What the host is told to do for a control of the domain.
+fn control_action(operation: &ControlOperation) -> Result<Action, AdapterError> {
+    let kind = match operation {
+        ControlOperation::Control(kind) => kind,
+        ControlOperation::Respond(response) => return respond_action(response.epoch(), response.request(), response.decision()),
+    };
+    Ok(match kind {
+        Control::Interrupt { .. } => Action::Interrupt,
+        Control::SetModel { model } => Action::SetModel { model: model.clone() },
+        Control::SetPermissionMode { mode } => Action::SetPermissionMode {
+            mode: match mode {
+                PermissionMode::Default => WireMode::Default,
+                PermissionMode::Plan => WireMode::Plan,
+                PermissionMode::DontAsk => WireMode::DontAsk,
+            },
+        },
+        Control::ReadMcpStatus => Action::McpStatus,
+    })
+}
+/// The answer Claude gets for the request the host persisted at the response's epoch, built from
+/// that request as it was asked: the tool runs with the input Claude gave it, Claude's questions
+/// get their answers by question text, a form its values. Nothing else widens what Claude may do.
+fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) -> Result<Action, AdapterError> {
+    let payload: serde_json::Value = serde_json::from_slice(request.payload()).map_err(|_| AdapterError::InvalidObservation)?;
+    let input = || payload.get("input").and_then(serde_json::Value::as_object).cloned().ok_or(AdapterError::InvalidObservation);
+    let kind = request.kind();
+    let decision = match (decision, kind) {
+        (Decision::Allow, DecisionKind::Permission | DecisionKind::Plan) => WireDecision::Allow { updated_input: input()? },
+        (Decision::Answers { answers }, DecisionKind::Question) => {
+            let mut updated_input = input()?;
+            let questions = updated_input.get("questions").and_then(serde_json::Value::as_array).ok_or(AdapterError::InvalidObservation)?;
+            if questions.len() != answers.len() {
+                return Err(AdapterError::InvalidObservation);
+            }
+            let answered = questions
+                .iter()
+                .zip(answers)
+                .map(|(question, answer)| {
+                    let text = question.get("question").and_then(serde_json::Value::as_str).ok_or(AdapterError::InvalidObservation)?;
+                    Ok((text.to_owned(), serde_json::Value::String(answer.clone())))
+                })
+                .collect::<Result<serde_json::Map<_, _>, AdapterError>>()?;
+            updated_input.insert("answers".into(), serde_json::Value::Object(answered));
+            WireDecision::Allow { updated_input }
+        }
+        (Decision::Deny { message }, DecisionKind::Permission | DecisionKind::Question | DecisionKind::Plan) => WireDecision::Deny { message: message.clone() },
+        (Decision::Accept { text }, DecisionKind::Elicitation) => WireDecision::Accept {
+            content: Some(crate::elicitation::elicitation_content(payload.get("requestedSchema").unwrap_or(&serde_json::Value::Null), text)),
+        },
+        (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
+        _ => return Err(AdapterError::InvalidObservation),
+    };
+    Ok(Action::Respond {
+        request_id: RequestId(request.request_id().to_owned()),
+        epoch,
+        kind: match kind {
+            DecisionKind::Permission => WireKind::Permission,
+            DecisionKind::Question => WireKind::Question,
+            DecisionKind::Plan => WireKind::Plan,
+            DecisionKind::Elicitation => WireKind::Elicitation,
+        },
+        tool_use_id: request.tool_use_id().map(str::to_owned),
+        decision,
+    })
+}
+fn decoded(bytes: &[u8]) -> Option<alondra_agent_protocol::Frame> {
+    let mut reader = FramedReader::new(std::io::Cursor::new(bytes));
+    let frame = reader.read().ok()??;
+    reader.read().ok()?.is_none().then_some(frame)
+}
+/// The command id of a recorded control the host answers with an event of its own: a read of the
+/// MCP servers' status. The owner reads the host until that event is staged.
+pub fn answered_by_event(command: &[u8]) -> Option<CommandId> {
+    match decoded(command)?.body {
+        Body::Command(Command { command_id, action: Action::McpStatus, .. }) => Some(command_id),
+        _ => None,
+    }
+}
+/// The control a host event answers, when it is the result of one.
+pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
+    let mut framed = u32::try_from(observation.evidence.len()).ok()?.to_be_bytes().to_vec();
+    framed.extend_from_slice(&observation.evidence);
+    let Body::Event(event) = decoded(&framed)?.body else {
+        return None;
+    };
+    match event.observation {
+        WireObservation::Sdk { kind: SdkEventKind::ControlResult, payload, .. } => {
+            let ControlResult::McpStatus { command_id, .. } = serde_json::from_value(payload).ok()?;
+            Some(command_id)
+        }
+        _ => None,
+    }
 }
 struct PreparedDispatch {
     command: PreparedCommand,
@@ -118,6 +244,7 @@ impl ClaudeWorker {
         Ok(Self {
             adapter: ClaudeAdapter::new(binding, configuration)?,
             prepared: None,
+            prepared_control: None,
             pending: None,
         })
     }
@@ -231,6 +358,54 @@ impl ClaudeWorker {
             _ => false,
         }
     }
+    /// The exact command of a claimed control, under the current owner. One at a time, like
+    /// dispatches: it is sent only once its committed evidence matches it.
+    pub fn prepare_control(&mut self, attempt: &ControlAttempt) -> Result<PreparedCommand, AdapterError> {
+        if self.prepared_control.is_some() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let owner = self.adapter.host()?.owner();
+        if attempt.scope() != owner.scope()
+            || attempt.binding() != owner.binding()
+            || attempt.binding() != self.binding()
+            || attempt.execution() != owner.execution()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let owner_generation = owner.generation();
+        let command = self.adapter.command(attempt.command_id(), control_action(attempt.operation())?)?;
+        let output = PreparedCommand::new(command.bytes().to_vec())?;
+        self.prepared_control = Some(PreparedControl {
+            command,
+            id: attempt.id(),
+            revision: attempt.revision(),
+            execution: attempt.execution().clone(),
+            binding: attempt.binding().clone(),
+            owner_generation,
+            control: attempt.control().clone(),
+            operation: attempt.operation().clone(),
+        });
+        Ok(output)
+    }
+    /// Sends the exact control its committed evidence names. The application must recheck its
+    /// current SQL fence before calling; this is not a lease.
+    pub fn submit_control(&mut self, committed: &CommittedControl) -> Result<Handoff, AdapterError> {
+        self.prepared_control
+            .as_ref()
+            .ok_or(AdapterError::InvalidObservation)?
+            .validate(committed)?;
+        let owner = self.adapter.host()?.owner();
+        if committed.owner_generation() != owner.generation()
+            || committed.attempt().scope() != owner.scope()
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let prepared = self
+            .prepared_control
+            .take()
+            .ok_or(AdapterError::InvalidObservation)?;
+        self.adapter.send(committed.attempt().execution(), &prepared.command)
+    }
     /// Asks the host to stop and waits until it has exited: a launched host with its whole group,
     /// an adopted one by its own exit. A worker without a host has none.
     pub fn stop(&mut self) -> Result<(), AdapterError> {
@@ -247,6 +422,13 @@ impl ClaudeWorker {
         let received = self.adapter.next()?;
         self.pending = received.clone();
         Ok(received)
+    }
+    /// Whether a host event waits to be read, within `timeout`, without consuming it.
+    pub fn readable(&self, timeout: Duration) -> Result<bool, AdapterError> {
+        if self.pending.is_some() {
+            return Ok(true);
+        }
+        self.adapter.connection.as_ref().ok_or(AdapterError::Disconnected)?.readable(timeout)
     }
     pub fn normalizer(&self) -> &impl ObservationNormalizer {
         self.adapter.normalizer()
@@ -399,6 +581,40 @@ impl ClaudeAdapter {
     }
     fn host(&self) -> Result<&Host, AdapterError> {
         self.host.as_ref().ok_or(AdapterError::Disconnected)
+    }
+    /// The exact command the host is told under this owner's fence, with its deadline.
+    fn command(&self, command_id: CommandId, action: Action) -> Result<PreparedCommand, AdapterError> {
+        let owner = self.host()?.owner();
+        let deadline_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| AdapterError::Disconnected)?
+            .checked_add(self.configuration.io_timeout)
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .ok_or(AdapterError::Disconnected)?;
+        self.connection
+            .as_ref()
+            .ok_or(AdapterError::Disconnected)?
+            .prepare(
+                owner,
+                Command {
+                    fence: fence(owner, &self.control),
+                    execution: execution(owner),
+                    command_id,
+                    deadline_ms,
+                    action,
+                },
+            )
+    }
+    fn send(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand) -> Result<Handoff, AdapterError> {
+        let deadline = self.deadline()?;
+        let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
+        if stamp != host.owner().execution() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        self.connection
+            .as_mut()
+            .ok_or(AdapterError::Disconnected)?
+            .submit(host.owner(), command, deadline)
     }
     /// Re-sends the exact recorded command bytes of an unresolved dispatch and reads the host's
     /// definitive answer. The owner is rechecked; the lane is the adopted one.
@@ -620,40 +836,17 @@ impl Adapter for ClaudeAdapter {
                 prompt: invocation.text.into(),
             },
         };
-        let deadline_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| AdapterError::Disconnected)?
-            .checked_add(self.configuration.io_timeout)
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-            .ok_or(AdapterError::Disconnected)?;
-        self.connection
-            .as_ref()
-            .ok_or(AdapterError::Disconnected)?
-            .prepare(
-                owner,
-                Command {
-                    fence: fence(owner, &self.control),
-                    execution: execution(owner),
-                    command_id: invocation.command,
-                    deadline_ms,
-                    action,
-                },
-            )
+        self.command(invocation.command, action)
     }
     fn submit(
         &mut self,
         invocation: Invocation<'_>,
         command: &PreparedCommand,
     ) -> Result<Handoff, AdapterError> {
-        let deadline = self.deadline()?;
-        let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
-        if invocation.binding != &self.binding || invocation.execution != host.owner().execution() {
+        if invocation.binding != &self.binding {
             return Err(AdapterError::InvalidObservation);
         }
-        self.connection
-            .as_mut()
-            .ok_or(AdapterError::Disconnected)?
-            .submit(host.owner(), command, deadline)
+        self.send(invocation.execution, command)
     }
     fn next(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         let deadline = self.deadline()?;
@@ -859,3 +1052,53 @@ mod sdk_tests;
 #[cfg(test)]
 #[path = "facade_tests.rs"]
 mod facade_tests;
+
+#[cfg(test)]
+mod respond_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn request(kind: DecisionKind, payload: serde_json::Value) -> DecisionRequest {
+        let tool_use = (kind != DecisionKind::Elicitation).then(|| "toolu_1".to_owned());
+        DecisionRequest::new("decision-1".into(), tool_use, kind, serde_json::to_vec(&payload).unwrap()).unwrap()
+    }
+    fn decided(action: Action) -> (u64, WireKind, Option<String>, WireDecision) {
+        let Action::Respond { request_id, epoch, kind, tool_use_id, decision } = action else { panic!("{action:?}") };
+        assert_eq!(request_id.0, "decision-1");
+        (epoch, kind, tool_use_id, decision)
+    }
+
+    #[test]
+    fn an_allowed_tool_runs_with_the_input_claude_asked_for_and_a_denial_carries_its_message() {
+        let asked = request(DecisionKind::Permission, json!({"tool": "Bash", "input": {"command": "make test", "timeout": 5}, "request": {}}));
+        let (epoch, kind, tool_use, decision) = decided(respond_action(9, &asked, &Decision::Allow).unwrap());
+        assert_eq!((epoch, kind, tool_use.as_deref()), (9, WireKind::Permission, Some("toolu_1")));
+        assert_eq!(decision, WireDecision::Allow { updated_input: json!({"command": "make test", "timeout": 5}).as_object().unwrap().clone() });
+        let denied = decided(respond_action(9, &asked, &Decision::Deny { message: "The user denied it".into() }).unwrap()).3;
+        assert_eq!(denied, WireDecision::Deny { message: "The user denied it".into() });
+        assert!(matches!(respond_action(9, &asked, &Decision::Decline), Err(AdapterError::InvalidObservation)), "a form answer does not answer a tool");
+    }
+
+    #[test]
+    fn claudes_questions_get_their_answers_by_question_text() {
+        let questions = json!([{"question": "Which color?", "options": [{"label": "Red"}]}, {"question": "Which sizes?", "multiSelect": true, "options": []}]);
+        let asked = request(DecisionKind::Question, json!({"tool": "AskUserQuestion", "input": {"questions": questions}, "request": {}}));
+        let answers = Decision::Answers { answers: vec!["Red".into(), "Small, Large".into()] };
+        let decision = decided(respond_action(4, &asked, &answers).unwrap()).3;
+        let expected = json!({"questions": questions, "answers": {"Which color?": "Red", "Which sizes?": "Small, Large"}});
+        assert_eq!(decision, WireDecision::Allow { updated_input: expected.as_object().unwrap().clone() });
+        let short = Decision::Answers { answers: vec!["Red".into()] };
+        assert!(matches!(respond_action(4, &asked, &short), Err(AdapterError::InvalidObservation)), "every question needs its answer");
+    }
+
+    #[test]
+    fn an_accepted_form_carries_the_values_its_schema_types_and_a_declined_one_nothing() {
+        let schema = json!({"type": "object", "properties": {"name": {"type": "string", "title": "Name"}, "count": {"type": "integer"}}});
+        let asked = request(DecisionKind::Elicitation, json!({"serverName": "fixture", "message": "Which?", "requestedSchema": schema}));
+        let (_, kind, tool_use, decision) = decided(respond_action(2, &asked, &Decision::Accept { text: "name: Ada\ncount: 3".into() }).unwrap());
+        assert_eq!((kind, tool_use), (WireKind::Elicitation, None));
+        assert_eq!(decision, WireDecision::Accept { content: Some(json!({"name": "Ada", "count": 3}).as_object().unwrap().clone()) });
+        assert_eq!(decided(respond_action(2, &asked, &Decision::Decline).unwrap()).3, WireDecision::Decline {});
+        assert!(matches!(respond_action(2, &asked, &Decision::Allow), Err(AdapterError::InvalidObservation)));
+    }
+}

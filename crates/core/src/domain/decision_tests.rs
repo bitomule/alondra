@@ -1,0 +1,294 @@
+//! Decisions Claude asks for through a task's SDK execution: what Alondra decides by itself, the
+//! cards the user decides the rest on, and what each answer tells Claude.
+use super::lifecycle_tests::{assert_aggregate_rules, exec, kinds, last, must, node, refused_unchanged, sdk_turn, task, user, world};
+use super::*;
+use serde_json::json;
+use std::collections::BTreeMap;
+
+fn alondra_server() -> McpServerOrigin {
+    McpServerOrigin { name: ALONDRA_MCP_SERVER.into(), source: PLUGIN_SOURCE.into() }
+}
+fn card_prompt(hold: Hold, body: &str) -> DecisionPrompt {
+    let options = hold.options_offering(hold == Hold::Permission);
+    let card = match hold {
+        Hold::Permission => CardSpec::new(CardKind::Authorize, body),
+        Hold::Plan => CardSpec::new(CardKind::Review, "Review the plan").content(ContentKind::Plan, body),
+        Hold::Question | Hold::Elicitation => CardSpec::new(CardKind::Provide, body),
+    };
+    DecisionPrompt::Card { body: body.into(), options, card }
+}
+fn question_prompt(question: &str, labels: &[&str]) -> DecisionPrompt {
+    let options: Vec<QuestionOption> = labels.iter().enumerate()
+        .map(|(at, label)| QuestionOption { id: format!("o{at}"), label: (*label).into(), description: None })
+        .collect();
+    DecisionPrompt::Card { body: question.into(), options, card: CardSpec::new(CardKind::Decide, question) }
+}
+fn request(epoch: u64, hold: Hold, tool: Option<&str>, input: serde_json::Value, mcp_server: Option<McpServerOrigin>, prompt: DecisionPrompt) -> Command {
+    Command::RecordDecisionRequest { task_id: "t".into(), generation: 1, epoch, hold, tool: tool.map(Into::into), input, mcp_server, prompt }
+}
+fn bash(epoch: u64, command: &str) -> Command {
+    request(epoch, Hold::Permission, Some("Bash"), json!({"command": command}), None, card_prompt(Hold::Permission, &format!("Run {command}")))
+}
+fn answer(card: &str, option: &str, note: Option<&str>) -> Command {
+    let inputs = note.map(|note| BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default();
+    Command::AnswerQuestion { attachments: vec![], interaction_id: card.into(), option_id: option.into(), inputs }
+}
+fn card_of(epoch: u64) -> String {
+    decision_card_id(&"t".into(), 1, epoch).0
+}
+fn held(s: &DomainState) -> Vec<String> {
+    replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().cards().into_iter().map(|(card, _)| card.0.clone()).collect()
+}
+fn plan(checked: bool) -> String {
+    if checked { "# Plan\n\n- [ ] Add the parser\n- [ ] Test it\n".into() } else { "# Plan\n\nAdd the parser and test it.".into() }
+}
+
+#[test]
+fn alondras_own_tools_pass_only_from_the_alondra_plugins_server() {
+    let ask = Some("mcp__plugin_alondra_alondra__ask");
+    let server = |name: &str, source: &str| McpServerOrigin { name: name.into(), source: source.into() };
+    for (tool, origin, allowed) in [
+        (ask, Some(alondra_server()), true),
+        (ask, Some(server(ALONDRA_MCP_SERVER, "user")), false),
+        (ask, Some(server(ALONDRA_MCP_SERVER, "project")), false),
+        (ask, Some(server("alondra", PLUGIN_SOURCE)), false),
+        (ask, None, false),
+        (Some("mcp__other__ask"), Some(alondra_server()), false),
+        (Some("Bash"), Some(alondra_server()), false),
+        (None, Some(alondra_server()), false),
+    ] {
+        let decided = decision_policy(Hold::Permission, tool, &json!({}), origin.as_ref(), None);
+        assert_eq!(decided, allowed.then_some(DecisionRecord::Allow), "{tool:?} from {origin:?}");
+    }
+    for hold in [Hold::Question, Hold::Elicitation] {
+        assert_eq!(decision_policy(hold, ask, &json!({}), Some(&alondra_server()), None), None, "{hold:?} is always asked");
+    }
+}
+
+#[test]
+fn what_nodes_may_never_do_and_a_plan_without_its_checklist_are_denied() {
+    let deny = |tool: &str, input: serde_json::Value| decision_policy(Hold::Permission, Some(tool), &input, None, None);
+    let Some(DecisionRecord::Deny { message }) = deny("Bash", json!({"command": "alondra answer 55 Merge"})) else { panic!("a user-only command") };
+    assert!(message.contains("act as the user"), "{message}");
+    let Some(DecisionRecord::Deny { message }) = deny("Bash", json!({"command": "sqlite3 /Users/x/.alondra/domain.db 'select 1'"})) else { panic!("a writable database") };
+    assert!(message.contains("sqlite3 -readonly"), "{message}");
+    assert_eq!(deny("Bash", json!({"command": "sqlite3 -readonly /Users/x/.alondra/domain.db 'select 1'"})), None);
+    assert_eq!(deny("Bash", json!({"command": "make test"})), None);
+    assert!(matches!(decision_policy(Hold::Plan, Some("ExitPlanMode"), &json!({}), None, Some(&plan(false))), Some(DecisionRecord::Deny { .. })));
+    assert_eq!(decision_policy(Hold::Plan, Some("ExitPlanMode"), &json!({}), None, Some(&plan(true))), None);
+}
+
+#[test]
+fn a_plan_claude_never_wrote_is_sent_back_to_be_written() {
+    for unwritten in [None, Some(""), Some(" \n")] {
+        assert_eq!(decision_policy(Hold::Plan, Some("ExitPlanMode"), &json!({}), None, unwritten),
+            Some(DecisionRecord::Deny { message: crate::domain::UNWRITTEN_PLAN.into() }), "{unwritten:?}");
+    }
+}
+
+#[test]
+fn a_permission_card_is_decided_by_the_user_and_settles_inside_its_turn() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let outcome = must(&mut s, Actor::System, bash(7, "make test"));
+    let card = card_of(7);
+    assert_eq!(outcome.created_ids, vec![card.clone()]);
+    assert_eq!(last(&s, "t"), LifecycleRecord::DecisionAsked { card: card.as_str().into(), epoch: 7, reason: DecisionReason::Permission });
+    assert_eq!(s.holds.get(&InteractionId::from(card.as_str())), Some(&Hold::Permission));
+    assert_eq!(held(&s), vec![card.clone()]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_aggregate_rules(&s);
+    must(&mut s, user(), answer(&card, Hold::ALLOW, None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: card.as_str().into(), epoch: 7, decision: DecisionRecord::Allow });
+    assert!(held(&s).is_empty());
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert_aggregate_rules(&s);
+    let settle = || Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 };
+    must(&mut s, Actor::System, settle());
+    assert_eq!(kinds(&s, "t").iter().rev().take(2).cloned().collect::<Vec<_>>(), ["decision_continued", "decision_settled"]);
+    assert_eq!(replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().activity(), alondra_domain::ActivityView::Working);
+    assert_eq!(refused_unchanged(&mut s, Actor::System, settle()), "conflict", "a decision settles once");
+    assert_aggregate_rules(&s);
+}
+
+/// Every answer a card offers, and what Claude receives for it.
+#[test]
+fn every_answer_becomes_the_decision_claude_receives() {
+    let permission = || card_prompt(Hold::Permission, "Run make test");
+    let cases: Vec<(Hold, DecisionPrompt, &str, Option<&str>, DecisionRecord)> = vec![
+        (Hold::Permission, permission(), Hold::ALLOW, None, DecisionRecord::Allow),
+        (Hold::Permission, permission(), Hold::ALWAYS, None, DecisionRecord::Allow),
+        (Hold::Permission, permission(), Hold::DENY, None, DecisionRecord::Deny { message: "The user denied it".into() }),
+        (Hold::Permission, permission(), Hold::DENY, Some("Use make check"), DecisionRecord::Deny { message: "The user denied it: Use make check".into() }),
+        (Hold::Plan, card_prompt(Hold::Plan, &plan(true)), Hold::APPROVE, None, DecisionRecord::Allow),
+        (Hold::Plan, card_prompt(Hold::Plan, &plan(true)), Hold::REQUEST_CHANGES, None, DecisionRecord::Deny { message: "The user requests changes to the plan".into() }),
+        (Hold::Plan, card_prompt(Hold::Plan, &plan(true)), Hold::REQUEST_CHANGES, Some("Split it"), DecisionRecord::Deny { message: "The user requests changes to the plan: Split it".into() }),
+        (Hold::Question, question_prompt("Which database?", &["SQLite", "Postgres"]), "o1", None, DecisionRecord::Answers { answers: vec!["Postgres".into()] }),
+        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, Some("abc"), DecisionRecord::Accept { text: "abc".into() }),
+        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, None, DecisionRecord::Accept { text: String::new() }),
+        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::DECLINE, None, DecisionRecord::Decline),
+    ];
+    for (hold, prompt, option, note, expected) in cases {
+        let mut s = world();
+        sdk_turn(&mut s, "t", "a");
+        must(&mut s, Actor::System, request(3, hold, None, json!({}), None, prompt));
+        must(&mut s, user(), answer(&card_of(3), option, note));
+        assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: card_of(3).as_str().into(), epoch: 3, decision: expected }, "{hold:?} {option} {note:?}");
+        if hold == Hold::Plan && option == Hold::APPROVE {
+            assert!(s.checklists.contains_key(&TaskId::from("t")), "an approved plan is what the delivery is held to");
+        }
+        assert_aggregate_rules(&s);
+    }
+}
+
+#[test]
+fn questions_asked_together_are_decided_once_the_last_is_answered() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let question = |need: &str, labels: &[&str]| GroupQuestion {
+        need: need.into(), why: String::new(), recommended: None,
+        options: labels.iter().enumerate().map(|(at, label)| QuestionOption { id: format!("o{at}"), label: (*label).into(), description: None }).collect(),
+    };
+    let prompt = DecisionPrompt::Questions { questions: vec![question("Which database?", &["SQLite", "Postgres"]), question("Which port?", &["5432", "6543"])] };
+    let outcome = must(&mut s, Actor::System, request(4, Hold::Question, Some("AskUserQuestion"), json!({}), None, prompt));
+    let group = InteractionId(card_of(4));
+    let (first, second) = (QuestionGroup::card_id(&group, 1), QuestionGroup::card_id(&group, 2));
+    assert_eq!(outcome.created_ids, vec![first.0.clone(), second.0.clone()]);
+    assert_eq!(held(&s), vec![first.0.clone()], "one decision, held by the group's first card");
+    must(&mut s, user(), answer(&second.0, "o0", None));
+    assert_eq!(held(&s), vec![first.0.clone()], "nothing is decided before the last answer");
+    assert_aggregate_rules(&s);
+    must(&mut s, user(), Command::ReopenAnswer { interaction_id: second.clone() });
+    must(&mut s, user(), answer(&second.0, "o1", None));
+    must(&mut s, user(), answer(&first.0, "o1", None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: first.clone(), epoch: 4, decision: DecisionRecord::Answers { answers: vec!["Postgres".into(), "6543".into()] } });
+    assert_eq!(exec(&mut s, user(), Command::ReopenAnswer { interaction_id: second.clone() }).unwrap_err().code, "question_already_answered");
+    assert!(held(&s).is_empty());
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn questions_asked_together_are_answered_in_any_order_and_decided_once() {
+    let question = |need: &str, labels: &[&str]| GroupQuestion {
+        need: need.into(), why: String::new(), recommended: None,
+        options: labels.iter().enumerate().map(|(at, label)| QuestionOption { id: format!("o{at}"), label: (*label).into(), description: None }).collect(),
+    };
+    let asked = |s: &mut DomainState| {
+        sdk_turn(s, "t", "a");
+        let prompt = DecisionPrompt::Questions { questions: vec![question("Which database?", &["SQLite", "Postgres"]), question("Which port?", &["5432", "6543"])] };
+        must(s, Actor::System, request(4, Hold::Question, Some("AskUserQuestion"), json!({}), None, prompt));
+        let group = InteractionId(card_of(4));
+        (QuestionGroup::card_id(&group, 1), QuestionGroup::card_id(&group, 2))
+    };
+    let decided = |s: &DomainState| s.lifecycle_journal[&TaskId::from("t")].iter().filter(|record| matches!(record, LifecycleRecord::Decided { .. })).count();
+
+    let mut s = world();
+    let (first, second) = asked(&mut s);
+    must(&mut s, user(), answer(&first.0, "o1", None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::CardMoved { from: first.clone(), to: second.clone() });
+    assert_eq!(held(&s), vec![second.0.clone()], "the decision waits on the question still open");
+    assert_eq!(decided(&s), 0);
+    assert_aggregate_rules(&s);
+    must(&mut s, user(), answer(&second.0, "o0", None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: second.clone(), epoch: 4, decision: DecisionRecord::Answers { answers: vec!["Postgres".into(), "5432".into()] } });
+    assert_eq!(decided(&s), 1);
+    assert!(held(&s).is_empty());
+    assert_aggregate_rules(&s);
+
+    let mut s = world();
+    let (first, second) = asked(&mut s);
+    must(&mut s, user(), answer(&first.0, "o0", None));
+    must(&mut s, user(), Command::ReopenAnswer { interaction_id: first.clone() });
+    assert_eq!(held(&s), vec![second.0.clone()], "a reopened answer leaves the decision where it waits");
+    must(&mut s, user(), answer(&second.0, "o1", None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::CardMoved { from: second.clone(), to: first.clone() });
+    assert_eq!(held(&s), vec![first.0.clone()], "the reopened question holds it again");
+    assert_aggregate_rules(&s);
+    must(&mut s, user(), answer(&first.0, "o1", None));
+    assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: first.clone(), epoch: 4, decision: DecisionRecord::Answers { answers: vec!["Postgres".into(), "6543".into()] } });
+    assert_eq!(decided(&s), 1);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn alondra_and_forbidden_tools_are_decided_without_a_card() {
+    let ask = Some("mcp__plugin_alondra_alondra__ask");
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let cards = s.interactions.len();
+    must(&mut s, Actor::System, request(1, Hold::Permission, ask, json!({}), Some(alondra_server()), card_prompt(Hold::Permission, "Ask the user")));
+    assert_eq!(last(&s, "t"), LifecycleRecord::DecidedByPolicy { epoch: 1, decision: DecisionRecord::Allow });
+    must(&mut s, Actor::System, bash(2, "alondra send orchestrator hello"));
+    let LifecycleRecord::DecidedByPolicy { epoch: 2, decision: DecisionRecord::Deny { message } } = last(&s, "t") else { panic!("denied by policy") };
+    assert!(message.contains("act as the user"), "{message}");
+    must(&mut s, Actor::System, request(3, Hold::Plan, Some("ExitPlanMode"), json!({}), None, card_prompt(Hold::Plan, &plan(false))));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::DecidedByPolicy { epoch: 3, decision: DecisionRecord::Deny { .. } }));
+    assert_eq!(s.interactions.len(), cards, "no card for what Alondra decides");
+    assert!(held(&s).is_empty());
+    assert_aggregate_rules(&s);
+    let imitation = McpServerOrigin { name: ALONDRA_MCP_SERVER.into(), source: "user".into() };
+    must(&mut s, Actor::System, request(5, Hold::Permission, ask, json!({}), Some(imitation), card_prompt(Hold::Permission, "Ask the user")));
+    assert_eq!(held(&s), vec![card_of(5)], "a tool that only imitates the name is put to the user");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn an_aborted_request_takes_its_card_and_a_late_answer_is_refused() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, bash(6, "make deploy"));
+    must(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "t".into(), generation: 1, epoch: 6 });
+    assert_eq!(last(&s, "t"), LifecycleRecord::DecisionAborted { epoch: 6, unheard_card: decision_cancelled_card_id(&"t".into(), 1, 6) });
+    assert!(s.interactions[&InteractionId(card_of(6))].withdrawn);
+    assert!(held(&s).is_empty(), "the turn that asked still runs: nothing else is asked");
+    assert!(!s.interactions.contains_key(&decision_cancelled_card_id(&"t".into(), 1, 6)));
+    assert_eq!(refused_unchanged(&mut s, user(), answer(&card_of(6), Hold::ALLOW, None)), "withdrawn");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_request_aborted_after_its_turn_ended_asks_how_the_task_goes_on() {
+    use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, bash(6, "make deploy"));
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert_eq!(held(&s), vec![card_of(6)], "the request explains the next step");
+    let outcome = must(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "t".into(), generation: 1, epoch: 6 });
+    let cancelled = decision_cancelled_card_id(&"t".into(), 1, 6);
+    assert_eq!(held(&s), vec![cancelled.0.clone()]);
+    assert!(crate::views::id::valid(&cancelled.0));
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == cancelled)));
+    assert_aggregate_rules(&s);
+    let index = ReadIndex::build(&s);
+    let live = LiveSnapshot::default();
+    let view = build("task:t", RenderContext { domain: &s, index: &index, live: &live, client: Client::Tui, lang: Lang::Es,
+        transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+    let view = serde_json::to_string(&view).unwrap();
+    assert!(view.contains("dejó de esperar tu decisión"), "{view}");
+    must(&mut s, user(), answer(&cancelled.0, CARRY_ON, None));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Answered { .. }));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn only_alondra_records_decisions_of_the_tasks_current_sdk_execution() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    assert_eq!(refused_unchanged(&mut s, user(), bash(1, "make")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, node("a"), bash(1, "make")), "forbidden");
+    let Command::RecordDecisionRequest { task_id, epoch, hold, tool, input, mcp_server, prompt, .. } = bash(1, "make") else { unreachable!() };
+    let stale = Command::RecordDecisionRequest { task_id, generation: 2, epoch, hold, tool, input, mcp_server, prompt };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, stale), "stale_execution");
+    let together = DecisionPrompt::Questions { questions: vec![] };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, request(1, Hold::Permission, Some("Bash"), json!({}), None, together)), "invalid_input");
+    must(&mut s, Actor::System, bash(1, "make"));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, bash(1, "make")), "invalid_input", "one card per request");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 1 }), "conflict", "nothing was decided yet");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "t".into(), generation: 1, epoch: 9 }), "conflict", "nothing was asked at 9");
+    task(&mut s, "u", Some("b"));
+    must(&mut s, node("b"), Command::StartTask { task_id: "u".into() });
+    let bg = Command::RecordDecisionSettled { task_id: "u".into(), generation: 1, epoch: 1 };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, bg), "invalid_input");
+    assert!(exec(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "missing".into(), generation: 1, epoch: 1 }).is_err());
+}

@@ -35,9 +35,14 @@ fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action
     Some(action)
 }
 
-/// Stopping a node's current turn, offered only while it works.
+/// Stopping a node's current turn, offered only while it works: for a node that runs through the
+/// SDK, while its execution runs a turn or work of its own.
 fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
-    common::working(id, context).then_some(())?;
+    let working = match context.index.node(&AgentId(id.into())) {
+        Some(node) if node.through_sdk => node.sdk_running,
+        _ => common::working(id, context),
+    };
+    working.then_some(())?;
     let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
         t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "i".into());
@@ -635,8 +640,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut actions = vec![];
     if !through_sdk {
         actions.extend(message_action(id, context));
-        actions.extend(interrupt_action(id, context));
     }
+    actions.extend(interrupt_action(id, context));
     actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
     if !through_sdk {
         actions.extend(close_action(id, context));

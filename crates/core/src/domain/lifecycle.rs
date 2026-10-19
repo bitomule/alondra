@@ -5,9 +5,10 @@
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
 use alondra_domain::{
-    ActivityView, CLAUDE_BG_HOST, CallbackId, ContinuationId, ConversationId, DrainObligation, Event, FinishIntent, HostId,
-    InputId, InstanceId, OperationId, PlanReviewOutcome as ReviewSettlement, PostMergeFact, Refusal, ResourceEvidence,
-    RuntimeFact, TaskLifecycle, TaskPhase, Trigger, TurnId, WorkId,
+    ActivityView, CLAUDE_BG_HOST, CallbackId, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
+    FinishIntent, HostId, InputId, InstanceId, OperationId, PermissionMode, PlanReviewOutcome as ReviewSettlement,
+    PostMergeFact, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle, TaskPhase, Trigger, TurnId, WaitReason, WorkId,
+    decision_callback, decision_continuation, decision_epoch,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -82,6 +83,76 @@ pub enum ReviewOutcome {
     KeptByUser,
 }
 
+/// The text of the input that asks an SDK execution to compact its conversation.
+pub const COMPACT: &str = "/compact";
+
+/// The permission modes an SDK execution can be set to; none grants a permission by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionModeRecord {
+    Default,
+    Plan,
+    DontAsk,
+}
+
+/// An operation on a running SDK execution, as the journal keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ControlRecord {
+    Interrupt {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<String>,
+    },
+    SetModel { model: String },
+    SetPermissionMode { mode: PermissionModeRecord },
+    ReadMcpStatus,
+}
+
+/// What answers a decision Claude asked for through the task's SDK execution, as the journal
+/// keeps it. Nothing is granted by default: only `Allow`, `Answers` and `Accept` let it go on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DecisionRecord {
+    Allow,
+    /// Claude's questions answered, one answer for each, in the order it asked them.
+    Answers { answers: Vec<String> },
+    Deny { message: String },
+    /// An MCP server's request for input accepted with what the user wrote.
+    Accept { text: String },
+    Decline,
+}
+impl From<&DecisionRecord> for Decision {
+    fn from(record: &DecisionRecord) -> Self {
+        match record {
+            DecisionRecord::Allow => Self::Allow,
+            DecisionRecord::Answers { answers } => Self::Answers { answers: answers.clone() },
+            DecisionRecord::Deny { message } => Self::Deny { message: message.clone() },
+            DecisionRecord::Accept { text } => Self::Accept { text: text.clone() },
+            DecisionRecord::Decline => Self::Decline,
+        }
+    }
+}
+impl From<&Decision> for DecisionRecord {
+    fn from(decision: &Decision) -> Self {
+        match decision {
+            Decision::Allow => Self::Allow,
+            Decision::Answers { answers } => Self::Answers { answers: answers.clone() },
+            Decision::Deny { message } => Self::Deny { message: message.clone() },
+            Decision::Accept { text } => Self::Accept { text: text.clone() },
+            Decision::Decline => Self::Decline,
+        }
+    }
+}
+
+/// What the card of a decision waits for: a permission or a plan is allowed or denied, a question
+/// or an MCP server's request for input is answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionReason {
+    Permission,
+    Question,
+}
+
 /// One decision in a task's journal, as it is kept. Data only: a task's lifecycle is what the
 /// aggregate says after replaying its journal, never a field read from a record. The task's DTO
 /// yields no lifecycle either, whatever it was deserialized from:
@@ -108,6 +179,8 @@ pub enum RuntimeObservation {
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
+    /// Work ended while the root turn that started it was still open: that turn goes on with it.
+    WorkContinued { continuation: String },
     /// The model answered: the API and the account Claude Code uses work. A fact about Claude,
     /// not about the task: it records nothing in the task's journal.
     ModelAnswered,
@@ -127,6 +200,8 @@ pub enum LifecycleRecord {
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
+    /// The root turn still open when work ended goes on with the work's `continuation`.
+    WorkContinued { continuation: String },
     /// The root turn of an SDK execution ended. `unheard_card` is the card the aggregate requires
     /// when nothing else explains the task's next step; otherwise it stays unused.
     TurnEnded { turn: String, unheard_card: InteractionId },
@@ -182,6 +257,26 @@ pub enum LifecycleRecord {
         text: Option<String>,
         unheard_card: InteractionId,
     },
+    /// The intent to run `operation` on the task's SDK execution, recorded before it reaches it.
+    ControlRequested { control: String, operation: ControlRecord },
+    /// The resting SDK execution is asked to compact its conversation with `input`.
+    Compacted { input: String },
+    /// The SDK execution asks the user, on `card`, for the decision its host persisted at `epoch`.
+    DecisionAsked { card: InteractionId, epoch: u64, reason: DecisionReason },
+    /// Alondra's own rules decided the request at `epoch` as it was asked: no card.
+    DecidedByPolicy { epoch: u64, decision: DecisionRecord },
+    /// The user answered `from`, one of the questions asked together, while others are open: the
+    /// request waits on `to`, one of them.
+    CardMoved { from: InteractionId, to: InteractionId },
+    /// The user decided `card`, the card of the request at `epoch`.
+    Decided { card: InteractionId, epoch: u64, decision: DecisionRecord },
+    /// The decision of the request at `epoch` reached Claude.
+    DecisionSettled { epoch: u64 },
+    /// The turn that asked at `epoch` goes on with the decision.
+    DecisionContinued { epoch: u64 },
+    /// The request at `epoch` ended without a decision reaching Claude. `unheard_card` is the card
+    /// the aggregate requires when nothing else explains the task's next step.
+    DecisionAborted { epoch: u64, unheard_card: InteractionId },
 }
 
 /// The aggregates of the tasks one transaction decides on, replayed from their journals when first
@@ -216,6 +311,36 @@ fn input_id(task: &TaskId, value: &str) -> Result<InputId> {
 }
 fn operation_id(task: &TaskId, value: &str) -> Result<OperationId> {
     OperationId::new(value).map_err(|e| corrupt(task, format!("operation {value:?}: {e:?}")))
+}
+fn control_of(task: &TaskId, record: &ControlRecord) -> Result<Control> {
+    Ok(match record {
+        ControlRecord::Interrupt { turn } => Control::Interrupt {
+            turn: turn.as_deref().map(|turn| TurnId::new(turn).map_err(|e| corrupt(task, format!("{e:?}")))).transpose()?,
+        },
+        ControlRecord::SetModel { model } => Control::SetModel { model: model.clone() },
+        ControlRecord::SetPermissionMode { mode } => Control::SetPermissionMode {
+            mode: match mode {
+                PermissionModeRecord::Default => PermissionMode::Default,
+                PermissionModeRecord::Plan => PermissionMode::Plan,
+                PermissionModeRecord::DontAsk => PermissionMode::DontAsk,
+            },
+        },
+        ControlRecord::ReadMcpStatus => Control::ReadMcpStatus,
+    })
+}
+fn record_of_control(control: &Control) -> ControlRecord {
+    match control {
+        Control::Interrupt { turn } => ControlRecord::Interrupt { turn: turn.as_ref().map(|turn| turn.as_str().into()) },
+        Control::SetModel { model } => ControlRecord::SetModel { model: model.clone() },
+        Control::SetPermissionMode { mode } => ControlRecord::SetPermissionMode {
+            mode: match mode {
+                PermissionMode::Default => PermissionModeRecord::Default,
+                PermissionMode::Plan => PermissionModeRecord::Plan,
+                PermissionMode::DontAsk => PermissionModeRecord::DontAsk,
+            },
+        },
+        Control::ReadMcpStatus => ControlRecord::ReadMcpStatus,
+    }
 }
 
 /// The event a record stands for, against the aggregate it was decided on: runtime facts take
@@ -267,6 +392,14 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
         })?,
+        LifecycleRecord::WorkContinued { continuation } => {
+            if is_decision(lifecycle.generation(), continuation) {
+                return Err(corrupt(task, format!("{continuation} is a decision's continuation, not work's")));
+            }
+            runtime(RuntimeFact::ContinuationConsumed {
+                continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            })?
+        }
         LifecycleRecord::ResourceAvailable => runtime(RuntimeFact::ResourceAvailable)?,
         LifecycleRecord::TurnStarted { turn, input } => runtime(RuntimeFact::TurnStarted {
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -314,7 +447,53 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
                 ReviewOutcome::KeptByUser => ReviewSettlement::KeptByUser,
             },
         },
+        LifecycleRecord::ControlRequested { control, operation } => Event::RequestControl {
+            control: operation_id(task, control)?,
+            kind: control_of(task, operation)?,
+        },
+        LifecycleRecord::Compacted { input } => Event::Compact { input: input_id(task, input)? },
+        LifecycleRecord::DecisionAsked { card, epoch, reason } => runtime(RuntimeFact::Ask {
+            card: card.clone(),
+            callback: decision_callback(lifecycle.generation(), *epoch),
+            reason: match reason {
+                DecisionReason::Permission => WaitReason::Permission,
+                DecisionReason::Question => WaitReason::Question,
+            },
+        })?,
+        LifecycleRecord::DecidedByPolicy { epoch, decision } => runtime(RuntimeFact::AnsweredByPolicy {
+            callback: decision_callback(lifecycle.generation(), *epoch),
+            decision: decision.into(),
+        })?,
+        LifecycleRecord::Decided { card, epoch, decision } => {
+            if lifecycle.card_callback(card).is_some_and(|callback| *callback != decision_callback(lifecycle.generation(), *epoch)) {
+                return Err(corrupt(task, format!("card {card} decides another request than the one at epoch {epoch}")));
+            }
+            Event::Decide { card: card.clone(), decision: decision.into() }
+        }
+        LifecycleRecord::CardMoved { from, to } => Event::MoveCard { from: from.clone(), to: to.clone() },
+        LifecycleRecord::DecisionSettled { epoch } => runtime(RuntimeFact::CallbackSettled {
+            callback: decision_callback(lifecycle.generation(), *epoch),
+            continuation: decision_continuation(lifecycle.generation(), *epoch),
+        })?,
+        LifecycleRecord::DecisionContinued { epoch } => runtime(RuntimeFact::ContinuationConsumed {
+            continuation: decision_continuation(lifecycle.generation(), *epoch),
+        })?,
+        LifecycleRecord::DecisionAborted { epoch, unheard_card } => runtime(RuntimeFact::CallbackAborted {
+            callback: decision_callback(lifecycle.generation(), *epoch),
+            unheard_card: unheard_card.clone(),
+        })?,
     })
+}
+
+/// Whether `continuation` is one a decision of the current execution resumes with.
+fn is_decision(generation: u64, continuation: &str) -> bool {
+    CallbackId::new(continuation).is_ok_and(|id| decision_epoch(generation, &id).is_some())
+}
+
+/// The epoch of a decision callback or continuation of the current execution.
+fn epoch_of(task: &TaskId, lifecycle: &TaskLifecycle, id: &str) -> Result<u64> {
+    let callback = CallbackId::new(id).map_err(|e| corrupt(task, format!("{e:?}")))?;
+    decision_epoch(lifecycle.generation(), &callback).ok_or_else(|| corrupt(task, format!("{id} is no decision of execution {}", lifecycle.generation())))
 }
 
 /// The aggregate a journal yields. A record the aggregate refuses makes the whole journal
@@ -353,6 +532,7 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::ExecutionReleased { input }
         | LifecycleRecord::HandedBack { input, .. }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
+        LifecycleRecord::Compacted { input } => Some((input, Some(COMPACT))),
         LifecycleRecord::Answered { input, text, .. } | LifecycleRecord::Resumed { input, text, .. } => Some((input, text.as_deref())),
         LifecycleRecord::HandoffSettled { resent: Some(input), text, .. } | LifecycleRecord::HandoffResent { resent: input, text, .. } => {
             Some((input, text.as_deref()))
@@ -390,7 +570,7 @@ pub fn journal_writes(task: &TaskId, journal: &[LifecycleRecord], from: usize) -
 
 /// The record an event of the store stands for, given the aggregate before it. An event the
 /// domain does not decide yet has none: the journal cannot be read.
-fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) -> Result<LifecycleRecord> {
+fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, lifecycle: &TaskLifecycle) -> Result<LifecycleRecord> {
     let drained = |obligation: &DrainObligation| -> Result<Drained> {
         Ok(match obligation {
             DrainObligation::Execution(instance) => Drained::Execution { instance: instance.as_str().into() },
@@ -478,6 +658,43 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) ->
                 ReviewSettlement::KeptByUser => ReviewOutcome::KeptByUser,
             },
         },
+        Event::RequestControl { control, kind } => LifecycleRecord::ControlRequested {
+            control: control.as_str().into(),
+            operation: record_of_control(kind),
+        },
+        Event::Compact { input } => LifecycleRecord::Compacted { input: input.as_str().into() },
+        Event::Runtime { fact: RuntimeFact::Ask { card, callback, reason }, .. } => LifecycleRecord::DecisionAsked {
+            card: card.clone(),
+            epoch: epoch_of(task, lifecycle, callback.as_str())?,
+            reason: match reason {
+                WaitReason::Permission => DecisionReason::Permission,
+                WaitReason::Question => DecisionReason::Question,
+                other => return Err(corrupt(task, format!("a decision that waits for {other:?}"))),
+            },
+        },
+        Event::Runtime { fact: RuntimeFact::AnsweredByPolicy { callback, decision }, .. } => LifecycleRecord::DecidedByPolicy {
+            epoch: epoch_of(task, lifecycle, callback.as_str())?,
+            decision: decision.into(),
+        },
+        Event::Decide { card, decision } => LifecycleRecord::Decided {
+            card: card.clone(),
+            epoch: epoch_of(task, lifecycle, lifecycle.card_callback(card).ok_or_else(|| corrupt(task, format!("card {card} decides nothing")))?.as_str())?,
+            decision: decision.into(),
+        },
+        Event::MoveCard { from, to } => LifecycleRecord::CardMoved { from: from.clone(), to: to.clone() },
+        Event::Runtime { fact: RuntimeFact::CallbackSettled { callback, .. }, .. } => {
+            LifecycleRecord::DecisionSettled { epoch: epoch_of(task, lifecycle, callback.as_str())? }
+        }
+        Event::Runtime { fact: RuntimeFact::ContinuationConsumed { continuation }, .. } if !is_decision(lifecycle.generation(), continuation.as_str()) => {
+            LifecycleRecord::WorkContinued { continuation: continuation.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::ContinuationConsumed { continuation }, .. } => {
+            LifecycleRecord::DecisionContinued { epoch: epoch_of(task, lifecycle, continuation.as_str())? }
+        }
+        Event::Runtime { fact: RuntimeFact::CallbackAborted { callback, unheard_card }, .. } => LifecycleRecord::DecisionAborted {
+            epoch: epoch_of(task, lifecycle, callback.as_str())?,
+            unheard_card: unheard_card.clone(),
+        },
         other => return Err(corrupt(task, format!("an event the domain does not decide: {other:?}"))),
     })
 }
@@ -488,7 +705,7 @@ pub fn records_from_events(task: &TaskId, initial: &InputId, events: &[Event], t
     let mut lifecycle = TaskLifecycle::planned(task.clone(), initial.clone()).map_err(|r| corrupt(task, format!("{r:?}")))?;
     let mut records = vec![LifecycleRecord::Planned { input: initial.as_str().into() }];
     for (n, stored) in events.iter().enumerate() {
-        let record = record_of(task, stored, texts)?;
+        let record = record_of(task, stored, texts, &lifecycle)?;
         let derived = event(task, &record, &lifecycle)?;
         if derived != *stored {
             return Err(corrupt(task, format!("event {} {stored:?} is not the one its record stands for ({derived:?})", n + 1)));
@@ -736,15 +953,23 @@ impl DomainState {
 
     /// The current SDK execution of `generation`: facts about another, or about one of the
     /// `claude --bg` backend, are refused.
-    fn sdk_execution(&self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
-        let lifecycle = self.lifecycle(lifecycles, task)?;
-        let Some(stamp) = lifecycle.execution().filter(|stamp| stamp.generation() == generation) else {
-            return Err(DomainError::new("stale_execution", format!("Task {task} has no execution of generation {generation}")));
-        };
-        if stamp.host().as_str() == CLAUDE_BG_HOST {
-            return Err(DomainError::new("invalid_input", "The claude --bg backend reports its facts through its node"));
-        }
-        Ok(())
+    pub(super) fn sdk_execution(&self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+        current_sdk(task, generation, self.lifecycle(lifecycles, task)?)
+    }
+
+    /// The task's lifecycle replayed, when its current execution is the SDK execution of
+    /// `generation`: what a guard judges facts about that execution on.
+    pub(super) fn sdk_replay(&self, task: &TaskId, generation: u64) -> Result<TaskLifecycle> {
+        let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
+        let lifecycle = replay(task, journal)?;
+        current_sdk(task, generation, &lifecycle)?;
+        Ok(lifecycle)
+    }
+
+    /// Applies `record` to a replay a guard judges on, as `decide` would apply it.
+    pub(super) fn judge(&self, task: &TaskId, lifecycle: &mut TaskLifecycle, record: &LifecycleRecord) -> Result<()> {
+        let event = event(task, record, lifecycle)?;
+        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, record, lifecycle, refusal))
     }
 
     /// The root turn of the task's SDK execution ended. A result of the SDK is evidence, never
@@ -761,14 +986,19 @@ impl DomainState {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
         let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
+        let interrupted = self.lifecycle_journal.get(task).is_some_and(|journal| interrupted(journal, turn));
         if let Some(hold) = kind.and_then(ClaudeHold::for_failure) {
             self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
         }
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone() })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             let title = self.tasks[task].title.clone();
-            let refused = failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser));
-            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, refused, self.revision + 1));
+            let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
+                Some(failure) => TurnEnd::Refused(failure),
+                None if interrupted => TurnEnd::Interrupted,
+                None => TurnEnd::Unexplained,
+            };
+            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
         Ok(())
@@ -911,10 +1141,51 @@ impl DomainState {
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
                 RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
                 RuntimeObservation::WorkEnded { work, continuation } => LifecycleRecord::WorkEnded { work, continuation },
+                RuntimeObservation::WorkContinued { continuation } => {
+                    if is_decision(generation, &continuation) {
+                        return Err(DomainError::new("invalid_input", "A decision's turn goes on only when its decision reaches Claude"));
+                    }
+                    LifecycleRecord::WorkContinued { continuation }
+                }
             };
             self.decide(lifecycles, task, record)?;
         }
         Ok(())
+    }
+
+    /// The open task whose current execution `agent` runs through the SDK, its lifecycle replayed.
+    pub(super) fn sdk_task_of(&self, agent: &AgentId) -> Result<(TaskId, TaskLifecycle)> {
+        for (id, t) in &self.tasks {
+            if t.agent_id.as_ref() != Some(agent) || t.over() || !self.lifecycle_journal.contains_key(id) {
+                continue;
+            }
+            let lifecycle = replay(id, &self.lifecycle_journal[id])?;
+            if lifecycle.execution().is_some_and(|stamp| stamp.node() == agent && stamp.host().as_str() != CLAUDE_BG_HOST) {
+                return Ok((id.clone(), lifecycle));
+            }
+        }
+        Err(DomainError::new("no_task", format!("Node {agent} has no task running through the Agent SDK")))
+    }
+
+    /// The lifecycle of an open task whose current execution runs through the SDK.
+    pub(super) fn sdk_lifecycle(&self, task: &TaskId) -> Result<TaskLifecycle> {
+        let t = self.tasks.get(task).ok_or_else(|| DomainError::new("not_found", "Task missing"))?;
+        if t.over() {
+            return Err(DomainError::new("task_not_active", format!("Task {task} is ending")));
+        }
+        let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
+        let lifecycle = replay(task, journal)?;
+        if !lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() != CLAUDE_BG_HOST) {
+            return Err(DomainError::new("no_task", format!("Task {task} has no execution running through the Agent SDK")));
+        }
+        Ok(lifecycle)
+    }
+
+    /// `record` if the task's lifecycle accepts it, judged on a replay that is then dropped.
+    pub(super) fn judged(&self, task: &TaskId, mut lifecycle: TaskLifecycle, record: LifecycleRecord) -> Result<LifecycleRecord> {
+        let event = event(task, &record, &lifecycle)?;
+        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, &lifecycle, refusal))?;
+        Ok(record)
     }
 
     /// The task's node is gone and left nothing behind: the task waits for another.
@@ -1156,6 +1427,37 @@ impl DomainState {
     }
 }
 
+fn current_sdk(task: &TaskId, generation: u64, lifecycle: &TaskLifecycle) -> Result<()> {
+    let Some(stamp) = lifecycle.execution().filter(|stamp| stamp.generation() == generation) else {
+        return Err(DomainError::new("stale_execution", format!("Task {task} has no execution of generation {generation}")));
+    };
+    if stamp.host().as_str() == CLAUDE_BG_HOST {
+        return Err(DomainError::new("invalid_input", "The claude --bg backend reports its facts through its node"));
+    }
+    Ok(())
+}
+
+/// The card of the decision the SDK execution of `generation` asked for at `epoch`; Claude's
+/// questions asked together are cards of a group under this id.
+pub fn decision_card_id(task: &TaskId, generation: u64, epoch: u64) -> InteractionId {
+    InteractionId(format!("decision-{task}-{generation}-{epoch}"))
+}
+/// The cards that ask the user how a task goes on when a decision it waited for was cancelled
+/// and nothing else explains its next step.
+pub const DECISION_CANCELLED_PREFIX: &str = "decision-cancelled-";
+pub fn decision_cancelled_card_id(task: &TaskId, generation: u64, epoch: u64) -> InteractionId {
+    InteractionId(format!("{DECISION_CANCELLED_PREFIX}{task}-{generation}-{epoch}"))
+}
+const DECISION_CANCELLED_WHY: &str = "Claude Code stopped waiting for the decision it asked you for. Tell it to go on, write to it what to do, or cancel the task.";
+
+pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+    let mut card = turn_ended_card(id, task, title, TurnEnd::Unexplained, revision);
+    let need = clip(&format!("“{title}” stopped waiting for your decision: tell it how to go on"), CardSpec::NEED_MAX);
+    card.body = need.clone();
+    card.card = CardSpec::new(CardKind::Decide, need).why(DECISION_CANCELLED_WHY);
+    card
+}
+
 /// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
 /// explains its next step.
 pub const TURN_ENDED_PREFIX: &str = "turn-ended-";
@@ -1175,11 +1477,27 @@ const CARRY_ON_INSTRUCTION: &str = "Go on with your task: deliver your result, o
 const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.";
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
+pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";
 
-fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, refused: Option<&SdkApiFailure>, revision: u64) -> Interaction {
-    let (need, why) = match refused {
-        Some(failure) => (format!("“{title}” stopped: {}", api_refusal(&failure.error)), REFUSED_WHY),
-        None => (format!("“{title}” stopped without delivering or asking: tell it how to go on"), TURN_ENDED_WHY),
+/// Why a root turn ended with nothing that explains the task's next step.
+enum TurnEnd<'a> {
+    Unexplained,
+    Interrupted,
+    Refused(&'a SdkApiFailure),
+}
+
+/// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
+fn interrupted(journal: &[LifecycleRecord], turn: &str) -> bool {
+    journal.iter().rev()
+        .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } if started == turn))
+        .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: Some(stopped) }, .. } if stopped == turn))
+}
+
+fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, revision: u64) -> Interaction {
+    let (need, why) = match end {
+        TurnEnd::Refused(failure) => (format!("“{title}” stopped: {}", api_refusal(&failure.error)), REFUSED_WHY),
+        TurnEnd::Interrupted => (format!("You interrupted “{title}”: tell it how to go on"), INTERRUPTED_WHY),
+        TurnEnd::Unexplained => (format!("“{title}” stopped without delivering or asking: tell it how to go on"), TURN_ENDED_WHY),
     };
     let need = clip(&need, CardSpec::NEED_MAX);
     Interaction {

@@ -463,13 +463,28 @@ fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Cli {
 /// and asks for its permissions, so the node plugin's hooks tell the daemon nothing.
 const SDK_HOST: &str = "ALONDRA_SDK_HOST";
 
+/// A node under the Agent SDK tells the daemon nothing through its hooks: the host reports its
+/// facts. What nodes may never do is still refused before the tool runs, here, without the daemon,
+/// because a tool an allow rule or the permission mode approves never reaches the host.
+fn guard_sdk_node(input: &[u8]) -> Result<()> {
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(input) else { return Ok(()) };
+    if payload.get("hook_event_name").and_then(serde_json::Value::as_str) != Some("PreToolUse") {
+        return Ok(());
+    }
+    let tool = payload.get("tool_name").and_then(serde_json::Value::as_str);
+    if let Some(reason) = alondra_core::node_guard::forbidden_for_nodes(tool, payload.get("tool_input")) {
+        println!("{}", json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}));
+    }
+    Ok(())
+}
+
 fn hook() -> Result<()> {
     use std::io::{Read, Write};
 
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
     if std::env::var_os(SDK_HOST).is_some() {
-        return Ok(());
+        return guard_sdk_node(&input);
     }
     let mut payload: serde_json::Value = serde_json::from_slice(&input)?;
     if std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty())

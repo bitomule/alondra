@@ -14,9 +14,9 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
-use alondra_store::{AuthorityScope, Committed, DispatchAttempt, DispatchPermit, DispatchReceipt};
+use alondra_store::{AuthorityScope, Committed, ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +26,30 @@ use std::time::Duration;
 /// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
 pub(crate) const HOST: &str = "alondra-sdk";
 const DRIVER: &str = "claude-agent-sdk";
+/// How long the owner waits for the host before it looks again for a control to send: a quiet
+/// turn never holds back an interrupt.
+const WAKE: Duration = Duration::from_millis(250);
+
+/// What an SDK execution's binding lets the domain ask of it.
+fn capabilities() -> BTreeSet<Capability> {
+    BTreeSet::from([
+        Capability::OfferInput,
+        Capability::Interrupt,
+        Capability::SetModel,
+        Capability::SetPermissionMode,
+        Capability::Compact,
+        Capability::McpStatus,
+        Capability::Decisions,
+    ])
+}
+
+fn receipt(handoff: Handoff) -> DispatchReceipt {
+    match handoff {
+        Handoff::Offered => DispatchReceipt::Handed,
+        Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
+        Handoff::Uncertain => DispatchReceipt::Uncertain,
+    }
+}
 
 /// Whether `agent` holds the current execution of a task that runs through the SDK.
 pub(crate) fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
@@ -77,7 +101,7 @@ impl Preparer for ClaudeWorker {
     }
 }
 
-/// One execution's owner: its worker and the task whose dispatches only it claims.
+/// One execution's owner: its worker and the task whose dispatches and controls only it claims.
 pub(crate) struct Driver {
     domain: Arc<DomainRuntime>,
     worker: ClaudeWorker,
@@ -85,16 +109,23 @@ pub(crate) struct Driver {
     task: TaskId,
     agent: AgentId,
     permits: VecDeque<DispatchPermit>,
+    controls: VecDeque<ControlPermit>,
     /// The input last handed to the host, until the task's lifecycle no longer waits for it.
     awaiting: Option<InputId>,
     /// The host was launched to replace one that ended and has been handed nothing yet: it runs no
     /// Claude, so it has nothing to say whatever the lifecycle still waits for.
     replacement: bool,
+    /// Controls the host took whose answer is an event of its own, until that event is staged.
+    results: Vec<alondra_foundation::CommandId>,
 }
 
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
 /// runs through the SDK, and any failure before it is the launch's own, never a `claude --bg`.
 pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch) -> Result<Driver, Failed> {
+    start_bound(domain, backend, launch, capabilities())
+}
+
+fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>) -> Result<Driver, Failed> {
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
@@ -113,8 +144,8 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         HOST.into(),
         "sandbox".into(),
         1,
-        1,
-        BTreeSet::from([Capability::OfferInput]),
+        3,
+        capabilities,
         "native-login".into(),
         1,
     )
@@ -146,7 +177,7 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
         })
         .map_err(failed("admitting the execution"))?;
-    let mut driver = Driver { domain, worker, scope, task: launch.task, agent, permits: VecDeque::new(), awaiting: None, replacement: false };
+    let mut driver = Driver::new(domain, worker, scope, launch.task, agent);
     let mut sealed = driver.sealed();
     let grant = sealed.owners.pop().ok_or_else(|| Failed("the admission issued no owner grant".into()))?;
     let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -187,11 +218,12 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
-    let ((stamp, directory, unresolved), _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
+    let (adoption, _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
     let grant = domain.seals.take(&task).owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
     let profile = plugin.map(worker_profile);
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false, profile)?)
+    let stamp = adoption.stamp;
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
@@ -201,17 +233,18 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     };
     let Some(journal) = journal else {
         worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
-        let mut driver = Driver { domain, worker, scope, task: task.clone(), agent, permits: VecDeque::new(), awaiting: None, replacement: false };
-        for command in unresolved {
+        let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+        for command in adoption.commands {
             let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
-            let receipt = match handoff {
-                Handoff::Offered => DispatchReceipt::Handed,
-                Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
-                Handoff::Uncertain => DispatchReceipt::Uncertain,
-            };
-            let stamp = stamp.clone();
             let intent = command.intent_id;
-            driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
+            driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, owner_generation, receipt(handoff))).map_err(failed("resolving a dispatch"))?;
+        }
+        for control in adoption.controls {
+            let handoff = driver.worker.reconcile(&control.command).map_err(adapter("reconciling a control"))?;
+            driver.domain.own(driver.scope.clone(), |owner| owner.resolve_control(&stamp, control.id, owner_generation, receipt(handoff))).map_err(failed("resolving a control"))?;
+            if handoff == Handoff::Offered {
+                driver.results.extend(answered_by_event(&control.command));
+            }
         }
         driver.sealed();
         let read = driver.domain.read();
@@ -226,18 +259,24 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     for event in journal.events() {
         let batch = OrderedObservation { owner_generation, execution: stamp.clone(), cursor: event.cursor, evidence: event.payload.clone() };
         let binding = grant.binding().clone();
-        let normalizer = worker.normalizer();
-        domain.own(scope.clone(), |owner| owner.stage_observation(&binding, owner_generation, &batch, normalizer))
+        let (normalizer, home) = (worker.normalizer(), domain.home());
+        domain.own(scope.clone(), |owner| owner.stage_observation(&binding, owner_generation, &batch, normalizer, home))
             .map_err(failed("committing what the ended host observed"))?;
     }
-    for command in unresolved {
-        let receipt = match journal.retained(&command.command).map_err(adapter("reading the ended host's receipt"))? {
+    let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
+        Ok(match journal.retained(command).map_err(adapter("reading the ended host's receipt"))? {
             Retained::Offered => DispatchReceipt::Handed,
             Retained::Refused | Retained::Absent => DispatchReceipt::Rejected,
             Retained::AdmittedOnly => DispatchReceipt::Uncertain,
-        };
-        let stamp = stamp.clone();
+        })
+    };
+    for command in adoption.commands {
+        let receipt = retained(&command.command)?;
         domain.own(scope.clone(), |owner| owner.resolve(&stamp, command.intent_id, owner_generation, receipt)).map_err(failed("resolving a dispatch"))?;
+    }
+    for control in adoption.controls {
+        let receipt = retained(&control.command)?;
+        domain.own(scope.clone(), |owner| owner.resolve_control(&stamp, control.id, owner_generation, receipt)).map_err(failed("resolving a control"))?;
     }
     let generation = stamp.generation();
     domain.own(scope.clone(), |owner| {
@@ -269,7 +308,8 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
     worker.relaunch(grant, adapter_state, base, resume, environment).map_err(adapter("launching the host that resumes the session"))?;
-    let mut driver = Driver { domain, worker, scope, task, agent, permits: VecDeque::new(), awaiting: None, replacement: true };
+    let mut driver = Driver::new(domain, worker, scope, task, agent);
+    driver.replacement = true;
     driver.sealed();
     Ok(driver)
 }
@@ -360,6 +400,10 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 }
 
 impl Driver {
+    fn new(domain: Arc<DomainRuntime>, worker: ClaudeWorker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![] }
+    }
+
     pub(crate) fn agent(&self) -> &AgentId {
         &self.agent
     }
@@ -368,7 +412,35 @@ impl Driver {
     fn sealed(&mut self) -> Committed {
         let mut sealed = self.domain.seals.take(&self.task);
         self.permits.extend(std::mem::take(&mut sealed.permits));
+        self.controls.extend(std::mem::take(&mut sealed.control_permits));
         sealed
+    }
+
+    /// Claims the control, records its exact command under the owner, hands it to the host with
+    /// no SQL held, and records how the host answered. An interrupt whose turn or work already
+    /// ended is revoked by its claim and never sent.
+    fn control(&mut self, permit: ControlPermit) -> Result<(), Failed> {
+        match self.domain.own(self.scope.clone(), |owner| owner.claim_control(permit)) {
+            Ok((true, _)) => {}
+            Ok((false, _)) => return Ok(()),
+            Err(StoreError::Storage(error)) if stale(&error) => return Ok(()),
+            Err(error) => return Err(failed("claiming the control")(error)),
+        }
+        let attempt = self.sealed().control_attempts.pop().ok_or_else(|| Failed("the claim issued no control attempt".into()))?;
+        let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
+        let worker = &mut self.worker;
+        self.domain
+            .own(self.scope.clone(), |owner| owner.record_control(attempt, generation, |attempt| worker.prepare_control(attempt)))
+            .map_err(failed("recording the control"))?;
+        let control = self.sealed().control_commands.pop().ok_or_else(|| Failed("the control left no seal".into()))?;
+        let handoff = self.worker.submit_control(&control).unwrap_or(Handoff::Uncertain);
+        let awaited = (handoff == Handoff::Offered).then(|| answered_by_event(control.bytes())).flatten();
+        self.domain
+            .own(self.scope.clone(), |owner| owner.record_control_receipt(control, receipt(handoff)))
+            .map_err(failed("recording the control's handoff"))?;
+        self.sealed();
+        self.results.extend(awaited);
+        Ok(())
     }
 
     /// Claims the dispatch, records the exact command under the owner, hands it to the host
@@ -388,13 +460,8 @@ impl Driver {
             .map_err(failed("recording the command"))?;
         let command = self.sealed().commands.pop().ok_or_else(|| Failed("the command left no seal".into()))?;
         let handoff = self.worker.submit(&command).unwrap_or(Handoff::Uncertain);
-        let receipt = match handoff {
-            Handoff::Offered => DispatchReceipt::Handed,
-            Handoff::RefusedBeforeOffer => DispatchReceipt::Rejected,
-            Handoff::Uncertain => DispatchReceipt::Uncertain,
-        };
         self.domain
-            .own(self.scope.clone(), |owner| owner.record_receipt(command, receipt))
+            .own(self.scope.clone(), |owner| owner.record_receipt(command, receipt(handoff)))
             .map_err(failed("recording the handoff"))?;
         self.sealed();
         if handoff == Handoff::Offered {
@@ -410,10 +477,13 @@ impl Driver {
         let batch = self.worker.poll().map_err(adapter("reading the SDK host"))?.ok_or_else(|| Failed("the SDK host closed".into()))?;
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let binding = self.worker.binding().clone();
-        let worker = &self.worker;
+        let (worker, home) = (&self.worker, self.domain.home());
         let (acceptance, _) = self.domain
-            .own(self.scope.clone(), |owner| owner.stage_observation(&binding, generation, &batch, worker.normalizer()))
+            .own(self.scope.clone(), |owner| owner.stage_observation(&binding, generation, &batch, worker.normalizer(), home))
             .map_err(failed("committing the observation"))?;
+        if let Some(answered) = answered_control(&batch) {
+            self.results.retain(|awaited| *awaited != answered);
+        }
         for observation in self.sealed().observations {
             #[cfg(test)]
             self.domain.before_acknowledge();
@@ -423,7 +493,8 @@ impl Driver {
     }
 
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
-    /// yet, or a turn or work of its own still going. Facts decide it, never a clock.
+    /// yet, a turn or work of its own still going, or the answer of a control it took. Facts
+    /// decide it, never a clock.
     fn expects_host(&mut self) -> Result<bool, Failed> {
         if self.replacement {
             return Ok(false);
@@ -435,21 +506,30 @@ impl Driver {
             self.awaiting = None;
         }
         Ok(self.awaiting.is_some()
+            || !self.results.is_empty()
             || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
     }
 
-    /// One step: send what is waiting, else read the host when the lifecycle waits for it, else
-    /// wait for a dispatch the store issues for this task.
+    /// One step: send a waiting control first, then a waiting dispatch, else read the host when
+    /// the lifecycle waits for it and the host has something, else wait for what the store
+    /// issues for this task.
     pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
         self.sealed();
+        if let Some(permit) = self.controls.pop_front() {
+            return self.control(permit);
+        }
         if let Some(permit) = self.permits.pop_front() {
             return self.dispatch(permit);
         }
         if self.expects_host()? {
+            if !self.worker.readable(WAKE).map_err(adapter("waiting for the SDK host"))? {
+                return Ok(());
+            }
             return self.observe().map(drop);
         }
         let sealed = self.domain.seals.wait(&self.task, stopped);
         self.permits.extend(sealed.permits);
+        self.controls.extend(sealed.control_permits);
         Ok(())
     }
 
@@ -491,6 +571,29 @@ impl Driver {
         let command = self.sealed().commands.pop().expect("the command left a seal");
         assert_eq!(self.worker.submit(&command).unwrap(), Handoff::Offered, "the host offered the input");
         true
+    }
+
+    /// Claims and records the next waiting control but does not send it: the crash state a daemon
+    /// leaves when it dies after recording a control and before the host receives it.
+    #[cfg(test)]
+    pub(crate) fn claim_and_record_control_without_sending(&mut self) -> bool {
+        self.sealed();
+        let Some(permit) = self.controls.pop_front() else {
+            return false;
+        };
+        assert!(self.domain.own(self.scope.clone(), |owner| owner.claim_control(permit)).unwrap().0, "the control was claimed");
+        let attempt = self.sealed().control_attempts.pop().expect("the claim issued a control attempt");
+        let generation = self.worker.owner_generation().unwrap();
+        let worker = &mut self.worker;
+        self.domain.own(self.scope.clone(), |owner| owner.record_control(attempt, generation, |attempt| worker.prepare_control(attempt))).unwrap();
+        self.sealed();
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_controls(&mut self) -> usize {
+        self.sealed();
+        self.controls.len()
     }
 
     #[cfg(test)]

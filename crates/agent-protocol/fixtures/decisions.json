@@ -1,0 +1,242 @@
+[
+  {
+    "name": "respond_permission_allow",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_permission_deny",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"deny\",\"message\":\"The user denied it\"}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_question_answers",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"question\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"questions\":[{\"question\":\"Which color?\"}],\"answers\":{\"Which color?\":\"Red\"}}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_plan_deny",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"plan\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"deny\",\"message\":\"The user denied it\"}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_epoch_at_bound",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":9007199254740991,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_elicitation_accept",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"accept\",\"content\":{\"name\":\"Ada\",\"count\":2,\"tags\":[\"a\"],\"ok\":true}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_elicitation_accept_without_content",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"accept\"}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_elicitation_decline",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"decline\"}}}}",
+    "accepted": true
+  },
+  {
+    "name": "respond_without_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_zero_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":0,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_unsafe_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":9007199254740992,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_fractional_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42.0,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_exponent_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":4.2e1,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_string_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":\"42\",\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_without_kind",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_unknown_kind",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"hook\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_permission_without_tool_use_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_permission_null_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_permission_empty_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_elicitation_with_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"decline\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_elicitation_without_tool_use_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"decision\":{\"behavior\":\"decline\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_permission_accept",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"accept\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_question_decline",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"question\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"decline\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_elicitation_allow",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_elicitation_deny",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"deny\",\"message\":\"The user denied it\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_updated_permissions",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"},\"updated_permissions\":[{\"type\":\"addRules\"}]}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_native_updated_permissions",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"},\"updatedPermissions\":[{\"type\":\"addRules\"}]}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_decline_with_message",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"decline\",\"message\":\"No\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_accept_null_content",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"accept\",\"content\":null}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_accept_array_content",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"accept\",\"content\":[\"Ada\"]}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_cancel_is_not_an_answer",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"elicitation\",\"tool_use_id\":null,\"decision\":{\"behavior\":\"cancel\"}}}}",
+    "accepted": false
+  },
+  {
+    "name": "respond_extra_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"respond-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"epoch\":42,\"kind\":\"permission\",\"tool_use_id\":\"toolu-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}},\"interrupt\":true}}}",
+    "accepted": false
+  },
+  {
+    "name": "requested_permission",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"toolu-test\",\"kind\":\"permission\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "requested_question",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"toolu-test\",\"kind\":\"question\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "requested_plan",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"toolu-test\",\"kind\":\"plan\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "requested_elicitation",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"kind\":\"elicitation\",\"payload\":{\"serverName\":\"fixture-server\",\"message\":\"Which name?\",\"mode\":\"form\"}}}}",
+    "accepted": true
+  },
+  {
+    "name": "requested_permission_without_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"kind\":\"permission\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "requested_null_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":null,\"kind\":\"permission\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "requested_elicitation_with_tool_use",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"kind\":\"elicitation\",\"payload\":{\"serverName\":\"fixture-server\",\"message\":\"Which name?\",\"mode\":\"form\"},\"tool_use_id\":\"toolu-test\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "requested_unknown_kind",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"toolu-test\",\"kind\":\"hook\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "requested_epoch_is_the_cursor",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"toolu-test\",\"kind\":\"permission\",\"payload\":{\"tool\":\"Bash\",\"input\":{\"command\":\"git status\"},\"request\":{\"toolUseID\":\"toolu-test\"}},\"epoch\":43}}}",
+    "accepted": false
+  },
+  {
+    "name": "settled_answered",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":42,\"outcome\":\"answered\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "settled_cancelled",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":42,\"outcome\":\"cancelled\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "settled_unknown_outcome",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":42,\"outcome\":\"denied\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "settled_zero_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":0,\"outcome\":\"answered\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "settled_fractional_epoch",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":42.0,\"outcome\":\"answered\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "settled_without_request",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"epoch\":42,\"outcome\":\"answered\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "settled_extra_field",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":43,\"observation\":{\"type\":\"decision_settled\",\"request_id\":\"request-test\",\"epoch\":42,\"outcome\":\"answered\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"command\":\"git status\"}}}}}",
+    "accepted": false
+  }
+]

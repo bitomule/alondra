@@ -352,25 +352,11 @@ fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
     })
 }
 
-/// The fields an MCP server's form asks for: (name, title, JSON type).
-fn elicitation_fields(schema: &Value) -> Vec<(String, String, String)> {
-    schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|props| {
-            props
-                .iter()
-                .map(|(name, f)| (name.clone(), str_field(f, "title").unwrap_or_else(|| name.clone()), str_field(f, "type").unwrap_or_else(|| "string".into())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 pub(crate) fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
     let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
     let message = str_field(p, "message").unwrap_or_default();
     let title = message.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{server} requests your input"), |l| l.chars().take(120).collect());
-    let fields = elicitation_fields(p.get("requested_schema").unwrap_or(&Value::Null));
+    let fields = alondra_provider_claude::elicitation_fields(p.get("requested_schema").unwrap_or(&Value::Null));
     let mut detail = vec![format!("MCP server “{server}” requests your input."), message];
     if let Some(url) = str_field(p, "url") {
         detail.push(url);
@@ -390,38 +376,8 @@ pub(crate) fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<Questi
     )
 }
 
-/// The form values for an accepted elicitation: a JSON object as written, the whole answer for a
-/// one-field form, or `name: value` lines, each typed as the form's schema says.
 pub(crate) fn elicitation_content(schema: &Value, said: &str) -> Value {
-    if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(said) {
-        return Value::Object(o);
-    }
-    let fields = elicitation_fields(schema);
-    let typed = |kind: &str, v: &str| -> Value {
-        let v = v.trim();
-        match kind {
-            "integer" => v.parse::<i64>().map(Value::from).unwrap_or_else(|_| v.into()),
-            "number" => v.parse::<f64>().map(Value::from).unwrap_or_else(|_| v.into()),
-            "boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),
-            _ => v.into(),
-        }
-    };
-    let mut content = serde_json::Map::new();
-    if said.is_empty() {
-        return Value::Object(content);
-    }
-    if let [(name, _, kind)] = fields.as_slice() {
-        content.insert(name.clone(), typed(kind, said));
-        return Value::Object(content);
-    }
-    for line in said.lines() {
-        let Some((key, value)) = line.split_once(':').or_else(|| line.split_once('=')) else { continue };
-        let key = key.trim();
-        if let Some((name, _, kind)) = fields.iter().find(|(name, title, _)| name.eq_ignore_ascii_case(key) || title.eq_ignore_ascii_case(key)) {
-            content.insert(name.clone(), typed(kind, value));
-        }
-    }
-    Value::Object(content)
+    Value::Object(alondra_provider_claude::elicitation_content(schema, said))
 }
 
 /// Every pull request a node mentions and GitHub confirms gets its card, once, for the task of

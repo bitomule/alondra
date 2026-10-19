@@ -28,6 +28,7 @@ impl TaskLifecycle {
             && matches!(
                 fact,
                 RuntimeFact::Ask { .. }
+                    | RuntimeFact::AnsweredByPolicy { .. }
                     | RuntimeFact::TurnStarted { .. }
                     | RuntimeFact::WorkStarted { .. }
             )
@@ -59,6 +60,20 @@ impl TaskLifecycle {
                     reason,
                     callback: Some(callback),
                 });
+            }
+            RuntimeFact::AnsweredByPolicy { callback, decision } => {
+                valid_decision(&decision)?;
+                if execution
+                    .callbacks
+                    .iter()
+                    .any(|state| callback_id(state) == &callback)
+                {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                execution
+                    .callbacks
+                    .push(CallbackState::Answered(callback.clone()));
+                add_callback_wake(&mut execution.activity, callback)?;
             }
             RuntimeFact::ResourceAvailable => {
                 if execution.resource != ResourceEvidence::Reserved {

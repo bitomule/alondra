@@ -285,6 +285,12 @@ export const register: Register = (on) => {
     reportedModel = undefined
     subagentModels.clear()
     const started = await next(e)
+    // Under the Agent SDK the host reports the session and puts its questions, plans and
+    // permissions to the user; holding them here would wait on a daemon that never answers.
+    if ((await $.env.get('ALONDRA_SDK_HOST')) === '1') {
+      session = undefined
+      return started
+    }
     const { version } = await $.session.version()
     const id = await $.session.id()
     stopping = false

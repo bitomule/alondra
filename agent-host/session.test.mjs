@@ -25,6 +25,7 @@ try {
     const observedResult = new Promise((resolve) => { completed = resolve; });
     const capture = join(root, `capture-${id}.json`);
     const decision = join(root, `decision-${id}.json`);
+    let cursor = 0;
     session = new Session({
       executable: '/fixture/original-claude', cwd: root,
       env: { HOME: home, PATH: '/fixture/no-js-runtime', FIXTURE_SCENARIO: scenario, FIXTURE_CAPTURE: capture, FIXTURE_DECISION: decision },
@@ -36,13 +37,15 @@ try {
       },
       observe(observation) {
         observations.push(observation);
+        cursor += 1;
         if (observation.type === 'sdk' && observation.kind === 'diagnostic') completed();
-        if (observation.type === 'decision_requested') decide?.(session, observation);
+        if (observation.type === 'decision_requested') { const epoch = cursor; queueMicrotask(() => decide?.(session, observation, epoch)); }
         if (scenario === 'interrupt' && observation.type === 'sdk' && observation.kind === 'status') interruption = session.interrupt();
         if (observation.type === 'sdk' && observation.kind === 'result') {
           if (scenario === 'multi_eof') session.offer('00000000-0000-4000-8000-000000000003', 'second input with EOF');
           else completed();
         }
+        return cursor;
       },
     });
     try {
@@ -60,23 +63,57 @@ try {
     } finally { session.close(); await session.finished; }
   }
   const callbackEvents = [];
-  const callbacks = new PermissionCallbacks((event) => callbackEvents.push(event));
+  const callbacks = new PermissionCallbacks((event) => { callbackEvents.push(event); return callbackEvents.length; });
+  const identity = (event, epoch) => ({ request_id: event.request_id, epoch, kind: event.kind, tool_use_id: event.tool_use_id ?? null });
   const oldAbort = new AbortController();
   const request = { signal: oldAbort.signal, requestId: 'duplicate', toolUseID: 'fixture-tool' };
   const first = callbacks.request('Bash', {}, request);
   const duplicate = callbacks.request('Bash', {}, request);
   assert.equal(callbackEvents.length, 1, 'duplicate must not replace or re-publish the first callback');
   assert.equal((await duplicate).behavior, 'deny');
-  callbacks.respond('duplicate', { behavior: 'allow' });
-  assert.equal((await first).behavior, 'allow');
+  assert.equal(callbacks.respond(identity(callbackEvents[0], 2), { behavior: 'allow', updated_input: {} }), false, 'another epoch reaches nothing');
+  assert.equal(callbacks.respond({ ...identity(callbackEvents[0], 1), kind: 'question' }, { behavior: 'allow', updated_input: {} }), false, 'another kind reaches nothing');
+  assert.equal(callbacks.respond({ ...identity(callbackEvents[0], 1), tool_use_id: 'other-tool' }, { behavior: 'allow', updated_input: {} }), false, 'another tool use reaches nothing');
+  assert.equal(callbacks.respond(identity(callbackEvents[0], 1), { behavior: 'accept' }), false, 'an elicitation answer never answers a permission');
+  assert.equal(callbackEvents.length, 1, 'a refused answer settles nothing');
+  assert.equal(callbacks.respond(identity(callbackEvents[0], 1), { behavior: 'allow', updated_input: { command: 'ls' } }), true);
+  assert.deepEqual(await first, { behavior: 'allow', updatedInput: { command: 'ls' } });
+  assert.deepEqual(callbackEvents[1], { type: 'decision_settled', request_id: 'duplicate', epoch: 1, outcome: 'answered' });
   const replacement = callbacks.request('Bash', {}, { ...request, signal: new AbortController().signal });
   oldAbort.abort();
-  callbacks.respond('duplicate', { behavior: 'deny', message: 'replacement' });
+  assert.equal(callbacks.respond(identity(callbackEvents[2], 1), { behavior: 'deny', message: 'replacement' }), false, 'the answered epoch never answers its replacement');
+  assert.equal(callbacks.respond(identity(callbackEvents[2], 3), { behavior: 'deny', message: 'replacement' }), true);
   assert.equal((await replacement).message, 'replacement');
   const pending = callbacks.request('Bash', {}, { ...request, requestId: 'closing', signal: new AbortController().signal });
   callbacks.close();
   assert.equal((await pending).behavior, 'deny');
-  assert.throws(() => callbacks.respond('closing', { behavior: 'allow' }), /expired/);
+  assert.deepEqual(callbackEvents.at(-1), { type: 'decision_settled', request_id: 'closing', epoch: 5, outcome: 'cancelled' });
+  assert.equal(callbacks.respond(identity(callbackEvents[4], 5), { behavior: 'allow', updated_input: {} }), false);
+  for (const [tool, kind] of [['AskUserQuestion', 'question'], ['ExitPlanMode', 'plan'], ['mcp__plugin_alondra_alondra__ask', 'permission']]) {
+    const events = [];
+    const classified = new PermissionCallbacks((event) => { events.push(event); return events.length; });
+    void classified.request(tool, { field: 'value' }, { signal: new AbortController().signal, requestId: tool, toolUseID: `${tool}-use`, title: 'Title', mcpServer: { name: 'plugin:alondra:alondra', source: 'plugin' }, blockedPath: undefined });
+    assert.deepEqual(events[0], { type: 'decision_requested', request_id: tool, tool_use_id: `${tool}-use`, kind, payload: { tool, input: { field: 'value' }, request: { requestId: tool, toolUseID: `${tool}-use`, title: 'Title', mcpServer: { name: 'plugin:alondra:alondra', source: 'plugin' } } } });
+    classified.close();
+  }
+  const unpersisted = new PermissionCallbacks(() => undefined);
+  assert.deepEqual(await unpersisted.request('Bash', {}, { signal: new AbortController().signal, requestId: 'lost', toolUseID: 'lost-tool' }), { behavior: 'deny', message: 'Permission delivery failed' }, 'a request with no durable event is denied');
+  const elicited = [];
+  const elicitations = new PermissionCallbacks((event) => { elicited.push(event); return elicited.length; });
+  const form = { serverName: 'fixture-server', message: 'Which name?', mode: 'form', requestedSchema: { type: 'object' } };
+  const accepted = elicitations.elicitation(form, { signal: new AbortController().signal, requestId: 'accept' });
+  assert.deepEqual(elicited[0], { type: 'decision_requested', request_id: 'accept', kind: 'elicitation', payload: form }, 'an elicitation names no tool use');
+  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null }, { behavior: 'allow', updated_input: {} }), false);
+  assert.equal(elicitations.respond({ request_id: 'accept', epoch: 1, kind: 'elicitation', tool_use_id: null }, { behavior: 'accept', content: { name: 'Ada' } }), true);
+  assert.deepEqual(await accepted, { action: 'accept', content: { name: 'Ada' } });
+  const declined = elicitations.elicitation(form, { signal: new AbortController().signal, requestId: 'decline' });
+  assert.equal(elicitations.respond({ request_id: 'decline', epoch: 3, kind: 'elicitation', tool_use_id: null }, { behavior: 'decline' }), true);
+  assert.deepEqual(await declined, { action: 'decline' });
+  const aborted = new AbortController();
+  const withdrawn = elicitations.elicitation(form, { signal: aborted.signal, requestId: 'withdrawn' });
+  aborted.abort();
+  assert.deepEqual(await withdrawn, { action: 'cancel' });
+  assert.deepEqual(elicited.filter((event) => event.type === 'decision_settled').map((event) => [event.request_id, event.epoch, event.outcome]), [['accept', 1, 'answered'], ['decline', 3, 'answered'], ['withdrawn', 5, 'cancelled']]);
   let barrierChild;
   let barrierExited;
   let barrierSession;
@@ -148,18 +185,21 @@ try {
       assert.doesNotThrow(() => session.offer(start.action.input_id, 'valid plural released technical capacity'));
     });
   }
-  const permission = await run('permission', (session, observation) => {
+  let asked;
+  const permission = await run('permission', (session, observation, epoch) => {
+    asked = { request_id: observation.request_id, epoch, kind: observation.kind, tool_use_id: observation.tool_use_id };
     assert.equal(observation.request_id, 'permission-request');
     assert.equal(observation.tool_use_id, 'fixture-tool');
     assert.deepEqual(observation.payload.request.mcpServer, { name: 'fixture-server', source: 'project' });
     assert.equal(observation.payload.request.matchedAskRule.source, 'project');
-    session.respond(observation.request_id, { behavior: 'deny', message: 'fixture refused' });
+    assert(session.respond(asked, { behavior: 'deny', message: 'fixture refused' }));
   });
   assert.deepEqual(JSON.parse(readFileSync(permission.decision)).response.response, { behavior: 'deny', message: 'fixture refused', toolUseID: 'fixture-tool' });
-  assert.throws(() => permission.session.respond('permission-request', { behavior: 'allow' }), /expired/);
+  assert.equal(permission.session.respond(asked, { behavior: 'allow', updated_input: {} }), false);
+  assert.equal(permission.observations.filter((o) => o.type === 'decision_settled').length, 1);
   const cancelled = await run('cancel_permission');
   assert.equal(JSON.parse(readFileSync(cancelled.decision)).response.response.behavior, 'deny');
-  assert.throws(() => cancelled.session.respond('permission-request', { behavior: 'allow' }), /expired/);
+  assert.deepEqual(cancelled.observations.filter((o) => o.type === 'decision_settled').map((o) => o.outcome), ['cancelled']);
   const interrupted = await run('interrupt');
   assert.deepEqual(interrupted.interruptReceipt, { still_queued: [] });
   assert(interrupted.observations.some((o) => o.type === 'sdk' && o.kind === 'result' && o.failures.some((f) => f.code === 'aborted_tools')));

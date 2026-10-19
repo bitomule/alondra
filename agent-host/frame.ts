@@ -25,17 +25,43 @@ export function executionSegments(value: Execution): string[] {
     ? [value.task_id, value.agent_id, value.conversation_id, value.process_instance_id, String(value.generation)]
     : [ORCHESTRATOR_LANE, value.run_id, value.conversation_id, String(value.generation)];
 }
-const decision = z.discriminatedUnion('behavior', [z.strictObject({ behavior: z.literal('allow'), updated_input: object }), z.strictObject({ behavior: z.literal('deny'), message: text(MAX_FRAME_BYTES) })]);
+export const MAX_MODEL_BYTES = 128;
+export const MAX_MCP_SERVERS = 64;
+/** The only permission modes Alondra can ask for: none of them grants a permission by itself. */
+export const PERMISSION_MODES = ['default', 'plan', 'dont_ask'] as const;
+export const DECISION_KINDS = ['permission', 'question', 'plan', 'elicitation'] as const;
+export type DecisionKind = typeof DECISION_KINDS[number];
+const decisionKind = z.enum(DECISION_KINDS);
+const decision = z.discriminatedUnion('behavior', [
+  z.strictObject({ behavior: z.literal('allow'), updated_input: object }), z.strictObject({ behavior: z.literal('deny'), message: text(MAX_FRAME_BYTES) }),
+  z.strictObject({ behavior: z.literal('accept'), content: object.optional() }), z.strictObject({ behavior: z.literal('decline') }),
+]);
+export type Decision = z.infer<typeof decision>;
+/** An elicitation comes from an MCP server, not from a tool call; every other request names its tool use. */
+export const hasToolUse = (kind: DecisionKind): boolean => kind !== 'elicitation';
+const answers = (kind: DecisionKind, behavior: Decision['behavior']): boolean => hasToolUse(kind) === (behavior === 'allow' || behavior === 'deny');
 const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('start'), cwd: text(4096).refine((s) => s.startsWith('/')), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
   z.strictObject({ type: z.literal('offer'), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
   z.strictObject({ type: z.literal('interrupt') }), z.strictObject({ type: z.literal('close') }),
-  z.strictObject({ type: z.literal('respond'), request_id: text(), decision }),
+  z.strictObject({ type: z.literal('respond'), request_id: text(), epoch: positive, kind: decisionKind, tool_use_id: text().nullable(), decision })
+    .refine((respond) => hasToolUse(respond.kind) === (respond.tool_use_id !== null) && answers(respond.kind, respond.decision.behavior)),
+  z.strictObject({ type: z.literal('set_model'), model: text(MAX_MODEL_BYTES).refine((s) => !/\p{Cc}/u.test(s) && s.trim().length > 0) }),
+  z.strictObject({ type: z.literal('set_permission_mode'), mode: z.enum(PERMISSION_MODES) }),
+  z.strictObject({ type: z.literal('mcp_status') }),
 ]);
+export type Action = z.infer<typeof action>;
+const controlResult = z.discriminatedUnion('control', [
+  z.strictObject({ control: z.literal('mcp_status'), command_id: text(), servers: z.array(z.strictObject({ name: text(), status: text(), error: text().optional() })).max(MAX_MCP_SERVERS) }),
+]);
+export type ControlResult = z.infer<typeof controlResult>;
 const native = z.strictObject({ message_id: text().optional(), turn_id: text().optional(), tool_use_id: text().optional(), parent_tool_use_id: text().optional(), task_id: text().optional(), run_id: text().optional() });
 const observation = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('sdk'), kind: z.enum(['initialized', 'message', 'result', 'task', 'status', 'diagnostic', 'unsupported']), native, payload: object, failures: z.array(z.strictObject({ surface: z.enum(['assistant', 'startup', 'result', 'terminal', 'exit', 'hook', 'rate_limit', 'settings', 'mirror', 'auth', 'control', 'iterator', 'transport']), code: text(), details: z.json() })).max(32) }),
-  z.strictObject({ type: z.literal('decision_requested'), request_id: text(), tool_use_id: text(), kind: z.enum(['permission', 'question', 'plan']), payload: object }),
+  z.strictObject({ type: z.literal('sdk'), kind: z.enum(['initialized', 'message', 'result', 'task', 'status', 'diagnostic', 'control_result', 'unsupported']), native, payload: object, failures: z.array(z.strictObject({ surface: z.enum(['assistant', 'startup', 'result', 'terminal', 'exit', 'hook', 'rate_limit', 'settings', 'mirror', 'auth', 'control', 'iterator', 'transport']), code: text(), details: z.json() })).max(32) })
+    .refine((sdk) => sdk.kind !== 'control_result' || controlResult.safeParse(sdk.payload).success),
+  z.strictObject({ type: z.literal('decision_requested'), request_id: text(), tool_use_id: text().optional(), kind: decisionKind, payload: object })
+    .refine((requested) => hasToolUse(requested.kind) === (requested.tool_use_id !== undefined)),
+  z.strictObject({ type: z.literal('decision_settled'), request_id: text(), epoch: positive, outcome: z.enum(['answered', 'cancelled']) }),
   z.strictObject({ type: z.literal('process_exited'), exit_code: z.number().int().min(-2147483648).max(2147483647).nullable(), signal: text(64).nullable() }),
 ]);
 const ownerIdentity = { fence, execution, host_instance_id: text() };
@@ -130,6 +156,8 @@ function validateJSONTokens(source: string): void {
     path.join('.') === 'body.cursor' ||
     path.join('.') === 'body.owner_generation' ||
     path.join('.') === 'body.observation.exit_code' ||
+    path.join('.') === 'body.action.epoch' ||
+    path.join('.') === 'body.observation.epoch' ||
     (path.length === 3 && path[0] === 'body' && path[1] === 'protocol_versions');
   // JSON.parse has already checked grammar; this scanner only retains key and numeric spelling.
   for (const match of source.matchAll(/"(?:\\.|[^"\\])*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|[{}\[\],:]/g)) {

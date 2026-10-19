@@ -822,6 +822,7 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| unheard_text(interaction, domain, lang))
         .or_else(|| turn_ended_text(interaction, domain, lang))
         .or_else(|| session_ended_text(interaction, domain, lang))
+        .or_else(|| decision_cancelled_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
 }
 
@@ -896,6 +897,20 @@ fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> 
         "Terminó su turno sin un resultado ni una pregunta para ti. Respóndele o escríbele y sigue.").into()))
 }
 
+/// The card that asks how a task goes on when Claude stopped waiting for the decision it asked
+/// for and nothing else explains its next step, in the viewer's language.
+fn decision_cancelled_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DECISION_CANCELLED_PREFIX) {
+        return None;
+    }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    let need = tf!(lang, "“{title}” stopped waiting for your decision: tell it how to go on", "«{title}» dejó de esperar tu decisión: dile cómo seguir");
+    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+        "Claude Code stopped waiting for the decision it asked you for. Tell it to go on, write to it what to do, or cancel the task.",
+        "Claude Code dejó de esperar la decisión que te pidió. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
+}
+
 /// The card that asks how a task goes on when its SDK turn ended with nothing that explains its
 /// next step, in the viewer's language.
 fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
@@ -911,6 +926,12 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
         return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
             "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
             "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));
+    }
+    if interaction.card.why == crate::domain::INTERRUPTED_WHY {
+        let need = tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir");
+        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+            "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.",
+            "Paraste su turno. Dile que siga, escríbele qué hacer o cancela la tarea.").into()));
     }
     let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,

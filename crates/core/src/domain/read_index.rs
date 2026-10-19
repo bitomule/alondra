@@ -46,6 +46,8 @@ pub struct NodeReading {
     /// Its task's execution runs through the Agent SDK: no terminal to attach to, and what it
     /// is told reaches it through its cards.
     pub through_sdk: bool,
+    /// Its SDK execution is connected and runs a turn, or work of its own: what an interrupt stops.
+    pub sdk_running: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -581,6 +583,7 @@ impl<'a> Builder<'a> {
                 post_merge_work: all.iter().filter(|t| !t.state.terminal())
                     .find_map(|t| t.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())),
                 through_sdk: task.is_some_and(|t| admitted_through_sdk(state, &t.id, &agent.id)),
+                sdk_running: task.is_some_and(|t| admitted_through_sdk(state, &t.id, &agent.id) && sdk_running(state, &t.id)),
             });
         }
     }
@@ -599,6 +602,14 @@ fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &AgentId) -> b
         LifecycleRecord::Admitted { node: admitted, execution } => Some(admitted == node && execution.is_some()),
         _ => None,
     })) == Some(true)
+}
+
+/// Whether the SDK execution of `task` is connected and runs a turn or work of its own.
+fn sdk_running(state: &DomainState, task: &TaskId) -> bool {
+    state.lifecycle_journal.get(task).and_then(|journal| replay(task, journal).ok()).is_some_and(|lifecycle| {
+        lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available)
+            && matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)
+    })
 }
 
 /// Every state a core test commits is read both ways: the index must say what the state answers
@@ -746,6 +757,12 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             })
         });
         assert_eq!(read.through_sdk, through_sdk, "whether {} runs through the SDK", agent.id);
+        let running = through_sdk && task.is_some_and(|t| {
+            let lifecycle = replay(&t.id, &state.lifecycle_journal[&t.id]).unwrap();
+            lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available)
+                && matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)
+        });
+        assert_eq!(read.sdk_running, running, "whether {} runs something an interrupt stops", agent.id);
         let asking: Vec<InboxItem> = waiting.iter().filter(|item| item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
         assert_eq!(read.waiting, ids(&asking));
         let work = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal())

@@ -3,6 +3,29 @@ use alondra_domain::*;
 use alondra_foundation::{AgentId, InteractionId, TaskId};
 use serde::{Deserialize, Serialize};
 
+/// The decision `events` recorded for `callback`: the decision of the card asked with it, or the
+/// one its own rules took.
+pub(super) fn decided(events: Vec<String>, callback: &CallbackId) -> Result<Option<Decision>> {
+    let mut cards = std::collections::BTreeSet::new();
+    let mut found = None;
+    for event in events {
+        match serde_json::from_str::<EventRecord>(&event).map_err(|_| Error::CorruptJournal)? {
+            EventRecord::Runtime { fact: FactRecord::Ask { card, callback: asked, .. }, .. } if asked == callback.as_str() => {
+                cards.insert(card);
+            }
+            EventRecord::Runtime { fact: FactRecord::AnsweredByPolicy { callback: answered, decision }, .. } if answered == callback.as_str() => {
+                found = Some(decision.into());
+            }
+            EventRecord::MoveCard { from, to } if cards.contains(&from) => {
+                cards.insert(to);
+            }
+            EventRecord::Decide { card, decision } if cards.contains(&card) => found = Some(decision.into()),
+            _ => {}
+        }
+    }
+    Ok(found)
+}
+
 pub(super) fn encode(event: &Event) -> Result<String> {
     struct Bounded(Vec<u8>);
     impl std::io::Write for Bounded {
@@ -128,6 +151,112 @@ impl From<PostMergeFactRecord> for PostMergeFact {
             PostMergeFactRecord::UserDecision => Self::UserDecision,
             PostMergeFactRecord::SessionOver => Self::SessionOver,
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(super) enum PermissionModeRecord {
+    Default,
+    Plan,
+    DontAsk,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(super) enum DecisionRecord {
+    Allow,
+    Answers { answers: Vec<String> },
+    Deny { message: String },
+    Accept { text: String },
+    Decline,
+}
+impl From<&Decision> for DecisionRecord {
+    fn from(decision: &Decision) -> Self {
+        match decision {
+            Decision::Allow => Self::Allow,
+            Decision::Answers { answers } => Self::Answers {
+                answers: answers.clone(),
+            },
+            Decision::Deny { message } => Self::Deny {
+                message: message.clone(),
+            },
+            Decision::Accept { text } => Self::Accept { text: text.clone() },
+            Decision::Decline => Self::Decline,
+        }
+    }
+}
+impl From<DecisionRecord> for Decision {
+    fn from(record: DecisionRecord) -> Self {
+        match record {
+            DecisionRecord::Allow => Self::Allow,
+            DecisionRecord::Answers { answers } => Self::Answers { answers },
+            DecisionRecord::Deny { message } => Self::Deny { message },
+            DecisionRecord::Accept { text } => Self::Accept { text },
+            DecisionRecord::Decline => Self::Decline,
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(super) enum ControlRecord {
+    Interrupt { turn: Option<String> },
+    SetModel { model: String },
+    SetPermissionMode { mode: PermissionModeRecord },
+    ReadMcpStatus,
+}
+impl From<&Control> for ControlRecord {
+    fn from(control: &Control) -> Self {
+        match control {
+            Control::Interrupt { turn } => Self::Interrupt {
+                turn: turn.as_ref().map(|turn| turn.as_str().to_owned()),
+            },
+            Control::SetModel { model } => Self::SetModel {
+                model: model.clone(),
+            },
+            Control::SetPermissionMode { mode } => Self::SetPermissionMode {
+                mode: match mode {
+                    PermissionMode::Default => PermissionModeRecord::Default,
+                    PermissionMode::Plan => PermissionModeRecord::Plan,
+                    PermissionMode::DontAsk => PermissionModeRecord::DontAsk,
+                },
+            },
+            Control::ReadMcpStatus => Self::ReadMcpStatus,
+        }
+    }
+}
+impl ControlRecord {
+    fn decode(self) -> Result<Control> {
+        Ok(match self {
+            ControlRecord::Interrupt { turn } => Control::Interrupt {
+                turn: turn
+                    .map(|turn| TurnId::new(turn).map_err(Error::from))
+                    .transpose()?,
+            },
+            ControlRecord::SetModel { model } => Control::SetModel { model },
+            ControlRecord::SetPermissionMode { mode } => Control::SetPermissionMode {
+                mode: match mode {
+                    PermissionModeRecord::Default => PermissionMode::Default,
+                    PermissionModeRecord::Plan => PermissionMode::Plan,
+                    PermissionModeRecord::DontAsk => PermissionMode::DontAsk,
+                },
+            },
+            ControlRecord::ReadMcpStatus => Control::ReadMcpStatus,
+        })
     }
 }
 
@@ -300,6 +429,10 @@ pub(super) enum FactRecord {
         callback: String,
         unheard_card: String,
     },
+    AnsweredByPolicy {
+        callback: String,
+        decision: DecisionRecord,
+    },
     EffectAccepted {
         operation: String,
     },
@@ -365,6 +498,10 @@ impl From<&RuntimeFact> for FactRecord {
             } => Self::CallbackAborted {
                 callback: callback.as_str().to_owned(),
                 unheard_card: unheard_card.0.clone(),
+            },
+            RuntimeFact::AnsweredByPolicy { callback, decision } => Self::AnsweredByPolicy {
+                callback: callback.as_str().to_owned(),
+                decision: DecisionRecord::from(decision),
             },
             RuntimeFact::EffectAccepted { operation } => Self::EffectAccepted {
                 operation: operation.as_str().to_owned(),
@@ -436,6 +573,10 @@ impl FactRecord {
                 callback: CallbackId::new(callback).map_err(Error::from)?,
                 unheard_card: InteractionId(unheard_card),
             },
+            FactRecord::AnsweredByPolicy { callback, decision } => RuntimeFact::AnsweredByPolicy {
+                callback: CallbackId::new(callback).map_err(Error::from)?,
+                decision: decision.into(),
+            },
             FactRecord::EffectAccepted { operation } => RuntimeFact::EffectAccepted {
                 operation: OperationId::new(operation).map_err(Error::from)?,
             },
@@ -475,6 +616,14 @@ pub(super) enum EventRecord {
     Answer {
         card: String,
         input: String,
+    },
+    Decide {
+        card: String,
+        decision: DecisionRecord,
+    },
+    MoveCard {
+        from: String,
+        to: String,
     },
     PlanApproved,
     BlockDelivery {
@@ -557,6 +706,13 @@ pub(super) enum EventRecord {
         input: String,
         resend: String,
     },
+    RequestControl {
+        control: String,
+        kind: ControlRecord,
+    },
+    Compact {
+        input: String,
+    },
 }
 impl From<&Event> for EventRecord {
     fn from(event: &Event) -> Self {
@@ -587,6 +743,14 @@ impl From<&Event> for EventRecord {
             Event::Answer { card, input } => Self::Answer {
                 card: card.0.clone(),
                 input: input.as_str().to_owned(),
+            },
+            Event::Decide { card, decision } => Self::Decide {
+                card: card.0.clone(),
+                decision: DecisionRecord::from(decision),
+            },
+            Event::MoveCard { from, to } => Self::MoveCard {
+                from: from.0.clone(),
+                to: to.0.clone(),
             },
             Event::PlanApproved => Self::PlanApproved,
             Event::BlockDelivery {
@@ -687,6 +851,13 @@ impl From<&Event> for EventRecord {
                 input: input.as_str().to_owned(),
                 resend: resend.as_str().to_owned(),
             },
+            Event::RequestControl { control, kind } => Self::RequestControl {
+                control: control.as_str().to_owned(),
+                kind: ControlRecord::from(kind),
+            },
+            Event::Compact { input } => Self::Compact {
+                input: input.as_str().to_owned(),
+            },
         }
     }
 }
@@ -719,6 +890,14 @@ impl EventRecord {
             EventRecord::Answer { card, input } => Event::Answer {
                 card: InteractionId(card),
                 input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::Decide { card, decision } => Event::Decide {
+                card: InteractionId(card),
+                decision: decision.into(),
+            },
+            EventRecord::MoveCard { from, to } => Event::MoveCard {
+                from: InteractionId(from),
+                to: InteractionId(to),
             },
             EventRecord::PlanApproved => Event::PlanApproved,
             EventRecord::BlockDelivery {
@@ -824,6 +1003,13 @@ impl EventRecord {
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
                 input: InputId::new(input).map_err(Error::from)?,
                 resend: InputId::new(resend).map_err(Error::from)?,
+            },
+            EventRecord::RequestControl { control, kind } => Event::RequestControl {
+                control: OperationId::new(control).map_err(Error::from)?,
+                kind: kind.decode()?,
+            },
+            EventRecord::Compact { input } => Event::Compact {
+                input: InputId::new(input).map_err(Error::from)?,
             },
         })
     }
@@ -1080,6 +1266,39 @@ mod tests {
                 fact: RuntimeFact::HostEnded {
                     unheard_card: "session-ended".into(),
                 },
+            },
+        );
+        for kind in [
+            Control::Interrupt {
+                turn: Some(TurnId::new("turn").unwrap()),
+            },
+            Control::Interrupt { turn: None },
+            Control::SetModel {
+                model: "claude-opus".into(),
+            },
+            Control::SetPermissionMode {
+                mode: PermissionMode::Default,
+            },
+            Control::SetPermissionMode {
+                mode: PermissionMode::Plan,
+            },
+            Control::SetPermissionMode {
+                mode: PermissionMode::DontAsk,
+            },
+            Control::ReadMcpStatus,
+        ] {
+            roundtrip(
+                &current,
+                Event::RequestControl {
+                    control: OperationId::new("control").unwrap(),
+                    kind,
+                },
+            );
+        }
+        roundtrip(
+            &current,
+            Event::Compact {
+                input: InputId::new("compact").unwrap(),
             },
         );
         for outcome in [
@@ -1545,6 +1764,16 @@ mod tests {
         assert!(serde_json::from_str::<DrainRecord>(r#"{"kind":"process","data":"instance"}"#).is_err());
         assert!(serde_json::from_str::<DrainRecord>(r#"{"kind":"execution","data":"instance"}"#).is_ok());
         assert!(serde_json::from_str::<EventRecord>(r#"{"kind":"retire_exited_execution","data":{"problem_card":"recovery","input":"initial"}}"#).is_err());
+    }
+    #[test]
+    fn only_the_modes_that_grant_nothing_by_default_can_be_journaled() {
+        let mode = |mode: &str| format!(r#"{{"kind":"request_control","data":{{"control":"control","kind":{{"kind":"set_permission_mode","data":{{"mode":{{"kind":"{mode}"}}}}}}}}}}"#);
+        for kept in ["default", "plan", "dont_ask"] {
+            assert!(serde_json::from_str::<EventRecord>(&mode(kept)).is_ok(), "{kept}");
+        }
+        for refused in ["accept_edits", "acceptEdits", "auto", "bypass_permissions", "bypassPermissions", "dontAsk"] {
+            assert!(serde_json::from_str::<EventRecord>(&mode(refused)).is_err(), "{refused}");
+        }
     }
 
 }

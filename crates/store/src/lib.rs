@@ -21,6 +21,12 @@ mod failure;
 mod codec;
 mod commit_seals;
 pub use commit_seals::{CommittedCommand, CommittedObservation};
+mod controls;
+pub use controls::{
+    CommittedControl, ControlAttempt, ControlOperation, ControlPermit, DecisionRequest, Response, UnresolvedControl,
+};
+pub use alondra_domain::{Control, Decision, PermissionMode};
+pub use alondra_provider_contract::DecisionKind;
 mod journal_format;
 pub mod measure;
 mod persistence;
@@ -314,6 +320,9 @@ pub struct Committed {
     pub owners: Vec<OwnerGrant>,
     pub commands: Vec<CommittedCommand>,
     pub observations: Vec<CommittedObservation>,
+    pub control_permits: Vec<ControlPermit>,
+    pub control_attempts: Vec<ControlAttempt>,
+    pub control_commands: Vec<CommittedControl>,
 }
 /// Committed lane ownership; correlation data alone cannot create or renew a grant.
 ///
@@ -422,12 +431,25 @@ pub struct LifecycleTransaction<'connection> {
     cleared_cards: BTreeSet<(TaskId, alondra_foundation::InteractionId)>,
     commands: Vec<commit_seals::StagedCommand>,
     observations: Vec<commit_seals::StagedObservation>,
+    claimed_controls: Vec<ControlAttempt>,
+    control_commands: Vec<controls::StagedControl>,
 }
 impl<'connection> LifecycleTransaction<'connection> {
     pub fn install(transaction: &mut Transaction<'_>) -> Result<()> {
         require_foreign_keys(transaction)?;
         let savepoint = transaction.savepoint()?;
         journal_format::install(&savepoint)?;
+        savepoint.commit()?;
+        Ok(())
+    }
+    /// Gives an installed journal the tables later releases added, and leaves a database without
+    /// one untouched: only `install` creates a journal.
+    pub fn upgrade(transaction: &mut Transaction<'_>) -> Result<()> {
+        require_foreign_keys(transaction)?;
+        let savepoint = transaction.savepoint()?;
+        if journal_format::extend(&savepoint)? {
+            journal_format::verify(&savepoint)?;
+        }
         savepoint.commit()?;
         Ok(())
     }
@@ -450,6 +472,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             cleared_cards: BTreeSet::new(),
             commands: vec![],
             observations: vec![],
+            claimed_controls: vec![],
+            control_commands: vec![],
         })
     }
     /// Records errors or unwinding in read-only application validation without exposing SQL.
@@ -661,7 +685,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 .map(|(card, _)| card.clone())
                 .collect();
             aggregate.apply(expected_revision, event)?;
-            if old_execution.as_ref() != aggregate.execution() && !unresolved(&self.transaction, &aggregate)?.is_empty() {
+            if old_execution.as_ref() != aggregate.execution() && (!unresolved(&self.transaction, &aggregate)?.is_empty() || self.claimed_control(task)?) {
                 return Err(Error::UnresolvedDispatch);
             }
             let cleared: Vec<_> = old_cards
@@ -691,6 +715,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             )?;
             // A prepared intent has not crossed the host boundary; obsolete bindings can revoke it.
             savepoint.execute("UPDATE lifecycle_dispatches SET status='revoked' WHERE task_id=?1 AND status='prepared' AND generation IS NOT ?2",
+                params![task.0, aggregate.execution().map(|stamp| crate::sql_number(stamp.generation())).transpose()?])?;
+            savepoint.execute("UPDATE lifecycle_controls SET status='revoked' WHERE task_id=?1 AND status='prepared' AND generation IS NOT ?2",
                 params![task.0, aggregate.execution().map(|stamp| crate::sql_number(stamp.generation())).transpose()?])?;
             savepoint.commit()?;
             for card in cleared {
@@ -1360,6 +1386,12 @@ impl<'connection> LifecycleTransaction<'connection> {
             for observation in &self.observations {
                 self.verify_observation_commit(observation)?;
             }
+            for attempt in &self.claimed_controls {
+                self.fence_control(attempt)?;
+            }
+            for control in &self.control_commands {
+                self.fence_staged_control(control)?;
+            }
             for (task, card) in &self.cleared_cards {
                 let aggregate = self.load(task)?;
                 if aggregate
@@ -1374,7 +1406,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                     return Err(Error::InvalidCard);
                 }
             }
-            let mut permits = vec![];
+            let (mut permits, mut control_permits) = (vec![], vec![]);
             for task in &self.touched {
                 let aggregate = self.load(task)?;
                 persistence::require_inputs(&self.transaction, &aggregate)?;
@@ -1385,10 +1417,11 @@ impl<'connection> LifecycleTransaction<'connection> {
                 if matches!(
                     aggregate.phase(),
                     TaskPhase::Completed | TaskPhase::Cancelled
-                ) && !self.unresolved(task)?.is_empty()
+                ) && (!self.unresolved(task)?.is_empty() || self.claimed_control(task)?)
                 {
                     return Err(Error::UnresolvedDispatch);
                 }
+                control_permits.extend(self.control_permits(&aggregate)?);
                 if !sdk || !dispatchable(&aggregate) {
                     continue;
                 }
@@ -1416,6 +1449,9 @@ impl<'connection> LifecycleTransaction<'connection> {
                 owners: self.owners,
                 commands: self.commands.into_iter().map(commit_seals::StagedCommand::seal).collect(),
                 observations: self.observations.into_iter().map(commit_seals::StagedObservation::seal).collect(),
+                control_permits,
+                control_attempts: self.claimed_controls,
+                control_commands: self.control_commands.into_iter().map(controls::StagedControl::seal).collect(),
             })
         })
     }

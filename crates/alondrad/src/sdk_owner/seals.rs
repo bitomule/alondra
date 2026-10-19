@@ -1,5 +1,5 @@
-//! What the store issued with commits whose state readers already see: dispatch permits, claimed
-//! attempts, owner grants, recorded commands and observations. Each SDK owner takes only those
+//! What the store issued with commits whose state readers already see: dispatch and control
+//! permits, claimed attempts, owner grants, recorded commands and observations. Each SDK owner takes only those
 //! of its own task; a commit of the normal command path hands its permits here too.
 use alondra_core::domain::TaskId;
 use alondra_store::Committed;
@@ -52,6 +52,9 @@ pub(crate) fn empty(committed: &Committed) -> bool {
         && committed.owners.is_empty()
         && committed.commands.is_empty()
         && committed.observations.is_empty()
+        && committed.control_permits.is_empty()
+        && committed.control_attempts.is_empty()
+        && committed.control_commands.is_empty()
 }
 
 fn take_of(queued: &mut Vec<Committed>, task: &TaskId) -> Committed {
@@ -67,6 +70,9 @@ fn take_of(queued: &mut Vec<Committed>, task: &TaskId) -> Committed {
         split(&mut committed.owners, &mut taken.owners, |owner| owner.execution().task() == task);
         split(&mut committed.commands, &mut taken.commands, |command| command.attempt().execution().task() == task);
         split(&mut committed.observations, &mut taken.observations, |observation| observation.execution().task() == task);
+        split(&mut committed.control_permits, &mut taken.control_permits, |permit| permit.execution().task() == task);
+        split(&mut committed.control_attempts, &mut taken.control_attempts, |attempt| attempt.execution().task() == task);
+        split(&mut committed.control_commands, &mut taken.control_commands, |command| command.attempt().execution().task() == task);
     }
     queued.retain(|committed| !empty(committed));
     taken

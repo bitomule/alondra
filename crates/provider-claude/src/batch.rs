@@ -141,7 +141,7 @@ impl<O: HostOwner> BatchHost<O> {
                     .unwrap_or_else(|| "diagnostic".into()),
             ),
             Observation::Sdk { payload, .. } => HostEvent::Sdk(payload.clone()),
-            Observation::DecisionRequested { .. } => return Err(AdapterError::Unsupported),
+            Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => return Err(AdapterError::Unsupported),
             Observation::ProcessExited { exit_code, signal } => HostEvent::Exited { code: *exit_code, signal: signal.clone() },
         };
         let cursor = event.cursor;

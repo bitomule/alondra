@@ -2915,9 +2915,17 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordHostEnded { .. } => 69,
         Command::RecordDoubtfulHandoff { .. } => 70,
         Command::ResendUntakenInput { .. } => 71,
+        Command::InterruptTurn { .. } => 72,
+        Command::SetModel { .. } => 73,
+        Command::SetPermissionMode { .. } => 74,
+        Command::ReadMcpStatus { .. } => 75,
+        Command::CompactConversation { .. } => 76,
+        Command::RecordDecisionRequest { .. } => 77,
+        Command::RecordDecisionSettled { .. } => 78,
+        Command::RecordDecisionAborted { .. } => 79,
     }
 }
-const COMMAND_KINDS: usize = 72;
+const COMMAND_KINDS: usize = 80;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3047,6 +3055,16 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
+        (Command::InterruptTurn { agent_id: ids.agent.into() }, false),
+        (Command::SetModel { task_id: ids.task.into(), model: "claude-opus".into() }, false),
+        (Command::SetPermissionMode { task_id: ids.task.into(), mode: PermissionModeRecord::Plan }, false),
+        (Command::ReadMcpStatus { task_id: ids.task.into() }, false),
+        (Command::CompactConversation { task_id: ids.task.into() }, false),
+        (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
+            input: serde_json::json!({"command": "make"}), mcp_server: None,
+            prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
+        (Command::RecordDecisionSettled { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
+        (Command::RecordDecisionAborted { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -4216,9 +4234,46 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::ReopenTask { task_id: "t".into() },
         Command::ArchiveTask { task_id: "t".into(), archived: true },
         Command::ArchiveTask { task_id: "t".into(), archived: false },
+        Command::InterruptTurn { agent_id: "a".into() },
+        Command::InterruptTurn { agent_id: "s".into() },
+        Command::InterruptTurn { agent_id: "missing".into() },
+        Command::SetModel { task_id: "sdk".into(), model: "claude-opus".into() },
+        Command::SetModel { task_id: "sdk".into(), model: " ".into() },
+        Command::SetModel { task_id: "t".into(), model: "claude-opus".into() },
+        Command::SetPermissionMode { task_id: "sdk".into(), mode: PermissionModeRecord::DontAsk },
+        Command::ReadMcpStatus { task_id: "sdk".into() },
+        Command::CompactConversation { task_id: "sdk".into() },
+        Command::RecordDecisionSettled { task_id: "sdk".into(), generation: 1, epoch: 1 },
+        Command::RecordDecisionSettled { task_id: "sdk".into(), generation: 2, epoch: 1 },
+        Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 1 },
+        Command::RecordDecisionAborted { task_id: "sdk".into(), generation: 1, epoch: 1 },
+        Command::RecordDecisionAborted { task_id: "sdk".into(), generation: 1, epoch: 9 },
+        Command::RecordDecisionAborted { task_id: "missing".into(), generation: 1, epoch: 1 },
     ];
+    let mut sdk = presented.clone();
+    exec(&mut sdk, Actor::System, Command::RegisterAgent { agent_id: "s".into(), name: "SDK".into(), at: 0 }).unwrap();
+    exec(&mut sdk, orchestrator(), Command::CreateTask { plan_items: None, task_id: "sdk".into(), request_id: "r".into(),
+        title: "SDK".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
+    exec(&mut sdk, Actor::System, Command::AdmitExecution { task_id: "sdk".into(), agent_id: "s".into(),
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into() }).unwrap();
+    let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
+    exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
+    ] }).unwrap();
+    let mut resting = sdk.clone();
+    exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None }).unwrap();
+    let mut asking = sdk.clone();
+    exec(&mut asking, Actor::System, Command::RecordDecisionRequest { task_id: "sdk".into(), generation: 1, epoch: 1, hold: Hold::Permission,
+        tool: Some("Bash".into()), input: serde_json::json!({"command": "make"}), mcp_server: None,
+        prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }).unwrap();
+    let mut asked_resting = asking.clone();
+    exec(&mut asked_resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None }).unwrap();
+    let mut decided = asking.clone();
+    exec(&mut decided, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"sdk".into(), 1, 1),
+        option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled] {
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &asking, &asked_resting, &decided] {
         for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
                 for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),

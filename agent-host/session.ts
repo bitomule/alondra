@@ -1,18 +1,23 @@
-import { query, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
+import { query, type CanUseTool, type ElicitationResult, type OnElicitation, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
+import { hasToolUse, type Decision, type DecisionKind } from './frame.js';
 
 export type Failure = { surface: string; code: string; details: unknown };
 export type Observation =
   | { type: 'sdk'; kind: string; native: Record<string, string>; payload: unknown; failures: Failure[] }
-  | { type: 'decision_requested'; request_id: string; tool_use_id: string; kind: 'permission'; payload: unknown }
+  | { type: 'decision_requested'; request_id: string; tool_use_id?: string; kind: DecisionKind; payload: unknown }
+  | { type: 'decision_settled'; request_id: string; epoch: number; outcome: 'answered' | 'cancelled' }
   | { type: 'process_exited'; exit_code: number | null; signal: string | null };
+/** A request as the owner names it: the epoch is the cursor the host gave its `decision_requested` event. */
+export type DecisionRequest = { request_id: string; epoch: number; kind: DecisionKind; tool_use_id: string | null };
 export type Configuration = {
   executable: string;
   cwd: string;
   env: Readonly<Record<string, string | undefined>>;
-  observe: (observation: Observation) => void;
+  /** Returns the cursor the observation was persisted under, when it was. */
+  observe: (observation: Observation) => number | void;
   beforeSpawn?: () => void;
   sessionId?: string;
   /** The native session `sessionId` already exists: resume it rather than start it. */
@@ -94,40 +99,74 @@ function safeDiagnostic(text: string): string {
   return text.replace(/sk-ant-[A-Za-z0-9_-]+/g, '[redacted]').replace(/(authorization|x-api-key)[:=]\s*[^\r\n]+/gi, '$1: [redacted]');
 }
 
+const MAX_PENDING_DECISIONS = 32;
+const defined = (fields: Record<string, unknown>) => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+const decisionKind = (tool: string): DecisionKind => tool === 'AskUserQuestion' ? 'question' : tool === 'ExitPlanMode' ? 'plan' : 'permission';
+/** A string is why no answer reached the request: Claude is denied, never granted by default. */
+type Outcome = Decision | string;
+const permissionResult = (outcome: Outcome): PermissionResult => {
+  if (typeof outcome === 'string') return { behavior: 'deny', message: outcome };
+  if (outcome.behavior === 'allow') return { behavior: 'allow', updatedInput: outcome.updated_input };
+  return { behavior: 'deny', message: outcome.behavior === 'deny' ? outcome.message : 'Permission request cancelled' };
+};
+const elicitationResult = (outcome: Outcome): ElicitationResult => {
+  if (typeof outcome === 'string') return { action: 'cancel' };
+  if (outcome.behavior === 'accept') return outcome.content ? { action: 'accept', content: outcome.content as ElicitationResult['content'] } : { action: 'accept' };
+  return outcome.behavior === 'decline' ? { action: 'decline' } : { action: 'cancel' };
+};
+type Pending = { kind: DecisionKind; toolUseId: string | null; epoch?: number; outcome?: 'answered' | 'cancelled'; settled: boolean; finish: (outcome: Outcome) => void };
+
 export class PermissionCallbacks {
-  private pending = new Map<string, (result: PermissionResult) => void>();
+  private pending = new Map<string, Pending>();
   private closed = false;
   constructor(private observe: Configuration['observe']) {}
-  request: NonNullable<Options['canUseTool']> = async (tool, input, request) => {
-    if (this.closed || request.signal.aborted) return { behavior: 'deny', message: 'Permission request cancelled' };
-    if (this.pending.has(request.requestId)) return { behavior: 'deny', message: 'Duplicate permission request' };
-    if (this.pending.size >= 32) return { behavior: 'deny', message: 'Permission request capacity exceeded' };
-    return new Promise<PermissionResult>((resolve) => {
-      const finish = (result: PermissionResult) => {
-        if (this.pending.get(request.requestId) !== finish) return;
-        request.signal.removeEventListener('abort', cancel);
-        this.pending.delete(request.requestId);
-        resolve(result);
-      };
-      const cancel = () => finish({ behavior: 'deny', message: 'Permission request cancelled' });
-      this.pending.set(request.requestId, finish);
-      request.signal.addEventListener('abort', cancel, { once: true });
-      try {
-        const metadata = Object.fromEntries(Object.entries(request).filter(([key, value]) => key !== 'signal' && value !== undefined));
-        this.observe({ type: 'decision_requested', request_id: request.requestId, tool_use_id: request.toolUseID, kind: 'permission', payload: { tool, input, request: metadata } });
-      } catch {
-        finish({ behavior: 'deny', message: 'Permission delivery failed' });
-      }
-    });
+  request: CanUseTool = (tool, input, options) => {
+    const { signal, ...request } = options;
+    return this.ask(options.requestId, decisionKind(tool), options.toolUseID, signal, { tool, input, request: defined(request) }, permissionResult);
   };
-  respond(requestId: string, result: PermissionResult): void {
-    const finish = this.pending.get(requestId);
-    if (!finish) throw new Error('Unknown or expired permission request');
-    finish(result);
+  elicitation: OnElicitation = (request, { signal, requestId }) => this.ask(requestId, 'elicitation', null, signal, defined({
+    serverName: request.serverName, message: request.message, mode: request.mode, url: request.url, elicitationId: request.elicitationId,
+    requestedSchema: request.requestedSchema, title: request.title, displayName: request.displayName, description: request.description,
+  }), elicitationResult);
+  private ask<T>(requestId: string, kind: DecisionKind, toolUseId: string | null, signal: AbortSignal, payload: Record<string, unknown>, answer: (outcome: Outcome) => T): Promise<T> {
+    if (this.closed || signal.aborted) return Promise.resolve(answer('Permission request cancelled'));
+    if (this.pending.has(requestId)) return Promise.resolve(answer('Duplicate permission request'));
+    if (this.pending.size >= MAX_PENDING_DECISIONS) return Promise.resolve(answer('Permission request capacity exceeded'));
+    return new Promise<T>((resolve) => {
+      const entry: Pending = { kind, toolUseId, settled: false, finish: (outcome) => {
+        if (this.pending.get(requestId) !== entry) return;
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(requestId);
+        resolve(answer(outcome));
+        entry.outcome = typeof outcome === 'string' ? 'cancelled' : 'answered';
+        this.settle(requestId, entry);
+      } };
+      const cancel = () => entry.finish('Permission request cancelled');
+      this.pending.set(requestId, entry);
+      signal.addEventListener('abort', cancel, { once: true });
+      let epoch: unknown;
+      try { epoch = this.observe({ type: 'decision_requested', request_id: requestId, ...(toolUseId === null ? {} : { tool_use_id: toolUseId }), kind, payload }); } catch { epoch = undefined; }
+      if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) { entry.finish('Permission delivery failed'); return; }
+      entry.epoch = epoch;
+      this.settle(requestId, entry);
+    });
+  }
+  private settle(requestId: string, entry: Pending): void {
+    if (entry.settled || entry.epoch === undefined || entry.outcome === undefined) return;
+    entry.settled = true;
+    try { this.observe({ type: 'decision_settled', request_id: requestId, epoch: entry.epoch, outcome: entry.outcome }); } catch { /* The host records its own storage failure. */ }
+  }
+  /** Applies the decision only to the request pending under this exact identity; false means it reached nothing. */
+  respond(request: DecisionRequest, decision: Decision): boolean {
+    const entry = this.pending.get(request.request_id);
+    if (!entry || entry.epoch === undefined || entry.epoch !== request.epoch || entry.kind !== request.kind || entry.toolUseId !== request.tool_use_id) return false;
+    if (hasToolUse(entry.kind) !== (decision.behavior === 'allow' || decision.behavior === 'deny')) return false;
+    entry.finish(decision);
+    return true;
   }
   close(): void {
     this.closed = true;
-    for (const finish of [...this.pending.values()]) finish({ behavior: 'deny', message: 'Session ended' });
+    for (const entry of [...this.pending.values()]) entry.finish('Session ended');
   }
 }
 
@@ -171,6 +210,7 @@ export class Session {
           permissionMode: 'default',
           permissionPrompts: 'host',
           canUseTool: this.permissions.request,
+          onElicitation: this.permissions.elicitation,
           ...(config.worker && {
             plugins: config.worker.plugins.map((path) => ({ type: 'local' as const, path })),
             settings: config.worker.settings as Options['settings'],
@@ -221,10 +261,14 @@ export class Session {
     this.input.offer({ type: 'user', uuid: inputId as NonNullable<SDKUserMessage['uuid']>, session_id: '', parent_tool_use_id: null, message: { role: 'user', content: prompt } });
     this.inputs.add(inputId);
   }
-  respond(requestId: string, result: PermissionResult): void {
-    this.permissions.respond(requestId, result);
+  respond(request: DecisionRequest, decision: Decision): boolean {
+    return this.permissions.respond(request, decision);
   }
   interrupt(): ReturnType<Query['interrupt']> { return this.query.interrupt(); }
+  supportedModels(): ReturnType<Query['supportedModels']> { return this.query.supportedModels(); }
+  setModel(model: string): Promise<void> { return this.query.setModel(model); }
+  setPermissionMode(mode: 'default' | 'plan' | 'dontAsk'): Promise<void> { return this.query.setPermissionMode(mode); }
+  mcpServerStatus(): ReturnType<Query['mcpServerStatus']> { return this.query.mcpServerStatus(); }
   close(): void {
     this.closing = true;
     this.input.close();

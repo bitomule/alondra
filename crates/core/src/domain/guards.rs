@@ -30,6 +30,21 @@ impl DomainState {
             Command::CancelTask { task_id } => self.cancel_guard(actor, task_id),
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
+            Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
+            Command::SetModel { task_id, model } => {
+                self.control_guard(actor, task_id, ControlRecord::SetModel { model: model.clone() }).map(drop)
+            }
+            Command::SetPermissionMode { task_id, mode } => {
+                self.control_guard(actor, task_id, ControlRecord::SetPermissionMode { mode: *mode }).map(drop)
+            }
+            Command::ReadMcpStatus { task_id } => self.control_guard(actor, task_id, ControlRecord::ReadMcpStatus).map(drop),
+            Command::CompactConversation { task_id } => self.compact_guard(actor, task_id).map(drop),
+            Command::RecordDecisionSettled { task_id, generation, epoch } => {
+                self.decision_end_guard(actor, task_id, *generation, *epoch, true).map(drop)
+            }
+            Command::RecordDecisionAborted { task_id, generation, epoch } => {
+                self.decision_end_guard(actor, task_id, *generation, *epoch, false).map(drop)
+            }
             _ => fail("invalid_input", "Only the commands offered as buttons are judged before they run"),
         }
     }
@@ -254,6 +269,51 @@ impl DomainState {
                 .map_err(|e| e.because(Refusal::MergeInProgress { number }));
         };
         Ok(t.id.clone())
+    }
+
+    /// The user, or Alondra, stops the turn or the work the node's SDK task runs now.
+    pub(super) fn interrupt_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
+        if !matches!(actor, Actor::User { .. } | Actor::System) {
+            return fail("forbidden", "Only the user or Alondra interrupts a node");
+        }
+        if !self.agents.contains_key(agent_id) {
+            return fail("not_found", "Agent missing");
+        }
+        let (task, lifecycle) = self.sdk_task_of(agent_id)?;
+        let turn = match lifecycle.activity() {
+            alondra_domain::ActivityView::Working => lifecycle.turn().map(|turn| turn.as_str().to_owned()),
+            alondra_domain::ActivityView::OwnWork => None,
+            _ => {
+                return Err(DomainError::new("conflict", format!("Nothing is running on node {agent_id} to interrupt"))
+                    .because(Refusal::NothingToInterrupt));
+            }
+        };
+        if lifecycle.resource() != Some(alondra_domain::ResourceEvidence::Available) {
+            let node = self.tasks.get(&task).map_or_else(|| agent_id.0.clone(), |task| task.title.clone());
+            return Err(DomainError::new("conflict", format!("Node {agent_id} is not connected, so it cannot be interrupted now"))
+                .because(Refusal::NodeUnreachable { node }));
+        }
+        let record = LifecycleRecord::ControlRequested {
+            control: format!("control-{task}-{}", lifecycle.revision() + 1),
+            operation: ControlRecord::Interrupt { turn },
+        };
+        let record = self.judged(&task, lifecycle, record)?;
+        Ok((task, record))
+    }
+
+    /// Alondra runs an operation on the task's SDK execution.
+    pub(super) fn control_guard(&self, actor: &Actor, task_id: &TaskId, operation: ControlRecord) -> Result<LifecycleRecord> {
+        system(actor)?;
+        let lifecycle = self.sdk_lifecycle(task_id)?;
+        let control = format!("control-{task_id}-{}", lifecycle.revision() + 1);
+        self.judged(task_id, lifecycle, LifecycleRecord::ControlRequested { control, operation })
+    }
+
+    /// Alondra has the task's resting SDK execution compact its conversation.
+    pub(super) fn compact_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<LifecycleRecord> {
+        system(actor)?;
+        let lifecycle = self.sdk_lifecycle(task_id)?;
+        self.judged(task_id, lifecycle, LifecycleRecord::Compacted { input: self.next_input(task_id) })
     }
 
     /// Alondra cancels on its own only a task nothing has started; anyone else must manage it.

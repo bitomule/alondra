@@ -9,7 +9,11 @@ A request that offers the orchestrator's create_task is an orchestrator batch: f
 user created in that batch with a script in <request scripts> (the sandbox's `fakes/scripts`), it
 calls create_task and then launch for every scripted task, one tool call per reply, and ends the
 turn once they are all made. Auto mode's safety check of an action (it stops at `</block>`) is
-answered with an allow. Any other request gets one text reply.
+answered with an allow. A task's request whose prompt holds the `when` text of a call scripted in
+`model-tools/*.json` next to <log> ({"when", "id", "name", "input"}) and that offers its tool gets
+that tool call, once per prompt; the request after its result is logged with it. `{plan_file}` in
+a scripted input becomes the plan file Claude Code's plan mode named in the request. Any other
+request gets one text reply.
 """
 import glob
 import http.server
@@ -74,6 +78,42 @@ def made_since_prompt(body):
         if message.get('role') == 'assistant' and isinstance(content, list):
             made.update(part.get('id') for part in content if isinstance(part, dict) and part.get('type') == 'tool_use')
     return made
+
+
+def tool_results(body):
+    """The tool results the conversation carries, with their text."""
+    parts = [part for message in body.get('messages', []) if message.get('role') == 'user' and isinstance(message.get('content'), list) for part in message['content']]
+    results = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get('type') != 'tool_result':
+            continue
+        inner = part.get('content')
+        text = inner if isinstance(inner, str) else '\n'.join(item.get('text', '') for item in inner or [] if isinstance(item, dict))
+        results.append({'tool_use_id': part.get('tool_use_id'), 'is_error': part.get('is_error', False), 'text': text})
+    return results
+
+
+PLAN_FILE = re.compile(r'(?:plan file \(|plan at |exists at )(/[^\s()]+?\.md)')
+
+
+def with_plan_file(value, body):
+    """`value` with each `{plan_file}` replaced by the plan file Claude Code's plan mode names in
+    the request; unchanged while it names none."""
+    found = PLAN_FILE.search(json.dumps(body))
+    if found is None:
+        return value
+    return json.loads(json.dumps(value).replace('{plan_file}', found.group(1)))
+
+
+def task_calls(log, body, text):
+    """The scripted tool calls whose `when` the prompt holds and whose tool the request offers."""
+    offered = {tool.get('name') for tool in body.get('tools', [])}
+    calls = []
+    for path in sorted(Path(log).with_name('model-tools').glob('*.json')):
+        call = json.loads(path.read_text())
+        if call['when'] in text and call['name'] in offered:
+            calls.append((call['id'], call['name'], with_plan_file(call['input'], body)))
+    return calls
 
 
 def orchestrator_calls(scripts, text):
@@ -164,14 +204,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             served = self.server.served
             with open(self.server.log, 'a') as stream:
                 stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
-                                         'tools': [tool.get('name') for tool in body.get('tools', [])], 'context': context_text(body)}) + '\n')
+                                         'tools': [tool.get('name') for tool in body.get('tools', [])], 'results': tool_results(body), 'context': context_text(body)}) + '\n')
         if not orchestrator and Path(self.server.log).with_name('model-hold').exists():
             # Held unanswered, as when the Mac shuts down before the model replies.
             threading.Event().wait()
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                    'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
         made = made_since_prompt(body)
-        pending = [call for call in orchestrator_calls(self.server.scripts, batch_text(body)) if call[0] not in made] if orchestrator and self.server.scripts else []
+        if orchestrator:
+            calls = [(use, ORCHESTRATOR + tool, arguments) for use, tool, arguments in orchestrator_calls(self.server.scripts, batch_text(body))] if self.server.scripts else []
+        else:
+            calls = task_calls(self.server.log, body, batch_text(body))
+        pending = [call for call in calls if call[0] not in made]
         stop_sequence = None
         if '</block>' in (body.get('stop_sequences') or []):
             block = {'type': 'text', 'text': ''}
@@ -179,7 +223,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             stop, stop_sequence = 'stop_sequence', '</block>'
         elif pending:
             use, tool, arguments = pending[0]
-            block = {'type': 'tool_use', 'id': use, 'name': ORCHESTRATOR + tool, 'input': {}}
+            block = {'type': 'tool_use', 'id': use, 'name': tool, 'input': {}}
             delta = {'type': 'input_json_delta', 'partial_json': json.dumps(arguments)}
             stop = 'tool_use'
         else:

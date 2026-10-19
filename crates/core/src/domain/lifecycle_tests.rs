@@ -5,35 +5,35 @@ use super::*;
 use alondra_domain::Event;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn user() -> Actor {
+pub(super) fn user() -> Actor {
     Actor::User { user_id: "u".into() }
 }
 fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
-fn node(id: &str) -> Actor {
+pub(super) fn node(id: &str) -> Actor {
     Actor::Agent { agent_id: id.into() }
 }
-fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
+pub(super) fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
     s.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision, command,
     })
 }
-fn must(s: &mut DomainState, actor: Actor, command: Command) -> CommandOutcome {
+pub(super) fn must(s: &mut DomainState, actor: Actor, command: Command) -> CommandOutcome {
     let shown = format!("{command:?}");
     match exec(s, actor, command) {
         Ok(outcome) => outcome,
         Err(error) => panic!("{shown} was refused: {error}"),
     }
 }
-fn task(s: &mut DomainState, id: &str, agent: Option<&str>) {
+pub(super) fn task(s: &mut DomainState, id: &str, agent: Option<&str>) {
     must(s, orchestrator(), Command::CreateTask {
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None,
     });
 }
-fn world() -> DomainState {
+pub(super) fn world() -> DomainState {
     let mut s = DomainState::new("epoch");
     for agent in ["a", "b"] {
         must(&mut s, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
@@ -44,7 +44,7 @@ fn world() -> DomainState {
     must(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
     s
 }
-fn kinds(s: &DomainState, task: &str) -> Vec<String> {
+pub(super) fn kinds(s: &DomainState, task: &str) -> Vec<String> {
     s.lifecycle_journal[&TaskId::from(task)].iter().map(|record| {
         let value = serde_json::to_value(record).unwrap();
         value["kind"].as_str().unwrap().to_owned()
@@ -81,6 +81,9 @@ pub(super) fn assert_aggregate_rules(s: &DomainState) {
         assert_eq!(&again.tasks[id], task, "derive_states moved the task {id} without a decision");
     }
     assert_eq!(again.agents, s.agents, "settle_nodes moved a node without a decision");
+    for card in s.interactions.values() {
+        assert!(!(card.withdrawn && DomainState::answered_question(card)), "the card {} is answered and withdrawn, which the store refuses", card.id);
+    }
     for (id, records) in &s.lifecycle_journal {
         let writes = journal_writes(id, records, 0).unwrap();
         let initial = writes[0].input.clone().expect("the journal is created with its initial input");
@@ -330,7 +333,7 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
 }
 
 /// An SDK task whose observed turn started: admitted, resource available, the planned input taken.
-fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
+pub(super) fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
     sdk_turn_named(s, id, node, "turn-1")
 }
 fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> String {
@@ -368,6 +371,73 @@ fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     assert_aggregate_rules(&s);
 }
 
+/// The screen of task `id` in `lang`.
+fn turn_end_shown(s: &DomainState, id: &str, lang: crate::views::text::Lang) -> String {
+    use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
+    let index = ReadIndex::build(s);
+    let live = LiveSnapshot::default();
+    let view = build(&format!("task:{id}"), RenderContext { domain: s, index: &index, live: &live, client: Client::Tui, lang,
+        transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+    serde_json::to_string(&view).unwrap()
+}
+
+#[test]
+fn a_turn_the_user_interrupted_ends_on_a_card_that_says_so() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    let asked = &s.interactions[&InteractionId::from(card.as_str())];
+    assert_eq!(asked.card.need, "You interrupted “Task t”: tell it how to go on");
+    assert_eq!(asked.card.why, INTERRUPTED_WHY);
+    assert!(matches!(&asked.payload, InteractionPayload::Question { options, answer: None }
+        if options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>() == [CARRY_ON, CANCEL_TASK]));
+    let en = turn_end_shown(&s, "t", Lang::En);
+    assert!(en.contains("You interrupted “Task t”: tell it how to go on"), "{en}");
+    assert!(en.contains("You stopped its turn. Tell it to carry on, write what to do, or cancel the task."), "{en}");
+    assert!(!en.contains("stopped without delivering"), "{en}");
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("Lo interrumpiste: dile a «Task t» cómo seguir"), "{es}");
+    assert!(es.contains("Paraste su turno. Dile que siga, escríbele qué hacer o cancela la tarea."), "{es}");
+    assert!(!es.contains("paró sin entregar"), "{es}");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_turn_that_ends_on_its_own_says_it_stopped_without_delivering_or_asking() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    let en = turn_end_shown(&s, "t", Lang::En);
+    assert!(en.contains("“Task t” stopped without delivering or asking: tell it how to go on"), "{en}");
+    assert!(en.contains("Its turn ended with nothing that explains its next step."), "{en}");
+    assert!(!en.contains("You interrupted"), "{en}");
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("«Task t» paró sin entregar ni preguntar: dile cómo seguir"), "{es}");
+    assert!(es.contains("Su turno terminó sin nada que explique qué hace después."), "{es}");
+    assert!(!es.contains("interrumpiste"), "{es}");
+}
+
+#[test]
+fn interrupting_a_turn_does_not_change_how_a_later_turn_ends() {
+    let mut s = world();
+    let first = sdk_turn(&mut s, "t", "a");
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: first.as_str().into(), option_id: CARRY_ON.into(), inputs: BTreeMap::new() });
+    let Some(LifecycleRecord::Answered { input, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    let later = &s.interactions[&turn_ended_card_id(&"t".into(), 1, "turn-2")];
+    assert_eq!(later.card.need, "“Task t” stopped without delivering or asking: tell it how to go on");
+    assert_ne!(later.card.why, INTERRUPTED_WHY);
+    assert_aggregate_rules(&s);
+}
+
 // The native Claude names its turns `claude-message:<uuid>`; the card is still one a client can
 // open and answer, whose view key and actions the views' grammar takes.
 #[test]
@@ -394,6 +464,27 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
     assert!(holds_slot(&s, "t"), "the work still running keeps the slot");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert_aggregate_rules(&s);
+}
+
+// Claude Code tracks a foreground command that runs for seconds as its own work. It ends inside
+// the turn that waits for it, which goes on with it and then rests on its card.
+#[test]
+fn work_that_ends_inside_its_turn_is_continued_by_it_and_the_turn_ends_on_one_card() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:bash".into() },
+        RuntimeObservation::WorkEnded { work: "claude-task:bash".into(), continuation: "claude-notification:bash".into() },
+        RuntimeObservation::WorkContinued { continuation: "claude-notification:bash".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert!(s.interactions.contains_key(&InteractionId::from(card.as_str())), "the turn asks how to go on");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_eq!(kinds(&s, "t")[4..], ["work_started", "work_ended", "work_continued", "turn_ended"]);
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkContinued { continuation: "decision-1-7".into() },
+    ] }).unwrap_err().code, "invalid_input", "a decision's continuation is the domain's to consume");
     assert_aggregate_rules(&s);
 }
 
@@ -666,5 +757,102 @@ fn what_the_user_writes_on_the_card_of_a_doubtful_message_is_sent_in_its_place()
     assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(),
         Some(LifecycleRecord::HandoffSettled { resent: Some(_), text: Some(text), .. }) if text == "Skip the tests, write the docs"));
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "what they wrote explains the next step");
+    assert_aggregate_rules(&s);
+}
+
+pub(super) fn last(s: &DomainState, task: &str) -> LifecycleRecord {
+    s.lifecycle_journal[&TaskId::from(task)].last().unwrap().clone()
+}
+pub(super) fn refused_unchanged(s: &mut DomainState, actor: Actor, command: Command) -> String {
+    let before = s.clone();
+    let code = exec(s, actor, command).unwrap_err().code;
+    assert_eq!(*s, before, "a refused command changed the state");
+    code
+}
+
+#[test]
+fn the_user_interrupts_exactly_what_the_nodes_sdk_task_runs() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let interrupt = |agent: &str| Command::InterruptTurn { agent_id: agent.into() };
+    assert_eq!(refused_unchanged(&mut s, node("a"), interrupt("a")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, orchestrator(), interrupt("a")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, user(), interrupt("ghost")), "not_found");
+    assert_eq!(refused_unchanged(&mut s, user(), interrupt("b")), "no_task", "b runs nothing");
+    let revision = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().revision();
+    let state = s.tasks[&TaskId::from("t")].state;
+    must(&mut s, user(), interrupt("a"));
+    assert_eq!(last(&s, "t"), LifecycleRecord::ControlRequested {
+        control: format!("control-t-{}", revision + 1),
+        operation: ControlRecord::Interrupt { turn: Some("turn-1".into()) },
+    });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, state, "the request alone stops nothing");
+    must(&mut s, Actor::System, interrupt("a"));
+    assert_aggregate_rules(&s);
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert_eq!(refused_unchanged(&mut s, user(), interrupt("a")), "conflict", "nothing runs to interrupt");
+
+    let mut s = world();
+    task(&mut s, "u", Some("b"));
+    must(&mut s, node("b"), Command::StartTask { task_id: "u".into() });
+    assert_eq!(refused_unchanged(&mut s, user(), interrupt("b")), "no_task", "a claude --bg node is not interrupted through the SDK");
+}
+
+#[test]
+fn interrupting_the_work_a_task_runs_on_its_own_names_no_turn() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "subagent".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: None }, .. }));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn only_alondra_sets_the_model_and_mode_or_reads_mcp_status_of_an_sdk_task() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let model = |model: &str| Command::SetModel { task_id: "t".into(), model: model.into() };
+    assert_eq!(refused_unchanged(&mut s, user(), model("claude-opus")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, node("a"), model("claude-opus")), "forbidden");
+    for invalid in ["", "  ", "two\nlines"] {
+        assert_eq!(refused_unchanged(&mut s, Actor::System, model(invalid)), "conflict", "{invalid:?}");
+    }
+    must(&mut s, Actor::System, model("claude-opus"));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::SetModel { model }, .. } if model == "claude-opus"));
+    must(&mut s, Actor::System, Command::SetPermissionMode { task_id: "t".into(), mode: PermissionModeRecord::DontAsk });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::SetPermissionMode { mode: PermissionModeRecord::DontAsk }, .. }));
+    must(&mut s, Actor::System, Command::ReadMcpStatus { task_id: "t".into() });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::ReadMcpStatus, .. }));
+    assert_aggregate_rules(&s);
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::ReadMcpStatus { task_id: "missing".into() }), "not_found");
+    task(&mut s, "u", Some("b"));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::ReadMcpStatus { task_id: "u".into() }), "no_task");
+    for mode in ["acceptEdits", "accept_edits", "auto", "bypass_permissions", "bypassPermissions"] {
+        let wire = format!(r#"{{"kind":"set_permission_mode","task_id":"t","mode":"{mode}"}}"#);
+        assert!(serde_json::from_str::<Command>(&wire).is_err(), "{mode} cannot be expressed");
+    }
+    assert!(serde_json::from_str::<Command>(r#"{"kind":"set_permission_mode","task_id":"t","mode":"dont_ask"}"#).is_ok());
+}
+
+#[test]
+fn compacting_a_resting_conversation_keeps_the_card_it_waits_on() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    let compact = || Command::CompactConversation { task_id: "t".into() };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "a turn runs");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert_eq!(refused_unchanged(&mut s, user(), compact()), "forbidden");
+    must(&mut s, Actor::System, compact());
+    let LifecycleRecord::Compacted { input } = last(&s, "t") else { panic!("compacted") };
+    let id = TaskId::from("t");
+    assert_eq!(writes_texts(&id, &s.lifecycle_journal[&id]).get(&alondra_domain::InputId::new(input.as_str()).unwrap()).map(String::as_str), Some(COMPACT));
+    let lifecycle = replay(&id, &s.lifecycle_journal[&id]).unwrap();
+    assert_eq!(lifecycle.cards().iter().map(|(card, _)| card.0.clone()).collect::<Vec<_>>(), vec![card.clone()], "the card it waits on stays");
+    assert!(matches!(&s.interactions[&InteractionId::from(card.as_str())].payload, InteractionPayload::Question { answer: None, .. }));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "its compaction is already pending");
     assert_aggregate_rules(&s);
 }

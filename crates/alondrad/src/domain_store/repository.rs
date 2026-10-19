@@ -847,7 +847,8 @@ pub(super) fn save_changes(
 }
 /// The task's new records, as the events the store keeps: only the store writes the journal, and
 /// it replays the task and checks each event before keeping it. What a user tells an SDK
-/// execution leaves with its dispatch prepared in the same transaction, for its owner to claim.
+/// execution, and each decision Claude waits on, leaves with its dispatch or response prepared in
+/// the same transaction, for its owner to claim.
 pub(super) fn save_journal(
     journal: &mut alondra_store::LifecycleTransaction<'_>,
     task: &TaskId,
@@ -869,11 +870,30 @@ pub(super) fn save_journal(
                     }
                     (None, _) => None,
                 };
-                journal.apply(task, write.revision, &format!("lifecycle-{}", write.revision + 1), event)?;
-                if let Some(input) = told
-                    && journal.load(task)?.execution().is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST)
-                {
-                    journal.stage_input(task, &input)?;
+                let decided = match &event {
+                    alondra_domain::Event::Decide { card, decision } => {
+                        let aggregate = journal.load(task)?;
+                        let callback = aggregate.card_callback(card).context("a decided card decides a callback")?;
+                        Some((alondra_domain::decision_epoch(aggregate.generation(), callback).context("a decided card decides a request")?, decision.clone()))
+                    }
+                    alondra_domain::Event::Runtime { stamp, fact: alondra_domain::RuntimeFact::AnsweredByPolicy { callback, decision }, .. } => {
+                        Some((alondra_domain::decision_epoch(stamp.generation(), callback).context("a policy decides a request")?, decision.clone()))
+                    }
+                    _ => None,
+                };
+                journal.apply(task, write.revision, &format!("lifecycle-{}", write.revision + 1), event.clone())?;
+                if let Some((epoch, decision)) = decided {
+                    journal.stage_response(task, epoch, &decision)?;
+                }
+                match (event, told) {
+                    (alondra_domain::Event::RequestControl { control, kind }, _) => journal.stage_control(task, &control, &kind)?,
+                    (alondra_domain::Event::Compact { input }, _) => journal.stage_compaction(task, &input)?,
+                    (_, Some(input))
+                        if journal.load(task)?.execution().is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST) =>
+                    {
+                        journal.stage_input(task, &input)?
+                    }
+                    _ => {}
                 }
             }
         }
