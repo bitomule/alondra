@@ -1,6 +1,7 @@
 import { query, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
+import type { OrchestratorProfile } from './bootstrap.js';
 
 export type Failure = { surface: string; code: string; details: unknown };
 export type Observation =
@@ -14,6 +15,8 @@ export type Configuration = {
   observe: (observation: Observation) => void;
   beforeSpawn?: () => void;
   sessionId?: string;
+  /** One turn of Alondra's orchestrator: its own tools, MCP and permissions, and nothing after its result. */
+  orchestrator?: OrchestratorProfile;
   // Test override must return a local ChildProcess: a PID proves spawn occurred.
   spawn?: (options: SpawnOptions) => SpawnedProcess & Pick<ChildProcess, 'pid'>;
 };
@@ -142,18 +145,37 @@ export class Session {
     if (!isAbsolute(config.executable) || !isAbsolute(config.cwd)) throw new Error('Executable and cwd must be absolute');
     this.permissions = new PermissionCallbacks(config.observe);
     const env = { ...config.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1' };
+    const sessionId = config.sessionId?.toLowerCase();
+    const profile = config.orchestrator;
+    const permissions: Options = profile
+      ? {
+          ...(profile.resume ? { resume: sessionId } : { sessionId }),
+          model: profile.model,
+          tools: profile.tools,
+          disallowedTools: profile.disallowed_tools,
+          mcpServers: Object.fromEntries(Object.entries(profile.mcp_servers).map(([name, server]) => [name, { type: 'stdio' as const, command: server.command, args: server.args }])),
+          strictMcpConfig: true,
+          plugins: profile.plugins.map((path) => ({ type: 'local' as const, path })),
+          settings: profile.settings as Options['settings'],
+          permissionMode: 'auto',
+          permissionPrompts: 'none',
+          extraArgs: { restricted: null },
+        }
+      : {
+          sessionId,
+          tools: { type: 'preset', preset: 'claude_code' },
+          permissionMode: 'default',
+          permissionPrompts: 'host',
+          canUseTool: this.permissions.request,
+        };
     const options: Options = {
+      ...permissions,
       cwd: config.cwd,
-      sessionId: config.sessionId?.toLowerCase(),
       pathToClaudeCodeExecutable: config.executable,
       env,
       settingSources: ['user', 'project', 'local'],
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      tools: { type: 'preset', preset: 'claude_code' },
-      permissionMode: 'default',
-      permissionPrompts: 'host',
       abortController: this.controller,
-      canUseTool: this.permissions.request,
       spawnClaudeCodeProcess: (options) => {
         config.beforeSpawn?.();
         const native = config.spawn ? undefined : spawn(options.command, options.args, { cwd: options.cwd, env: options.env, signal: options.signal, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -220,6 +242,7 @@ export class Session {
           }
         }
         this.config.observe(classify(payload));
+        if (this.config.orchestrator && payload.type === 'result' && this.inputs.size === 0) this.input.close();
       }
       if (!this.closing && (!this.seenResult || this.inputs.size > 0)) this.diagnostic('eof_without_result', { unresolved_input_ids: [...this.inputs] });
     } catch (error) {

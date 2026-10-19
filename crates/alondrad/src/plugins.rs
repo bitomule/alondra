@@ -131,17 +131,22 @@ pub fn launch_flags(plugins: &[&Path]) -> Vec<String> {
     launch_flags_with(plugins, None)
 }
 
+/// Alondra's launch settings, with extra permissions when given.
+pub fn launch_settings_with(permissions: Option<serde_json::Value>) -> serde_json::Value {
+    let mut settings: serde_json::Value = serde_json::from_str(&alondra_core::launch_settings()).expect("launch settings are JSON");
+    if let Some(permissions) = permissions {
+        settings["permissions"] = permissions;
+    }
+    settings
+}
+
 /// Extra permissions join Alondra's launch settings in its single `--settings`.
 pub fn launch_flags_with(plugins: &[&Path], permissions: Option<serde_json::Value>) -> Vec<String> {
     let mut out = vec![];
     for p in plugins {
         out.extend(["--plugin-dir".to_string(), p.display().to_string()]);
     }
-    let mut settings: serde_json::Value = serde_json::from_str(&alondra_core::launch_settings()).expect("launch settings are JSON");
-    if let Some(permissions) = permissions {
-        settings["permissions"] = permissions;
-    }
-    out.extend(["--settings".to_string(), settings.to_string()]);
+    out.extend(["--settings".to_string(), launch_settings_with(permissions).to_string()]);
     out
 }
 

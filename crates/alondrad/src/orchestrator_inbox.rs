@@ -61,6 +61,44 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     steps
 }
 
+/// What a handled batch left without an outcome, as `request <id>` or `suggestion <id>`: one of
+/// its open requests with no task, no open question of the orchestrator, and neither a reminder on
+/// its way back nor the user's problem; one of its node suggestions with no decision and no
+/// reminder. `settle` leaves it empty.
+pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestions: &[InteractionId]) -> Vec<String> {
+    let mut left = vec![];
+    for id in requests {
+        let Some(request) = state.requests.get(id) else { continue };
+        if request.closed
+            || state.tasks.values().any(|task| task.request_id == *id)
+            || asked_about(state, id)
+            || !numbered(state, UNSPLIT_NOTICE_PREFIX, &id.0).is_empty()
+            || !numbered(state, UNSPLIT_PROBLEM_PREFIX, &id.0).is_empty()
+        {
+            continue;
+        }
+        left.push(format!("request {id}"));
+    }
+    for id in suggestions {
+        let Some(suggestion) = state.interactions.get(id) else { continue };
+        if !waits(suggestion) || state.interactions.contains_key(&InteractionId(format!("{UNSETTLED_NOTICE_PREFIX}{id}"))) {
+            continue;
+        }
+        left.push(format!("suggestion {id}"));
+    }
+    left
+}
+
+/// The open requests and the node suggestions a batch is asked to leave with an outcome.
+pub(crate) fn asked(state: &DomainState) -> (Vec<RequestId>, Vec<InteractionId>) {
+    let requests = state.requests.values().filter(|request| !request.closed).map(|request| request.id.clone()).collect();
+    let suggestions = state.interactions.values()
+        .filter(|i| waits(i) && i.card.kind == CardKind::Propose)
+        .map(|i| i.id.clone())
+        .collect();
+    (requests, suggestions)
+}
+
 /// The orchestrator waits for the user's answer about this request: nothing is left in it.
 fn asked_about(state: &DomainState, request: &RequestId) -> bool {
     state.interactions.values().any(|i| {

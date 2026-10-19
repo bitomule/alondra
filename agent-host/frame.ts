@@ -12,7 +12,19 @@ const positive = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const object = z.record(z.string(), z.json());
 const fence = z.strictObject({ profile_id: text(), account_id: text(), data_epoch: text(), host_id: text() });
-const execution = z.strictObject({ task_id: text(), agent_id: text(), conversation_id: text(), process_instance_id: text(), generation: positive });
+/** The `lane` an orchestrator batch's execution names on the wire. */
+export const ORCHESTRATOR_LANE = 'orchestrator';
+const execution = z.union([
+  z.strictObject({ task_id: text(), agent_id: text(), conversation_id: text(), process_instance_id: text(), generation: positive }),
+  z.strictObject({ lane: z.literal(ORCHESTRATOR_LANE), run_id: text(), conversation_id: text(), generation: positive }),
+]);
+export type Execution = z.infer<typeof execution>;
+/** The execution as the owner proofs bind it, in order; the generation comes last. */
+export function executionSegments(value: Execution): string[] {
+  return 'task_id' in value
+    ? [value.task_id, value.agent_id, value.conversation_id, value.process_instance_id, String(value.generation)]
+    : [ORCHESTRATOR_LANE, value.run_id, value.conversation_id, String(value.generation)];
+}
 const decision = z.discriminatedUnion('behavior', [z.strictObject({ behavior: z.literal('allow'), updated_input: object }), z.strictObject({ behavior: z.literal('deny'), message: text(MAX_FRAME_BYTES) })]);
 const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('start'), cwd: text(4096).refine((s) => s.startsWith('/')), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),

@@ -1,5 +1,6 @@
-//! A task through the Agent SDK backend (`SDK=1`): the orchestrator creates it, Alondra admits it
-//! and the SDK host runs the pinned native Claude against the local model double. Its first turn
+//! A task through the Agent SDK backend (`SDK=1`): the orchestrator, itself one turn of the pinned
+//! native Claude through the SDK host, creates it with Alondra's MCP tools; Alondra admits it and
+//! the SDK host runs the task's native Claude against the local model double. Its first turn
 //! ends with nothing that explains the next step, so one card asks the user; «Carry on» with a
 //! note from the phone commits and reaches Claude, whose next turn ends with a card of its own.
 use anyhow::{Context, Result};
@@ -18,6 +19,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     report.case("S1", "A task runs through the Agent SDK; its turn-end card asks once and «Carry on» from the phone reaches Claude", |report| {
         request(report, fakes, &user, &task_script("req-s1", "t-s1", "Write the release notes"), "Write the release notes")?;
         let first = wait(report, "the native Claude's first turn ends and its card waits in Inbox", || turn_card(&user, None))?;
+        let batches = orchestrator_requests(sandbox)?;
+        report.step("the orchestrator's batch ran through the SDK host, not claude -p", || {
+            anyhow::ensure!(batches.iter().any(|request| request["user"].as_str().is_some_and(|text| text.contains("The user created Request req-s1"))), "{batches:?}");
+            let fallback = fakes.dir.join("orchestrator");
+            let prompts = std::fs::read_dir(&fallback).map(|entries| entries.filter_map(|entry| entry.ok()).filter(|entry| entry.file_name().to_string_lossy().starts_with("prompt-")).count()).unwrap_or(0);
+            anyhow::ensure!(prompts == 0, "{prompts} batches went to claude -p in {}", fallback.display());
+            Ok(())
+        })?;
         let requests = model_requests(sandbox)?;
         report.step("the model got the task's mission once", || {
             anyhow::ensure!(requests.len() == 1, "{} requests reached the model: {requests:?}", requests.len());
@@ -57,7 +66,17 @@ fn turn_card(user: &User, not: Option<&str>) -> Result<(Option<String>, String)>
     Ok((card, format!("{inbox:?}")))
 }
 
+/// What the task's native Claude asked the model.
 fn model_requests(sandbox: &Sandbox) -> Result<Vec<Value>> {
+    Ok(requests_to_model(sandbox)?.into_iter().filter(|request| request["orchestrator"] != true).collect())
+}
+
+/// What the orchestrator's native Claude asked the model.
+fn orchestrator_requests(sandbox: &Sandbox) -> Result<Vec<Value>> {
+    Ok(requests_to_model(sandbox)?.into_iter().filter(|request| request["orchestrator"] == true).collect())
+}
+
+fn requests_to_model(sandbox: &Sandbox) -> Result<Vec<Value>> {
     let log = sandbox.dir.join("sdk/model-requests.jsonl");
     let text = match std::fs::read_to_string(&log) {
         Ok(text) => text,

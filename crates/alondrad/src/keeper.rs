@@ -149,7 +149,7 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
         return transition(hub, Transition::Finished { run_id, outcome: Outcome::Ambiguous, context: None,
             error: Some("Orchestrator execution was cancelled; check its effects before retrying".into()), retry_at: None, compact_pending: runtime.compact_pending });
     }
-    if resume && process::missing_session(&output, &session) {
+    if output.end(&session, resume, false) == process::BatchEnd::SessionMissing {
         transition(hub, Transition::SessionMissing { run_id: run_id.clone() })?;
         if run.kind == RunKind::Compact {
             return transition(hub, Transition::Finished { run_id, outcome: Outcome::Success, context: None,

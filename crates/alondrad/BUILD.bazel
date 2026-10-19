@@ -89,6 +89,7 @@ rust_test(
         "FIXTURE_NODE": "$(rootpath //agent-host:pinned_node)",
         "FIXTURE_HOST": "$(rootpath //agent-host:persistent.cjs)",
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
     },
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-application:agent_application",
@@ -102,6 +103,7 @@ rust_test(
         "//crates/store:store",
     ],
     data = [
+        "//agent-host:orchestrator-fake-claude.py",
         "//agent-host:persistent-fake-claude.py",
         "//agent-host:persistent.cjs",
         "//agent-host:pinned_node",

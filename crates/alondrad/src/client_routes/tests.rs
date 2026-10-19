@@ -788,8 +788,10 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     executor.tick(&ownership).await.unwrap();
     let prompt = std::fs::read_to_string(fixture.home.join("runtime/orchestrator/received-prompt")).unwrap();
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("request request-1: Make the editor readable"), "{prompt}");
-    assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|m| m.recipient_kind != "orchestrator"),
-        "the batch was handed");
+    assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter()
+        .filter(|m| m.recipient_kind == "orchestrator")
+        .all(|m| m.interaction_id.as_deref() == Some("request-unsplit-request-1-1")),
+        "the batch was handed; only the reminder of the request it left without a task waits");
 }
 
 #[tokio::test]

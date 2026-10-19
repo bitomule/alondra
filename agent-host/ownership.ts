@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { Frame } from './frame.js';
+import { executionSegments, type Frame } from './frame.js';
 
 const OWNER_PROOF_DOMAIN = 'alondra-host-owner-v1';
 const HOST_PROOF_DOMAIN = 'alondra-host-accept-v1';
@@ -11,7 +11,7 @@ function claimProof(secret: Buffer, attach: Omit<Attach, 'proof' | 'type'>, doma
   const { fence, execution } = attach;
   const segments = [domain, attach.nonce, attach.host_instance_id, String(attach.owner_generation),
     fence.profile_id, fence.account_id, fence.data_epoch, fence.host_id,
-    execution.task_id, execution.agent_id, execution.conversation_id, execution.process_instance_id, String(execution.generation),
+    ...executionSegments(execution),
     attach.host_release, attach.host_sha256, attach.executable_sha256, attach.sdk_version];
   if (requestProof !== undefined) segments.push(requestProof);
   const hmac = createHmac('sha256', secret);

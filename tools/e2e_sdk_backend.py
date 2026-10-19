@@ -4,7 +4,8 @@ Usage: e2e_sdk_backend.py <sandbox dir> <Mac home> <node> <persistent.cjs> <nati
 
 Copies the pinned Node and the host bundle, extracts the pinned native Claude from its npm archive
 (size and SHA256 checked), starts the local model double, writes the Seatbelt profile the whole host
-runs under and the Mac's sdk-backend.json. Claude gets a synthetic HOME, configuration and
+runs under and the Mac's sdk-backend.json. The Mac's orchestrator runs through the same host: the
+profile also lets its turn start Alondra's MCP server and reach the Mac's daemon. Claude gets a synthetic HOME, configuration and
 temporary folder inside the sandbox and the public fixture key: never the user's login, Keychain
 or ~/.claude.json, and no network beyond the model double on loopback.
 """
@@ -39,20 +40,24 @@ def quote(value):
     return json.dumps(str(value))
 
 
-def profile(runtime, home, tmp, state, work, port):
-    reads = [runtime, home, tmp, state, work]
+def profile(runtime, home, tmp, state, work, port, orchestrator):
+    """`orchestrator` is what the Mac's orchestrator turn needs besides a task's: its folder, the
+    plugins and the alondra CLI their MCP server runs, the Mac's home and its daemon's port."""
+    folder, plugins, cli, mac, daemon = orchestrator
+    reads = [runtime, home, tmp, state, work, folder, cli, mac] + plugins
     parents = sorted({str(parent) for path in reads for parent in path.parents})
     return '\n'.join([
         '(version 1)', '(deny default)', '(deny mach-lookup)',
         '(allow process-fork)', '(allow signal (target same-sandbox))',
         '(allow process-info* (target self))', '(allow sysctl-read)',
-        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + '))',
+        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + ') (literal "/bin/sh") (literal "/bin/bash") (literal "/usr/bin/dirname") (literal ' + quote(cli) + ') ' + ' '.join('(literal ' + quote(plugin / 'bin' / 'alondra') + ')' for plugin in plugins) + ')',
         '(allow file-read-data (literal "/"))',
         '(allow file-read-metadata ' + ' '.join('(literal ' + quote(parent) + ')' for parent in parents) + ')',
-        '(allow file-read* (subpath ' + quote(runtime) + ') (subpath ' + quote(work) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom"))',
+        '(allow file-read* (subpath ' + quote(runtime) + ') (subpath ' + quote(work) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom") (literal "/bin/sh") (literal "/bin/bash") (literal "/private/var/select/sh") (literal "/usr/bin/dirname") (literal ' + quote(cli) + ') (subpath ' + quote(mac) + ') ' + ' '.join('(subpath ' + quote(plugin) + ')' for plugin in plugins) + ')',
+        '(allow file-read* file-write* (subpath ' + quote(folder) + '))',
         '(allow file-read* file-write* (subpath ' + quote(home) + ') (subpath ' + quote(tmp) + ') (subpath ' + quote(state) + ') (literal "/dev/null"))',
         '(allow network-bind network-inbound (local unix-socket (subpath ' + quote(state) + ')))',
-        '(allow network-outbound (remote ip "localhost:' + str(port) + '"))',
+        '(allow network-outbound (remote ip "localhost:' + str(port) + '") (remote ip "localhost:' + str(daemon) + '"))',
     ]) + '\n'
 
 
@@ -67,7 +72,7 @@ def main():
     shutil.copyfile(host, runtime / 'persistent.cjs')
     (runtime / 'persistent.cjs').chmod(0o400)
     native_sha256 = fixture().native_from_archive(archive, runtime / 'claude')
-    model = subprocess.Popen([sys.executable, '-I', str(REPO / 'tests/native/claude/model_double.py'), str(root / 'model-requests.jsonl')],
+    model = subprocess.Popen([sys.executable, '-I', str(REPO / 'tests/native/claude/model_double.py'), str(root / 'model-requests.jsonl'), str(sandbox / 'fakes' / 'scripts')],
                              stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=open(root / 'model.log', 'ab'), start_new_session=True)
     port = int(model.stdout.readline())
     model.stdout.close()
@@ -76,7 +81,12 @@ def main():
     state.mkdir(mode=0o700)
     (root / 'state-root').write_text(str(state))
     work = Path(os.path.realpath(sandbox / 'repo'))
-    (root / 'host.sb').write_text(profile(runtime, home, tmp, state, work, port))
+    daemon = next(line.split('=', 1)[1].strip() for line in (mac / 'config.toml').read_text().splitlines() if line.startswith('port'))
+    folder = mac / 'runtime' / 'orchestrator'
+    folder.mkdir(parents=True, exist_ok=True)
+    plugins = [Path(os.path.realpath(sandbox / name)) for name in ('plugin', 'plugin-orchestrator')]
+    orchestrator = (Path(os.path.realpath(folder)), plugins, Path(os.path.realpath(sandbox / 'bin' / 'alondra')), Path(os.path.realpath(mac)), daemon)
+    (root / 'host.sb').write_text(profile(runtime, home, tmp, state, work, port, orchestrator))
     synthetic = {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
     native = dict(synthetic, CLAUDE_CONFIG_DIR=str(home / 'config'), TMPDIR=str(tmp), CLAUDE_CODE_TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC',
                   ANTHROPIC_API_KEY='sk-ant-public-loopback-fixture-only', ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(port),

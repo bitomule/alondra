@@ -32,13 +32,40 @@ pub struct Fence {
     pub host_id: String,
 }
 
+/// What a host runs: a task's execution, or one batch of the orchestrator, which is no task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Execution {
+    Task(TaskExecution),
+    Orchestrator(OrchestratorExecution),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Execution {
+pub struct TaskExecution {
     pub task_id: TaskId,
     pub agent_id: AgentId,
     pub conversation_id: String,
     pub process_instance_id: String,
+    pub generation: u64,
+}
+
+/// The `lane` an orchestrator batch's execution names on the wire.
+pub const ORCHESTRATOR_LANE: &str = "orchestrator";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrchestratorLane {
+    #[serde(rename = "orchestrator")]
+    Orchestrator,
+}
+
+/// One orchestrator batch: its run, the Claude conversation it continues and its generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorExecution {
+    pub lane: OrchestratorLane,
+    pub run_id: String,
+    pub conversation_id: String,
     pub generation: u64,
 }
 
@@ -515,15 +542,34 @@ impl Fence {
 }
 impl Execution {
     pub fn validate(&self) -> Result<(), Error> {
-        for field in [
-            &self.task_id.0,
-            &self.agent_id.0,
-            &self.conversation_id,
-            &self.process_instance_id,
-        ] {
+        for field in self.segments().iter().take(self.segments().len() - 1) {
             text(field, 256)?;
         }
-        positive(self.generation)
+        positive(self.generation())
+    }
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Task(task) => task.generation,
+            Self::Orchestrator(batch) => batch.generation,
+        }
+    }
+    /// The execution as the owner proofs bind it, in order; the generation comes last.
+    pub fn segments(&self) -> Vec<String> {
+        match self {
+            Self::Task(task) => vec![
+                task.task_id.0.clone(),
+                task.agent_id.0.clone(),
+                task.conversation_id.clone(),
+                task.process_instance_id.clone(),
+                task.generation.to_string(),
+            ],
+            Self::Orchestrator(batch) => vec![
+                ORCHESTRATOR_LANE.into(),
+                batch.run_id.clone(),
+                batch.conversation_id.clone(),
+                batch.generation.to_string(),
+            ],
+        }
     }
 }
 impl Command {

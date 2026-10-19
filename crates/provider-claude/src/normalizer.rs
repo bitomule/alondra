@@ -62,13 +62,16 @@ impl ObservationNormalizer for Normalizer {
         let Body::Event(event) = &received.frame().body else {
             return Err(AdapterError::InvalidObservation);
         };
+        let alondra_agent_protocol::Execution::Task(execution) = &event.execution else {
+            return Err(AdapterError::InvalidObservation);
+        };
         if event.cursor != batch.cursor
             || self.fence.as_ref() != Some(&event.fence)
-            || event.execution.task_id != *batch.execution.task()
-            || event.execution.agent_id != *batch.execution.node()
-            || event.execution.conversation_id != batch.execution.conversation().as_str()
-            || event.execution.process_instance_id != batch.execution.instance().as_str()
-            || event.execution.generation != batch.execution.generation()
+            || execution.task_id != *batch.execution.task()
+            || execution.agent_id != *batch.execution.node()
+            || execution.conversation_id != batch.execution.conversation().as_str()
+            || execution.process_instance_id != batch.execution.instance().as_str()
+            || execution.generation != batch.execution.generation()
             || event.fence.host_id != batch.execution.host().as_str()
         {
             return Err(AdapterError::InvalidObservation);
@@ -355,7 +358,7 @@ fn optional_string(payload: &Value, key: &str) -> Result<Option<String>, Adapter
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_agent_protocol::{Execution, NativeCorrelation, SdkEventKind};
+    use alondra_agent_protocol::{Execution, NativeCorrelation, SdkEventKind, TaskExecution};
     use alondra_foundation::{AgentId, DataEpoch, InputId, TaskId};
     use serde_json::json;
 
@@ -372,13 +375,13 @@ mod tests {
                 data_epoch: DataEpoch::from("epoch"),
                 host_id: "host".into(),
             },
-            execution: Execution {
+            execution: Execution::Task(TaskExecution {
                 task_id: TaskId::from("task"),
                 agent_id: AgentId::from("node"),
                 conversation_id: "conversation".into(),
                 process_instance_id: "process".into(),
                 generation: 1,
-            },
+            }),
             cursor: 1,
             observation: WireObservation::Sdk {
                 kind: SdkEventKind::Message,
@@ -558,7 +561,7 @@ mod tests {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
-    use alondra_agent_protocol::{Execution, NativeCorrelation, SdkEventKind};
+    use alondra_agent_protocol::{Execution, NativeCorrelation, SdkEventKind, TaskExecution};
     use alondra_foundation::{AgentId, DataEpoch, InputId, TaskId};
     use serde_json::json;
     const SESSION: &str = "30000000-0000-4000-8000-000000000001";
@@ -571,13 +574,13 @@ mod diagnostic_tests {
                 data_epoch: DataEpoch::from("epoch"),
                 host_id: "host".into(),
             },
-            execution: Execution {
+            execution: Execution::Task(TaskExecution {
                 task_id: TaskId::from("task"),
                 agent_id: AgentId::from("node"),
                 conversation_id: "conversation".into(),
                 process_instance_id: "process".into(),
                 generation: 1,
-            },
+            }),
             cursor: 1,
             observation: WireObservation::Sdk {
                 kind,

@@ -1,18 +1,28 @@
 """A local stand-in for the Messages API that the native Claude of the e2e sandbox talks to.
 
-Usage: model_double.py <log>
-Prints the port it listens on as its only line of stdout, then answers every /v1/messages with one
-text reply over SSE until it is killed. It accepts only the synthetic fixture key and never a saved
-bearer, and appends each request's last user text to <log>, one JSON line per request.
+Usage: model_double.py <log> [<request scripts>]
+Prints the port it listens on as its only line of stdout, then answers every /v1/messages over SSE
+until it is killed. It accepts only the synthetic fixture key and never a saved bearer, and appends
+each request's last user text to <log>, one JSON line per request.
+
+A request that offers the orchestrator's create_task is an orchestrator batch: for each request the
+user created in that batch with a script in <request scripts> (the sandbox's `fakes/scripts`), it
+calls create_task and then launch for every scripted task, one tool call per reply, and ends the
+turn once they are all made. Auto mode's safety check of an action (it stops at `</block>`) is
+answered with an allow. Any other request gets one text reply.
 """
+import glob
 import http.server
 import json
+import os
+import re
 import sys
 import threading
 
 MAX_BODY = 1048576
 TOKEN = 'sk-ant-public-loopback-fixture-only'
 REPLY = 'Done: the notes are drafted.'
+ORCHESTRATOR = 'mcp__alondra-orchestrator__'
 
 
 def last_user_text(body):
@@ -26,12 +36,56 @@ def last_user_text(body):
     return ''
 
 
+def batch_text(body):
+    """The text of the last user message that is a prompt rather than tool results."""
+    for message in reversed(body.get('messages', [])):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            return content
+        text = '\n'.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text')
+        if not any(isinstance(part, dict) and part.get('type') == 'tool_result' for part in content):
+            return text
+    return ''
+
+
+def made_since_prompt(body):
+    """The tool calls already made in this turn, by id."""
+    made = set()
+    for message in reversed(body.get('messages', [])):
+        content = message.get('content')
+        if message.get('role') == 'user' and (isinstance(content, str) or not any(isinstance(part, dict) and part.get('type') == 'tool_result' for part in content)):
+            break
+        if message.get('role') == 'assistant' and isinstance(content, list):
+            made.update(part.get('id') for part in content if isinstance(part, dict) and part.get('type') == 'tool_use')
+    return made
+
+
+def orchestrator_calls(scripts, text):
+    calls = []
+    for path in sorted(glob.glob(os.path.join(scripts, '*.json'))):
+        with open(path) as stream:
+            script = json.load(stream)
+        request = script['request_id']
+        if not re.search(r'The user created Request ' + re.escape(request) + r'\b', text):
+            continue
+        for task in script['tasks']:
+            launch = {'name': 'sandbox/' + task['task_id'], 'cwd': os.path.join(os.path.dirname(os.path.dirname(scripts)), 'repo'), 'model': 'sonnet', 'reason': 'A scripted sandbox node'}
+            calls.append(('toolu_create_' + task['task_id'], 'create_task', {
+                'task_id': task['task_id'], 'request_id': request, 'title': task['title'], 'agent_id': None,
+                'review_prs': False, 'dependencies': [], 'launch': launch}))
+            calls.append(('toolu_launch_' + task['task_id'], 'launch', {'task': task['task_id'], 'title': task['title'], 'model': 'sonnet', 'reason': 'A scripted sandbox node'}))
+    return calls
+
+
 class Model(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, log):
+    def __init__(self, log, scripts):
         super().__init__(('127.0.0.1', 0), Handler)
         self.log = log
+        self.scripts = scripts
         self.guard = threading.Lock()
         self.served = 0
 
@@ -68,29 +122,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {'input_tokens': 10})
         if path != '/v1/messages':
             return self.refuse('unexpected route ' + path)
+        orchestrator = any(tool.get('name') == ORCHESTRATOR + 'create_task' for tool in body.get('tools', []))
         with self.server.guard:
             self.server.served += 1
             served = self.server.served
             with open(self.server.log, 'a') as stream:
-                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body)}) + '\n')
+                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'orchestrator': orchestrator}) + '\n')
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                    'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
+        made = made_since_prompt(body)
+        pending = [call for call in orchestrator_calls(self.server.scripts, batch_text(body)) if call[0] not in made] if orchestrator and self.server.scripts else []
+        stop_sequence = None
+        if '</block>' in (body.get('stop_sequences') or []):
+            block = {'type': 'text', 'text': ''}
+            delta = {'type': 'text_delta', 'text': '<block>no'}
+            stop, stop_sequence = 'stop_sequence', '</block>'
+        elif pending:
+            use, tool, arguments = pending[0]
+            block = {'type': 'tool_use', 'id': use, 'name': ORCHESTRATOR + tool, 'input': {}}
+            delta = {'type': 'input_json_delta', 'partial_json': json.dumps(arguments)}
+            stop = 'tool_use'
+        else:
+            block = {'type': 'text', 'text': ''}
+            delta = {'type': 'text_delta', 'text': 'Batch handled.' if orchestrator else REPLY}
+            stop = 'end_turn'
         events = [
             ('message_start', {'type': 'message_start', 'message': message}),
-            ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}}),
-            ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': REPLY}}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': block}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': delta}),
             ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
-            ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': 10}}),
+            ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': stop_sequence}, 'usage': {'output_tokens': 10}}),
             ('message_stop', {'type': 'message_stop'}),
         ]
         if body.get('stream') is not True:
-            return self.refuse('a streamed request is expected')
+            text = block if block['type'] == 'tool_use' else dict(block, text=delta['text'])
+            if text['type'] == 'tool_use':
+                text = dict(block, input=json.loads(delta['partial_json']))
+            return self.reply(200, dict(message, content=[text], stop_reason=stop, stop_sequence=stop_sequence,
+                                        usage={'input_tokens': 10, 'output_tokens': 10}))
         data = ''.join('event: ' + name + '\ndata: ' + json.dumps(event) + '\n\n' for name, event in events).encode()
         self.reply(200, data, 'text/event-stream')
 
 
 def main():
-    model = Model(sys.argv[1])
+    model = Model(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
     sys.stdout.write(str(model.server_address[1]) + '\n')
     sys.stdout.flush()
     sys.stdout.close()

@@ -239,30 +239,37 @@ struct ClaudeAdapter {
     connection: Option<Connection>,
     normalizer: Normalizer,
 }
-impl ClaudeAdapter {
-    fn new(
-        binding: ProviderBinding,
-        configuration: ClaudeConfiguration,
-    ) -> Result<Self, AdapterError> {
-        if configuration.io_timeout.is_zero()
-            || configuration.io_timeout > Duration::from_secs(300)
-            || !configuration.native_executable.is_absolute()
-            || !configuration.native_directory.is_absolute()
-            || configuration.profile_id.trim().is_empty()
-            || configuration.account_id.trim().is_empty()
-            || configuration.host_release.trim().is_empty()
+impl ClaudeConfiguration {
+    /// Checks the configuration and makes the private control material of one host.
+    pub(super) fn control(&self) -> Result<ControlIdentity, AdapterError> {
+        if self.io_timeout.is_zero()
+            || self.io_timeout > Duration::from_secs(300)
+            || !self.native_executable.is_absolute()
+            || !self.native_directory.is_absolute()
+            || self.profile_id.trim().is_empty()
+            || self.account_id.trim().is_empty()
+            || self.host_release.trim().is_empty()
         {
             return Err(AdapterError::InvalidObservation);
         }
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).map_err(|_| AdapterError::Disconnected)?;
-        let control = ControlIdentity {
-            profile_id: configuration.profile_id.clone(),
-            account_id: configuration.account_id.clone(),
+        Ok(ControlIdentity {
+            profile_id: self.profile_id.clone(),
+            account_id: self.account_id.clone(),
             host_instance_id: random_uuid()?.as_str().into(),
             secret,
-            host_release: configuration.host_release.clone(),
-        };
+            host_release: self.host_release.clone(),
+        })
+    }
+}
+
+impl ClaudeAdapter {
+    fn new(
+        binding: ProviderBinding,
+        configuration: ClaudeConfiguration,
+    ) -> Result<Self, AdapterError> {
+        let control = configuration.control()?;
         Ok(Self {
             binding,
             configuration,
@@ -464,6 +471,7 @@ impl DurableAdapter for ClaudeAdapter {
                     &self.control,
                     &self.configuration,
                     &session,
+                    None,
                 )
             },
         )
@@ -481,12 +489,13 @@ impl DurableAdapter for ClaudeAdapter {
         Ok(())
     }
 }
-fn bootstrap(
-    owner: &OwnerGrant,
+pub(super) fn bootstrap(
+    owner: &impl crate::wire::HostOwner,
     identity: &LaunchIdentity,
     control: &ControlIdentity,
     configuration: &ClaudeConfiguration,
     session: &SessionRecord,
+    orchestrator: Option<&crate::batch::OrchestratorProfile>,
 ) -> std::io::Result<Vec<u8>> {
     let secret = control
         .secret
@@ -511,14 +520,18 @@ fn bootstrap(
             executable_sha256: identity.artifact().executable_sha256().into(),
         }));
     alondra_agent_protocol::encode(&frame).map_err(std::io::Error::other)?;
-    serde_json::to_vec(&serde_json::json!({
+    let mut bootstrap = serde_json::json!({
         "state_dir": identity.state_dir(), "ownership_path": identity.ownership_path(), "socket_path": identity.socket_path(), "host_instance_id": control.host_instance_id, "control_secret": secret,
         "fence": fence(owner, control), "execution": execution(owner),
         "manifest": { "mode": "node_bundle", "artifact_path": identity.artifact().artifact(), "host_release": control.host_release, "host_sha256": identity.artifact().artifact_sha256(), "executable_sha256": identity.artifact().executable_sha256(), "sdk_version": SDK_VERSION },
         "native": { "session_id": session.session_id, "executable": configuration.native_executable, "cwd": configuration.native_directory, "env": configuration.native_environment }
-    })).map_err(std::io::Error::other)
+    });
+    if let Some(profile) = orchestrator {
+        bootstrap["orchestrator"] = serde_json::to_value(profile).map_err(std::io::Error::other)?;
+    }
+    serde_json::to_vec(&bootstrap).map_err(std::io::Error::other)
 }
-fn random_uuid() -> Result<MessageUuid, AdapterError> {
+pub(super) fn random_uuid() -> Result<MessageUuid, AdapterError> {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).map_err(|_| AdapterError::Disconnected)?;
     bytes[6] = (bytes[6] & 15) | 64;

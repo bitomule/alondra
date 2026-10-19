@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const HINT: &[u8] = b"Alondra host: socket listening";
 const BOOTSTRAP_LIMIT: usize = 65_536;
@@ -125,8 +125,10 @@ impl Drop for DiagnosticDrain {
 }
 /// No query or native mission is authorized by this handle. The private adapter must
 /// authenticate the endpoint and consume active dispatch authority before requesting work.
-pub struct OwnedHost {
-    owner: OwnerGrant,
+/// `O` is the authority that owns the host: the store's `OwnerGrant` for a task, or another
+/// owner its own authority issued and nothing else can make.
+pub struct OwnedHost<O = OwnerGrant> {
+    owner: O,
     identity: LaunchIdentity,
     child: Child,
     wake: mpsc::Receiver<Wake>,
@@ -134,15 +136,15 @@ pub struct OwnedHost {
     drains: Vec<DiagnosticDrain>,
     lock_identity: (u64, u64),
 }
-impl OwnedHost {
+impl<O> OwnedHost<O> {
     /// The builder belongs to the concrete private adapter and validates its bootstrap
     /// semantics against this issued grant and verified manifest. It must perform no I/O.
     pub fn launch(
-        owner: OwnerGrant,
+        owner: O,
         artifact: VerifiedArtifact,
         state_dir: &Path,
         environment: &BTreeMap<String, String>,
-        build: impl FnOnce(&OwnerGrant, &LaunchIdentity) -> io::Result<Vec<u8>>,
+        build: impl FnOnce(&O, &LaunchIdentity) -> io::Result<Vec<u8>>,
     ) -> io::Result<Self> {
         Self::launch_confined(owner, artifact, state_dir, environment, None, build)
     }
@@ -150,12 +152,12 @@ impl OwnedHost {
     /// profile `confinement` when one is given. `sandbox-exec` execs the host in place, so the
     /// child is still the host itself.
     pub fn launch_confined(
-        owner: OwnerGrant,
+        owner: O,
         artifact: VerifiedArtifact,
         state_dir: &Path,
         environment: &BTreeMap<String, String>,
         confinement: Option<&Path>,
-        build: impl FnOnce(&OwnerGrant, &LaunchIdentity) -> io::Result<Vec<u8>>,
+        build: impl FnOnce(&O, &LaunchIdentity) -> io::Result<Vec<u8>>,
     ) -> io::Result<Self> {
         private_directory(state_dir)?;
         let state_dir = state_dir.canonicalize()?;
@@ -279,22 +281,11 @@ impl OwnedHost {
         drop(rollback);
         prepared
     }
-    pub fn owner(&self) -> &OwnerGrant {
+    pub fn owner(&self) -> &O {
         &self.owner
     }
     pub fn identity(&self) -> &LaunchIdentity {
         &self.identity
-    }
-    pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
-        if owner.scope() != self.owner.scope()
-            || owner.execution() != self.owner.execution()
-            || owner.binding() != self.owner.binding()
-            || owner.generation() <= self.owner.generation()
-        {
-            return Err(refused("owned host generation mismatch"));
-        }
-        self.owner = owner;
-        Ok(())
     }
     /// Returns an unauthenticated connection. Hints, file ownership and Hello fields
     /// never replace the concrete adapter's full expected-transcript mutual proof.
@@ -359,6 +350,10 @@ impl OwnedHost {
     pub fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }
+    /// The host's process id: it leads its own process group, which Claude runs in.
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
     /// Requests graceful shutdown of this unreaped child. This is fixture cleanup, not
     /// current-owner control after adoption; production control requires authenticated fencing.
     /// Only actual exit can be observed by wait.
@@ -390,6 +385,19 @@ impl OwnedHost {
             }
         }
         Ok(status)
+    }
+}
+impl OwnedHost<OwnerGrant> {
+    pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
+        if owner.scope() != self.owner.scope()
+            || owner.execution() != self.owner.execution()
+            || owner.binding() != self.owner.binding()
+            || owner.generation() <= self.owner.generation()
+        {
+            return Err(refused("owned host generation mismatch"));
+        }
+        self.owner = owner;
+        Ok(())
     }
 }
 /// An existing endpoint's retained private material, without an invented child handle.
@@ -522,6 +530,20 @@ pub(super) fn connect_socket() -> io::Result<std::os::fd::OwnedFd> {
     rustix::io::ioctl_fionbio(&socket, true)?;
     Ok(socket)
 }
+/// Whether `stream` has bytes, or its end, to read within `timeout`. Nothing is read.
+pub fn readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
+    loop {
+        let mut fds = [PollFd::new(stream, PollFlags::IN)];
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
 pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use rustix::net::sockopt::socket_error;
@@ -560,7 +582,7 @@ pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<Uni
     stream.set_nonblocking(false)?;
     Ok(stream)
 }
-impl Drop for OwnedHost {
+impl<O> Drop for OwnedHost<O> {
     fn drop(&mut self) {
         for drain in &mut self.drains {
             drain.stop();

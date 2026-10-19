@@ -5,9 +5,9 @@
 //! invocation never completes a Task.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
-use crate::orchestrator_process::{self as process, Invocation, Ownership};
+use crate::orchestrator_process::{self as process, BatchEnd, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, Scope};
+use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
 use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 use alondra_core::orchestrator_cards::{STUCK_AFTER, STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
@@ -160,6 +160,9 @@ impl Executor {
     pub(crate) fn recover(&self) -> Result<Runtime> {
         let mut runtime = load(&self.home)?;
         if let Some(run) = runtime.active_run.take() {
+            if let Err(error) = process::end_recorded(&self.home.join("runtime/orchestrator"), &run.id) {
+                log!("orchestrator: cannot end the process the previous daemon left running: {error:#}");
+            }
             self.give_up(&run, "daemon_restarted_during_execution")?;
             runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
             runtime.last_error = None;
@@ -305,17 +308,15 @@ impl Executor {
             Some(session) => session,
             None => process::uuid()?,
         };
-        let mut attempts = vec![];
-        let mut claimed = vec![];
-        {
-            let mut store = self.domain.store.lock().expect("domain store poisoned");
-            for message in pending {
-                if let Some(claim) = store.claim_orchestrator_message(message.id)? {
-                    attempts.push((claim.attempt_id, claim.version));
-                    claimed.push(claim.message);
-                }
-            }
-        }
+        let state = self.domain.state()?;
+        let epoch = state.data_epoch.clone();
+        let asked = crate::orchestrator_inbox::asked(&state);
+        drop(state);
+        let ids: Vec<i64> = pending.iter().map(|message| message.id).collect();
+        let (claims, owner) = self.domain.store.lock().expect("domain store poisoned")
+            .claim_orchestrator_batch(&ids, &run_id, &session, epoch)?;
+        let attempts: Vec<(i64, u64)> = claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect();
+        let claimed: Vec<OutboxMessage> = claims.into_iter().map(|claim| claim.message).collect();
         if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
             return Ok(());
         }
@@ -329,14 +330,6 @@ impl Executor {
         runtime.cancel_requested = false;
         save(&self.home, &runtime)?;
         self.bind_session(&session);
-        {
-            let mut store = self.domain.store.lock().expect("domain store poisoned");
-            for (attempt, _) in &run.attempts {
-                if let Err(error) = store.record_orchestrator_delivery(*attempt, &session) {
-                    log!("orchestrator delivery {attempt} to {session}: {error:#}");
-                }
-            }
-        }
         let projects_root = crate::domain_schedule_runner::options_at(&self.home).ok()
             .map(|file| file.projects_root(&crate::options::user_home()))
             .filter(|root| root.is_dir());
@@ -349,90 +342,118 @@ impl Executor {
         };
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
-        let output = process::execute(Invocation {
-            executable: &self.executable, cwd: &directory, home: &self.home,
-            plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
-            domain: true, projects_root: projects_root.as_deref(),
-            capability: Some(capability.expose_for_child_environment()),
-            session: &session, resume, execution: &run_id, prompt: &prompt, ownership,
-        }, |_| {
+        let mark_spawned = move || {
             let mut runtime = load(&home)?;
             if let Some(run) = runtime.active_run.as_mut() { run.spawned = true; }
             save(&home, &runtime)
-        }, || Ok(()), async {
+        };
+        let cancel = async {
             loop {
                 if load(&self.home).is_ok_and(|runtime| runtime.cancel_requested) { break; }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-        }).await;
+        };
+        let output = match self.domain.sdk() {
+            Some((backend, _)) => crate::orchestrator_sdk::execute(crate::orchestrator_sdk::Batch {
+                owner, backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
+                node_plugin, orchestrator_plugin, projects_root: projects_root.clone(),
+                capability: capability.expose_for_child_environment().to_owned(),
+                session: session.clone(), resume, prompt,
+            }, mark_spawned, cancel).await,
+            None => {
+                drop(owner);
+                let mut mark_spawned = Some(mark_spawned);
+                process::execute(Invocation {
+                    executable: &self.executable, cwd: &directory, home: &self.home,
+                    plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
+                    domain: true, projects_root: projects_root.as_deref(),
+                    capability: Some(capability.expose_for_child_environment()),
+                    session: &session, resume, execution: &run_id, prompt: &prompt, ownership,
+                }, |_| mark_spawned.take().map_or(Ok(()), |mark| mark()), || Ok(()), cancel).await
+            }
+        };
         if let Err(error) = self.domain.revoke_execution(&run_id) {
             log!("orchestrator: cannot persist the revoked capability of {run_id}: {error:#}");
         }
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
-        let succeeded = output.exit_ok && output.stream.success && output.stream.result
-            && output.stream.initialized && output.stream.error.is_none();
-        let effects = |stop: BatchStop| output.stream.may_have_effects().then(|| BatchProblem {
-            stop, calls: output.stream.alondra_calls.clone(), subjects: self.subjects(&claimed), error: String::new(),
-        });
-        if runtime.cancel_requested {
-            let Some(problem) = effects(BatchStop::Cancelled) else {
+        let end = output.end(&session, resume, runtime.cancel_requested);
+        if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
+            && let Some(reset) = output.stream.limit(&output.diagnostic)
+        {
+            let reset = reset.or_else(|| output.stream.limited.then(|| self.domain.live.mods.reset_after_limit(now_millis())).flatten());
+            self.domain.live.usage_pause.exhaust(reset, now_millis());
+        }
+        let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };
+        match end {
+            BatchEnd::Cancelled { effects: None } => {
                 self.give_up(&run, "orchestrator_cancelled")?;
                 runtime.active_run = None;
                 runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
                 runtime.last_error = None;
                 runtime.failure = None;
                 runtime.cancel_requested = false;
-                return save(&self.home, &runtime);
-            };
-            self.finish(&run, State::Uncertain, Some("orchestrator_cancelled"))?;
-            runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
-            runtime.failure = Some(Failure::Cancelled);
-            runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
-            save(&self.home, &runtime)?;
-            self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
-            return Ok(());
-        }
-        if resume && process::missing_session(&output, &session) {
-            self.finish(&run, State::Retryable, Some("orchestrator_session_missing"))?;
-            runtime.session_id = None;
-            runtime.active_run = None;
-            runtime.last_error = Some("The saved Claude conversation is missing; a new conversation will be created".into());
-            runtime.failure = Some(Failure::SessionMissing);
-            return save(&self.home, &runtime);
-        }
-        if !succeeded && let Some(until) = self.usage_limit(&output) {
-            self.domain.live.usage_pause.exhaust(until, now_millis());
-            if !output.stream.worked {
+                save(&self.home, &runtime)
+            }
+            BatchEnd::Cancelled { effects: Some(calls) } => {
+                self.finish(&run, State::Uncertain, Some("orchestrator_cancelled"))?;
+                runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
+                runtime.failure = Some(Failure::Cancelled);
+                runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
+                save(&self.home, &runtime)?;
+                self.raise_batch_problem(&run.id, problem(BatchStop::Cancelled, calls), runtime.last_error.as_deref().unwrap_or_default());
+                Ok(())
+            }
+            BatchEnd::SessionMissing => {
+                self.finish(&run, State::Retryable, Some("orchestrator_session_missing"))?;
+                runtime.session_id = None;
+                runtime.active_run = None;
+                runtime.last_error = Some("The saved Claude conversation is missing; a new conversation will be created".into());
+                runtime.failure = Some(Failure::SessionMissing);
+                save(&self.home, &runtime)
+            }
+            BatchEnd::Limited { .. } => {
                 self.finish(&run, State::Retryable, Some("orchestrator_usage_exhausted"))?;
                 runtime.active_run = None;
                 runtime.last_error = None;
                 runtime.failure = None;
                 runtime.retry_at = None;
-                return save(&self.home, &runtime);
+                save(&self.home, &runtime)
             }
+            BatchEnd::Handled => self.handled(runtime, &run, &asked),
+            BatchEnd::NotStarted { why } => self.failed(runtime, &run, why, None),
+            BatchEnd::Interrupted { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Interrupted, calls))),
+            BatchEnd::Denied { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Denied, calls))),
         }
-        if succeeded {
-            self.finish(&run, State::Handed, None)?;
-            read_handed_notices(&self.domain);
-            runtime.active_run = None;
-            runtime.last_error = None;
-            runtime.failure = None;
-            runtime.retry_at = None;
-            runtime.consecutive_failures = 0;
-            runtime.pending_resolutions.clear();
-            if let Some(problem) = runtime.stuck_problem.take() {
-                let _ = self.domain.withdraw_problem(&InteractionId(problem));
-            }
-            return save(&self.home, &runtime);
+    }
+
+    /// The batch's turn ended with its result: its messages were handed over. When nothing else
+    /// waits for the orchestrator, whatever it left without an outcome is settled now, in this
+    /// step; a message still waiting is the next batch's, and settling before it would close or
+    /// remind about a request the orchestrator has not seen yet.
+    fn handled(&self, mut runtime: Runtime, run: &Run, (requests, suggestions): &(Vec<RequestId>, Vec<InteractionId>)) -> Result<()> {
+        self.finish(run, State::Handed, None)?;
+        read_handed_notices(&self.domain);
+        runtime.active_run = None;
+        runtime.last_error = None;
+        runtime.failure = None;
+        runtime.retry_at = None;
+        runtime.consecutive_failures = 0;
+        runtime.pending_resolutions.clear();
+        if let Some(problem) = runtime.stuck_problem.take() {
+            let _ = self.domain.withdraw_problem(&InteractionId(problem));
         }
-        let problem = effects(if output.stream.denied { BatchStop::Denied } else { BatchStop::Interrupted });
-        let error = output.stream.error.unwrap_or_else(|| if !output.diagnostic.trim().is_empty() {
-            output.diagnostic
-        } else {
-            "Claude exited without a successful terminal result".into()
-        });
-        self.failed(runtime, &run, error, problem)
+        save(&self.home, &runtime)?;
+        if !self.pending()?.is_empty() {
+            return Ok(());
+        }
+        crate::orchestrator_inbox::settle(&self.domain);
+        let state = self.domain.state()?;
+        let left = crate::orchestrator_inbox::unresolved(&state, requests, suggestions);
+        if !left.is_empty() {
+            log!("orchestrator: batch {} left without an outcome: {}", run.id, left.join(", "));
+        }
+        Ok(())
     }
 
     /// What a batch was about, as the user knows it: the cards and tasks its messages came from.
@@ -457,15 +478,6 @@ impl Executor {
             }
         }
         subjects
-    }
-
-    /// Whether the run failed because usage ran out, with the reset Claude reported if it did.
-    fn usage_limit(&self, output: &process::Output) -> Option<Option<i64>> {
-        let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, now_millis()));
-        if output.stream.limited {
-            return Some(output.stream.limit_reset.or_else(|| self.domain.live.mods.reset_after_limit(now_millis())));
-        }
-        output.stream.error.as_deref().and_then(said).or_else(|| said(&output.diagnostic))
     }
 
     /// A run that changed nothing (`problem` is None) is offered again with a fresh prompt; one
@@ -793,6 +805,24 @@ exit 1"#;
             .filter(|m| m.recipient_kind == "orchestrator").map(|m| (m.id, m.state)).collect()
     }
 
+    /// The reminders `settle` sent back to the orchestrator when a batch left something open.
+    fn reminders(domain: &DomainRuntime) -> Vec<String> {
+        use alondra_core::orchestrator_cards::{UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX};
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .filter(|m| m.recipient_kind == "orchestrator")
+            .filter_map(|m| m.interaction_id)
+            .filter(|id| [UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX].iter().any(|prefix| id.starts_with(prefix)))
+            .collect()
+    }
+
+    /// The orchestrator's inbox without those reminders.
+    fn unhandled(domain: &DomainRuntime) -> Vec<(i64, String)> {
+        let reminders = reminders(domain);
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .filter(|m| m.recipient_kind == "orchestrator" && m.interaction_id.as_ref().is_none_or(|id| !reminders.contains(id)))
+            .map(|m| (m.id, m.state)).collect()
+    }
+
     fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
         domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
             .filter(|i| i.recipient_kind == "orchestrator").map(|i| (i.message_id, i.state, i.reason)).collect()
@@ -813,7 +843,8 @@ exit 1"#;
             && prompt.contains("Where do I put change 2?") && !prompt.contains("inbox message")
             && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
         assert!(prompt.contains("request r: Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
-        assert!(outbox(domain).is_empty());
+        assert!(unhandled(domain).is_empty());
+        assert_eq!(reminders(domain).len(), 2, "the two questions it left unanswered go back once, in the same step");
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.session_id.is_some() && runtime.last_error.is_none());
@@ -834,7 +865,9 @@ exit 1"#;
             });
         }
         f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1, "nothing pending, no launch");
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "the reminders are a batch of their own");
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "nothing pending, no launch");
         ask_orchestrator(domain, 3);
         f.executor.tick(&f.ownership).await.unwrap();
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
@@ -897,7 +930,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         f.executor.tick(&f.ownership).await.unwrap();
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
-        assert!(outbox(domain).is_empty());
+        assert!(unhandled(domain).is_empty());
     }
 
     #[tokio::test]
@@ -1036,7 +1069,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(prompt.contains("Where do I put change 1?") && !prompt.contains("new conversation"), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.session_id.as_deref() == Some("saved"), "{runtime:?}");
-        assert!(outbox(domain).is_empty());
+        assert!(unhandled(domain).is_empty());
     }
 
     #[tokio::test]
@@ -1164,7 +1197,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         // A daemon restart during an execution resolves it without the user.
         let mut runtime = load(&f.executor.home).unwrap();
         ask_orchestrator(domain, 3);
-        let pending = outbox(domain)[0].0;
+        let pending = unhandled(domain)[0].0;
         let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
         runtime.active_run = Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
             attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true });
@@ -1172,7 +1205,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let recovered = f.executor.recover().unwrap();
         assert!(recovered.active_run.is_none());
         assert_eq!(recovered.pending_resolutions[0].run_id, "interrupted");
-        assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
+        assert!(unhandled(domain).is_empty(), "the interrupted batch is not replayed");
         assert!(attempts(domain).iter().any(|(id, state, _)| *id == claim.message.id && state == "discarded"));
     }
 
@@ -1205,8 +1238,11 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.pending_resolutions.is_empty() && runtime.active_run.is_none() && runtime.last_error.is_none());
 
+        assert_eq!(reminders(domain), ["request-unsplit-bc2466f2-1"], "the request it left without a task goes back once, in the same step");
         f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1, "one fresh run, not a loop");
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "the reminder is a batch of its own");
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "then it is the user's question: one fresh run, not a loop");
     }
 
     #[test]
@@ -1288,9 +1324,9 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         domain.live.usage_pause.resume(now_millis());
         f.executor.tick(&f.ownership).await.unwrap();
         assert_eq!(starts(&f), 1, "resumed: the pending batch runs");
-        assert!(outbox(domain).is_empty());
+        assert!(unhandled(domain).is_empty());
         f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 1, "and only once");
+        assert_eq!(starts(&f), 2, "and only once: the next run is the reminder of the question it left open");
     }
 
     fn limited_once(reset_seconds: i64) -> String {
@@ -1324,7 +1360,7 @@ fi"#)
         domain.live.usage_pause.resume(now_millis());
         f.executor.tick(&f.ownership).await.unwrap();
         assert_eq!(starts(&f), 2, "the same batch is retried");
-        assert!(outbox(domain).is_empty());
+        assert!(unhandled(domain).is_empty());
         assert!(attempts(domain).iter().any(|(_, state, _)| state == "handed"));
     }
 }

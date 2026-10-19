@@ -84,6 +84,7 @@ mod notifier;
 mod options;
 mod orchestrate;
 mod orchestrator_process;
+mod orchestrator_sdk;
 mod plugins;
 mod preflight;
 mod process_watch;

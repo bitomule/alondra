@@ -44,3 +44,18 @@ for (const field of Object.keys(frame.body.execution)) {
   assert.notEqual(hostProof(secret, { ...frame.body, execution: { ...frame.body.execution, [field]: typeof value === 'number' ? value + 1 : `${value}x` } }), response.proof, `host execution ${field}`);
 }
 console.log('Direction-separated host proof binds the complete pending Attach and prevents reflection');
+
+const batchVector = JSON.parse(fixture('owner-proof-orchestrator'));
+const batch = parsePayload(fixture('attach-orchestrator'));
+assert.equal(batch.body.type, 'attach');
+assert.equal(batch.body.execution.lane, 'orchestrator');
+assert.equal(ownerProof(secret, batch.body), batchVector.proof);
+assert.equal(proofMatches(secret, batch.body), true);
+assert.notEqual(ownerProof(secret, batch.body), vector.proof);
+for (const field of Object.keys(batch.body.execution).filter((field) => field !== 'lane')) {
+  const value = batch.body.execution[field];
+  assert.notEqual(ownerProof(secret, { ...batch.body, execution: { ...batch.body.execution, [field]: typeof value === 'number' ? value + 1 : `${value}x` } }), batchVector.proof, field);
+}
+assert.throws(() => parsePayload(Buffer.from(fixture('attach-orchestrator').toString().replace('"lane":"orchestrator"', '"lane":"task"'))));
+assert.throws(() => parsePayload(Buffer.from(fixture('attach-orchestrator').toString().replace('"lane":"orchestrator",', '"lane":"orchestrator","task_id":"t",'))));
+console.log('An orchestrator batch has its own execution identity and proof, shared with Rust');

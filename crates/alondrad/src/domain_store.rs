@@ -802,6 +802,62 @@ fn epoch_of(conn: &Connection) -> Result<alondra_foundation::DataEpoch> {
     let epoch: String = conn.query_row("SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |r| r.get(0))?;
     Ok(alondra_foundation::DataEpoch(epoch))
 }
+enum Claimed {
+    Absent,
+    Discarded,
+    Claimed(DeliveryClaim),
+}
+impl Claimed {
+    fn changed(&self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+    fn claim(self) -> Option<DeliveryClaim> {
+        match self {
+            Self::Claimed(claim) => Some(claim),
+            Self::Absent | Self::Discarded => None,
+        }
+    }
+}
+fn claim_in(tx: &rusqlite::Transaction<'_>, id: i64, expire_orchestrator: bool, test_now: Option<i64>) -> Result<Claimed> {
+    let row = tx.query_row(
+        "SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,
+            m.agent_id,m.task_id,m.interaction_id,m.message,o.state,a.at,m.recipient_kind,
+            u.message_id IS NOT NULL
+         FROM domain_messages m JOIN command_audit a ON a.revision=m.revision
+         JOIN domain_outbox o ON o.message_id=m.id
+         LEFT JOIN domain_message_user_targets u ON u.message_id=m.id
+         WHERE m.id=?1 AND o.state IN('pending','retryable')",
+        [id],
+        |r| Ok((OutboxMessage {
+            id: r.get(0)?, recipient_kind: r.get(1)?, agent_id: r.get(2)?,
+            task_id: r.get(3)?, interaction_id: r.get(4)?, message: r.get(5)?, state: r.get(6)?,
+        }, r.get::<_, i64>(7)?, r.get::<_, String>(8)?, r.get::<_, bool>(9)?)),
+    ).optional()?;
+    let Some((message, created_at, actual_recipient, user_target)) = row else {
+        return Ok(Claimed::Absent);
+    };
+    if expire_orchestrator && actual_recipient == "orchestrator" && !user_target {
+        let now = test_now.unwrap_or_else(alondra_core::now_millis);
+        if created_at < now.saturating_sub(ORCHESTRATOR_MESSAGE_TTL_MS) {
+            tx.execute(
+                "UPDATE domain_outbox SET state='discarded' WHERE message_id=?1 AND state IN('pending','retryable')",
+                [id],
+            )?;
+            return Ok(Claimed::Discarded);
+        }
+    }
+    tx.execute("INSERT INTO delivery_attempts(message_id,state,version,reason) VALUES(?1,'dispatching',1,NULL)",[id])?;
+    let attempt_id = tx.last_insert_rowid();
+    tx.execute(
+        "UPDATE domain_outbox SET state='dispatching' WHERE message_id=?1",
+        [id],
+    )?;
+    Ok(Claimed::Claimed(DeliveryClaim {
+        attempt_id,
+        version: 1,
+        message,
+    }))
+}
 fn check_schema(conn: &Connection) -> Result<()> {
     ensure!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? == SCHEMA_VERSION
@@ -829,6 +885,47 @@ pub(crate) struct OutboxMessage {
     pub message: String,
     pub state: String,
 }
+/// The host the domain names an orchestrator batch's SDK run by: never a task's.
+const BATCH_HOST: &str = "alondra-sdk-orchestrator";
+
+/// The owner of one orchestrator batch's SDK host. Only the claim of the batch's messages issues
+/// it (`DomainStore::claim_orchestrator_batch`), in the same transaction; it is never cloned.
+#[derive(Debug)]
+pub(crate) struct BatchOwner {
+    run: String,
+    session: String,
+    epoch: alondra_core::domain::DataEpoch,
+}
+
+impl BatchOwner {
+    fn issued(run: &str, session: &str, epoch: alondra_core::domain::DataEpoch) -> Self {
+        Self { run: run.into(), session: session.into(), epoch }
+    }
+    pub(crate) fn run(&self) -> &str {
+        &self.run
+    }
+}
+
+impl alondra_provider_claude::HostOwner for BatchOwner {
+    fn owner_generation(&self) -> u64 {
+        1
+    }
+    fn epoch(&self) -> &alondra_core::domain::DataEpoch {
+        &self.epoch
+    }
+    fn host(&self) -> &str {
+        BATCH_HOST
+    }
+    fn wire_execution(&self) -> alondra_provider_claude::Execution {
+        alondra_provider_claude::Execution::Orchestrator(alondra_provider_claude::OrchestratorExecution {
+            lane: alondra_provider_claude::OrchestratorLane::Orchestrator,
+            run_id: self.run.clone(),
+            conversation_id: self.session.clone(),
+            generation: 1,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct DeliveryClaim {
     pub attempt_id: i64,
@@ -1322,17 +1419,9 @@ impl DomainStore {
     pub(crate) fn claim_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, false, None)
     }
+    #[cfg(test)]
     pub(crate) fn claim_orchestrator_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, true, None)
-    }
-    /// The orchestrator session a claimed message was handed to.
-    pub(crate) fn record_orchestrator_delivery(&mut self, attempt_id: i64, session: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO orchestrator_deliveries(attempt_id,session_id) VALUES(?1,?2)",
-            params![attempt_id, session],
-        )?;
-        self.note_side_write();
-        Ok(())
     }
     pub(crate) fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> {
         Ok(self.conn.query_row("SELECT session_id FROM orchestrator_deliveries WHERE attempt_id=?1", [attempt_id], |r| r.get(0)).optional()?)
@@ -1355,48 +1444,45 @@ impl DomainStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
-        let row = tx.query_row(
-            "SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,
-                m.agent_id,m.task_id,m.interaction_id,m.message,o.state,a.at,m.recipient_kind,
-                u.message_id IS NOT NULL
-             FROM domain_messages m JOIN command_audit a ON a.revision=m.revision
-             JOIN domain_outbox o ON o.message_id=m.id
-             LEFT JOIN domain_message_user_targets u ON u.message_id=m.id
-             WHERE m.id=?1 AND o.state IN('pending','retryable')",
-            [id],
-            |r| Ok((OutboxMessage {
-                id: r.get(0)?, recipient_kind: r.get(1)?, agent_id: r.get(2)?,
-                task_id: r.get(3)?, interaction_id: r.get(4)?, message: r.get(5)?, state: r.get(6)?,
-            }, r.get::<_, i64>(7)?, r.get::<_, String>(8)?, r.get::<_, bool>(9)?)),
-        ).optional()?;
-        let Some((message, created_at, actual_recipient, user_target)) = row else {
-            return Ok(None);
-        };
-        if expire_orchestrator && actual_recipient == "orchestrator" && !user_target {
-            let now = test_now.unwrap_or_else(alondra_core::now_millis);
-            if created_at < now.saturating_sub(ORCHESTRATOR_MESSAGE_TTL_MS) {
+        let claimed = claim_in(&tx, id, expire_orchestrator, test_now)?;
+        tx.commit()?;
+        if claimed.changed() {
+            self.note_side_write();
+        }
+        Ok(claimed.claim())
+    }
+    /// Claims the messages of one orchestrator batch in one transaction, with the session they are
+    /// handed to, and issues the owner of that batch's run: nothing else issues one.
+    pub(crate) fn claim_orchestrator_batch(
+        &mut self,
+        ids: &[i64],
+        run: &str,
+        session: &str,
+        epoch: alondra_core::domain::DataEpoch,
+    ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_schema(&tx)?;
+        let mut claims = vec![];
+        let mut changed = false;
+        for id in ids {
+            let claimed = claim_in(&tx, *id, true, None)?;
+            changed |= claimed.changed();
+            if let Some(claim) = claimed.claim() {
                 tx.execute(
-                    "UPDATE domain_outbox SET state='discarded' WHERE message_id=?1 AND state IN('pending','retryable')",
-                    [id],
+                    "INSERT OR REPLACE INTO orchestrator_deliveries(attempt_id,session_id) VALUES(?1,?2)",
+                    params![claim.attempt_id, session],
                 )?;
-                tx.commit()?;
-                self.note_side_write();
-                return Ok(None);
+                claims.push(claim);
             }
         }
-        tx.execute("INSERT INTO delivery_attempts(message_id,state,version,reason) VALUES(?1,'dispatching',1,NULL)",[id])?;
-        let attempt_id = tx.last_insert_rowid();
-        tx.execute(
-            "UPDATE domain_outbox SET state='dispatching' WHERE message_id=?1",
-            [id],
-        )?;
+        let owner = BatchOwner::issued(run, session, epoch);
         tx.commit()?;
-        self.note_side_write();
-        Ok(Some(DeliveryClaim {
-            attempt_id,
-            version: 1,
-            message,
-        }))
+        if changed {
+            self.note_side_write();
+        }
+        Ok((claims, owner))
     }
     pub(crate) fn finish_message(
         &mut self,

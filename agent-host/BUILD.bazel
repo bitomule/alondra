@@ -93,12 +93,12 @@ js_run_binary(
     outs = ["persistent-fixture.cjs", "persistent-fixture.meta.json"],
     args = ["$(location persistent-fixture-main.ts)", "$(location persistent-fixture.cjs)", "$(location persistent-fixture.meta.json)"],
 )
-exports_files(["persistent-fake-claude.py", "descendant-fake-claude.py"])
+exports_files(["persistent-fake-claude.py", "descendant-fake-claude.py", "orchestrator-fake-claude.py"])
 js_test(
     name = "ownership_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "ownership.test.mjs",
-    data = [":host_lib", "//crates/agent-protocol:fixtures/owner-proof.json", "//crates/agent-protocol:fixtures/attach.json", "//crates/agent-protocol:fixtures/host-proof.json", "//crates/agent-protocol:fixtures/attached.json"],
+    data = [":host_lib", "//crates/agent-protocol:fixtures/owner-proof.json", "//crates/agent-protocol:fixtures/attach.json", "//crates/agent-protocol:fixtures/host-proof.json", "//crates/agent-protocol:fixtures/attached.json", "//crates/agent-protocol:fixtures/owner-proof-orchestrator.json", "//crates/agent-protocol:fixtures/attach-orchestrator.json"],
 )
 js_test(
     name = "journal_test",
@@ -146,5 +146,10 @@ js_test(
 js_test(
     name = "sdk_retry_test",
     entry_point = "session-retry.test.mjs",
+    data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
+    name = "sdk_orchestrator_test",
+    entry_point = "session-orchestrator.test.mjs",
     data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )

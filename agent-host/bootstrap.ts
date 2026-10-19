@@ -12,7 +12,17 @@ const shape = z.strictObject({
   fence: z.unknown(), execution: z.unknown(),
   manifest: z.strictObject({ mode: z.literal('node_bundle'), artifact_path: absolute, host_release: z.string().min(1).max(256), host_sha256: digest, executable_sha256: digest, sdk_version: z.literal(SDK_VERSION) }),
   native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()) }),
+  orchestrator: z.strictObject({
+    resume: z.boolean(),
+    model: z.string().min(1).max(64),
+    tools: z.array(z.string().min(1).max(128)).max(16),
+    disallowed_tools: z.array(z.string().min(1).max(128)).max(16),
+    mcp_servers: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), z.strictObject({ command: absolute, args: z.array(z.string().max(256)).max(16) })),
+    plugins: z.array(absolute).max(8),
+    settings: z.record(z.string(), z.json()),
+  }).optional(),
 });
+export type OrchestratorProfile = NonNullable<z.infer<typeof shape>['orchestrator']>;
 const verified = Symbol('verified bootstrap');
 const retained = new WeakMap<object, { fd: number; dev: number; ino: number }>();
 type Identity = Extract<Frame['body'], { type: 'attached' }>;

@@ -93,8 +93,8 @@ fn claim_mac(secret: &[u8; 32], attach: &Attach, domain: &str) -> Result<Hmac<Sh
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret).map_err(|_| Error::Invalid("owner secret"))?;
     let owner_generation = attach.owner_generation.to_string();
-    let generation = attach.execution.generation.to_string();
-    for segment in [
+    let execution = attach.execution.segments();
+    let segments = [
         domain,
         &attach.nonce,
         &attach.host_instance_id,
@@ -103,16 +103,16 @@ fn claim_mac(secret: &[u8; 32], attach: &Attach, domain: &str) -> Result<Hmac<Sh
         &attach.fence.account_id,
         &attach.fence.data_epoch.0,
         &attach.fence.host_id,
-        &attach.execution.task_id.0,
-        &attach.execution.agent_id.0,
-        &attach.execution.conversation_id,
-        &attach.execution.process_instance_id,
-        &generation,
-        &attach.host_release,
+    ]
+    .into_iter()
+    .chain(execution.iter().map(String::as_str))
+    .chain([
+        attach.host_release.as_str(),
         &attach.host_sha256,
         &attach.executable_sha256,
         &attach.sdk_version,
-    ] {
+    ]);
+    for segment in segments {
         mac.update(&(segment.len() as u32).to_be_bytes());
         mac.update(segment.as_bytes());
     }

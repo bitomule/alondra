@@ -36,7 +36,7 @@ impl Ownership {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct ProcessOwner {
+pub(crate) struct ProcessOwner {
     daemon_pid: u32,
     daemon_started: u64,
     child_pid: u32,
@@ -72,7 +72,7 @@ fn identity(pid: u32, expected_run: Option<&str>) -> Option<u64> {
 }
 
 impl ProcessOwner {
-    fn record(directory: &Path, child_pid: u32, run_id: &str) -> Result<()> {
+    pub(crate) fn record(directory: &Path, child_pid: u32, run_id: &str) -> Result<()> {
         let daemon_pid = std::process::id();
         let owner = Self {
             daemon_pid,
@@ -90,6 +90,29 @@ impl ProcessOwner {
         std::fs::File::open(directory)?.sync_all()?;
         Ok(())
     }
+}
+
+/// At recovery, under this daemon's ownership: a process a previous daemon recorded for the run it
+/// left unfinished is ended if it still runs, and its record goes. One the lock already ended, or
+/// one that is not the recorded process any more, is left alone.
+pub fn end_recorded(directory: &Path, active_run: &str) -> Result<()> {
+    let path = directory.join("owner.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let owner: ProcessOwner = serde_json::from_slice(&bytes)?;
+    if owner.run_id == active_run
+        && identity(owner.daemon_pid, None) != Some(owner.daemon_started)
+        && identity(owner.child_pid, Some(&owner.run_id)) == Some(owner.child_started)
+        && unsafe { libc::getpgid(owner.child_pid as i32) } == owner.child_pid as i32
+        && unsafe { libc::kill(-(owner.child_pid as i32), libc::SIGKILL) } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    std::fs::remove_file(&path)?;
+    Ok(())
 }
 
 /// Called only while the inherited execution lock is held by a previous process. A PID
@@ -116,9 +139,31 @@ pub fn terminate_orphan(directory: &Path, active_run: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// How a batch's turn ended, from what Claude reported and how its process exited; never from a
+/// clock. `domain_orchestrator::tick` carries each one out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchEnd {
+    /// The turn finished with its result: the batch was handed over.
+    Handled,
+    /// Nothing the run did can have changed anything: the batch is offered again on its own.
+    NotStarted { why: String },
+    /// Claude did not finish and may have changed something: the user decides.
+    Interrupted { calls: Vec<String>, why: String },
+    /// One of Alondra's own tools was refused to Claude, after it may have changed something.
+    Denied { calls: Vec<String>, why: String },
+    /// Usage ran out before Claude answered: the batch waits for the reset.
+    Limited { reset: Option<i64> },
+    /// The resumed conversation is gone: the next run starts a new one.
+    SessionMissing,
+    /// The user stopped the run; `effects` are the calls that changed something, if any could have.
+    Cancelled { effects: Option<Vec<String>> },
+}
+
 #[derive(Default, Debug)]
 pub struct Stream {
     restricted: bool,
+    /// The id the SDK gives the batch's one prompt: a result that names another is not this batch's.
+    input: Option<String>,
     pub initialized: bool,
     pub result: bool,
     pub success: bool,
@@ -140,6 +185,48 @@ pub struct Stream {
     pub alondra_calls: Vec<String>,
 }
 impl Stream {
+    /// The parser of a batch run through the Agent SDK host, whose prompt the SDK calls `input`.
+    pub fn for_input(input: &str) -> Self {
+        Self { restricted: true, input: Some(input.to_owned()), ..Self::default() }
+    }
+    /// Whether usage ran out, with the reset Claude reported if it did.
+    pub fn limit(&self, diagnostic: &str) -> Option<Option<i64>> {
+        if self.limited {
+            return Some(self.limit_reset);
+        }
+        let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, alondra_core::now_millis()));
+        self.error.as_deref().and_then(said).or_else(|| said(diagnostic))
+    }
+    fn session_missing(&self, exit_ok: bool, diagnostic: &str, session: &str) -> bool {
+        !self.initialized && !self.acted && !self.compacted && self.missing_session && !exit_ok
+            && (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))
+    }
+    /// How the batch's turn ended.
+    pub fn end(&self, exit_ok: bool, diagnostic: &str, session: &str, resumed: bool, cancelled: bool) -> BatchEnd {
+        let effects = self.may_have_effects().then(|| self.alondra_calls.clone());
+        if cancelled {
+            return BatchEnd::Cancelled { effects };
+        }
+        if resumed && self.session_missing(exit_ok, diagnostic, session) {
+            return BatchEnd::SessionMissing;
+        }
+        if exit_ok && self.success && self.result && self.initialized && self.error.is_none() {
+            return BatchEnd::Handled;
+        }
+        if let Some(reset) = self.limit(diagnostic) && !self.worked {
+            return BatchEnd::Limited { reset };
+        }
+        let why = self.error.clone().unwrap_or_else(|| if diagnostic.trim().is_empty() {
+            "Claude exited without a successful terminal result".into()
+        } else {
+            diagnostic.to_owned()
+        });
+        match effects {
+            None => BatchEnd::NotStarted { why },
+            Some(calls) if self.denied => BatchEnd::Denied { calls, why },
+            Some(calls) => BatchEnd::Interrupted { calls, why },
+        }
+    }
     /// Whether the run may have changed something: it called a tool that does, or Claude was
     /// answering when the run ended without its result, so what came next is unknown.
     pub fn may_have_effects(&self) -> bool {
@@ -171,7 +258,10 @@ impl Stream {
                         }))
                 });
                 if !available {
-                    bail!("required Alondra MCP tools are unavailable");
+                    let servers: Vec<String> = v["mcp_servers"].as_array().into_iter().flatten()
+                        .map(|server| format!("{} {}", server["name"].as_str().unwrap_or("?"), server["status"].as_str().unwrap_or("?")))
+                        .collect();
+                    bail!("required Alondra MCP tools are unavailable (MCP servers: {})", if servers.is_empty() { "none".into() } else { servers.join(", ") });
                 }
                 let servers = v["mcp_servers"].as_array().expect("checked above");
                 if self.restricted && servers.iter().any(|server| {
@@ -227,6 +317,12 @@ impl Stream {
             (Some("result"), _) => {
                 if self.result { bail!("multiple Claude terminal results"); }
                 if v["session_id"] != session { bail!("Claude result omitted its session ID"); }
+                if let Some(input) = &self.input
+                    && !v["user_message_uuid"].as_str().is_some_and(|id| id.eq_ignore_ascii_case(input))
+                    && !(v["subtype"] == "error_during_execution" && v["num_turns"] == 0)
+                {
+                    bail!("Claude reported the result of another input");
+                }
                 self.result = true;
                 self.missing_session = v["subtype"] == "error_during_execution" && v["is_error"] == true
                     && v["num_turns"] == 0 && v["duration_api_ms"] == 0
@@ -255,14 +351,14 @@ impl Stream {
     }
 }
 
-const RESTRICTED_TOOLS: &str = "Skill,Read,Glob,Grep";
+pub(crate) const RESTRICTED_TOOLS: &str = "Skill,Read,Glob,Grep";
 
 fn alondra_tool(name: &str) -> bool {
     name.starts_with("mcp__alondra-orchestrator__") || name.starts_with("mcp__plugin_alondra-orchestrator_alondra-orchestrator__")
 }
 
 /// The projects root is readable and never writable: nodes do the work in it.
-fn read_only(root: &Path) -> Value {
+pub(crate) fn read_only(root: &Path) -> Value {
     let pattern = format!("/{}/**", root.display());
     serde_json::json!({
         "additionalDirectories": [root],
@@ -271,7 +367,7 @@ fn read_only(root: &Path) -> Value {
     })
 }
 
-fn bounded(mut text: String) -> String {
+pub(crate) fn bounded(mut text: String) -> String {
     if text.len() > MAX_DIAGNOSTIC {
         let mut at = MAX_DIAGNOSTIC;
         while !text.is_char_boundary(at) { at -= 1; }
@@ -473,14 +569,94 @@ fn prompt_input(cwd: &Path, execution: &str, prompt: &str) -> std::io::Result<st
     written.map(|()| file)
 }
 
-pub fn missing_session(output: &Output, session: &str) -> bool {
-    !output.stream.initialized && !output.stream.acted && !output.stream.compacted && output.stream.missing_session && !output.exit_ok
-        && output.diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}"))
+impl Output {
+    pub fn end(&self, session: &str, resumed: bool, cancelled: bool) -> BatchEnd {
+        self.stream.end(self.exit_ok, &self.diagnostic, session, resumed, cancelled)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","model":"opus","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}"#;
+    const WORKED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"text","text":"On it"}],"usage":{"input_tokens":2}}}"#;
+    const CREATED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"tool_use","id":"t","name":"mcp__alondra-orchestrator__create_task","input":{}}],"usage":{"input_tokens":2}}}"#;
+    const DONE: &str = r#"{"type":"result","session_id":"s","subtype":"success","is_error":false,"permission_denials":[]}"#;
+
+    fn ended(input: Option<&str>, lines: &[&str], exit_ok: bool, diagnostic: &str, resumed: bool, cancelled: bool) -> BatchEnd {
+        let mut stream = match input {
+            Some(input) => Stream::for_input(input),
+            None => Stream { restricted: true, ..Stream::default() },
+        };
+        for line in lines {
+            if let Err(error) = stream.accept(line.as_bytes(), "s") {
+                stream.error = Some(error.to_string());
+                break;
+            }
+        }
+        stream.end(exit_ok, diagnostic, "s", resumed, cancelled)
+    }
+
+    #[test]
+    fn each_way_a_batch_run_ends_is_one_closed_outcome() {
+        let denied = DONE.replace(r#""permission_denials":[]"#, r#""permission_denials":[{"tool_name":"mcp__alondra-orchestrator__create_task"}]"#);
+        let limited = r#"{"type":"rate_limit_event","session_id":"s","rate_limit_info":{"status":"rejected","resetsAt":1900000000}}"#;
+        let limited_result = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"You have hit your session limit"}"#;
+        let missing = r#"{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"num_turns":0,"duration_api_ms":0,"errors":["No conversation found with session ID: s"]}"#;
+        let created = vec!["create_task".to_owned()];
+        assert_eq!(ended(None, &[INIT, WORKED, DONE], true, "", false, false), BatchEnd::Handled);
+        assert!(matches!(ended(None, &[], false, "cannot launch Claude", false, false), BatchEnd::NotStarted { why } if why == "cannot launch Claude"));
+        assert!(matches!(ended(None, &[INIT, WORKED], false, "", false, false), BatchEnd::Interrupted { calls, .. } if calls.is_empty()),
+            "Claude was answering when it ended: what came next is unknown");
+        assert!(matches!(ended(None, &[INIT, CREATED], false, "", false, false), BatchEnd::Interrupted { calls, .. } if calls == created));
+        assert!(matches!(ended(None, &[INIT, CREATED, &denied], true, "", false, false), BatchEnd::Denied { calls, .. } if calls == created));
+        assert_eq!(ended(None, &[INIT, limited, limited_result], false, "", false, false), BatchEnd::Limited { reset: Some(1_900_000_000_000) });
+        assert_eq!(ended(None, &[missing], false, "No conversation found with session ID: s", true, false), BatchEnd::SessionMissing);
+        assert!(matches!(ended(None, &[missing], false, "", true, false), BatchEnd::NotStarted { .. }),
+            "claude -p says it on stderr too, or it is not the lost conversation");
+        assert_eq!(ended(Some("00000000-0000-4000-8000-000000000001"), &[missing], false, "", true, false), BatchEnd::SessionMissing,
+            "through the SDK the result is the fact");
+        assert_eq!(ended(None, &[INIT, CREATED], false, "", false, true), BatchEnd::Cancelled { effects: Some(created.clone()) });
+        assert_eq!(ended(None, &[], false, "", false, true), BatchEnd::Cancelled { effects: None });
+    }
+
+    #[test]
+    fn a_result_names_the_batch_it_ends() {
+        let input = "00000000-0000-4000-8000-000000000001";
+        let bound = DONE.replace(r#""permission_denials":[]"#, &format!(r#""permission_denials":[],"user_message_uuid":"{input}""#));
+        let other = DONE.replace(r#""permission_denials":[]"#, r#""permission_denials":[],"user_message_uuid":"00000000-0000-4000-8000-0000000000ff""#);
+        assert_eq!(ended(Some(input), &[INIT, WORKED, &bound], true, "", false, false), BatchEnd::Handled);
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, &other], true, "", false, false),
+            BatchEnd::Interrupted { why, .. } if why.contains("another input")));
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, DONE], true, "", false, false), BatchEnd::Interrupted { .. }),
+            "a result that names no input is not this batch's either");
+    }
+
+    #[test]
+    fn a_process_a_dead_daemon_left_for_its_unfinished_run_is_ended_at_recovery() {
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut gone = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let daemon = gone.id();
+        gone.wait().unwrap();
+        use std::os::unix::process::CommandExt;
+        let mut left = std::process::Command::new("/bin/cat").stdin(Stdio::piped()).process_group(0).spawn().unwrap();
+        let (child_pid, child_started) = (left.id(), identity(left.id(), None).unwrap());
+        let record = |run: &str| std::fs::write(directory.join("owner.json"), serde_json::to_vec(&ProcessOwner {
+            daemon_pid: daemon, daemon_started: 1, child_pid, child_started, run_id: run.into(),
+        }).unwrap()).unwrap();
+        record("another-run");
+        end_recorded(&directory, "unfinished").unwrap();
+        assert!(left.try_wait().unwrap().is_none(), "a process recorded for another run is left alone");
+        assert!(!directory.join("owner.json").exists());
+        record("unfinished");
+        end_recorded(&directory, "unfinished").unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(left.wait().unwrap().signal(), Some(libc::SIGKILL));
+        assert!(!directory.join("owner.json").exists());
+        end_recorded(&directory, "unfinished").unwrap();
+    }
     #[test]
     fn latest_main_call_not_aggregate_or_child_usage() {
         let mut s = Stream::default();

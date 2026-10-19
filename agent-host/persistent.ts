@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
-import { commandDigest, PROTOCOL_VERSION, type Frame } from './frame.js';
+import { commandDigest, executionSegments, PROTOCOL_VERSION, type Frame } from './frame.js';
 import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
@@ -53,7 +53,8 @@ export class PersistentHost {
   private identity() { return { fence: this.config.fence, execution: this.config.execution, host_instance_id: this.config.host_instance_id }; }
   private binding(body: { fence: Bootstrap['fence']; execution: Bootstrap['execution'] }): void {
     for (const key of ['profile_id', 'account_id', 'data_epoch', 'host_id'] as const) if (body.fence[key] !== this.config.fence[key]) throw new Error('Host fence mismatch');
-    for (const key of ['task_id', 'agent_id', 'conversation_id', 'process_instance_id', 'generation'] as const) if (body.execution[key] !== this.config.execution[key]) throw new Error('Host execution mismatch');
+    const expected = executionSegments(this.config.execution); const actual = executionSegments(body.execution);
+    if (expected.length !== actual.length || expected.some((segment, at) => segment !== actual[at])) throw new Error('Host execution mismatch');
   }
   private current(lane: Lane): void {
     assertBootstrap(this.config);
@@ -119,6 +120,9 @@ export class PersistentHost {
     if (this.journal.recovering || this.unavailable) {
       this.receipt(record, { status: 'rejected', code: 'host_reconciliation_required', message: 'Prior native work and effects need positive reconciliation' }); return;
     }
+    if (this.config.orchestrator && command.action.type !== 'start' && command.action.type !== 'interrupt' && command.action.type !== 'close') {
+      this.receipt(record, { status: 'rejected', code: 'single_turn', message: 'An orchestrator batch is one turn: a later input waits for the next batch' }); return;
+    }
     await this.hooks.beforeEffect?.();
     this.current(lane);
     try {
@@ -126,7 +130,7 @@ export class PersistentHost {
         case 'start': {
           if (this.session || command.action.cwd !== this.config.native.cwd) throw new Error('Owned session configuration refused');
           this.current(lane);
-          this.session = new Session({ ...this.config.native, sessionId: this.config.native.session_id,
+          this.session = new Session({ ...this.config.native, sessionId: this.config.native.session_id, orchestrator: this.config.orchestrator,
             beforeSpawn: () => { this.hooks.beforeSpawn?.(); this.current(lane); },
             observe: (observation) => this.observe(observation),
           });

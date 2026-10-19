@@ -5,6 +5,7 @@ use alondra_agent_protocol::{
 };
 use alondra_agent_runtime::owned_host::OwnedHost;
 use alondra_provider_contract::{AdapterError, Handoff, PreparedCommand};
+use alondra_foundation::DataEpoch;
 use alondra_store::OwnerGrant;
 use std::collections::VecDeque;
 use std::io::{Cursor, Read, Write};
@@ -13,6 +14,36 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const MAX_QUEUED_EVENTS: usize = 64;
+
+/// Who may command an owned host: what its fence and execution name, and the owner's generation.
+/// The store's `OwnerGrant` owns a task's host; an orchestrator batch's claim owns its own.
+pub trait HostOwner {
+    fn owner_generation(&self) -> u64;
+    fn epoch(&self) -> &DataEpoch;
+    fn host(&self) -> &str;
+    fn wire_execution(&self) -> Execution;
+}
+impl HostOwner for OwnerGrant {
+    fn owner_generation(&self) -> u64 {
+        self.generation()
+    }
+    fn epoch(&self) -> &DataEpoch {
+        self.scope().epoch()
+    }
+    fn host(&self) -> &str {
+        self.execution().host().as_str()
+    }
+    fn wire_execution(&self) -> Execution {
+        let stamp = self.execution();
+        Execution::Task(alondra_agent_protocol::TaskExecution {
+            task_id: stamp.task().clone(),
+            agent_id: stamp.node().clone(),
+            conversation_id: stamp.conversation().as_str().into(),
+            process_instance_id: stamp.instance().as_str().into(),
+            generation: stamp.generation(),
+        })
+    }
+}
 
 pub(super) struct ControlIdentity {
     pub profile_id: String,
@@ -27,6 +58,7 @@ pub(super) struct Connection {
     reader: FramedReader<DeadlineReader>,
     read_deadline: Arc<Mutex<Instant>>,
     writer: UnixStream,
+    probe: UnixStream,
     pending_attach: Attach,
     commands: CommandRegistry,
     queued: VecDeque<ReceivedFrame>,
@@ -35,8 +67,8 @@ pub(super) struct Connection {
     failed: bool,
 }
 impl Connection {
-    pub fn attach(
-        host: &mut OwnedHost,
+    pub fn attach<O: HostOwner>(
+        host: &mut OwnedHost<O>,
         control: &ControlIdentity,
         committed_cursor: u64,
         deadline: Instant,
@@ -50,6 +82,7 @@ impl Connection {
         execution.validate().map_err(protocol)?;
         let stream = host.wait_for_socket(deadline).map_err(disconnected)?;
         let mut writer = stream.try_clone().map_err(disconnected)?;
+        let probe = stream.try_clone().map_err(disconnected)?;
         let read_deadline = Arc::new(Mutex::new(deadline));
         let mut reader = FramedReader::new(DeadlineReader {
             stream,
@@ -83,7 +116,7 @@ impl Connection {
             execution: execution.clone(),
             host_instance_id: control.host_instance_id.clone(),
             nonce: challenge.nonce,
-            owner_generation: host.owner().generation(),
+            owner_generation: host.owner().owner_generation(),
             host_release: control.host_release.clone(),
             host_sha256: host.identity().artifact().artifact_sha256().into(),
             executable_sha256: host.identity().artifact().executable_sha256().into(),
@@ -105,6 +138,7 @@ impl Connection {
             reader,
             read_deadline,
             writer,
+            probe,
             pending_attach,
             commands: CommandRegistry::new(fence, execution).map_err(protocol)?,
             queued: VecDeque::new(),
@@ -121,7 +155,7 @@ impl Connection {
     /// persisted exact command bytes and rechecked its real DispatchAttempt.
     pub fn submit(
         &mut self,
-        owner: &OwnerGrant,
+        owner: &impl HostOwner,
         prepared: &PreparedCommand,
         deadline: Instant,
     ) -> Result<Handoff, AdapterError> {
@@ -182,7 +216,7 @@ impl Connection {
     }
     pub fn prepare(
         &self,
-        owner: &OwnerGrant,
+        owner: &impl HostOwner,
         command: Command,
     ) -> Result<PreparedCommand, AdapterError> {
         self.check_owner(owner)?;
@@ -195,7 +229,7 @@ impl Connection {
     }
     pub fn next(
         &mut self,
-        owner: &OwnerGrant,
+        owner: &impl HostOwner,
         deadline: Instant,
     ) -> Result<ReceivedFrame, AdapterError> {
         self.check_owner(owner)?;
@@ -254,7 +288,7 @@ impl Connection {
     /// Only WorkerController invokes this after evidence, checkpoint and facts commit.
     pub fn acknowledge(
         &mut self,
-        owner: &OwnerGrant,
+        owner: &impl HostOwner,
         cursor: u64,
         deadline: Instant,
     ) -> Result<(), AdapterError> {
@@ -281,14 +315,25 @@ impl Connection {
         }
         result
     }
-    fn check_owner(&self, owner: &OwnerGrant) -> Result<(), AdapterError> {
+    /// Whether a host event is waiting to be read, without consuming it: one already queued, or
+    /// bytes on the socket within `timeout`. A frame is never split by this wait.
+    pub fn readable(&self, timeout: std::time::Duration) -> Result<bool, AdapterError> {
+        if !self.queued.is_empty() {
+            return Ok(true);
+        }
         if self.failed {
             return Err(AdapterError::Disconnected);
         }
-        if owner.generation() != self.pending_attach.owner_generation
-            || owner.scope().epoch() != &self.pending_attach.fence.data_epoch
+        alondra_agent_runtime::owned_host::readable(&self.probe, timeout).map_err(disconnected)
+    }
+    fn check_owner(&self, owner: &impl HostOwner) -> Result<(), AdapterError> {
+        if self.failed {
+            return Err(AdapterError::Disconnected);
+        }
+        if owner.owner_generation() != self.pending_attach.owner_generation
+            || owner.epoch() != &self.pending_attach.fence.data_epoch
             || execution(owner) != self.pending_attach.execution
-            || owner.execution().host().as_str() != self.pending_attach.fence.host_id
+            || owner.host() != self.pending_attach.fence.host_id
         {
             return Err(invalid("stale host owner"));
         }
@@ -383,23 +428,16 @@ fn invalid(message: &str) -> AdapterError {
 fn protocol(error: alondra_agent_protocol::Error) -> AdapterError {
     AdapterError::Protocol(error.to_string())
 }
-pub(super) fn fence(owner: &OwnerGrant, control: &ControlIdentity) -> Fence {
+pub(super) fn fence(owner: &impl HostOwner, control: &ControlIdentity) -> Fence {
     Fence {
         profile_id: control.profile_id.clone(),
         account_id: control.account_id.clone(),
-        data_epoch: owner.scope().epoch().clone(),
-        host_id: owner.execution().host().as_str().into(),
+        data_epoch: owner.epoch().clone(),
+        host_id: owner.host().into(),
     }
 }
-pub(super) fn execution(owner: &OwnerGrant) -> Execution {
-    let stamp = owner.execution();
-    Execution {
-        task_id: stamp.task().clone(),
-        agent_id: stamp.node().clone(),
-        conversation_id: stamp.conversation().as_str().into(),
-        process_instance_id: stamp.instance().as_str().into(),
-        generation: stamp.generation(),
-    }
+pub(super) fn execution(owner: &impl HostOwner) -> Execution {
+    owner.wire_execution()
 }
 
 trait TimeoutReader {

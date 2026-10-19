@@ -340,10 +340,19 @@ fn mutated_commands() -> Vec<Command> {
     macro_rules! change {
         ($field:ident, $value:expr) => {{
             let mut c = command();
-            c.execution.$field = $value;
+            let Execution::Task(execution) = &mut c.execution else { panic!("a task's command") };
+            execution.$field = $value;
             cases.push(c);
         }};
     }
+    let mut batch = command();
+    batch.execution = Execution::Orchestrator(OrchestratorExecution {
+        lane: OrchestratorLane::Orchestrator,
+        run_id: "run".into(),
+        conversation_id: "conversation".into(),
+        generation: 1,
+    });
+    cases.push(batch);
     change!(task_id, "other".into());
     change!(agent_id, "other".into());
     change!(conversation_id, "other".into());
@@ -574,10 +583,12 @@ fn every_inspected_sdk_error_code_and_opaque_details_are_preserved() {
 #[test]
 fn empty_ids_unsafe_numbers_and_nonobject_decisions_are_rejected() {
     let mut empty = command();
-    empty.execution.agent_id.0.clear();
+    let Execution::Task(execution) = &mut empty.execution else { panic!("a task's command") };
+    execution.agent_id.0.clear();
     assert!(encode(&Frame::new(Body::Command(empty))).is_err());
     let mut unsafe_number = command();
-    unsafe_number.execution.generation = MAX_SAFE_INTEGER + 1;
+    let Execution::Task(execution) = &mut unsafe_number.execution else { panic!("a task's command") };
+    execution.generation = MAX_SAFE_INTEGER + 1;
     assert!(encode(&Frame::new(Body::Command(unsafe_number))).is_err());
     let mut zero = event();
     zero.cursor = 0;
@@ -948,6 +959,33 @@ fn ownership_wire_golden_frames_roundtrip_without_changing_commands() {
         command_digest(&command()).unwrap(),
         "4cb067672d9a45e3f61fbdd00612a2b8cb400441f7ea6482c028513ce8a45a2b"
     );
+}
+
+const ATTACH_ORCHESTRATOR: &[u8] = include_bytes!("../fixtures/attach-orchestrator.json");
+const OWNER_PROOF_ORCHESTRATOR: &str = include_str!("../fixtures/owner-proof-orchestrator.json");
+
+#[test]
+fn an_orchestrator_batch_is_its_own_execution_with_its_own_proof() {
+    let expected = frame(ATTACH_ORCHESTRATOR);
+    expected.validate().unwrap();
+    assert_eq!(&encode(&expected).unwrap()[4..], ATTACH_ORCHESTRATOR, "the batch's wire bytes are its own");
+    let Body::Attach(claim) = expected.body else { panic!("fixture attach") };
+    let Execution::Orchestrator(batch) = &claim.execution else { panic!("an orchestrator batch, not a task: {:?}", claim.execution) };
+    assert_eq!((batch.lane, batch.run_id.as_str(), batch.generation), (OrchestratorLane::Orchestrator, "run-test", 1));
+    assert_eq!(serde_json::to_value(OrchestratorLane::Orchestrator).unwrap(), ORCHESTRATOR_LANE);
+    let fixture: Value = serde_json::from_str(OWNER_PROOF_ORCHESTRATOR).unwrap();
+    let secret = std::array::from_fn(|index| index as u8);
+    assert_eq!(owner_proof(&secret, &claim).unwrap(), fixture["proof"]);
+    verify_owner_proof(&secret, &claim).unwrap();
+    assert_ne!(owner_proof(&secret, &claim).unwrap(), owner_proof(&secret, &attach()).unwrap());
+    let raw = std::str::from_utf8(ATTACH_ORCHESTRATOR).unwrap();
+    for mixed in [
+        raw.replace(r#""lane":"orchestrator""#, r#""lane":"task""#),
+        raw.replace(r#""lane":"orchestrator","#, r#""lane":"orchestrator","task_id":"t","#),
+        raw.replace(r#""lane":"orchestrator","#, ""),
+    ] {
+        assert!(serde_json::from_str::<Frame>(&mixed).is_err(), "neither a task nor a batch: {mixed}");
+    }
 }
 
 #[test]
