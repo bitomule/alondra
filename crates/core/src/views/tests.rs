@@ -4574,6 +4574,30 @@ fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
         [(Some("o0"), "Postgres", false), (Some("o1"), "SQLite", false), (None, "Reply", true)]);
 }
 
+/// The question Claude asked through AskUserQuestion on 19 October, with the words it put under
+/// each option.
+fn described_question_fixture() -> DomainState {
+    use crate::domain::{CardKind, Hold};
+    let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which format should the notes use?", ""));
+    let options = [("Markdown", "Headings and lists"), ("Plain text", "No markup at all")].iter().enumerate()
+        .map(|(index, (label, description))| QuestionOption {
+            id: format!("o{index}"), label: (*label).into(), description: Some((*description).into()) }).collect();
+    state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options, answer: None };
+    state
+}
+
+#[test]
+fn a_held_ask_user_question_card_shows_the_words_claude_put_under_each_option() {
+    let state = described_question_fixture();
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            let view = render(&state, &LiveSnapshot::default(), client, lang, "card:i-1", "");
+            assert_eq!(answers(card_of(&view)).iter().map(|a| (a.label.as_str(), a.description.as_deref())).collect::<Vec<_>>(),
+                [("Markdown", Some("Headings and lists")), ("Plain text", Some("No markup at all"))], "{client:?} {lang:?}");
+        }
+    }
+}
+
 #[test]
 fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
     use crate::domain::{CardKind, Hold};
@@ -6608,7 +6632,9 @@ fn every_card_button_leaves_the_server_ready_to_paint() {
     let interaction = permission.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
     interaction.card.allow_always = Some(AllowAlways::Offered { repo: "alondra".into(), rules: vec!["make build".into()], quiet: vec![] });
-    let states = [(golden_fixture(), golden_live()), (pr_fixture(), LiveSnapshot::default()), (permission, LiveSnapshot::default())];
+    let question = described_question_fixture();
+    let states = [(golden_fixture(), golden_live()), (pr_fixture(), LiveSnapshot::default()), (permission, LiveSnapshot::default()),
+        (question, LiveSnapshot::default())];
     let mut checked = 0;
     let mut captions = 0;
     for (state, live) in &states {
@@ -6624,7 +6650,8 @@ fn every_card_button_leaves_the_server_ready_to_paint() {
                         let role = action.role.unwrap_or_else(|| panic!("{id}: {} has no role", action.label));
                         assert_eq!(role == Role::Risk, action.style == Style::Destructive, "{id}: {} is {role:?} as {:?}", action.label, action.style);
                         if action.description.is_some() {
-                            assert_eq!(action.option_id.as_deref(), Some(Hold::ALWAYS), "{id}: words under {}", action.label);
+                            let claudes = state.holds.get(&id.as_str().into()) == Some(&Hold::Question);
+                            assert!(claudes || action.option_id.as_deref() == Some(Hold::ALWAYS), "{id}: words under {}", action.label);
                             captions += 1;
                         }
                     }

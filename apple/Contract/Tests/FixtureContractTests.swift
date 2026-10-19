@@ -48,7 +48,7 @@ final class FixtureContractTests: XCTestCase {
                     XCTAssertTrue(action.enabled, "\(name): \(action.label)")
                     XCTAssertNotNil(action.role, "\(name): \(action.label)")
                     XCTAssertEqual(action.role == .risk, action.style == .destructive, "\(name): \(action.label)")
-                    if action.description != nil { XCTAssertEqual(action.optionId, "always", "\(name): \(action.label)") }
+                    if action.description != nil { XCTAssertNotNil(action.optionId, "\(name): \(action.label)") }
                 }
                 checked += card.actions.count
             }

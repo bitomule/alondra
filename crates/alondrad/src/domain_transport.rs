@@ -2916,6 +2916,48 @@ mod tests {
         assert!(question.group.is_none(), "one question is an ordinary card");
     }
 
+    /// What each client shows under the answer buttons of card `id`, by option.
+    fn option_words(domain: &DomainRuntime, id: &InteractionId) -> Vec<(alondra_core::views::Client, Vec<(String, Option<String>)>)> {
+        use alondra_core::views::{Client, Item, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+        let read = domain.read();
+        let live = LiveSnapshot::default();
+        [Client::Ios, Client::Mac, Client::Tui].into_iter().map(|client| {
+            let view = build(&format!("card:{}", id.0), RenderContext {
+                domain: read.state(), index: read.index(), live: &live, client, lang: Lang::En,
+                transport: Transport::Loopback, cursor: "test", rendered_at: "",
+            }).unwrap();
+            let words = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+                Item::Card(card) => Some(card),
+                _ => None,
+            }).flat_map(|card| card.actions.iter().chain(&card.more))
+                .filter(|action| action.option_id.is_some())
+                .map(|action| (action.option_id.clone().unwrap(), action.description.clone())).collect();
+            (client, words)
+        }).collect()
+    }
+
+    #[test]
+    fn claudes_question_reaches_every_client_with_the_words_under_each_option() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let mut single = single_question("agent-a");
+        single["input"]["questions"][0]["options"] = json!([
+            {"label": "Markdown", "description": "Headings and lists"}, {"label": "Plain text", "description": "No markup at all"}]);
+        let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&domain, &serde_json::from_value(single).unwrap(), true).unwrap()
+        else { panic!("not held") };
+        let expected = vec![("o0".to_owned(), Some("Headings and lists".to_owned())), ("o1".to_owned(), Some("No markup at all".to_owned()))];
+        for (client, words) in option_words(&domain, &id) {
+            assert_eq!(words, expected, "{client:?}");
+        }
+        let crate::domain_holds::Posted::Held(first) = crate::domain_holds::post(&domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap()
+        else { panic!("not held") };
+        for (client, words) in option_words(&domain, &first) {
+            assert_eq!(words, [("o0".to_owned(), Some("Works at home and away".to_owned())), ("o1".to_owned(), Some("Only at home".to_owned()))],
+                "{client:?}: a question asked with others keeps its words too");
+        }
+    }
+
     #[test]
     fn a_single_question_marks_its_recommendation_instead_of_labelling_it() {
         let fixture = Fixture::new();

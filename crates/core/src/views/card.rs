@@ -536,9 +536,10 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             next += 1;
         }
     }
+    let worded = interaction.map(|interaction| claudes_worded_options(interaction, context.domain)).unwrap_or_default();
     let settles = |mut action: Action| {
         action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
-        painted(action)
+        painted(action, &worded)
     };
     card.reply = reply_action(item, interaction, context).map(settles).and_then(CardAction::usable);
     card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
@@ -546,15 +547,27 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     Ok(card)
 }
 
+/// The ids of the options Claude explained in the question it asked.
+fn claudes_worded_options(interaction: &Interaction, domain: &DomainState) -> Vec<String> {
+    match (&interaction.payload, domain.holds.get(&interaction.id)) {
+        (InteractionPayload::Question { options, .. }, Some(Hold::Question)) => options.iter()
+            .filter(|option| option.description.is_some())
+            .map(|option| option.id.clone())
+            .collect(),
+        _ => vec![],
+    }
+}
+
 /// How a card's button reads is settled here, once, for every client: red only when its style is
-/// destructive, and words under it only for «Allow always», which says exactly what stops asking.
-fn painted(mut action: Action) -> Action {
+/// destructive, and words under it only for «Allow always», which says exactly what stops asking,
+/// and for the options of Claude's question that Claude explained.
+fn painted(mut action: Action, worded: &[String]) -> Action {
     action.role = Some(match (action.style, action.role) {
         (Style::Destructive, _) => Role::Risk,
         (_, Some(Role::Advance)) | (Style::Primary, _) => Role::Advance,
         _ => Role::Neutral,
     });
-    if action.option_id.as_deref() != Some(Hold::ALWAYS) {
+    if !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || worded.iter().any(|worded| worded == id)) {
         action.description = None;
     }
     action
