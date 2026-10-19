@@ -299,13 +299,16 @@ impl Client {
         self.call("DELETE", path, None).map(|_| ())
     }
 
-    /// Fetch one server-rendered TUI view. The key is encoded by the URL form encoder
-    /// because card identifiers and view parameters may contain reserved characters.
+    /// Fetch one server-rendered TUI view. The key's path is one encoded segment, because card
+    /// identifiers may contain reserved characters; its options (`section`, `after`, `project`…)
+    /// travel in the query next to the protocol's own parameters.
     pub fn views(&self, key: &str, known: Option<&str>) -> Result<ViewDocument> {
-        let mut query = vec![("protocol", self.protocol.to_string()), ("client", "tui".to_owned()), ("lang", lang_name(crate::i18n::lang()).to_owned())];
-        if let Some(version) = known { query.push(("known", version.to_owned())); }
+        let (base, options) = key.split_once('?').unwrap_or((key, ""));
+        let mut query = vec![("protocol".to_owned(), self.protocol.to_string()), ("client".to_owned(), "tui".to_owned()), ("lang".to_owned(), lang_name(crate::i18n::lang()).to_owned())];
+        if let Some(version) = known { query.push(("known".to_owned(), version.to_owned())); }
+        query.extend(url::form_urlencoded::parse(options.as_bytes()).into_owned());
         let query = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(query).finish();
-        let path = format!("/views/{}?{query}", crate::mcp::urlencode(key));
+        let path = format!("/views/{}?{query}", crate::mcp::urlencode(base));
         self.get(&path)
     }
 
@@ -952,6 +955,33 @@ mod wire_tests {
         let mut client = Client::new(timeout);
         client.base = base;
         client.post("/actions", &serde_json::json!({})).unwrap_err()
+    }
+
+    #[test]
+    fn a_project_name_with_a_space_and_an_accent_is_encoded_once_in_the_query() {
+        let lang = lang_name(crate::i18n::lang());
+        let path: &'static str = format!("/views/new_request?protocol={VIEWS_PROTOCOL}&client=tui&lang={lang}&project=Mi+proyecto+ni%C3%B1o").leak();
+        let (client, seen, server) = peer(vec![(path, Value::Null)]);
+        let _ = client.views(&format!("new_request?project={}", crate::mcp::urlencode("Mi proyecto niño")), None);
+        let served = server.join();
+        assert_eq!(*seen.lock().unwrap(), [path]);
+        served.unwrap();
+    }
+
+    #[test]
+    fn a_view_key_with_options_asks_for_its_path_with_the_options_in_the_query() {
+        let lang = lang_name(crate::i18n::lang());
+        let section = format!("/views/tasks?protocol={VIEWS_PROTOCOL}&client=tui&lang={lang}&section=finished&after=0");
+        let card = format!("/views/card%3Aturn-ended-t-1?protocol={VIEWS_PROTOCOL}&client=tui&lang={lang}");
+        let project = format!("/views/new_request?protocol={VIEWS_PROTOCOL}&client=tui&lang={lang}&project=bitomule%2Falondra");
+        let expected: [&'static str; 3] = [section.leak(), card.leak(), project.leak()];
+        let (client, seen, server) = peer(expected.iter().map(|path| (*path, Value::Null)).collect());
+        let _ = client.views("tasks?section=finished&after=0", None);
+        let _ = client.views("card:turn-ended-t-1", None);
+        let _ = client.views(&format!("new_request?project={}", crate::mcp::urlencode("bitomule/alondra")), None);
+        let served = server.join();
+        assert_eq!(*seen.lock().unwrap(), expected);
+        served.unwrap();
     }
 
     #[test]
