@@ -9,18 +9,7 @@ pub(super) fn load(
     scope: &AuthorityScope,
     task: &TaskId,
 ) -> Result<TaskLifecycle> {
-    check_epoch(connection, scope)?;
-    let row: Option<(String, String, Revision)> = connection
-        .query_row(
-            "SELECT epoch,initial_input,revision FROM lifecycle_tasks WHERE task_id=?1",
-            params![task.0],
-            |row| Ok((row.get(0)?, row.get(1)?, crate::read_number(row, 2)?)),
-        )
-        .optional()?;
-    let (epoch, initial, revision) = row.ok_or(Error::MissingTask)?;
-    if epoch != scope.epoch.0 {
-        return Err(Error::WrongScope);
-    }
+    let (initial, revision) = head(connection, scope, task)?;
     crate::measure::aggregate_loaded();
     let mut aggregate = TaskLifecycle::planned(task.clone(), InputId::new(initial)?)?;
     require_inputs(connection, &aggregate)?;
@@ -48,6 +37,41 @@ pub(super) fn load(
     }
     verify_relations(connection, &aggregate)?;
     Ok(aggregate)
+}
+
+/// The checks a replay ends with, for an aggregate this transaction already replayed.
+pub(super) fn revalidate(
+    connection: &Connection,
+    scope: &AuthorityScope,
+    aggregate: &TaskLifecycle,
+) -> Result<()> {
+    let (_, revision) = head(connection, scope, aggregate.task())?;
+    let (events, last): (Revision, Revision) = connection.query_row(
+        "SELECT count(*),coalesce(max(revision),0) FROM lifecycle_events WHERE task_id=?1",
+        params![aggregate.task().0],
+        |row| Ok((crate::read_number(row, 0)?, crate::read_number(row, 1)?)),
+    )?;
+    if aggregate.revision() != revision || (events, last) != (revision, revision) {
+        return Err(Error::CorruptJournal);
+    }
+    require_inputs(connection, aggregate)?;
+    verify_relations(connection, aggregate)
+}
+
+fn head(connection: &Connection, scope: &AuthorityScope, task: &TaskId) -> Result<(String, Revision)> {
+    check_epoch(connection, scope)?;
+    let row: Option<(String, String, Revision)> = connection
+        .query_row(
+            "SELECT epoch,initial_input,revision FROM lifecycle_tasks WHERE task_id=?1",
+            params![task.0],
+            |row| Ok((row.get(0)?, row.get(1)?, crate::read_number(row, 2)?)),
+        )
+        .optional()?;
+    let (epoch, initial, revision) = row.ok_or(Error::MissingTask)?;
+    if epoch != scope.epoch.0 {
+        return Err(Error::WrongScope);
+    }
+    Ok((initial, revision))
 }
 
 pub(super) fn require_inputs(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {

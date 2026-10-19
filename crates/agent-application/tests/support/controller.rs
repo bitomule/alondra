@@ -205,7 +205,7 @@ impl<A: DurableAdapter> WorkerController<A> {
         self.pending = None;
         Ok(true)
     }
-    pub fn load(&mut self, task: &TaskId) -> Result<TaskLifecycle> {
+    pub fn load(&mut self, task: &TaskId) -> Result<std::sync::Arc<TaskLifecycle>> {
         let raw = self
             .connection
             .transaction()

@@ -250,7 +250,7 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
     }
 
-    pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<TaskLifecycle, StoreError> {
+    pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<std::sync::Arc<TaskLifecycle>, StoreError> {
         Ok(self.journal.load(task)?)
     }
 

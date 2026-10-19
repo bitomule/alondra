@@ -3,9 +3,19 @@
 macro_rules! staging {
     ($transaction:ident, $body:block) => {{
         let operation = $transaction.failure.begin()?;
+        $transaction.aggregates.revalidate(&$transaction.transaction)?;
+        let result: Result<_> = (|| $body)();
+        $transaction.aggregates.settle(&$transaction.transaction, result.is_ok())?;
+        operation.finish(result)
+    }};
+    (unsettled $transaction:ident, $body:block) => {{
+        let operation = $transaction.failure.begin()?;
+        $transaction.aggregates.revalidate(&$transaction.transaction)?;
         operation.finish((|| $body)())
     }};
 }
+
+mod aggregates;
 
 mod failure;
 mod codec;
@@ -25,7 +35,7 @@ use alondra_domain::{
 use alondra_foundation::{DataEpoch, Revision, TaskId};
 use alondra_provider_contract::{Capability, Placement, ProviderBinding};
 use rusqlite::{Connection, DropBehavior, OptionalExtension, Transaction, params};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 use std::path::Path;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -402,8 +412,9 @@ pub struct UnresolvedCommand {
 /// ```
 /// The caller must install this port instead of independent legacy task/node writes at cutover.
 pub struct LifecycleTransaction<'connection> {
-    transaction: Transaction<'connection>,
+    transaction: aggregates::Watched<'connection>,
     failure: failure::Failure,
+    aggregates: aggregates::Aggregates,
     scope: AuthorityScope,
     touched: BTreeSet<TaskId>,
     claimed: Vec<DispatchAttempt>,
@@ -426,9 +437,12 @@ impl<'connection> LifecycleTransaction<'connection> {
         require_foreign_keys(&transaction)?;
         journal_format::verify(&transaction)?;
         check_epoch(&transaction, &scope)?;
+        crate::measure::transaction_attached();
+        let aggregates = aggregates::Aggregates::default();
         Ok(Self {
-            transaction,
+            transaction: aggregates.watch(transaction)?,
             failure: Default::default(),
+            aggregates,
             scope,
             touched: BTreeSet::new(),
             claimed: vec![],
@@ -443,7 +457,7 @@ impl<'connection> LifecycleTransaction<'connection> {
     where
         E: From<Error>,
     {
-        staging!(self, { operation() })
+        staging!(unsettled self, { operation() })
     }
     /// Records errors or unwinding in adapter work that writes through this transaction.
     pub fn inspect_mut<T, E>(
@@ -454,15 +468,25 @@ impl<'connection> LifecycleTransaction<'connection> {
         E: From<Error>,
     {
         let guard = self.failure.begin()?;
+        self.aggregates.revalidate(&self.transaction)?;
         guard.finish(operation(self))
     }
     pub fn scope(&self) -> &AuthorityScope {
         &self.scope
     }
-    pub fn load(&self, task: &TaskId) -> Result<TaskLifecycle> {
-        staging!(self, {
-            persistence::load(&self.transaction, &self.scope, task)
-        })
+    /// The task's aggregate as this transaction left it. It is replayed from the journal once;
+    /// later reads revalidate its live relations against the rows instead.
+    pub fn load(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
+        staging!(self, { self.aggregate(task) })
+    }
+    fn aggregate(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
+        if let Some(aggregate) = self.aggregates.get(task) {
+            persistence::revalidate(&self.transaction, &self.scope, &aggregate)?;
+            return Ok(aggregate);
+        }
+        Ok(self
+            .aggregates
+            .keep(persistence::load(&self.transaction, &self.scope, task)?))
     }
     pub fn create(&mut self, task: &TaskId, initial: InputPayload) -> Result<()> {
         staging!(self, {
@@ -593,7 +617,12 @@ impl<'connection> LifecycleTransaction<'connection> {
             identity(command_id)?;
             check_epoch(&self.transaction, &self.scope)?;
             let encoded = codec::encode(&event)?;
-            let mut aggregate = self.load(task)?;
+            let shared = self.aggregate(task)?;
+            self.aggregates.take(task);
+            let mut aggregate = match Arc::try_unwrap(shared) {
+                Ok(aggregate) => aggregate,
+                Err(_) => persistence::load(&self.transaction, &self.scope, task)?,
+            };
             let prior: Option<(Revision, String)> = self
                 .transaction
                 .query_row(
@@ -606,6 +635,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 if revision.checked_sub(1) != Some(expected_revision) || prior != encoded {
                     return Err(Error::CommandConflict);
                 }
+                self.aggregates.keep(aggregate);
                 self.touched.insert(task.clone());
                 return Ok(Applied {
                     revision,
@@ -658,8 +688,10 @@ impl<'connection> LifecycleTransaction<'connection> {
                 self.cleared_cards.insert((task.clone(), card));
             }
             self.touched.insert(task.clone());
+            let revision = aggregate.revision();
+            self.aggregates.keep(aggregate);
             Ok(Applied {
-                revision: aggregate.revision(),
+                revision,
                 replayed: false,
             })
         })
@@ -1299,7 +1331,7 @@ impl<'connection> LifecycleTransaction<'connection> {
         })
     }
     pub fn commit(self) -> Result<Committed> {
-        staging!(self, {
+        staging!(unsettled self, {
             check_epoch(&self.transaction, &self.scope)?;
             for attempt in &self.claimed {
                 self.fence_attempt(attempt)?;

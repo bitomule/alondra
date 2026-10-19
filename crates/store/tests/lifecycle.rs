@@ -2642,3 +2642,133 @@ fn the_journal_reads_every_task_with_its_events() {
     assert_eq!(task.events, vec![claude_bg("task")]);
     assert!(task.texts.is_empty(), "the claude --bg input has no text");
 }
+
+#[test]
+fn a_transaction_replays_each_task_once_and_reads_its_own_applies() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let path = fixture.directory.join("task");
+    let before = measure::counts();
+    let mut tx = fixture.transaction();
+    let held = tx.load(&"task".into()).unwrap();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance"))
+        .unwrap();
+    assert_eq!(held.revision(), 0, "an aggregate read before the apply stays as it was read");
+    drop(held);
+    let admitted = tx.load(&"task".into()).unwrap();
+    assert_eq!(
+        (admitted.revision(), admitted.execution().is_some()),
+        (1, true),
+        "a read after the apply sees the apply"
+    );
+    drop(admitted);
+    tx.stage_launch(&"task".into(), &local(&path), &test_binding())
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        (measure::counts() - before).aggregate_loads,
+        2,
+        "one replay before the apply, one for the apply that found the aggregate still held, none for the reads and the commit after it"
+    );
+
+    let before = measure::counts();
+    let mut tx = fixture.transaction();
+    assert_eq!(tx.load(&"task".into()).unwrap().revision(), 1, "the next transaction reads what the last one committed");
+    let launched = tx.load(&"task".into()).unwrap();
+    let (stamp, cursor) = (launched.execution().unwrap().clone(), launched.cursor().unwrap() + 1);
+    drop(launched);
+    tx.apply(
+        &"task".into(),
+        1,
+        "fact-1",
+        Event::Runtime { stamp, cursor, fact: RuntimeFact::ResourceAvailable },
+    )
+    .unwrap();
+    assert_eq!(tx.load(&"task".into()).unwrap().revision(), 2);
+    drop(tx);
+    assert_eq!(
+        measure::counts() - before,
+        measure::Counts { transactions: 1, aggregate_loads: 1, event_decodes: 1 },
+        "a transaction replays the journal of the task it touches once"
+    );
+
+    let tx = fixture.transaction();
+    assert_eq!(
+        tx.load(&"task".into()).unwrap().revision(),
+        1,
+        "an apply rolled back with its transaction is not read by the next one"
+    );
+}
+
+fn tamper_after_a_read(
+    through_inspect: bool,
+    tamper: impl FnOnce(&Connection),
+) -> Result<std::sync::Arc<TaskLifecycle>> {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance"))
+        .unwrap();
+    tx.stage_launch(&"task".into(), &local(&path), &test_binding())
+        .unwrap();
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
+    assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs(), vec![&id("initial")]);
+    let connection = tx.connection;
+    if through_inspect {
+        tx.inspect(|| {
+            tamper(connection);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+    } else {
+        tamper(connection);
+    }
+    tx.load(&"task".into())
+}
+
+fn rewrite_the_first_event(connection: &Connection) {
+    corrupt_while_guard_removed(connection, "lifecycle_event_immutable", || {
+        connection
+            .execute("UPDATE lifecycle_events SET event='{}' WHERE task_id='task' AND revision=1", [])
+            .unwrap();
+    });
+}
+
+fn rewrite_the_initial_input(connection: &Connection) {
+    connection
+        .execute_batch(
+            "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES('task','other','Another prompt');
+             UPDATE lifecycle_tasks SET initial_input='other' WHERE task_id='task';",
+        )
+        .unwrap();
+}
+
+#[test]
+fn an_event_rewritten_on_the_same_connection_is_replayed_and_refused() {
+    assert!(
+        tamper_after_a_read(false, rewrite_the_first_event).is_err(),
+        "a journal the store did not write must not be read from an aggregate replayed before it"
+    );
+}
+
+#[test]
+fn a_journal_row_rewritten_without_a_schema_change_is_replayed() {
+    let reread = tamper_after_a_read(false, rewrite_the_initial_input).unwrap();
+    assert_eq!(
+        reread.pending_inputs(),
+        vec![&id("other")],
+        "a journal write the store did not make must not leave an aggregate replayed before it"
+    );
+}
+
+#[test]
+fn a_journal_row_rewritten_inside_inspect_is_replayed() {
+    let reread = tamper_after_a_read(true, rewrite_the_initial_input).unwrap();
+    assert_eq!(
+        reread.pending_inputs(),
+        vec![&id("other")],
+        "application work inside inspect must not leave an aggregate replayed before it"
+    );
+}

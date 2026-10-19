@@ -302,11 +302,13 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     driver.stop().unwrap();
 }
 
-// A5: deterministic counts of the slice's work, never its time: per step, how many aggregates the
-// store rebuilt from their journals, how many journal events it decoded, how many writing
-// statements the daemon issued and how many read indexes publication built.
+// A5: deterministic counts of the slice's work, never its time: per step, how many lifecycle
+// transactions it ran, how many aggregates the store rebuilt from their journals, how many journal
+// events it decoded, how many writing statements the daemon issued and how many read indexes
+// publication built.
 #[derive(Debug, PartialEq, Eq)]
 struct Work {
+    transactions: u64,
     aggregate_loads: u64,
     event_decodes: u64,
     writes: u64,
@@ -320,6 +322,7 @@ fn measured<T>(domain: &DomainRuntime, step: impl FnOnce() -> T) -> (T, Work) {
     let done = alondra_store::measure::counts() - store;
     let (written, _) = crate::domain_store::statement_counts();
     (value, Work {
+        transactions: done.transactions,
         aggregate_loads: done.aggregate_loads,
         event_decodes: done.event_decodes,
         writes: written - writes,
@@ -344,15 +347,21 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     assert_eq!(traces.len(), 2, "the native trace of the first prompt, queued and started: {observations:?}");
     assert!(traces.iter().all(|work| work.index_builds == 0), "an observation that changes nothing for readers builds no index: {observations:?}");
     assert!(facts.iter().all(|work| work.index_builds == 1), "each observation with facts builds one index: {observations:?}");
-    assert!(turn_end.aggregate_loads <= 14 && turn_end.event_decodes <= 38 && turn_end.writes <= 14,
-        "the turn end's work grew past what this slice measured first: {turn_end:?}");
+    assert!(launch.aggregate_loads <= launch.transactions, "the launch rebuilds its one task at most once per transaction: {launch:?}");
+    assert!(observations.iter().all(|work| work.aggregate_loads <= work.transactions),
+        "an observation rebuilds its one task at most once per transaction: {observations:?}");
+    let journal: i64 = rusqlite::Connection::open(&slice.database).unwrap()
+        .query_row("SELECT count(*) FROM lifecycle_events WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap();
+    assert!(turn_end.event_decodes <= (turn_end.transactions + turn_end.index_builds) * journal as u64,
+        "the turn end decodes the task's {journal} journal events at most once per transaction and once per publication: {turn_end:?}");
+    assert!(turn_end.writes <= 14, "the turn end's writes grew past what this slice measured first: {turn_end:?}");
     let state = slice.domain.state().unwrap();
     let retitle = envelope(&state, "retitle", Command::TitleRequest { request_id: "sdk-slice-request".into(), title: "Notes for the release".into() });
     let (_, first) = measured(&slice.domain, || slice.domain.execute_with(&user(), &retitle, None, None, || Ok(())).unwrap());
     let (_, replay) = measured(&slice.domain, || slice.domain.execute_with(&user(), &retitle, None, None, || Ok(())).unwrap());
     eprintln!("command: {first:?}, exact replay: {replay:?}");
     assert_eq!(first.index_builds, 1);
-    assert_eq!(replay, Work { aggregate_loads: 0, event_decodes: 0, writes: 0, index_builds: 0 }, "an exact replay rebuilds nothing");
+    assert_eq!((replay.aggregate_loads, replay.event_decodes, replay.writes, replay.index_builds), (0, 0, 0, 0), "an exact replay rebuilds nothing: {replay:?}");
     driver.stop().unwrap();
 }
 
