@@ -30,6 +30,16 @@ pub struct ClaudeConfiguration {
     pub io_timeout: Duration,
     /// A Seatbelt profile the whole host runs under, the native process included.
     pub confinement: Option<PathBuf>,
+    /// What a task's native Claude loads besides the user's own settings, skills, plugins and MCP.
+    pub worker: Option<WorkerProfile>,
+}
+
+/// Alondra's plugin directories and launch settings for a task's native Claude, which loads them
+/// on top of every setting source of the user's default profile.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WorkerProfile {
+    pub plugins: Vec<PathBuf>,
+    pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Opaque technical worker. The application owns SQL, policy and publication.
@@ -703,8 +713,11 @@ pub(super) fn bootstrap(
         "manifest": { "mode": "node_bundle", "artifact_path": identity.artifact().artifact(), "host_release": control.host_release, "host_sha256": identity.artifact().artifact_sha256(), "executable_sha256": identity.artifact().executable_sha256(), "sdk_version": SDK_VERSION },
         "native": { "session_id": session.session_id, "executable": configuration.native_executable, "cwd": configuration.native_directory, "env": configuration.native_environment }
     });
-    if let Some(profile) = orchestrator {
-        bootstrap["orchestrator"] = serde_json::to_value(profile).map_err(std::io::Error::other)?;
+    match (orchestrator, &configuration.worker) {
+        (Some(_), Some(_)) => return Err(std::io::Error::other("a host runs the orchestrator or a task, never both")),
+        (Some(profile), None) => bootstrap["orchestrator"] = serde_json::to_value(profile).map_err(std::io::Error::other)?,
+        (None, Some(profile)) => bootstrap["worker"] = serde_json::to_value(profile).map_err(std::io::Error::other)?,
+        (None, None) => {}
     }
     serde_json::to_vec(&bootstrap).map_err(std::io::Error::other)
 }

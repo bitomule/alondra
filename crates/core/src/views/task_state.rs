@@ -138,6 +138,14 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     }
 }
 
+/// What Claude holds the task on, while a card of its own waits for it.
+fn claude_hold(task: &Task, context: &RenderContext<'_>) -> Option<crate::domain::ClaudeHold> {
+    context.index.cards_of_task(&task.id).iter().rev().find_map(|id| {
+        let card = context.domain.interactions.get(id).filter(|card| card.author == crate::domain::Author::System && context.domain.open(card))?;
+        crate::domain::ClaudeHold::of(&card.id)
+    })
+}
+
 fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     let read = context.reading(&task.id);
@@ -170,7 +178,12 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
             since: active_at,
             ..Presentation::new(t!(lang, "Waiting for the orchestrator", "Esperando al orquestador"), Tone::Neutral, Block::Waiting, fact)
         },
-        (TaskActivity::WaitingUser, _) => return warn(t!(lang, "Waiting for an answer", "Esperando respuesta")),
+        (TaskActivity::WaitingUser, _) => return warn(match claude_hold(task, context) {
+            Some(crate::domain::ClaudeHold::SignedOut) => t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude"),
+            Some(crate::domain::ClaudeHold::Outage) => t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude"),
+            Some(crate::domain::ClaudeHold::Usage) => t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude"),
+            None => t!(lang, "Waiting for an answer", "Esperando respuesta"),
+        }),
         (TaskActivity::WaitingDependency, _) => return waiting_dependency(task, context),
         (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
         (TaskActivity::AfterMerge { reason }, _) => return Presentation { since: active_at,

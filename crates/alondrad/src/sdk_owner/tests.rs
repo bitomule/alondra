@@ -22,6 +22,7 @@ struct Slice {
     database: PathBuf,
     capture: PathBuf,
     worktree: PathBuf,
+    plugin: PathBuf,
     backend: SdkBackend,
     _home: Directory,
     _state: Directory,
@@ -42,6 +43,8 @@ impl Slice {
         let state = Directory::for_unix_socket();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
+        let plugin = home.join("plugin");
+        std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
         let native = home.join("native");
         std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -65,7 +68,7 @@ impl Slice {
         };
         let database = home.join("domain.sqlite");
         let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
-        let slice = Self { domain, database, capture, worktree, backend, _home: home, _state: state };
+        let slice = Self { domain, database, capture, worktree, plugin, backend, _home: home, _state: state };
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "sdk-slice-request".into(),
             body: "Write the release notes".into(),
@@ -103,6 +106,7 @@ impl Slice {
             name: "Release notes".into(),
             directory: self.worktree.to_str().unwrap().into(),
             prompt: prompt.into(),
+            plugin: self.plugin.clone(),
         })
         .unwrap()
     }
@@ -544,4 +548,129 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "the reconciled turn ended with its own card");
     adopted.stop().unwrap();
+}
+
+// 19 Oct: Claude's sign-in expired and nothing told the user. Through the SDK, the native
+// Claude's 401 ends the turn with `authentication_failed`: the task waits on its card asking the
+// user to sign in, committed and published before the host is acknowledged. Once the user signs
+// in and says so, the task goes on and Claude's answer leaves no card open.
+#[test]
+fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
+    let slice = Slice::new();
+    let acknowledged = watch_acknowledgements(&slice);
+    let mut driver = slice.launch_with("Write the release notes signed-out");
+    slice.settle(&mut driver);
+    assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
+    let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
+    assert_eq!(held, [(TASK.to_owned(), ClaudeHold::SignedOut)]);
+    let listed = |domain: &DomainRuntime| -> Vec<InteractionId> {
+        domain.read().index().waiting().iter().map(|item| { let InboxSubject::Interaction { interaction_id } = &item.subject; interaction_id.clone() })
+            .filter(|id| id.0.starts_with(SIGNED_OUT_PREFIX)).collect()
+    };
+    let card = listed(&slice.domain).pop().expect("Waiting for You lists the sign-in card");
+    let stored: i64 = slice.observer().query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1 AND task_id=?2", [format!("{SIGNED_OUT_PREFIX}%"), TASK.to_owned()], |row| row.get(0)).unwrap();
+    assert_eq!(stored, 1, "its card, committed");
+    assert!(!acknowledged.lock().unwrap().is_empty(), "the host's observations were acknowledged after their commit");
+
+    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    let state = slice.domain.state().unwrap();
+    let signed_in = Command::AnswerQuestion { interaction_id: card, option_id: SIGNED_IN.into(), inputs: BTreeMap::new(), attachments: vec![] };
+    slice.domain.execute_with(&user(), &envelope(&state, "client-signed-in", signed_in), None, None, || Ok(())).unwrap();
+    assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].starts_with("Claude answers again"), "{}", prompts[1]);
+    let read = slice.domain.read();
+    assert!(read.state().claude_held().is_empty(), "Claude answered: nothing waits for it");
+    assert_eq!(listed(&slice.domain), [], "no sign-in card is listed");
+    driver.stop().unwrap();
+}
+
+// The API kept failing past Claude Code's retries: the task waits with no announcement, and the
+// daemon's scheduled probe, run as the daemon runs it, sends exactly that task on once Claude
+// answers again.
+#[test]
+fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answering() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("Write the release notes overloaded");
+    slice.settle(&mut driver);
+    let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
+    assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
+    assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
+    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    crate::claude_access::probe(&slice.domain, ClaudeHold::Outage);
+    assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].starts_with("Claude answers again"), "{}", prompts[1]);
+    assert!(slice.domain.read().state().claude_held().is_empty(), "Claude answered: nothing waits for it");
+    driver.stop().unwrap();
+}
+
+// Each launch made a provider binding of its own while the store keeps one active binding per
+// host: every task after the first was refused with BindingRevoked.
+#[test]
+fn a_second_task_starts_through_the_same_sdk_host() {
+    let slice = Slice::new();
+    slice.run(&Actor::Orchestrator { generation: 0 }, "second-task", Command::CreateTask {
+        plan_items: None,
+        task_id: "sdk-slice-second".into(),
+        request_id: "sdk-slice-request".into(),
+        title: "Write the upgrade guide".into(),
+        agent_id: None,
+        review_prs: false,
+        dependencies: BTreeSet::new(),
+        stack: None,
+        launch: Some(LaunchPlan::new("node", slice.worktree.to_str().unwrap())),
+    });
+    let mut first = slice.launch();
+    slice.settle(&mut first);
+    let mut second = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: "sdk-slice-second".into(),
+        name: "Upgrade guide".into(),
+        directory: slice.worktree.to_str().unwrap().into(),
+        prompt: "Write the upgrade guide".into(),
+        plugin: slice.plugin.clone(),
+    })
+    .expect("the second task starts too");
+    slice.settle(&mut second);
+    assert_eq!(slice.prompts(), ["Write the release notes", "Write the upgrade guide"]);
+    first.stop().unwrap();
+    second.stop().unwrap();
+}
+
+// The task's native Claude loads every settings source of the user's default profile, with no
+// strict MCP that would hide the user's servers, and Alondra's node plugin, launch settings and a
+// capability issued to its node on top: its Alondra MCP server reaches the daemon as that node.
+#[test]
+fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_capability() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    let after = |flag: &str| args.iter().position(|arg| *arg == flag).and_then(|at| args.get(at + 1)).copied()
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{flag}="))));
+    assert_eq!(after("--setting-sources"), Some("user,project,local"), "{args:?}");
+    assert!(!args.contains(&"--strict-mcp-config"), "the user's MCP servers load: {args:?}");
+    assert_eq!(after("--plugin-dir"), slice.plugin.to_str(), "{args:?}");
+    let settings: serde_json::Value = serde_json::from_str(after("--settings").expect("Alondra's launch settings")).unwrap();
+    assert_eq!(settings, crate::plugins::launch_settings_with(None));
+    let environment: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    for alondra in ["ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_HOME", "ALONDRA_SDK_HOST"] {
+        assert!(environment.contains(&alondra), "{alondra} reaches the node plugin's MCP server: {environment:?}");
+    }
+    for profile in ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"] {
+        assert!(!environment.contains(&profile), "the user's default profile: {environment:?}");
+    }
+    let agent = driver.agent().0.clone();
+    let session = capture["env_value_sha256"]["ALONDRA_SESSION_ID"].as_str().unwrap();
+    use sha2::Digest;
+    let expected: String = sha2::Sha256::digest(agent.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(session, expected, "the node the capability was issued to");
+    driver.stop().unwrap();
 }

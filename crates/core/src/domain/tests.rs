@@ -2911,9 +2911,10 @@ fn variant_index(c: &Command) -> usize {
         Command::AdmitExecution { .. } => 65,
         Command::RecordRuntimeFacts { .. } => 66,
         Command::RecordTurnBoundary { .. } => 67,
+        Command::ProbeClaudeAccess { .. } => 68,
     }
 }
-const COMMAND_KINDS: usize = 68;
+const COMMAND_KINDS: usize = 69;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3038,7 +3039,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
             instance: "instance".into(), host: "sdk-host".into() }, false),
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
-        (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into() }, false),
+        (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None }, false),
+        (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

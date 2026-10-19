@@ -5,8 +5,8 @@ Usage: e2e_sdk_backend.py <sandbox dir> <Mac home> <node> <persistent.cjs> <nati
 Copies the pinned Node and the host bundle, extracts the pinned native Claude from its npm archive
 (size and SHA256 checked), starts the local model double, writes the Seatbelt profile the whole host
 runs under and the Mac's sdk-backend.json. The Mac's orchestrator runs through the same host: the
-profile also lets its turn start Alondra's MCP server and reach the Mac's daemon. Claude gets a synthetic HOME, configuration and
-temporary folder inside the sandbox and the public fixture key: never the user's login, Keychain
+profile also lets its turn start Alondra's MCP server and reach the Mac's daemon. Claude gets a synthetic HOME, whose
+~/.claude is its default profile (no CLAUDE_CONFIG_DIR), and a temporary folder inside the sandbox and the public fixture key: never the user's login, Keychain
 or ~/.claude.json, and no network beyond the model double on loopback.
 """
 import hashlib
@@ -65,7 +65,7 @@ def main():
     sandbox, mac, node, host, archive = (Path(value).resolve() for value in sys.argv[1:6])
     root = sandbox / 'sdk'
     runtime, home, tmp = root / 'runtime', root / 'home', root / 'tmp'
-    for folder in [runtime, home / 'config', tmp]:
+    for folder in [runtime, home, tmp]:
         folder.mkdir(mode=0o700, parents=True)
     shutil.copyfile(node, runtime / 'node')
     (runtime / 'node').chmod(0o700)
@@ -84,13 +84,13 @@ def main():
     daemon = next(line.split('=', 1)[1].strip() for line in (mac / 'config.toml').read_text().splitlines() if line.startswith('port'))
     folder = mac / 'runtime' / 'orchestrator'
     folder.mkdir(parents=True, exist_ok=True)
-    plugins = [Path(os.path.realpath(sandbox / name)) for name in ('plugin', 'plugin-orchestrator')]
+    plugins = [Path(os.path.realpath(sandbox / name)) for name in ('plugin', 'plugin-orchestrator')] + [Path(os.path.realpath(mac / 'plugin'))]
     orchestrator = (Path(os.path.realpath(folder)), plugins, Path(os.path.realpath(sandbox / 'bin' / 'alondra')), Path(os.path.realpath(mac)), daemon)
     (root / 'host.sb').write_text(profile(runtime, home, tmp, state, work, port, orchestrator))
     synthetic = {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
-    native = dict(synthetic, CLAUDE_CONFIG_DIR=str(home / 'config'), TMPDIR=str(tmp), CLAUDE_CODE_TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC',
+    native = dict(synthetic, TMPDIR=str(tmp), CLAUDE_CODE_TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC',
                   ANTHROPIC_API_KEY='sk-ant-public-loopback-fixture-only', ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(port),
-                  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1')
+                  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1', CLAUDE_CODE_MAX_RETRIES='1')
     backend = {
         'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
         'host': str(runtime / 'persistent.cjs'), 'host_sha256': checksum(runtime / 'persistent.cjs'),

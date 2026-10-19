@@ -5,7 +5,7 @@ use alondra_agent_protocol::{
     SdkEventKind,
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{AdapterError, Observation, OrderedObservation};
+use alondra_provider_contract::{AdapterError, ApiFailure, Observation, OrderedObservation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +33,12 @@ struct LogicalTurn {
     // Alondra logical identity assigned at an observed SDK root-message boundary.
     id: String,
     consumed: BTreeSet<MessageUuid>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    answered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resets_at: Option<u64>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +198,15 @@ fn fold(
         facts.push(Observation::Available);
         return Ok(facts);
     }
+    if kind == "system"
+        && matches!(
+            payload.get("subtype").and_then(Value::as_str),
+            Some("hook_started" | "hook_progress" | "hook_response")
+        )
+    {
+        // The hooks of the user's and Alondra's plugins: SessionStart's run before init.
+        return Ok(facts);
+    }
     if !state.initialized {
         return Err(AdapterError::InvalidObservation);
     }
@@ -251,6 +266,15 @@ fn fold(
         }
         return Ok(facts);
     }
+    if kind == "rate_limit_event" {
+        let info = payload.get("rate_limit_info");
+        if info.and_then(|info| info.get("status")).and_then(Value::as_str) == Some("rejected") {
+            if let Some(turn) = state.turn.as_mut() {
+                turn.resets_at = info.and_then(|info| info.get("resetsAt")).and_then(Value::as_u64);
+            }
+        }
+        return Ok(facts);
+    }
     if kind != "assistant" && kind != "result" && kind != "stream_event" {
         return Ok(facts);
     }
@@ -300,6 +324,9 @@ fn fold(
             state.turn = Some(LogicalTurn {
                 id: logical,
                 consumed: BTreeSet::from([consumed[0].clone()]),
+                answered: false,
+                error: None,
+                resets_at: None,
             });
         }
         let turn = state
@@ -315,6 +342,20 @@ fn fold(
             return Err(AdapterError::InvalidObservation);
         }
     }
+    if kind == "assistant" {
+        if let Some(turn) = state.turn.as_mut() {
+            match payload.get("error") {
+                // The synthetic message Claude Code ends a turn with once a Claude API error
+                // outlasted its own retries.
+                Some(error) => turn.error = Some(error_code(error)?),
+                None if !turn.answered && turn.error.is_none() => {
+                    turn.answered = true;
+                    facts.push(Observation::ModelAnswered);
+                }
+                None => {}
+            }
+        }
+    }
     if kind == "result" {
         // A singular failed-delivery echo alone cannot prove input consumption or a turn.
         let turn = state.turn.as_ref().ok_or(AdapterError::Unsupported)?;
@@ -324,12 +365,39 @@ fn fold(
                 return Err(AdapterError::Unsupported);
             }
         }
+        let failure = match &turn.error {
+            Some(error) => Some(ApiFailure {
+                error: error.clone(),
+                status: match payload.get("api_error_status") {
+                    None | Some(Value::Null) => None,
+                    Some(status) => Some(
+                        status
+                            .as_u64()
+                            .and_then(|status| u16::try_from(status).ok())
+                            .ok_or(AdapterError::InvalidObservation)?,
+                    ),
+                },
+                resets_at: turn.resets_at,
+            }),
+            None => None,
+        };
         facts.push(Observation::TurnEnded {
             turn: TurnId::new(turn.id.clone()).map_err(|_| AdapterError::InvalidObservation)?,
+            failure,
         });
         state.turn = None;
     }
     Ok(facts)
+}
+fn error_code(value: &Value) -> Result<String, AdapterError> {
+    let code = value.as_str().ok_or(AdapterError::InvalidObservation)?;
+    if code.is_empty()
+        || code.len() > 64
+        || !code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+    {
+        return Err(AdapterError::InvalidObservation);
+    }
+    Ok(code.to_owned())
 }
 fn native_uuid(payload: &Value, key: &str) -> Result<MessageUuid, AdapterError> {
     MessageUuid::new(string(payload, key)?).map_err(|_| AdapterError::InvalidObservation)
@@ -444,7 +512,8 @@ mod tests {
                     input: InputId::new(SECOND).unwrap()
                 },
                 Observation::TurnEnded {
-                    turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap()
+                    turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
+                    failure: None,
                 }
             ]
         );
@@ -489,7 +558,8 @@ mod tests {
             fold(&assistant, &session(), &mut state, input)
                 .unwrap()
                 .len(),
-            1
+            2,
+            "the turn starts and the model answered"
         );
         assert!(
             fold(&assistant, &session(), &mut state, input)
@@ -500,7 +570,8 @@ mod tests {
         assert_eq!(
             fold(&result, &session(), &mut state, input).unwrap(),
             vec![Observation::TurnEnded {
-                turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap()
+                turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
+                failure: None,
             }]
         );
     }
@@ -510,6 +581,9 @@ mod tests {
         state.turn = Some(LogicalTurn {
             id: "turn".into(),
             consumed: BTreeSet::new(),
+            answered: false,
+            error: None,
+            resets_at: None,
         });
         let started = event(
             json!({"type":"system","subtype":"task_started","uuid":REPLY,"task_id":"task-native","run_id":"run-first"}),
@@ -556,6 +630,76 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+    fn turn_end(state: &mut Checkpoint, payloads: Vec<Value>) -> Vec<Observation> {
+        payloads
+            .into_iter()
+            .flat_map(|payload| fold(&event(payload), &session(), state, input).unwrap())
+            .collect()
+    }
+    fn failure(facts: &[Observation]) -> Option<ApiFailure> {
+        match facts.last() {
+            Some(Observation::TurnEnded { failure, .. }) => failure.clone(),
+            other => panic!("the turn did not end: {other:?}"),
+        }
+    }
+    // Claude Code 2.1.300 retries a 401 itself and says so with api_retry, also between two
+    // requests of one turn; the turn then goes on with an answer of the model. A retry is never a
+    // logout.
+    #[test]
+    fn a_retried_authentication_error_that_the_model_then_answers_ends_the_turn_without_failure() {
+        let mut state = state();
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":401,"error":"authentication_failed","uuid":SECOND}),
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}),
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":401,"error":"authentication_failed","uuid":SECOND}),
+            json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null}),
+            json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":false,"user_message_uuid":FIRST}),
+        ]);
+        assert!(facts.contains(&Observation::ModelAnswered), "{facts:?}");
+        assert_eq!(failure(&facts), None);
+    }
+    // The synthetic message Claude Code ends a turn with when the API refused its sign-in.
+    #[test]
+    fn a_turn_ended_by_an_authentication_error_carries_it_and_proves_no_answer() {
+        let mut state = state();
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"authentication_failed"}),
+            json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":true,"api_error_status":401,"terminal_reason":"api_error","user_message_uuid":FIRST}),
+        ]);
+        assert!(!facts.contains(&Observation::ModelAnswered), "{facts:?}");
+        assert_eq!(failure(&facts), Some(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }));
+    }
+    #[test]
+    fn a_forbidden_request_keeps_its_status_and_a_rejected_limit_its_reset() {
+        let forbidden = turn_end(&mut state(), vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"authentication_failed"}),
+            json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":403,"user_message_uuid":FIRST}),
+        ]);
+        assert_eq!(failure(&forbidden).and_then(|failure| failure.status), Some(403));
+        let limited = turn_end(&mut state(), vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"rate_limit"}),
+            json!({"type":"rate_limit_event","uuid":SECOND,"rate_limit_info":{"status":"rejected","resetsAt":4_102_444_800_u64,"rateLimitType":"five_hour"}}),
+            json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"blocking_limit","user_message_uuid":FIRST}),
+        ]);
+        assert_eq!(failure(&limited), Some(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }));
+    }
+    // Claude Code 2.1.300 always reports SessionStart hooks, before init: a plugin with hooks,
+    // the user's or Alondra's, must not stop the task.
+    #[test]
+    fn hooks_reported_before_init_are_evidence_without_facts() {
+        let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        for subtype in ["hook_started", "hook_progress", "hook_response"] {
+            let hook = event(json!({"type":"system","subtype":subtype,"hook_id":"h","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":REPLY}));
+            assert_eq!(fold(&hook, &session(), &mut state, input).unwrap(), vec![], "{subtype}");
+        }
+        let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available]);
+    }
+    #[test]
+    fn an_error_code_outside_claude_codes_grammar_is_refused() {
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"Not Logged In"}));
+        assert!(matches!(fold(&assistant, &session(), &mut state(), input), Err(AdapterError::InvalidObservation)));
     }
 }
 #[cfg(test)]

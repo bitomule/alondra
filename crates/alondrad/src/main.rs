@@ -12,6 +12,7 @@ mod operation_journal;
 mod api_failures;
 mod auth;
 mod classify;
+mod claude_access;
 mod cleanup;
 mod claude_trust;
 mod delivery;
@@ -536,6 +537,9 @@ async fn run_domain(config: &Config) -> Result<()> {
         domain.clone(),
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
+    if domain.sdk().is_some() {
+        tokio::spawn(claude_access::run(domain.clone()));
+    }
     tokio::spawn(machine_watch::run(
         domain.clone(),
         gauges.clone(),

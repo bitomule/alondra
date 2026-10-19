@@ -3142,7 +3142,9 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
-                self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
+                if !self.settle_claude_card(interaction_id, lifecycles)? {
+                    self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
+                }
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
                 self.settle_post_merge_problem(interaction_id, option_id, lifecycles)?;
                 self.settle_plan_review_problem(interaction_id, option_id, lifecycles)?;
@@ -3972,11 +3974,20 @@ impl DomainState {
                 self.task(task_id)?;
                 self.record_runtime_facts(task_id, *generation, facts, lifecycles)?;
             }
-            Command::RecordTurnBoundary { task_id, generation, turn } => {
+            Command::RecordTurnBoundary { task_id, generation, turn, failure } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(turn)?;
-                self.record_turn_boundary(task_id, *generation, turn, effects, lifecycles)?;
+                self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), effects, lifecycles)?;
+            }
+            Command::ProbeClaudeAccess { hold } => {
+                system(actor)?;
+                if *hold == ClaudeHold::SignedOut {
+                    return fail("invalid_input", "Only the user's answer probes Claude's sign-in");
+                }
+                if self.probe_claude(*hold, lifecycles)?.is_none() {
+                    return fail("not_found", "No task waits for Claude");
+                }
             }
             Command::RecordTaskCleanup { task_id } => {
                 system(actor)?;

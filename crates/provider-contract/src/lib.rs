@@ -148,11 +148,25 @@ pub enum Observation {
         work: WorkId,
         continuation: ContinuationId,
     },
+    /// The root turn ended; `failure` when a Claude API error ended it.
     TurnEnded {
         turn: TurnId,
+        failure: Option<ApiFailure>,
     },
+    /// The model answered the root turn: the API and the account Claude Code uses work.
+    ModelAnswered,
     TransportLost,
     ResourceReleased,
+}
+/// The Claude API error a root turn ended with, as Claude Code reports it after its own retries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiFailure {
+    /// Claude Code's error category, such as `authentication_failed` or `rate_limit`.
+    pub error: String,
+    /// The HTTP status of the failed request, when one was answered.
+    pub status: Option<u16>,
+    /// When a rejected usage limit resets, in Unix seconds.
+    pub resets_at: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderedObservation {

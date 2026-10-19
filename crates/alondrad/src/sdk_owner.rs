@@ -14,10 +14,11 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, WorkerProfile};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, DispatchAttempt, DispatchPermit, DispatchReceipt};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -43,6 +44,8 @@ pub(crate) struct Launch {
     pub(crate) name: String,
     pub(crate) directory: String,
     pub(crate) prompt: String,
+    /// Alondra's node plugin: its MCP server is how the task reaches Alondra.
+    pub(crate) plugin: PathBuf,
 }
 
 #[derive(Debug)]
@@ -99,8 +102,10 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         expected_revision: 0,
         command,
     };
+    // One binding for the daemon's SDK host: the store keeps one active binding per host, so a
+    // binding of each launch would revoke every task after the first.
     let binding = ProviderBinding::new(
-        format!("{DRIVER}-{}-{suffix}", launch.task),
+        format!("{DRIVER}-{HOST}"),
         DRIVER.into(),
         HOST.into(),
         "sandbox".into(),
@@ -111,8 +116,11 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
         1,
     )
     .map_err(|error| Failed(format!("the provider binding: {error:?}")))?;
-    let mut worker = ClaudeWorker::configured(binding.clone(), configuration(backend, &launch.directory, &agent.0, true)?)
-        .map_err(adapter("configuring the SDK worker"))?;
+    let profile = WorkerProfile {
+        plugins: vec![launch.plugin.clone()],
+        settings: crate::plugins::launch_settings_with(None).as_object().cloned().unwrap_or_default(),
+    };
+    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(profile))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
         .execute_on_current(&envelope("register", Command::RegisterAgent {
@@ -121,6 +129,9 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
             at: alondra_core::now_millis(),
         }))
         .map_err(failed("registering the node"))?;
+    let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
+    configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
+    let mut worker = ClaudeWorker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     let admit = envelope("admit", Command::AdmitExecution {
         task_id: launch.task.clone(),
         agent_id: agent.clone(),
@@ -177,7 +188,7 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     let ((stamp, directory, unresolved), _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
     let grant = domain.seals.take(&task).owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false)?)
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &directory, stamp.instance().as_str(), false, None)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
@@ -232,7 +243,7 @@ pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
 
 /// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
 /// daemon that comes back finds it without searching. A launch creates it; an adoption reuses it.
-fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: bool) -> Result<ClaudeConfiguration, Failed> {
+fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
     let state_directory = backend.state_root.join(instance);
     if create {
         std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed(format!("creating the SDK state root: {error}")))?;
@@ -255,7 +266,27 @@ fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: 
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
+        worker,
     })
+}
+
+/// How the task's Claude reaches Alondra through the node plugin's MCP server: as its node, with
+/// the capability issued to it, by the daemon's own address. The plugin's hooks stay inert: the
+/// host reports what Claude does.
+fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -> BTreeMap<String, String> {
+    let mut environment = BTreeMap::from([
+        ("ALONDRA_HOME".to_owned(), home.display().to_string()),
+        ("ALONDRA_SESSION_ID".to_owned(), agent.0.clone()),
+        ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), capability.to_owned()),
+        ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
+        ("ALONDRA_SDK_HOST".to_owned(), "1".to_owned()),
+    ]);
+    for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
+        if let Ok(value) = std::env::var(name) {
+            environment.insert(name.to_owned(), value);
+        }
+    }
+    environment
 }
 
 impl Driver {

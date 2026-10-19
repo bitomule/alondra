@@ -151,6 +151,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
+        worker: None,
     })
 }
 

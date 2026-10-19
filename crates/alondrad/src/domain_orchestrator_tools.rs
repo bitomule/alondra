@@ -403,7 +403,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         if let Some(checked) = checked {
             checked();
         }
-        return crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt }).await;
+        return crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt, plugin }).await;
     }
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)

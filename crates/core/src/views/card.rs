@@ -808,6 +808,53 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| pace_text(interaction, domain, lang))
         .or_else(|| unheard_text(interaction, domain, lang))
         .or_else(|| turn_ended_text(interaction, domain, lang))
+        .or_else(|| claude_hold_text(interaction, domain, lang))
+}
+
+/// The card of a task Claude holds, in the viewer's language: Waiting for You shows one of them
+/// for every task that waits on the same hold.
+fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    use crate::domain::ClaudeHold;
+    if interaction.author != Author::System {
+        return None;
+    }
+    let hold = ClaudeHold::of(&interaction.id)?;
+    let waiting = domain.claude_waiting(hold).max(1);
+    let need = match (hold, waiting) {
+        (ClaudeHold::SignedOut, _) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
+        (ClaudeHold::Outage, 1) => t!(lang, "Claude's API is not answering: a task waits", "La API de Claude no responde: una tarea espera").to_owned(),
+        (ClaudeHold::Outage, _) => tf!(lang, "Claude's API is not answering: {waiting} tasks wait", "La API de Claude no responde: esperan {waiting} tareas"),
+        (ClaudeHold::Usage, 1) => t!(lang, "Claude's usage limit is reached: a task waits", "Se agotó el límite de uso de Claude: una tarea espera").to_owned(),
+        (ClaudeHold::Usage, _) => tf!(lang, "Claude's usage limit is reached: {waiting} tasks wait", "Se agotó el límite de uso de Claude: esperan {waiting} tareas"),
+    };
+    let how = t!(lang, "Open Terminal, run claude and sign in with /login, then press I signed in.",
+        "Abre Terminal, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.");
+    let why = match (hold, waiting) {
+        (ClaudeHold::SignedOut, 1) => format!("{} {how}", t!(lang, "Claude Code's sign-in expired and a task waits.", "La sesión de Claude Code caducó y una tarea espera.")),
+        (ClaudeHold::SignedOut, _) => format!("{} {how}", tf!(lang, "Claude Code's sign-in expired and {waiting} tasks wait.", "La sesión de Claude Code caducó y esperan {waiting} tareas.")),
+        (ClaudeHold::Outage, _) => t!(lang,
+            "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
+            "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.").to_owned(),
+        (ClaudeHold::Usage, _) => t!(lang,
+            "The tasks that run through Claude Code wait until the limit resets. Alondra tries one then; when Claude answers, every waiting task goes on.",
+            "Las tareas que van por Claude Code esperan a que se reinicie el límite. Entonces Alondra prueba una; cuando Claude responda, siguen todas.").to_owned(),
+    };
+    Some((clip(&need, CardSpec::NEED_MAX), why))
+}
+
+/// What a refused Claude API request needs, in the viewer's language.
+fn api_refusal_text(error: &str, lang: Lang) -> &'static str {
+    match error {
+        "authentication_failed" => t!(lang, "the Claude account refuses this request", "la cuenta de Claude rechaza esta petición"),
+        "oauth_org_not_allowed" => t!(lang, "the Claude organization does not allow Claude Code", "la organización de Claude no permite Claude Code"),
+        "account_on_hold" => t!(lang, "the Claude account is on hold", "la cuenta de Claude está suspendida"),
+        "verification_required" => t!(lang, "the Claude account needs verifying", "la cuenta de Claude necesita verificarse"),
+        "billing_error" => t!(lang, "the Claude account has a billing problem", "la cuenta de Claude tiene un problema de facturación"),
+        "cloud_credential_error" => t!(lang, "Claude Code's cloud credentials fail", "fallan las credenciales en la nube de Claude Code"),
+        "model_not_found" => t!(lang, "Claude Code's model is not available", "el modelo de Claude Code no está disponible"),
+        "invalid_request" => t!(lang, "the Claude API refuses Claude Code's request", "la API de Claude rechaza la petición de Claude Code"),
+        _ => t!(lang, "the Claude API refuses its request", "la API de Claude rechaza su petición"),
+    }
 }
 
 /// What a node said last, when the card holds its words: the task's row shows them.
@@ -843,6 +890,14 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
+    if interaction.card.why == crate::domain::REFUSED_WHY {
+        let error = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))?;
+        let refusal = api_refusal_text(error, lang);
+        let need = tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}");
+        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+            "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
+            "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));
+    }
     let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
@@ -932,6 +987,16 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             Some(t!(lang, "Nothing starts and nodes wait until midnight, then carry on", "No arranca nada y los nodos esperan hasta medianoche; luego continúan")),
         ),
         ("keep_going", "Keep going") => (t!(lang, "Keep going", "Seguir"), None),
+        (crate::domain::SIGNED_IN, crate::domain::SIGNED_IN_LABEL) => (
+            t!(lang, "I signed in", "Ya he iniciado sesión"),
+            Some(t!(lang, "One waiting task goes on; when Claude answers it, the rest go on too",
+                "Sigue una de las tareas que esperan; cuando Claude le responda, siguen las demás")),
+        ),
+        (crate::domain::TRY_NOW, crate::domain::TRY_NOW_LABEL) => (
+            t!(lang, "Try now", "Reintentar ahora"),
+            Some(t!(lang, "One waiting task tries again now; when Claude answers it, the rest go on too",
+                "Una de las tareas que esperan lo intenta ahora; cuando Claude le responda, siguen las demás")),
+        ),
         (crate::domain::CARRY_ON, crate::domain::CARRY_ON_LABEL) => (
             t!(lang, "Carry on", "Que siga"),
             Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
@@ -1323,7 +1388,9 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 /// open question it is the answer to that question, the orchestrator's included.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
-    let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none() && !is_machine_card(interaction))?;
+    let interaction = interaction.filter(|interaction| {
+        start_problem_of(interaction).is_none() && !is_machine_card(interaction) && crate::domain::ClaudeHold::of(&interaction.id).is_none()
+    })?;
     let answers = answered_by_reply(interaction)
         && (interaction.author != Author::System || matches!(interaction.scope, Scope::Task { .. }));
     let held_placeholder = match answers.then(|| context.domain.holds.get(&interaction.id).copied()).flatten() {

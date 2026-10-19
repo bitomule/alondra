@@ -69,6 +69,168 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         report.snapshot("fleet", &user.view("fleet")?)
     });
+    report.case("S2", "Claude's sign-in is refused: the task waits on the sign-in card, and «I signed in» lets it go on", |report| {
+        refuse(sandbox, Some(401))?;
+        request(report, fakes, &user, &task_script("req-s2", "t-s2", "Write the upgrade guide"), "Write the upgrade guide")?;
+        let card = wait(report, "the native Claude's 401 ends its turn and the sign-in card waits in Inbox", || hold_card(&user, "claude-signed-out-t-s2-"))?;
+        report.step("a refused sign-in is no generic turn-end card", || {
+            let inbox = user.inbox()?;
+            anyhow::ensure!(!inbox.iter().any(|id| id.starts_with("turn-ended-t-s2-")), "{inbox:?}");
+            Ok(())
+        })?;
+        let view = user.view(&format!("card:{card}"))?;
+        report.snapshot("card-signed-out", &view)?;
+        refuse(sandbox, None)?;
+        let signed_in = user.action_labeled(&view, "★ I signed in").context("the card offers no «I signed in»")?;
+        report.step("the user signs in outside Alondra and presses «I signed in»", || {
+            user.press(signed_in["id"].as_str().unwrap_or_default(), signed_in["option_id"].as_str(), None)
+        })?;
+        wait(report, "the task goes on: Claude gets told to carry on", || {
+            let requests = model_requests(sandbox)?;
+            Ok(((told_to_go_on(&requests) == 1).then_some(()), format!("{} requests", requests.len())))
+        })?;
+        wait(report, "Claude answered: no sign-in card is left", || {
+            let inbox = user.inbox()?;
+            Ok((inbox.iter().all(|id| !id.starts_with("claude-signed-out-")).then_some(()), format!("{inbox:?}")))
+        })?;
+        Ok(())
+    });
+    report.case("S3", "The API is overloaded past Claude Code's retries: the task waits, unannounced, and «Try now» lets it go on", |report| {
+        refuse(sandbox, Some(529))?;
+        request(report, fakes, &user, &task_script("req-s3", "t-s3", "Write the FAQ"), "Write the FAQ")?;
+        let card = wait(report, "the native Claude's 529 ends its turn and the API card waits in Inbox", || hold_card(&user, "claude-outage-t-s3-"))?;
+        let view = user.view(&format!("card:{card}"))?;
+        report.snapshot("card-outage", &view)?;
+        refuse(sandbox, None)?;
+        let try_now = user.action_labeled(&view, "★ Try now").context("the card offers no «Try now»")?;
+        report.step("the user presses «Try now»", || user.press(try_now["id"].as_str().unwrap_or_default(), try_now["option_id"].as_str(), None))?;
+        wait(report, "the task goes on: Claude gets told to carry on", || {
+            let requests = model_requests(sandbox)?;
+            Ok(((told_to_go_on(&requests) == 2).then_some(()), format!("{} requests", requests.len())))
+        })?;
+        wait(report, "Claude answered: no API card is left", || {
+            let inbox = user.inbox()?;
+            Ok((inbox.iter().all(|id| !id.starts_with("claude-outage-")).then_some(()), format!("{inbox:?}")))
+        })?;
+        Ok(())
+    });
+    report.case("S4", "A task's native Claude loads the user's default profile, the project and Alondra's plugin", |report| {
+        write_parity(sandbox)?;
+        request(report, fakes, &user, &task_script("req-s4", "t-s4", "Write the parity notes"), "Write the parity notes")?;
+        let first = wait(report, "the task's native Claude asks the model", || {
+            let requests = model_requests(sandbox)?;
+            let found = requests.into_iter().find(|request| request["request"].is_number() && request["user"].as_str().is_some_and(|text| text.contains("Write the parity notes")));
+            Ok((found, "no request of the task yet".to_owned()))
+        })?;
+        let context = first["context"].as_str().unwrap_or_default().to_owned();
+        for (what, marker) in MEMORIES {
+            report.step(&format!("Claude loaded {what}"), || {
+                anyhow::ensure!(context.contains(marker), "{marker} is not in what Claude Code put in front of the model");
+                Ok(())
+            })?;
+        }
+        let init = native_init(sandbox, "t-s4")?.context("the native Claude's init was not kept")?;
+        report.step("init lists the user's skill, the user's plugin's skill and Alondra's", || {
+            let skills: Vec<&str> = init["skills"].as_array().map(|skills| skills.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let missing: Vec<&str> = SKILLS.into_iter().filter(|skill| !skills.contains(skill)).collect();
+            anyhow::ensure!(missing.is_empty(), "missing {missing:?} from {skills:?}");
+            Ok(())
+        })?;
+        report.step("Alondra's MCP server from the node plugin is connected", || {
+            let servers = init["mcp_servers"].as_array().cloned().unwrap_or_default();
+            anyhow::ensure!(servers.iter().any(|server| server["name"] == "plugin:alondra:alondra" && server["status"] == "connected"), "{servers:?}");
+            Ok(())
+        })
+    });
+}
+
+/// How many requests the model answered that told a held task to go on.
+fn told_to_go_on(requests: &[Value]) -> usize {
+    requests.iter().filter(|request| request["request"].is_number() && request["user"].as_str().is_some_and(|text| text.contains("Claude answers again"))).count()
+}
+
+/// What Claude Code puts in front of the model from each settings source, by a marker in it: the
+/// user's CLAUDE.md, the project's (committed, since the task works in a worktree of the repo) and
+/// the local CLAUDE.local.md.
+const MEMORIES: [(&str, &str); 3] = [
+    ("the user's CLAUDE.md (user source)", "PARITY-USER-MEMORY"),
+    ("the project's CLAUDE.md (project source)", "PARITY-PROJECT-MEMORY"),
+    ("the local CLAUDE.local.md (local source)", "PARITY-LOCAL-MEMORY"),
+];
+/// What the native Claude's init lists: the user's skill, the skill of the plugin the user enabled
+/// in their settings, and the skill of Alondra's node plugin.
+const SKILLS: [&str; 3] = ["user-parity", "parity-plugin:plugin-parity", "alondra:alondra"];
+
+fn write_parity(sandbox: &Sandbox) -> Result<()> {
+    let home = sandbox.dir.join("sdk/home");
+    let repo = sandbox.dir.join("repo");
+    let marketplace = home.join("parity-marketplace");
+    let skill = |name: &str| format!("---\nname: {name}\ndescription: A skill the parity check looks for.\n---\n\nParity.\n");
+    let files = [
+        (home.join(".claude/CLAUDE.md"), "PARITY-USER-MEMORY\n".to_owned()),
+        (home.join(".claude/skills/user-parity/SKILL.md"), skill("user-parity")),
+        (home.join(".claude/settings.json"), serde_json::json!({
+            "extraKnownMarketplaces": {"parity": {"source": {"source": "directory", "path": marketplace}}},
+            "enabledPlugins": {"parity-plugin@parity": true},
+        }).to_string()),
+        (marketplace.join(".claude-plugin/marketplace.json"), serde_json::json!({
+            "name": "parity", "owner": {"name": "Parity"},
+            "plugins": [{"name": "parity-plugin", "source": "./parity-plugin", "description": "The parity check's plugin"}],
+        }).to_string()),
+        (marketplace.join("parity-plugin/.claude-plugin/plugin.json"), serde_json::json!({"name": "parity-plugin", "version": "1.0.0"}).to_string()),
+        (marketplace.join("parity-plugin/skills/plugin-parity/SKILL.md"), skill("plugin-parity")),
+        (repo.join("CLAUDE.md"), "PARITY-PROJECT-MEMORY\n".to_owned()),
+        (repo.join("CLAUDE.local.md"), "PARITY-LOCAL-MEMORY\n".to_owned()),
+    ];
+    for (path, text) in files {
+        std::fs::create_dir_all(path.parent().context("a parent folder")?)?;
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    for args in [&["add", "CLAUDE.md"][..], &["commit", "-q", "-m", "Project memory for the parity check"]] {
+        let status = std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().context("git")?;
+        anyhow::ensure!(status.success(), "git {args:?} failed in {}", repo.display());
+    }
+    Ok(())
+}
+
+/// The native Claude's init for `task`, as the Mac kept it with the task's raw observations.
+fn native_init(sandbox: &Sandbox, task: &str) -> Result<Option<Value>> {
+    let database = sandbox.dir.join("mac-1/domain.db");
+    let output = std::process::Command::new("sqlite3")
+        .arg(&database)
+        .arg(format!("SELECT cast(bytes AS text) FROM provider_observations WHERE task_id='{task}' ORDER BY cursor"))
+        .output()
+        .context("sqlite3")?;
+    anyhow::ensure!(output.status.success(), "sqlite3: {}", String::from_utf8_lossy(&output.stderr));
+    fn init(value: &Value) -> Option<&Value> {
+        match value {
+            Value::Object(map) if map.get("type") == Some(&Value::from("system")) && map.get("subtype") == Some(&Value::from("init")) => Some(value),
+            Value::Object(map) => map.values().find_map(init),
+            Value::Array(items) => items.iter().find_map(init),
+            _ => None,
+        }
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().find_map(|line| {
+        let value: Value = serde_json::from_str(&line[line.find('{')?..]).ok()?;
+        init(&value).cloned()
+    }))
+}
+
+fn hold_card(user: &User, prefix: &str) -> Result<(Option<String>, String)> {
+    let inbox = user.inbox()?;
+    Ok((inbox.iter().find(|id| id.starts_with(prefix)).cloned(), format!("{inbox:?}")))
+}
+
+/// The model double answers the tasks' requests with `status` while it is set.
+fn refuse(sandbox: &Sandbox, status: Option<u16>) -> Result<()> {
+    let marker = sandbox.dir.join("sdk/model-refuse");
+    match status {
+        Some(status) => std::fs::write(&marker, status.to_string()).with_context(|| format!("writing {}", marker.display())),
+        None => match std::fs::remove_file(&marker) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error).context("removing the refusal"),
+            _ => Ok(()),
+        },
+    }
 }
 
 fn turn_card(user: &User, not: Option<&str>) -> Result<(Option<String>, String)> {

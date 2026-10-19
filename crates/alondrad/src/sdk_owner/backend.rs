@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const FILE: &str = "sdk-backend.json";
+/// Setting either selects another credential namespace than the user's default profile, even when
+/// it names the default folder.
+const DEFAULT_PROFILE: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,6 +45,10 @@ pub(crate) fn load(home: &Path, sandbox: bool) -> Result<Option<SdkBackend>> {
         ensure!(file.is_absolute(), "{} must be an absolute path", file.display());
         ensure!(digest(file)? == *sha256, "{} does not have the SHA256 {sha256} the SDK backend names", file.display());
     }
+    for profile in DEFAULT_PROFILE {
+        ensure!(!backend.native_environment.contains_key(profile),
+            "the SDK backend's native environment sets {profile}: Claude Code runs with the user's default profile, which leaves it unset");
+    }
     ensure!(backend.state_root.is_absolute(), "the SDK state root must be an absolute path");
     ensure!((1..=300).contains(&backend.io_timeout_seconds), "the SDK host's I/O timeout is 1 to 300 seconds");
     Ok(Some(backend))
@@ -76,5 +83,26 @@ mod tests {
         std::fs::write(home.join(FILE), b"{}").unwrap();
         let refused = load(&home, false).unwrap_err().to_string();
         assert!(refused.contains("runs only in a sandbox daemon"), "{refused}");
+    }
+
+    // Claude Code keeps the user's sign-in per profile: naming the default folder in either
+    // variable selects another credential namespace than the one the user signed in to.
+    #[test]
+    fn a_native_environment_that_names_a_claude_profile_is_refused() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir(&home).unwrap();
+        let file = home.join("artifact");
+        std::fs::write(&file, b"artifact").unwrap();
+        let sha256 = digest(&file).unwrap();
+        for profile in DEFAULT_PROFILE {
+            let backend = serde_json::json!({
+                "node": file, "node_sha256": sha256, "host": file, "host_sha256": sha256, "native": file, "native_sha256": sha256,
+                "host_environment": {}, "native_environment": {"HOME": home.join("home"), profile: home.join("home/.claude")},
+                "state_root": home.join("state"), "io_timeout_seconds": 30,
+            });
+            std::fs::write(home.join(FILE), backend.to_string()).unwrap();
+            let refused = load(&home, true).unwrap_err().to_string();
+            assert!(refused.contains(&format!("sets {profile}")), "{refused}");
+        }
     }
 }

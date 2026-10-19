@@ -463,6 +463,13 @@ pub enum Command {
         task_id: TaskId,
         generation: u64,
         turn: String,
+        /// The Claude API error that ended the turn, past Claude Code's own retries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<SdkApiFailure>,
+    },
+    /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
+    ProbeClaudeAccess {
+        hold: ClaudeHold,
     },
 }
 /// A wire command written before cards existed gets the card its own fields describe; the

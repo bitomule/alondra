@@ -15,15 +15,19 @@ type Result<T> = std::result::Result<T, alondra_agent_application::Error>;
 
 /// What the domain does with an accepted observation's facts, for fixtures that run the store
 /// without it: each technical fact becomes the next runtime event of the execution, then the
-/// observation is settled. The end of a turn needs the domain's decision, so it is refused.
+/// observation is settled. The end of a turn needs the domain's decision, so it is refused; that
+/// the model answered moves no task, so nothing records it.
 pub fn record_facts(
     transaction: &mut LifecycleTransaction<'_>,
     pending: PendingObservation,
 ) -> Result<alondra_store::ObservationAcceptance> {
+    use alondra_agent_application::ObservedFact;
     let stamp = pending.execution().clone();
     for (index, fact) in pending.facts().iter().enumerate() {
-        let alondra_agent_application::ObservedFact::Runtime(fact) = fact else {
-            return Err(Error::RequiresDomainCommand);
+        let fact = match fact {
+            ObservedFact::Runtime(fact) => fact,
+            ObservedFact::ModelAnswered => continue,
+            ObservedFact::TurnEnded { .. } => return Err(Error::RequiresDomainCommand),
         };
         let aggregate = transaction.load(stamp.task())?;
         let cursor = aggregate.cursor().unwrap_or(0) + 1;

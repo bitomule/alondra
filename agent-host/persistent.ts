@@ -134,7 +134,7 @@ export class PersistentHost {
         case 'start': {
           if (this.session || command.action.cwd !== this.config.native.cwd) throw new Error('Owned session configuration refused');
           this.current(lane);
-          this.session = new Session({ ...this.config.native, sessionId: this.config.native.session_id, orchestrator: this.config.orchestrator,
+          this.session = new Session({ ...this.config.native, sessionId: this.config.native.session_id, orchestrator: this.config.orchestrator, worker: this.config.worker,
             beforeSpawn: () => { this.hooks.beforeSpawn?.(); this.current(lane); },
             observe: (observation) => this.observe(observation),
           });

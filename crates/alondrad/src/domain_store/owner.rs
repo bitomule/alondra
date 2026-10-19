@@ -168,11 +168,13 @@ impl<'connection> OwnerTransaction<'connection> {
         for fact in pending.facts() {
             match fact {
                 ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
-                ObservedFact::TurnEnded(turn) => {
+                ObservedFact::ModelAnswered => technical.push(RuntimeObservation::ModelAnswered),
+                ObservedFact::TurnEnded { turn, failure } => {
                     if !technical.is_empty() {
                         commands.push(Command::RecordRuntimeFacts { task_id: execution.task().clone(), generation: execution.generation(), facts: std::mem::take(&mut technical) });
                     }
-                    commands.push(Command::RecordTurnBoundary { task_id: execution.task().clone(), generation: execution.generation(), turn: turn.as_str().into() });
+                    let failure = failure.as_ref().map(|failure| SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at });
+                    commands.push(Command::RecordTurnBoundary { task_id: execution.task().clone(), generation: execution.generation(), turn: turn.as_str().into(), failure });
                 }
             }
         }

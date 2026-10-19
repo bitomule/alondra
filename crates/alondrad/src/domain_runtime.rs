@@ -649,7 +649,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::AdvanceOrchestratorGeneration { .. }
         | Command::BindOrchestratorSession { .. }
         | Command::HoldHook { .. }
-        | Command::HoldQuestions { .. } => None,
+        | Command::HoldQuestions { .. }
+        | Command::ProbeClaudeAccess { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

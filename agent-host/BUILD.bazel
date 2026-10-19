@@ -159,3 +159,8 @@ js_test(
     entry_point = "session-orchestrator.test.mjs",
     data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
+js_test(
+    name = "sdk_worker_test",
+    entry_point = "session-worker.test.mjs",
+    data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)

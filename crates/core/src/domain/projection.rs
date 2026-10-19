@@ -197,7 +197,7 @@ impl DomainState {
         match &i.payload {
             InteractionPayload::Information { read_by } => read_by.is_empty() && !i.withdrawn,
             InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => {
-                answer.is_none() && !i.withdrawn && active
+                answer.is_none() && !i.withdrawn && active && !self.grouped_away(i)
             }
             InteractionPayload::Delivery { acceptance, .. } => {
                 task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))

@@ -13,6 +13,9 @@ session_id = next(argument.split('=', 1)[1] for argument in sys.argv[1:] if argu
 pending = []
 permission = None
 serial = 0
+# The API refuses every prompt, with a 401 for an expired sign-in or a 529 when it is overloaded,
+# until the test marks it recovered with a file next to the capture.
+refused = None
 
 def send(value):
     sys.stdout.write(json.dumps(value, ensure_ascii=False) + '\n')
@@ -23,6 +26,40 @@ def lifecycle(message, state):
     serial += 1
     send(dict(type='command_lifecycle', command_uuid=message['uuid'], state=state, session_id=session_id,
               uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
+
+REFUSALS = {401: ('authentication_failed', 'Failed to authenticate. API Error: 401 OAuth token has expired'),
+            529: ('server_error', 'API Error: 529 Overloaded')}
+
+def assistant(message, error=None, text='Fixture answer'):
+    global serial
+    serial += 1
+    value = dict(type='assistant', session_id=session_id,
+                 uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+                 parent_tool_use_id=None,
+                 message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant',
+                              model='fixture', content=[dict(type='text', text=text)],
+                              stop_reason=None, stop_sequence=None,
+                              usage=dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)),
+                 user_message_uuid=message['uuid'],
+                 user_message_uuids=[entry['uuid'] for entry in pending])
+    if error:
+        value['error'] = error
+    send(value)
+
+def refuse(message, status):
+    global serial
+    error, text = REFUSALS[status]
+    assistant(message, error=error, text=text)
+    serial += 1
+    send(dict(type='result', subtype='success', is_error=True, api_error_status=status,
+              session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+              duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={},
+              permission_denials=[], result=text,
+              terminal_reason='api_error', stop_reason=None,
+              user_message_uuid=message['uuid'], user_message_uuids=[entry['uuid'] for entry in pending]))
+    for entry in pending:
+        lifecycle(entry, 'completed')
+    pending.clear()
 
 def result(message, failed=False):
     global serial
@@ -85,7 +122,17 @@ for raw in sys.stdin:
         with open(capture + '.prompts', 'a') as stream:
             stream.write(json.dumps(message['message']['content']) + '\n')
         text = message['message']['content']
-        if text == 'stop-cleanup':
+        if text.endswith('signed-out'):
+            refused = 401
+        elif text.endswith('overloaded'):
+            refused = 529
+        if refused and os.path.exists(capture + '.recovered'):
+            refused = None
+            assistant(message)
+            result(message)
+        elif refused:
+            refuse(message, refused)
+        elif text == 'stop-cleanup':
             send(dict(type='system', subtype='status', status='compacting', uuid='00000000-0000-4000-8000-000000000103', session_id=session_id))
         elif text == 'native-failure-now':
             sys.exit(7)

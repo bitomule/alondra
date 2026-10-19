@@ -214,7 +214,17 @@ pub fn invocation(attempt: &DispatchAttempt) -> Invocation<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObservedFact {
     Runtime(RuntimeFact),
-    TurnEnded(TurnId),
+    TurnEnded {
+        turn: TurnId,
+        failure: Option<alondra_provider_contract::ApiFailure>,
+    },
+    /// Evidence about Claude itself, not about the task: its runtime does not move.
+    ModelAnswered,
+}
+impl ObservedFact {
+    fn moves_runtime(&self) -> bool {
+        !matches!(self, Self::ModelAnswered)
+    }
 }
 
 fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
@@ -235,7 +245,13 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             work: work.clone(),
             continuation: continuation.clone(),
         },
-        Observation::TurnEnded { turn } => return Ok(ObservedFact::TurnEnded(turn.clone())),
+        Observation::TurnEnded { turn, failure } => {
+            return Ok(ObservedFact::TurnEnded {
+                turn: turn.clone(),
+                failure: failure.clone(),
+            });
+        }
+        Observation::ModelAnswered => return Ok(ObservedFact::ModelAnswered),
         Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
     }))
 }
@@ -271,7 +287,8 @@ impl PendingObservation {
     /// The domain recorded every fact: the task's runtime moved by exactly that many.
     pub fn settle(self, transaction: &mut LifecycleTransaction<'_>) -> Result<ObservationAcceptance> {
         if self.acceptance == ObservationAcceptance::Accepted {
-            transaction.settle_observation(&self.execution, self.cursor, self.facts.len())?;
+            let moved = self.facts.iter().filter(|fact| fact.moves_runtime()).count();
+            transaction.settle_observation(&self.execution, self.cursor, moved)?;
         }
         Ok(self.acceptance)
     }

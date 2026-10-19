@@ -129,7 +129,7 @@ impl ObservationNormalizer for Normalizer {
                 if *work {
                     facts.push(Observation::WorkStarted { turn: turn.clone(), work: WorkId::new("subagent").unwrap() });
                 }
-                facts.push(Observation::TurnEnded { turn });
+                facts.push(Observation::TurnEnded { turn, failure: None });
                 facts
             }
             _ => vec![Observation::Available],

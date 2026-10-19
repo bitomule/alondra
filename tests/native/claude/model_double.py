@@ -3,7 +3,7 @@
 Usage: model_double.py <log> [<request scripts>]
 Prints the port it listens on as its only line of stdout, then answers every /v1/messages over SSE
 until it is killed. It accepts only the synthetic fixture key and never a saved bearer, and appends
-each request's last user text to <log>, one JSON line per request.
+each request's last user text, its tools' names and its context to <log>, one JSON line per request.
 
 A request that offers the orchestrator's create_task is an orchestrator batch: for each request the
 user created in that batch with a script in <request scripts> (the sandbox's `fakes/scripts`), it
@@ -14,6 +14,7 @@ answered with an allow. Any other request gets one text reply.
 import glob
 import http.server
 import json
+from pathlib import Path
 import os
 import re
 import sys
@@ -34,6 +35,19 @@ def last_user_text(body):
             return content
         return '\n'.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text')
     return ''
+
+
+def context_text(body):
+    """Everything Claude Code put in front of the model as context: the system prompt, every
+    user message's text and the tools' descriptions, where the skills it loaded are listed."""
+    system = body.get('system')
+    parts = [system] if isinstance(system, str) else [block.get('text', '') for block in system or [] if isinstance(block, dict)]
+    for message in body.get('messages', []):
+        content = message.get('content')
+        if message.get('role') == 'user':
+            parts.append(content if isinstance(content, str) else '\n'.join(part.get('text', '') for part in content if isinstance(part, dict)))
+    parts.extend(tool.get('description', '') for tool in body.get('tools', []))
+    return '\n'.join(part for part in parts if part)
 
 
 def batch_text(body):
@@ -77,6 +91,22 @@ def orchestrator_calls(scripts, text):
                 'review_prs': False, 'dependencies': [], 'launch': launch}))
             calls.append(('toolu_launch_' + task['task_id'], 'launch', {'task': task['task_id'], 'title': task['title'], 'model': 'sonnet', 'reason': 'A scripted sandbox node'}))
     return calls
+
+
+# A task's requests get this HTTP error while a file named `model-refuse` next to the log holds
+# its status: 401 is a sign-in the API no longer takes, 529 an overloaded API.
+ERRORS = {
+    401: {'type': 'authentication_error', 'message': 'invalid x-api-key'},
+    529: {'type': 'overloaded_error', 'message': 'Overloaded'},
+}
+
+
+def refusal(log):
+    try:
+        status = int(Path(log).with_name('model-refuse').read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+    return status if status in ERRORS else None
 
 
 class Model(http.server.ThreadingHTTPServer):
@@ -123,11 +153,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path != '/v1/messages':
             return self.refuse('unexpected route ' + path)
         orchestrator = any(tool.get('name') == ORCHESTRATOR + 'create_task' for tool in body.get('tools', []))
+        refused = refusal(self.server.log)
+        if refused and not orchestrator:
+            with self.server.guard, open(self.server.log, 'a') as stream:
+                stream.write(json.dumps({'refused': refused, 'user': last_user_text(body)}) + '\n')
+            return self.reply(refused, {'type': 'error', 'error': ERRORS[refused]})
         with self.server.guard:
             self.server.served += 1
             served = self.server.served
             with open(self.server.log, 'a') as stream:
-                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator}) + '\n')
+                stream.write(json.dumps({'request': served, 'model': body.get('model'), 'user': last_user_text(body), 'messages': len(body.get('messages', [])), 'orchestrator': orchestrator,
+                                         'tools': [tool.get('name') for tool in body.get('tools', [])], 'context': context_text(body)}) + '\n')
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                    'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
         made = made_since_prompt(body)

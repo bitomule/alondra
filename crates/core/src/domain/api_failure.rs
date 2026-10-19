@@ -92,3 +92,63 @@ pub fn after_api_failure(error: &str, detail: Option<&str>, attempt: u8, health:
         }
     }
 }
+
+/// The Claude API error an SDK turn ended with, once Claude Code's own retries were spent: its
+/// category in `SDKAssistantMessage.error`, the HTTP status of the result and, for a rejected
+/// usage limit, when it resets in Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SdkApiFailure {
+    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdkFailureKind {
+    /// Claude Code's sign-in expired or was revoked: only the user signing in again helps.
+    SignedOut,
+    /// The usage limit: it goes on when the limit resets.
+    Usage,
+    /// The API failed past Claude Code's retries: it goes on when the API answers again.
+    Outage,
+    /// Something only the user can fix, and not by signing in: billing, the organization, the model.
+    NeedsUser,
+}
+
+/// The kind of an SDK turn's API error. A 403 is labelled `authentication_failed` too, but signing
+/// in again does not help with it. An answer cut at the output limit is no failure of the API: the
+/// turn ends like any other. A category Claude Code adds later is taken as an outage.
+pub fn classify_sdk(error: &str, status: Option<u16>) -> Option<SdkFailureKind> {
+    Some(match error {
+        "max_output_tokens" => return None,
+        "authentication_failed" if status == Some(403) => SdkFailureKind::NeedsUser,
+        "authentication_failed" => SdkFailureKind::SignedOut,
+        "rate_limit" => SdkFailureKind::Usage,
+        "oauth_org_not_allowed" | "account_on_hold" | "verification_required" | "billing_error" | "cloud_credential_error"
+        | "invalid_request" | "model_not_found" => SdkFailureKind::NeedsUser,
+        _ => SdkFailureKind::Outage,
+    })
+}
+
+/// The categories `api_refusal` names.
+pub const REFUSALS: [&str; 8] = [
+    "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error",
+    "cloud_credential_error", "model_not_found", "invalid_request",
+];
+
+/// What a refused request needs, for a card that names it.
+pub fn api_refusal(error: &str) -> &'static str {
+    match error {
+        "authentication_failed" => "the Claude account refuses this request",
+        "oauth_org_not_allowed" => "the Claude organization does not allow Claude Code",
+        "account_on_hold" => "the Claude account is on hold",
+        "verification_required" => "the Claude account needs verifying",
+        "billing_error" => "the Claude account has a billing problem",
+        "cloud_credential_error" => "Claude Code's cloud credentials fail",
+        "model_not_found" => "Claude Code's model is not available",
+        "invalid_request" => "the Claude API refuses Claude Code's request",
+        _ => "the Claude API refuses its request",
+    }
+}

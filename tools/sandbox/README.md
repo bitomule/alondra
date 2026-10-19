@@ -107,7 +107,12 @@ the real login, Keychain or `~/.claude.json`. A daemon outside a sandbox that fi
 `make e2e-sdk` (`//tests/sandbox:sdk_journey`, opt-in, macOS arm64) starts such a sandbox and runs
 the `sdk` journey: the phone sends a request, the native Claude's first turn ends with the card
 «stopped without delivering or asking», «Carry on» with a note reaches Claude, its next turn ends
-with a card of its own, and what the user writes on that card reaches Claude too.
+with a card of its own, and what the user writes on that card reaches Claude too. Then the model
+double answers the tasks' requests with a 401 and later a 529 while `sdk/model-refuse` holds that
+status: the native Claude's error holds each task on its sign-in or API card, and «I signed in» or
+«Try now» lets it go on once the double answers again. Last, a task's native Claude, in a synthetic HOME
+that is its default profile, loads the user's CLAUDE.md, skill and enabled plugin, the project's
+CLAUDE.md, the local CLAUDE.local.md and Alondra's node plugin, whose MCP server connects.
 `alondra-sandbox journey sdk` runs it against a sandbox already started with `SDK=1`; `journey all`
 leaves it out.
 

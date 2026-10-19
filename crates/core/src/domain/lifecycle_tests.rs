@@ -353,7 +353,7 @@ fn holds_slot(s: &DomainState, id: &str) -> bool {
 fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
-    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
     let created = &s.interactions[&InteractionId::from(card.as_str())];
     assert_eq!(created.card.need, "“Task t” stopped without delivering or asking: tell it how to go on");
     assert!(matches!(&created.payload, InteractionPayload::Question { options, answer: None }
@@ -362,7 +362,7 @@ fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
     assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, None, "a native result is not a delivery");
     assert!(!s.tasks[&TaskId::from("t")].over(), "nor the end of the task");
-    assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() }).unwrap_err().code,
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None }).unwrap_err().code,
         "conflict", "the same turn end does not ask twice");
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).count(), 1);
     assert_aggregate_rules(&s);
@@ -375,7 +375,7 @@ fn a_native_turn_ends_with_a_card_clients_can_name() {
     let mut s = world();
     let turn = "claude-message:3272f577-e432-452d-9331-2bb86fc8686c";
     sdk_turn_named(&mut s, "t", "a", turn);
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None });
     let card = s.interactions.keys().find(|id| id.0.starts_with(TURN_ENDED_PREFIX)).unwrap().clone();
     assert_eq!(card.0, "turn-ended-t-1-claude-message-3272f577-e432-452d-9331-2bb86fc8686c");
     assert!(crate::views::id::valid(&card.0), "{card:?} is a valid view id");
@@ -389,7 +389,7 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "subagent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(TURN_ENDED_PREFIX)), "its own work explains the next step");
     assert!(holds_slot(&s, "t"), "the work still running keeps the slot");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
@@ -401,7 +401,7 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
 fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]) });
     let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
@@ -411,9 +411,167 @@ fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
 
     let mut s = world();
     let card = sdk_turn(&mut s, "u", "b");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "u".into(), generation: 1, turn: "turn-1".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "u".into(), generation: 1, turn: "turn-1".into(), failure: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CANCEL_TASK.into(), inputs: BTreeMap::new() });
     assert_eq!(lifecycle(&s, "u").0, TaskState::Closing);
     assert_eq!(lifecycle(&s, "u").3, Some(TaskEnding::Cancelling));
     assert_aggregate_rules(&s);
+}
+
+fn fail_turn(s: &mut DomainState, id: &str, turn: &str, error: &str, status: Option<u16>) -> CommandOutcome {
+    must(s, Actor::System, Command::RecordTurnBoundary {
+        task_id: id.into(), generation: 1, turn: turn.into(),
+        failure: Some(SdkApiFailure { error: error.into(), status, resets_at: None }),
+    })
+}
+fn sign_in_cards(s: &DomainState) -> Vec<&Interaction> {
+    s.interactions.values().filter(|i| i.id.0.starts_with(SIGNED_OUT_PREFIX) && s.open(i)).collect()
+}
+/// The cards of Claude's holds Waiting for You lists.
+fn listed_holds(s: &DomainState) -> Vec<String> {
+    super::read_index::inbox_items(s).into_iter().filter(|item| item.pending).map(|item| {
+        let InboxSubject::Interaction { interaction_id } = item.subject;
+        interaction_id.0
+    }).filter(|id| ClaudeHold::of(&InteractionId::from(id.as_str())).is_some()).collect()
+}
+fn notices(outcome: &CommandOutcome) -> usize {
+    outcome.effects.iter().filter(|e| matches!(e, DomainEffect::NotifyUser { .. })).count()
+}
+fn held(s: &DomainState) -> Vec<(String, ClaudeHold)> {
+    s.claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect()
+}
+/// The task goes on with the input its resume gave it: a new turn starts on it.
+fn turn_on_resumed(s: &mut DomainState, id: &str, turn: &str) {
+    let Some(LifecycleRecord::Resumed { input, .. }) = s.lifecycle_journal[&TaskId::from(id)].last().cloned() else { panic!("{id} was not resumed") };
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: turn.into(), input },
+    ] });
+}
+
+// 19 Oct: Claude's sign-in expired and every node looked like an API outage. A logout is a fact
+// of its own: every task waits on a card of its own, as the store requires, and Waiting for You
+// lists them as one, announced once; never the generic card that tells a task to go on.
+#[test]
+fn tasks_signed_out_of_claude_wait_on_cards_listed_and_announced_as_one() {
+    let mut s = world();
+    let generic_t = sdk_turn(&mut s, "t", "a");
+    let generic_u = sdk_turn(&mut s, "u", "b");
+    let first = fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    let second = fail_turn(&mut s, "u", "turn-1", "authentication_failed", None);
+    assert_eq!(sign_in_cards(&s).len(), 2, "each task waits on a card of its own");
+    assert_eq!(sign_in_cards(&s)[0].card.need, "Sign in to Claude outside Alondra");
+    assert_eq!((notices(&first), notices(&second)), (1, 0), "announced once");
+    assert_eq!(listed_holds(&s).len(), 1, "Waiting for You lists one: {:?}", listed_holds(&s));
+    for generic in [generic_t, generic_u] {
+        assert!(!s.interactions.contains_key(&InteractionId::from(generic.as_str())), "no generic card");
+    }
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::SignedOut), ("u".into(), ClaudeHold::SignedOut)]);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn signing_in_probes_one_task_and_the_model_answering_lets_every_held_task_go_on() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "u", "b");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    fail_turn(&mut s, "u", "turn-1", "authentication_failed", Some(401));
+    let listed = listed_holds(&s).pop().unwrap();
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: listed.as_str().into(), option_id: SIGNED_IN.into(), inputs: BTreeMap::new() });
+    assert_eq!(held(&s), [("u".into(), ClaudeHold::SignedOut)], "one task probes");
+    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("resumed"));
+    assert_eq!(listed_holds(&s), Vec::<String>::new(), "nothing to press while the probe runs");
+    turn_on_resumed(&mut s, "t", "turn-2");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert_eq!(held(&s), [], "Claude answered: every held task goes on");
+    assert_eq!(kinds(&s, "u").last().map(String::as_str), Some("resumed"));
+    assert!(sign_in_cards(&s).is_empty(), "no card is left open");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_probe_that_fails_again_lists_the_one_card_again() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "u", "b");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    fail_turn(&mut s, "u", "turn-1", "authentication_failed", Some(401));
+    let listed = listed_holds(&s).pop().unwrap();
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: listed.as_str().into(), option_id: SIGNED_IN.into(), inputs: BTreeMap::new() });
+    turn_on_resumed(&mut s, "t", "turn-2");
+    let again = fail_turn(&mut s, "t", "turn-2", "authentication_failed", Some(401));
+    assert_eq!(notices(&again), 0, "the user already knows");
+    assert_eq!(listed_holds(&s).len(), 1, "one card to press again");
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::SignedOut), ("u".into(), ClaudeHold::SignedOut)]);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exactly_one_task_go_on() {
+    let mut s = world();
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
+    sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "u", "b");
+    sdk_turn(&mut s, "v", "c");
+    let outage = fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
+    fail_turn(&mut s, "u", "turn-1", "server_error", Some(500));
+    let usage = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "v".into(), generation: 1, turn: "turn-1".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }) });
+    assert_eq!((notices(&outage), notices(&usage)), (0, 0), "never announced");
+    assert_eq!(listed_holds(&s).len(), 2, "one card for the outage, one for the limit: {:?}", listed_holds(&s));
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
+    let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
+    assert_eq!(usage_resets_at(&limit.card), Some(4_102_444_800), "the reset Claude gave");
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::SignedOut }).unwrap_err().code, "invalid_input",
+        "only the user's answer probes the sign-in");
+    assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }).unwrap_err().code, "forbidden");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage });
+    assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)], "one probe, the oldest");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage });
+    assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage)]);
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage }).unwrap_err().code, "not_found");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() {
+    for (error, status, reason) in [
+        ("authentication_failed", Some(403), "the Claude account refuses this request"),
+        ("billing_error", Some(400), "the Claude account has a billing problem"),
+    ] {
+        let mut s = world();
+        let card = sdk_turn(&mut s, "t", "a");
+        fail_turn(&mut s, "t", "turn-1", error, status);
+        let asked = &s.interactions[&InteractionId::from(card.as_str())];
+        assert_eq!(asked.card.need, format!("“Task t” stopped: {reason}"));
+        assert_eq!(asked.card.why, REFUSED_WHY);
+        assert!(sign_in_cards(&s).is_empty(), "{error} {status:?} is not a logout");
+        assert_eq!(listed_holds(&s), Vec::<String>::new());
+        assert_eq!(held(&s), []);
+        assert_aggregate_rules(&s);
+    }
+}
+
+// What David sees with two tasks signed out: one card in Waiting for You, which counts them, and
+// the task it does not show reads what it waits for.
+#[test]
+fn the_screens_show_one_sign_in_card_and_name_the_wait_of_the_other_task() {
+    use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "u", "b");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    fail_turn(&mut s, "u", "turn-1", "authentication_failed", Some(401));
+    let index = ReadIndex::build(&s);
+    let live = LiveSnapshot::default();
+    let render = |key: &str| {
+        let view = build(key, RenderContext { domain: &s, index: &index, live: &live, client: Client::Tui, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+        serde_json::to_string(&view).unwrap()
+    };
+    let home = render("home");
+    assert!(home.contains("\"id\":\"waiting\",\"title\":\"Te espera\",\"count\":1,"), "one card in Waiting for You: {home}");
+    assert!(home.contains("La sesión de Claude Code caducó y esperan 2 tareas."), "{home}");
+    let other = render("task:u");
+    assert!(other.contains("Espera a que inicies sesión en Claude"), "{other}");
 }

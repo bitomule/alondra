@@ -459,11 +459,18 @@ fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
 }
 
+/// Set for a task's Claude that runs through the Agent SDK host: the host reports what Claude does
+/// and asks for its permissions, so the node plugin's hooks tell the daemon nothing.
+const SDK_HOST: &str = "ALONDRA_SDK_HOST";
+
 fn hook() -> Result<()> {
     use std::io::{Read, Write};
 
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
+    if std::env::var_os(SDK_HOST).is_some() {
+        return Ok(());
+    }
     let mut payload: serde_json::Value = serde_json::from_slice(&input)?;
     if std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty())
         && payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("PreToolUse")

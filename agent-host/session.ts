@@ -1,7 +1,7 @@
 import { query, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
-import type { OrchestratorProfile } from './bootstrap.js';
+import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
 
 export type Failure = { surface: string; code: string; details: unknown };
 export type Observation =
@@ -17,6 +17,8 @@ export type Configuration = {
   sessionId?: string;
   /** One turn of Alondra's orchestrator: its own tools, MCP and permissions, and nothing after its result. */
   orchestrator?: OrchestratorProfile;
+  /** Alondra's plugins and launch settings for a task, on top of the user's own settings sources. */
+  worker?: WorkerProfile;
   // Test override must return a local ChildProcess: a PID proves spawn occurred.
   spawn?: (options: SpawnOptions) => SpawnedProcess & Pick<ChildProcess, 'pid'>;
 };
@@ -167,6 +169,10 @@ export class Session {
           permissionMode: 'default',
           permissionPrompts: 'host',
           canUseTool: this.permissions.request,
+          ...(config.worker && {
+            plugins: config.worker.plugins.map((path) => ({ type: 'local' as const, path })),
+            settings: config.worker.settings as Options['settings'],
+          }),
         };
     const options: Options = {
       ...permissions,

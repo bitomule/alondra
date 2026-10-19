@@ -66,6 +66,51 @@ fn hook_cli_sends_json_to_local_daemon_and_returns_its_reply() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+// A task's Claude that runs through the Agent SDK host loads the node plugin for its MCP server
+// and skills; the host already reports every fact and asks for permissions, so its hooks are
+// inert: not even a tool a daemon would refuse reaches it.
+#[test]
+fn a_session_through_the_sdk_host_tells_the_daemon_nothing() {
+    const DONE: &[u8; 4] = b"DONE";
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-sdk-hook-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let socket = home.join("hooks.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let mut contacted = vec![];
+        loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut first = [0; 4];
+            stream.read_exact(&mut first).unwrap();
+            if &first == DONE {
+                return contacted;
+            }
+            let mut body = vec![0; u32::from_be_bytes(first) as usize];
+            stream.read_exact(&mut body).unwrap();
+            contacted.push(String::from_utf8_lossy(&body).into_owned());
+        }
+    });
+    for event in [br#"{"session_id":"s","hook_event_name":"SessionStart"}"#.as_slice(), br#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash"}"#] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .arg("hook")
+            .env("ALONDRA_HOME", &home)
+            .env("ALONDRA_SDK_HOST", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(event).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+    }
+    std::os::unix::net::UnixStream::connect(&socket).unwrap().write_all(DONE).unwrap();
+    assert_eq!(daemon.join().unwrap(), Vec::<String>::new(), "the daemon was told");
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn intermediate_message_batch_does_not_contact_daemon() {
     let scratch_directory = crate::test_support::Directory::new();

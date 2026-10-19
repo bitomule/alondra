@@ -21,8 +21,13 @@ const shape = z.strictObject({
     plugins: z.array(absolute).max(8),
     settings: z.record(z.string(), z.json()),
   }).optional(),
-});
+  worker: z.strictObject({
+    plugins: z.array(absolute).max(8),
+    settings: z.record(z.string(), z.json()),
+  }).optional(),
+}).refine((config) => !(config.orchestrator && config.worker), 'A host runs the orchestrator or a task, never both');
 export type OrchestratorProfile = NonNullable<z.infer<typeof shape>['orchestrator']>;
+export type WorkerProfile = NonNullable<z.infer<typeof shape>['worker']>;
 const verified = Symbol('verified bootstrap');
 const retained = new WeakMap<object, { fd: number; dev: number; ino: number }>();
 type Identity = Extract<Frame['body'], { type: 'attached' }>;

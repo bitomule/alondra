@@ -108,6 +108,9 @@ pub enum RuntimeObservation {
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
+    /// The model answered: the API and the account Claude Code uses work. A fact about Claude,
+    /// not about the task: it records nothing in the task's journal.
+    ModelAnswered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +150,15 @@ pub enum LifecycleRecord {
     Reopened { input: String },
     HeldForPlanReview { review: InteractionId },
     PlanReviewSettled { review: InteractionId, plan_revision: u64, outcome: ReviewOutcome },
+    /// Held by `card` until something outside the task changes: Claude's sign-in or the API.
+    Paused { card: InteractionId },
+    /// The hold `card` ended: the task goes on with `input`, whose text is what it is told.
+    Resumed {
+        card: InteractionId,
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
 }
 
 /// The aggregates of the tasks one transaction decides on, replayed from their journals when first
@@ -218,6 +230,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             unheard_card: unheard_card.clone(),
         })?,
         LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
+        LifecycleRecord::Paused { card } => Event::Pause { card: card.clone() },
+        LifecycleRecord::Resumed { card, input, .. } => Event::Resume { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::WorkEnded { work, continuation } => runtime(RuntimeFact::WorkEnded {
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -308,7 +322,7 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::ExecutionReleased { input }
         | LifecycleRecord::HandedBack { input, .. }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
-        LifecycleRecord::Answered { input, text, .. } => Some((input, text.as_deref())),
+        LifecycleRecord::Answered { input, text, .. } | LifecycleRecord::Resumed { input, text, .. } => Some((input, text.as_deref())),
         _ => None,
     }
 }
@@ -370,6 +384,12 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) ->
             LifecycleRecord::TurnEnded { turn: turn.as_str().into(), unheard_card: unheard_card.clone() }
         }
         Event::Answer { card, input } => LifecycleRecord::Answered {
+            card: card.clone(),
+            input: input.as_str().into(),
+            text: texts.get(input).cloned(),
+        },
+        Event::Pause { card } => LifecycleRecord::Paused { card: card.clone() },
+        Event::Resume { card, input } => LifecycleRecord::Resumed {
             card: card.clone(),
             input: input.as_str().into(),
             text: texts.get(input).cloned(),
@@ -684,16 +704,24 @@ impl DomainState {
     /// success: nothing is delivered, finished or released. When nothing explains what the task
     /// does next (no work of its own, no continuation, no input waiting), the lifecycle requires
     /// the card that asks the user how it goes on, and it is created in this same step.
-    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    ///
+    /// A turn a Claude API error ended is held instead when waiting helps: on the one card that
+    /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on.
+    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let card = turn_ended_card_id(task, generation, turn);
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
+        let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
+        if let Some(hold) = kind.and_then(ClaudeHold::for_failure) {
+            self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
+        }
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone() })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             let title = self.tasks[task].title.clone();
-            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, self.revision + 1));
+            let refused = failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser));
+            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, refused, self.revision + 1));
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
         Ok(())
@@ -746,6 +774,10 @@ impl DomainState {
         }
         for fact in facts {
             let record = match fact.clone() {
+                RuntimeObservation::ModelAnswered => {
+                    self.claude_answered(lifecycles)?;
+                    continue;
+                }
                 RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,
                 RuntimeObservation::TurnStarted { turn, input } => LifecycleRecord::TurnStarted { turn, input },
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
@@ -1014,8 +1046,14 @@ const CANCEL_TASK_MEANS: &str = "The task ends and its execution is closed";
 const CARRY_ON_INSTRUCTION: &str = "Go on with your task: deliver your result, or ask the user through a card when you need them.";
 const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.";
 
-fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
-    let need = clip(&format!("“{title}” stopped without delivering or asking: tell it how to go on"), CardSpec::NEED_MAX);
+pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
+
+fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, refused: Option<&SdkApiFailure>, revision: u64) -> Interaction {
+    let (need, why) = match refused {
+        Some(failure) => (format!("“{title}” stopped: {}", api_refusal(&failure.error)), REFUSED_WHY),
+        None => (format!("“{title}” stopped without delivering or asking: tell it how to go on"), TURN_ENDED_WHY),
+    };
+    let need = clip(&need, CardSpec::NEED_MAX);
     Interaction {
         attachments: vec![],
         id,
@@ -1035,7 +1073,7 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, revision: u64)
         revision,
         order: revision,
         withdrawn: false,
-        card: CardSpec::new(CardKind::Decide, need).why(TURN_ENDED_WHY),
+        card: CardSpec::new(CardKind::Decide, need).why(why),
         clarification: None,
     }
 }
