@@ -8,6 +8,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
@@ -18,6 +19,7 @@ const BOOTSTRAP_LIMIT: usize = 65_536;
 const LINE_LIMIT: usize = 4096;
 const TAIL_LIMIT: usize = 16_384;
 const CONNECT_LIMIT: usize = 8;
+const SWEEP_ROUNDS: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct VerifiedArtifact {
@@ -131,6 +133,8 @@ pub struct OwnedHost<O = OwnerGrant> {
     owner: O,
     identity: LaunchIdentity,
     child: Child,
+    leader: Arc<Mutex<Option<rustix::process::Pid>>>,
+    reaped: Option<ExitStatus>,
     wake: mpsc::Receiver<Wake>,
     tail: Arc<Mutex<VecDeque<DiagnosticCode>>>,
     drains: Vec<DiagnosticDrain>,
@@ -262,10 +266,13 @@ impl<O> OwnedHost<O> {
                 .send(Box::new(stderr))
                 .expect("prepared stderr reader");
             let drains = vec![stdout_drain, stderr_drain];
+            let leader = Arc::new(Mutex::new(Some(rustix::process::Pid::from_child(&child))));
             Ok(Self {
                 owner,
                 identity,
                 child,
+                leader,
+                reaped: None,
                 wake,
                 tail,
                 drains,
@@ -301,7 +308,7 @@ impl<O> OwnedHost<O> {
             Err(error) => return Err(error),
         }
         loop {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.exit(false)? {
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
                     format!("owned host exited before authentication: {status}"),
@@ -347,8 +354,36 @@ impl<O> OwnedHost<O> {
     fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
         connect_identity(&self.identity, self.lock_identity, deadline)
     }
+    /// The host's exit, observed without reaping it, so its process group stays reserved.
     pub fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        self.exit(false)
+    }
+    fn exit(&self, block: bool) -> io::Result<Option<ExitStatus>> {
+        if let Some(status) = self.reaped {
+            return Ok(Some(status));
+        }
+        use rustix::process::{WaitId, WaitIdOptions, waitid};
+        let mut options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+        if !block {
+            options |= WaitIdOptions::NOHANG;
+        }
+        let pid = rustix::process::Pid::from_child(&self.child);
+        loop {
+            match waitid(WaitId::Pid(pid), options) {
+                Ok(Some(status)) if status.exited() || status.killed() || status.dumped() => {
+                    let raw = match (status.exit_status(), status.terminating_signal()) {
+                        (Some(code), _) => (code & 0xff) << 8,
+                        (None, Some(signal)) => signal | if status.dumped() { 0x80 } else { 0 },
+                        (None, None) => return Err(io::Error::other("owned host exit without status")),
+                    };
+                    return Ok(Some(ExitStatus::from_raw(raw)));
+                }
+                Ok(_) if !block => return Ok(None),
+                Ok(_) => continue,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
     /// The host's process id: it leads its own process group, which Claude runs in.
     pub fn process_id(&self) -> u32 {
@@ -358,16 +393,15 @@ impl<O> OwnedHost<O> {
     /// current-owner control after adoption; production control requires authenticated fencing.
     /// Only actual exit can be observed by wait.
     pub fn request_stop(&mut self) -> io::Result<()> {
-        if self.child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        match rustix::process::kill_process(
-            rustix::process::Pid::from_child(&self.child),
-            rustix::process::Signal::TERM,
-        ) {
-            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.stopper().request()
+    }
+    /// The process group this host leads: its own PID, reserved until `wait` reaps it.
+    pub fn process_group(&self) -> i32 {
+        rustix::process::Pid::from_child(&self.child).as_raw_nonzero().get()
+    }
+    /// A handle that asks this host to stop from another thread, and never signals it once reaped.
+    pub fn stopper(&self) -> HostStop {
+        HostStop(Leader::Launched(self.leader.clone()))
     }
     pub fn diagnostic_tail(&self) -> Vec<DiagnosticCode> {
         self.tail
@@ -377,8 +411,21 @@ impl<O> OwnedHost<O> {
             .copied()
             .collect()
     }
+    /// Waits for the host to exit, then kills and waits out every process left in its group while
+    /// the unreaped host still reserves the group's number, and only then reaps it. A group that
+    /// does not empty keeps the host unreaped and names what is left.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        let status = self.child.wait()?;
+        if let Some(status) = self.reaped {
+            return Ok(status);
+        }
+        let status = self.exit(true)?.ok_or_else(|| io::Error::other("owned host exit unobserved"))?;
+        sweep(rustix::process::Pid::from_child(&self.child))?;
+        {
+            let mut leader = self.leader.lock().expect("owned host leader poisoned");
+            *leader = None;
+            self.child.wait()?;
+        }
+        self.reaped = Some(status);
         for drain in &mut self.drains {
             if drain.stop() {
                 push_code(&self.tail, DiagnosticCode::ReaderFailed);
@@ -386,6 +433,70 @@ impl<O> OwnedHost<O> {
         }
         Ok(status)
     }
+}
+/// Asks a host to stop from another thread. A launched host is signalled only while unreaped: the
+/// reap takes the same lock and clears the leader first. An adopted host is signalled only while
+/// the process at its endpoint is still the one this daemon reached.
+#[derive(Clone)]
+pub struct HostStop(Leader);
+#[derive(Clone)]
+enum Leader {
+    Launched(Arc<Mutex<Option<rustix::process::Pid>>>),
+    Adopted(Arc<Mutex<Option<alondra_process_group::Member>>>),
+}
+impl HostStop {
+    pub fn request(&self) -> io::Result<()> {
+        let pid = match &self.0 {
+            Leader::Launched(leader) => {
+                let leader = leader.lock().expect("owned host leader poisoned");
+                let Some(pid) = *leader else {
+                    return Ok(());
+                };
+                return signal(pid);
+            }
+            Leader::Adopted(peer) => match *peer.lock().expect("adopted host peer poisoned") {
+                Some(host) if alondra_process_group::alive(&host)? => host.pid,
+                _ => return Ok(()),
+            },
+        };
+        signal(rustix::process::Pid::from_raw(pid).ok_or_else(|| refused("adopted host without a process"))?)
+    }
+}
+fn signal(pid: rustix::process::Pid) -> io::Result<()> {
+    match rustix::process::kill_process(pid, rustix::process::Signal::TERM) {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+/// Kills what is left in the exited leader's group and waits for each process's exit, round
+/// after round, until only the unreaped leader is left.
+fn sweep(leader: rustix::process::Pid) -> io::Result<()> {
+    let group = leader.as_raw_nonzero().get();
+    let left = || -> io::Result<Vec<alondra_process_group::Member>> {
+        Ok(alondra_process_group::members(group)?
+            .into_iter()
+            .filter(|member| member.pid != group && !member.zombie)
+            .collect())
+    };
+    for _ in 0..SWEEP_ROUNDS {
+        match rustix::process::kill_process_group(leader, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let live = left()?;
+        if live.is_empty() {
+            return Ok(());
+        }
+        let mut exits = alondra_process_group::Exits::new()?;
+        for member in &live {
+            exits.watch(member)?;
+        }
+        exits.wait()?;
+    }
+    let names = left()?.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    Err(io::Error::other(format!(
+        "owned host group {group} still holds {names} after {SWEEP_ROUNDS} rounds; the host stays unreaped"
+    )))
 }
 impl OwnedHost<OwnerGrant> {
     pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
@@ -406,6 +517,8 @@ pub struct AdoptedHost {
     owner: OwnerGrant,
     identity: LaunchIdentity,
     lock_identity: (u64, u64),
+    /// The process this daemon reached at the host's endpoint, by PID and start time.
+    peer: Arc<Mutex<Option<alondra_process_group::Member>>>,
 }
 impl AdoptedHost {
     pub fn adopt<T>(
@@ -472,6 +585,7 @@ impl AdoptedHost {
                 owner,
                 identity,
                 lock_identity,
+                peer: Arc::new(Mutex::new(None)),
             },
             value,
         ))
@@ -494,8 +608,36 @@ impl AdoptedHost {
         Ok(())
     }
     /// Does not acquire the launch lock, rotate material, spawn or authenticate the peer.
+    /// Also records the process at the endpoint, which a later stop is addressed to.
     pub fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
-        connect_identity(&self.identity, self.lock_identity, deadline)
+        let stream = connect_identity(&self.identity, self.lock_identity, deadline)?;
+        *self.peer.lock().expect("adopted host peer poisoned") = alondra_process_group::peer(&stream)?;
+        Ok(stream)
+    }
+    /// Asks the process at the endpoint to stop from another thread, while it is still that process.
+    pub fn stopper(&self) -> HostStop {
+        HostStop(Leader::Adopted(self.peer.clone()))
+    }
+    /// Stops the host this daemon adopted and waits for its exit. It is not this daemon's child, so
+    /// its exit cannot be held unreaped: whatever of its group outlives it is named, never signalled.
+    pub fn stop(&mut self) -> io::Result<()> {
+        let Some(host) = *self.peer.lock().expect("adopted host peer poisoned") else {
+            return Ok(());
+        };
+        let mut exits = alondra_process_group::Exits::new()?;
+        exits.watch(&host)?;
+        self.stopper().request()?;
+        exits.wait()?;
+        let left: Vec<String> = alondra_process_group::members(host.pid)?
+            .into_iter()
+            .filter(|member| !member.zombie)
+            .map(|member| member.to_string())
+            .collect();
+        if left.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("the adopted host {host} exited, but its group still holds {}", left.join(", "))))
+        }
     }
 }
 fn connect_identity(

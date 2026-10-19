@@ -5,9 +5,9 @@
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
 use alondra_domain::{
-    ActivityView, CLAUDE_BG_HOST, ContinuationId, ConversationId, DrainObligation, Event, FinishIntent, HostId, InputId,
-    InstanceId, OperationId, PlanReviewOutcome as ReviewSettlement, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle,
-    TaskPhase, Trigger, TurnId, WorkId,
+    ActivityView, CLAUDE_BG_HOST, CallbackId, ContinuationId, ConversationId, DrainObligation, Event, FinishIntent, HostId,
+    InputId, InstanceId, OperationId, PlanReviewOutcome as ReviewSettlement, PostMergeFact, Refusal, ResourceEvidence,
+    RuntimeFact, TaskLifecycle, TaskPhase, Trigger, TurnId, WorkId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -36,6 +36,41 @@ pub enum Drained {
     Execution { instance: String },
     Cleanup { operation: String },
     PostMerge { operation: String },
+    /// Background work of the execution, gone with the node's session.
+    Work { work: String },
+    /// A callback the execution waited on, gone with the node's session.
+    Callback { callback: String },
+}
+
+/// What ended the work a node declared it runs after its PR merged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostMergeEnd {
+    NodeDeclaredEnd,
+    Cleanup,
+    UserDecision,
+    SessionOver,
+}
+
+impl From<PostMergeEnd> for PostMergeFact {
+    fn from(end: PostMergeEnd) -> Self {
+        match end {
+            PostMergeEnd::NodeDeclaredEnd => Self::NodeDeclaredEnd,
+            PostMergeEnd::Cleanup => Self::Cleanup,
+            PostMergeEnd::UserDecision => Self::UserDecision,
+            PostMergeEnd::SessionOver => Self::SessionOver,
+        }
+    }
+}
+impl From<PostMergeFact> for PostMergeEnd {
+    fn from(fact: PostMergeFact) -> Self {
+        match fact {
+            PostMergeFact::NodeDeclaredEnd => Self::NodeDeclaredEnd,
+            PostMergeFact::Cleanup => Self::Cleanup,
+            PostMergeFact::UserDecision => Self::UserDecision,
+            PostMergeFact::SessionOver => Self::SessionOver,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +141,9 @@ pub enum LifecycleRecord {
     Accepted { delivery: InteractionId },
     Finished { intent: TaskEnding, cleanup: String, post_merge: Option<String> },
     Drained { obligation: Drained },
+    /// The node declared work it runs after its PR merges; only `PostMergeEnded` ends it.
+    PostMergeDeclared { operation: String },
+    PostMergeEnded { operation: String, fact: PostMergeEnd },
     Reopened { input: String },
     HeldForPlanReview { review: InteractionId },
     PlanReviewSettled { review: InteractionId, plan_revision: u64, outcome: ReviewOutcome },
@@ -209,8 +247,16 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
                 ),
                 Drained::Cleanup { operation } => DrainObligation::Cleanup(operation_id(task, operation)?),
                 Drained::PostMerge { operation } => DrainObligation::PostMerge(operation_id(task, operation)?),
+                Drained::Work { work } => DrainObligation::Work(WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?),
+                Drained::Callback { callback } => {
+                    DrainObligation::Callback(CallbackId::new(callback.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?)
+                }
             },
         },
+        LifecycleRecord::PostMergeDeclared { operation } => Event::PostMergeDeclared { operation: operation_id(task, operation)? },
+        LifecycleRecord::PostMergeEnded { operation, fact } => {
+            Event::PostMergeEnded { operation: operation_id(task, operation)?, fact: (*fact).into() }
+        }
         LifecycleRecord::Reopened { input } => Event::Reopen { input: input_id(task, input)? },
         LifecycleRecord::HeldForPlanReview { review } => Event::HoldForPlanReview { review: review.clone() },
         LifecycleRecord::PlanReviewSettled { review, plan_revision, outcome } => Event::PlanReviewSettled {
@@ -302,6 +348,8 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) ->
             DrainObligation::Execution(instance) => Drained::Execution { instance: instance.as_str().into() },
             DrainObligation::Cleanup(operation) => Drained::Cleanup { operation: operation.as_str().into() },
             DrainObligation::PostMerge(operation) => Drained::PostMerge { operation: operation.as_str().into() },
+            DrainObligation::Work(work) => Drained::Work { work: work.as_str().into() },
+            DrainObligation::Callback(callback) => Drained::Callback { callback: callback.as_str().into() },
             other => return Err(corrupt(task, format!("a drained obligation the domain does not decide: {other:?}"))),
         })
     };
@@ -347,6 +395,10 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>) ->
             post_merge: post_merge.as_ref().map(|op| op.as_str().into()),
         },
         Event::DrainObserved { obligation } => LifecycleRecord::Drained { obligation: drained(obligation)? },
+        Event::PostMergeDeclared { operation } => LifecycleRecord::PostMergeDeclared { operation: operation.as_str().into() },
+        Event::PostMergeEnded { operation, fact } => {
+            LifecycleRecord::PostMergeEnded { operation: operation.as_str().into(), fact: (*fact).into() }
+        }
         Event::Reopen { input } => LifecycleRecord::Reopened { input: input.as_str().into() },
         Event::HoldForPlanReview { review } => LifecycleRecord::HeldForPlanReview { review: review.clone() },
         Event::PlanReviewSettled { review, plan_revision, outcome } => LifecycleRecord::PlanReviewSettled {
@@ -411,15 +463,17 @@ pub fn with_execution_instances(task: &TaskId, journal: Vec<LifecycleRecord>) ->
     Ok(renamed)
 }
 
-/// What the ending of a finishing task still owes, as receipts discharge them.
+/// What the ending of a finishing task still owes that a receipt discharges. Work and callbacks
+/// go with the node's session; work after the merge ends only with its own fact, never here.
 pub fn owed(lifecycle: &TaskLifecycle) -> Vec<Drained> {
     lifecycle
         .drain()
         .filter_map(|obligation| match obligation {
             DrainObligation::Execution(instance) => Some(Drained::Execution { instance: instance.as_str().into() }),
             DrainObligation::Cleanup(operation) => Some(Drained::Cleanup { operation: operation.as_str().into() }),
-            DrainObligation::PostMerge(operation) => Some(Drained::PostMerge { operation: operation.as_str().into() }),
-            DrainObligation::Work(_) | DrainObligation::Callback(_) | DrainObligation::Merge(_) | DrainObligation::ExternalEffect(_) => None,
+            DrainObligation::Work(work) => Some(Drained::Work { work: work.as_str().into() }),
+            DrainObligation::Callback(callback) => Some(Drained::Callback { callback: callback.as_str().into() }),
+            DrainObligation::PostMerge(_) | DrainObligation::Merge(_) | DrainObligation::ExternalEffect(_) => None,
         })
         .collect()
 }
@@ -720,6 +774,55 @@ impl DomainState {
             self.decide(lifecycles, task, LifecycleRecord::Drained { obligation })?;
         }
         Ok(())
+    }
+
+    /// The node declared work it runs after its PR merges: the lifecycle owes it from now until a
+    /// fact ends it. Declaring again only updates what Alondra shows.
+    pub(super) fn declare_post_merge(&mut self, task: &TaskId, work: PostMergeWork, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.lifecycle(lifecycles, task)?.post_merge().is_none() {
+            if self.tasks[task].ending() {
+                return Err(DomainError::new("task_not_active", format!("Task {} is ending: no work after the merge starts now", task.0)));
+            }
+            let record = LifecycleRecord::PostMergeDeclared { operation: self.next_operation("post-merge", task) };
+            self.decide(lifecycles, task, record)?;
+        }
+        self.tasks.get_mut(task).unwrap().wrap_up.post_merge_work = Some(work);
+        Ok(())
+    }
+
+    /// The work after the merge ends, with the fact that ended it. A task that owes none is left
+    /// as it is.
+    pub(super) fn end_post_merge(&mut self, task: &TaskId, fact: PostMergeEnd, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.tasks.get_mut(task).unwrap().wrap_up.post_merge_work = None;
+        let Some(operation) = self.lifecycle(lifecycles, task)?.post_merge().map(|operation| operation.as_str().to_owned()) else {
+            return Ok(());
+        };
+        self.decide(lifecycles, task, LifecycleRecord::PostMergeEnded { operation, fact })
+    }
+
+    /// Work after the merge a node declared under a daemon from before the lifecycle owed it: the
+    /// lifecycle takes it over, so from then on only a fact ends it.
+    pub(super) fn adopt_declared_post_merge(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+        let declared: Vec<TaskId> = self.tasks.values()
+            .filter(|t| t.wrap_up.post_merge_work.is_some() && !t.over())
+            .map(|t| t.id.clone())
+            .collect();
+        for task in declared {
+            if self.lifecycle(lifecycles, &task)?.post_merge().is_none() {
+                let record = LifecycleRecord::PostMergeDeclared { operation: self.next_operation("post-merge", &task) };
+                self.decide(lifecycles, &task, record)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the work after the merge the task's node declared still holds it. A declaration
+    /// from before the lifecycle owed it holds it too, until the next commit adopts it.
+    pub fn post_merge_owed(&self, task: &Task) -> bool {
+        let owed = self.lifecycle_journal.get(&task.id)
+            .and_then(|journal| replay(&task.id, journal).ok())
+            .is_some_and(|lifecycle| lifecycle.post_merge().is_some());
+        owed || (task.wrap_up.post_merge_work.is_some() && !task.over())
     }
 
     /// The node ran with what it was given: its `claude --bg` process is up and its turn took

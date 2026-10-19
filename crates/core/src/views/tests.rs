@@ -6845,3 +6845,28 @@ fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_
         review_id: "q".into(), task_id: "t-1".into(), outcome: PlanReviewOutcome::Unchanged { reason: "Phase C does not use the prints".into() } });
     assert_ne!(task_state_text(&state, &live, Lang::Es), "Revisión de plan pendiente");
 }
+
+#[test]
+fn a_working_node_that_runs_through_the_sdk_offers_no_pause() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
+    let mut live = pacing_live(vec![], vec![], None);
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
+    assert!(find_action(&render(&state, &live, Client::Tui, Lang::En, "node:a-1", ""), "pause:a-1").is_some(), "the same node through claude --bg offers pause");
+    state.lifecycle_journal.insert("t-1".into(), vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+    ]);
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        for key in ["node:a-1", "fleet"] {
+            let view = render(&state, &live, client, Lang::En, key, "");
+            assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} {key} offers pause to an SDK node: {:?}", action_ids(&view));
+        }
+    }
+}

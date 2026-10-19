@@ -3583,12 +3583,15 @@ fn work_declared_while_closing_takes_the_task_back_to_in_progress() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
 }
 #[test]
-fn closing_the_node_drops_the_work_it_declared_after_the_merge() {
+fn alondra_closing_the_node_never_ends_its_work_after_the_merge_but_the_session_ending_does() {
     let mut s = fixture();
     accept_text(&mut s);
     exec(&mut s, agent(), post_merge_work(Some("release.sh"))).unwrap();
-    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }, "post_merge_running");
+    assert!(s.post_merge_owed(&s.tasks[&"t".into()]));
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: None }).unwrap();
     assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
+    assert!(!s.post_merge_owed(&s.tasks[&"t".into()]));
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]

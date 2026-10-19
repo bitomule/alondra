@@ -8,7 +8,7 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//crates:__subpackages__"],
-    deps = ["//crates/store:store"] + all_crate_deps(normal = True),
+    deps = ["//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -33,7 +33,9 @@ rust_test(
     srcs = ["tests/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
     data = [":owned_host_fixture"],
-    env = {"HOME": ".", "ALONDRA_OWNED_HOST_FIXTURE": "$(rootpath :owned_host_fixture)"},
+    # Every test spawns processes and asserts on kernel locks: run in parallel in one process, a
+    # spawn in one test copies, for an instant, the locked descriptor of another into its child.
+    env = {"HOME": ".", "ALONDRA_OWNED_HOST_FIXTURE": "$(rootpath :owned_host_fixture)", "RUST_TEST_THREADS": "1"},
     edition = "2024",
-    deps = [":agent_runtime", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
+    deps = [":agent_runtime", "//crates/process-group:process_group", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
 )

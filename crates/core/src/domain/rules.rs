@@ -1463,6 +1463,10 @@ impl DomainState {
             self.retire(card);
         }
         self.retire_cards_of(task_id);
+        let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
+        for card in &held {
+            self.retire(card);
+        }
         let record = LifecycleRecord::Finished {
             intent: TaskEnding::Cancelling,
             cleanup: self.next_operation("cleanup", task_id),
@@ -1481,6 +1485,16 @@ impl DomainState {
             });
         }
         Ok(())
+    }
+    /// The user chose to close the node on the card about its work after the merge: that choice is
+    /// the fact that ends the work, in the same commit as the answer.
+    fn settle_post_merge_problem(&mut self, card: &InteractionId, option: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(POST_MERGE_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
+        if option != POST_MERGE_CLOSE || self.tasks.get(&task_id).is_none_or(Task::over) {
+            return Ok(());
+        }
+        self.end_post_merge(&task_id, PostMergeEnd::UserDecision, lifecycles)
     }
     /// What the user chose on a start problem card that the domain does itself: cancel the task, or
     /// let it start without the cancelled task it waited for. "Try again" is the daemon's to do.
@@ -1997,6 +2011,7 @@ impl DomainState {
         next.apply(actor, &envelope.command, &mut effects, &mut created, &mut lifecycles)?;
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
+        next.adopt_declared_post_merge(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
@@ -3129,6 +3144,7 @@ impl DomainState {
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
                 self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
+                self.settle_post_merge_problem(interaction_id, option_id, lifecycles)?;
                 self.settle_plan_review_problem(interaction_id, option_id, lifecycles)?;
                 if matches!(actor, Actor::User { .. }) {
                     self.hold_for_plan_review(interaction_id, effects, lifecycles)?;
@@ -3866,18 +3882,17 @@ impl DomainState {
                 let revision = self.revision + 1;
                 let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
                 wrap_up.cleaned_at = Some(revision);
-                wrap_up.post_merge_work = None;
-                self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. } | Drained::PostMerge { .. }))?;
+                self.end_post_merge(task_id, PostMergeEnd::Cleanup, lifecycles)?;
+                self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. }))?;
             }
             Command::DeclarePostMergeWork { task_id, reason } => {
                 self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
                     .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at });
-                let over = work.is_none();
-                self.tasks.get_mut(task_id).unwrap().wrap_up.post_merge_work = work;
-                if over {
-                    self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::PostMerge { .. }))?;
+                match work {
+                    Some(work) => self.declare_post_merge(task_id, work, lifecycles)?,
+                    None => self.end_post_merge(task_id, PostMergeEnd::NodeDeclaredEnd, lifecycles)?,
                 }
             }
             Command::RecordNodeEnd { task_id, end, agent_id } => {
@@ -3897,15 +3912,27 @@ impl DomainState {
                 let closing = self.in_cleanup(t) && self.wraps_up(t);
                 if !closing && !t.state.terminal() && !t.ending() {
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
+                        self.end_post_merge(task_id, PostMergeEnd::SessionOver, lifecycles)?;
                         self.release(task_id, lifecycles)?;
                         self.tasks.get_mut(task_id).unwrap().wrap_up = WrapUp::default();
                         return Ok(());
                     }
                     return fail("not_closing", &format!("Task {} is not closing", task_id.0));
                 }
-                let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
-                wrap_up.node = Some(*end);
-                wrap_up.post_merge_work = None;
+                let fact = match end {
+                    NodeEnd::Gone => PostMergeEnd::SessionOver,
+                    NodeEnd::KeptByUser | NodeEnd::UsersOwn => PostMergeEnd::UserDecision,
+                    NodeEnd::Closed if t.cancelled() => PostMergeEnd::UserDecision,
+                    NodeEnd::Closed => {
+                        if self.lifecycle(lifecycles, task_id)?.post_merge().is_some() {
+                            return fail("post_merge_running", &format!(
+                                "Task {}'s node still runs work after the merge: only the node, its cleanup or the user ends it, never Alondra closing it", task_id.0));
+                        }
+                        PostMergeEnd::SessionOver
+                    }
+                };
+                self.end_post_merge(task_id, fact, lifecycles)?;
+                self.tasks.get_mut(task_id).unwrap().wrap_up.node = Some(*end);
                 if self.tasks[task_id].ending() {
                     self.drain(task_id, lifecycles, |_| true)?;
                 } else if self.lifecycle(lifecycles, task_id)?.execution().is_some() {

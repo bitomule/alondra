@@ -3,7 +3,7 @@ use crate::records::{InputRecord, SessionRecord};
 use crate::wire::{Connection, ControlIdentity, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_agent_protocol::{Action, Body, Command, SDK_VERSION};
-use alondra_agent_runtime::owned_host::{AdoptedHost, LaunchIdentity, OwnedHost, VerifiedArtifact};
+use alondra_agent_runtime::owned_host::{AdoptedHost, HostStop, LaunchIdentity, OwnedHost, VerifiedArtifact};
 use alondra_foundation::{ExecutionStamp, MessageUuid};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
@@ -192,8 +192,26 @@ impl ClaudeWorker {
         self.adapter
             .submit(invocation(committed.attempt()), &prepared.command)
     }
-    /// Asks a launched host to stop and waits until it has exited; an adopted host's process is not
-    /// ours to stop, and a worker without a host has none.
+    /// Asks this worker's host to stop from another thread; `None` before it has a host.
+    pub fn stopper(&self) -> Option<HostStop> {
+        self.adapter.host.as_ref().map(Host::stopper)
+    }
+    /// The process group a launched host leads, named by the host's PID.
+    pub fn host_group(&self) -> Option<i32> {
+        match self.adapter.host.as_ref()? {
+            Host::Launched(host) => Some(host.process_group()),
+            Host::Adopted(_) => None,
+        }
+    }
+    /// Whether the host this worker launched has exited; an adopted host is not this daemon's child.
+    pub fn host_exited(&mut self) -> bool {
+        match self.adapter.host.as_mut() {
+            Some(Host::Launched(host)) => host.observed_exit().ok().flatten().is_some(),
+            _ => false,
+        }
+    }
+    /// Asks the host to stop and waits until it has exited: a launched host with its whole group,
+    /// an adopted one by its own exit. A worker without a host has none.
     pub fn stop(&mut self) -> Result<(), AdapterError> {
         self.adapter.connection = None;
         let Some(host) = self.adapter.host.as_mut() else {
@@ -245,7 +263,7 @@ fn validate_ack(
 }
 
 /// The transport's host: one this daemon launched, or one a previous daemon left running that
-/// this one adopted. An adopted host's process is not ours to stop or reap.
+/// this one adopted. An adopted host is stopped by the process at its endpoint, never reaped here.
 enum Host {
     Launched(OwnedHost),
     Adopted(AdoptedHost),
@@ -281,14 +299,19 @@ impl Host {
             Host::Adopted(_) => Err(std::io::Error::other("an adopted host is not ours to reap")),
         }
     }
-    /// Stops a host we launched; an adopted host's process is not ours to stop (that is phase 5d).
+    fn stopper(&self) -> HostStop {
+        match self {
+            Host::Launched(host) => host.stopper(),
+            Host::Adopted(host) => host.stopper(),
+        }
+    }
     fn stop(&mut self) -> std::io::Result<()> {
         match self {
             Host::Launched(host) => {
                 host.request_stop()?;
                 host.wait().map(|_| ())
             }
-            Host::Adopted(_) => Ok(()),
+            Host::Adopted(host) => host.stop(),
         }
     }
 }

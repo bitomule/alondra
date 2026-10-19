@@ -114,6 +114,8 @@ pub enum Refusal {
     SelfDependency,
     /// A decision of the user holds the task until the orchestrator reviews its plan.
     PlanReviewPending,
+    /// Work after the merge ends only with the fact that ended it, never as a bare drain.
+    DrainWithoutFact,
 }
 
 impl From<IdentityError> for Refusal {
@@ -140,6 +142,20 @@ pub enum DrainObligation {
     Cleanup(OperationId),
     ExternalEffect(OperationId),
     PostMerge(OperationId),
+}
+
+/// What ended the work a node declared it runs after its PR merged. Time is not one of them: a
+/// clock may schedule a question, never end the work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostMergeFact {
+    /// The node said the work ended.
+    NodeDeclaredEnd,
+    /// The node confirmed its cleanup.
+    Cleanup,
+    /// The user chose to close the node on the card that asks about the work.
+    UserDecision,
+    /// The node's session is over, so nothing it ran is left.
+    SessionOver,
 }
 
 /// How the plan review of a held task was settled. `Cancelled` only releases the hold: the
@@ -215,6 +231,15 @@ pub enum Event {
     },
     DrainObserved {
         obligation: DrainObligation,
+    },
+    /// The node said it runs work after its PR merges, under `operation`.
+    PostMergeDeclared {
+        operation: OperationId,
+    },
+    /// The work after the merge under `operation` ended, with the fact that ended it.
+    PostMergeEnded {
+        operation: OperationId,
+        fact: PostMergeFact,
     },
     RetireReleasedExecution {
         problem_card: InteractionId,
@@ -523,6 +548,9 @@ pub struct TaskLifecycle {
     /// Decisions holding the task, each with the plan revision it held. Kept apart from `state`,
     /// so no phase change, dependency or reopening releases one: only its settlement does.
     plan_reviews: BTreeMap<InteractionId, u64>,
+    /// Work the node declared it runs after the merge, until its fact ends it. Kept apart from
+    /// `state` until the task finishes, when it becomes one of the obligations the ending owes.
+    post_merge: Option<OperationId>,
 }
 
 impl TaskLifecycle {
@@ -535,6 +563,7 @@ impl TaskLifecycle {
             state: State::Unstarted(input),
             plan_revision: 0,
             plan_reviews: BTreeMap::new(),
+            post_merge: None,
         })
     }
     pub fn task(&self) -> &TaskId {
@@ -690,6 +719,15 @@ impl TaskLifecycle {
             _ => None,
         }
     }
+    /// The work after the merge that still holds the task, declared or owed by its ending.
+    pub fn post_merge(&self) -> Option<&OperationId> {
+        self.post_merge.as_ref().or_else(|| {
+            self.drain().find_map(|obligation| match obligation {
+                DrainObligation::PostMerge(operation) => Some(operation),
+                _ => None,
+            })
+        })
+    }
     pub fn drain(&self) -> impl Iterator<Item = &DrainObligation> {
         let obligations = match &self.state {
             State::Finishing(finishing) => Some(&finishing.remaining),
@@ -713,6 +751,7 @@ impl TaskLifecycle {
             state: self.state.clone(),
             plan_revision: self.plan_revision,
             plan_reviews: self.plan_reviews.clone(),
+            post_merge: self.post_merge.clone(),
         };
         candidate.transition(event)?;
         candidate.revision += 1;

@@ -41,6 +41,17 @@ done
 for pidfile in "$dir"/mac-*/alondrad.pid; do
 	[ -f "$pidfile" ] && stop "$pidfile"
 done
+# Each SDK host leads its own process group, with its Claude and whatever that started; the
+# daemon stops them, and this ends the group of any host still running from $dir/sdk/runtime.
+real=$(cd "$dir" 2>/dev/null && pwd -P) || real=$dir
+ps -axo pid=,pgid=,command= | while read -r pid pgid command; do
+	case $command in
+	"$dir/sdk/runtime/node "* | "$real/sdk/runtime/node "*)
+		[ "$pid" = "$pgid" ] && kill -9 -- "-$pgid" 2>/dev/null
+		;;
+	esac
+done
+
 stop "$dir/relay.pid"
 stop "$dir/issuer.pid"
 stop "$dir/sdk/model.pid"

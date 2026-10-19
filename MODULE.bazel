@@ -54,6 +54,7 @@ crate.from_cargo(
         "//crates/store:Cargo.toml",
         "//crates/provider-contract:Cargo.toml",
         "//crates/agent-application:Cargo.toml",
+        "//crates/process-group:Cargo.toml",
         "//crates/agent-runtime:Cargo.toml",
         "//crates/provider-claude:Cargo.toml",
         "//crates/alondrad:Cargo.toml",

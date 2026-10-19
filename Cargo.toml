@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent-protocol", "crates/foundation", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/agent-runtime", "crates/provider-claude", "crates/core", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay"]
+members = ["crates/agent-protocol", "crates/foundation", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/agent-runtime", "crates/provider-claude", "crates/core", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay"]
 
 [workspace.package]
 version = "0.2.89"
@@ -15,6 +15,7 @@ alondra-domain = { path = "crates/domain" }
 alondra-store = { path = "crates/store" }
 alondra-provider-contract = { path = "crates/provider-contract" }
 alondra-agent-application = { path = "crates/agent-application" }
+alondra-process-group = { path = "crates/process-group" }
 alondra-agent-runtime = { path = "crates/agent-runtime" }
 alondra-provider-claude = { path = "crates/provider-claude" }
 alondra-core = { path = "crates/core" }

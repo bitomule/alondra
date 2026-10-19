@@ -12,8 +12,8 @@ use crate::worktree::TaskWorktree;
 use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_core::views::Lang;
 use alondra_core::domain::{
-    AgentId, CardSpec, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, PostMergeWork, QuestionOption,
-    Scope, Task, TaskId, TaskState, clip,
+    AgentId, CardSpec, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, POST_MERGE_CLOSE, POST_MERGE_LEAVE,
+    POST_MERGE_PROBLEM_PREFIX, PostMergeWork, QuestionOption, Scope, Task, TaskId, TaskState, clip,
 };
 use anyhow::Result;
 use std::path::Path;
@@ -233,6 +233,10 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let Some(agent) = task.agent_id.clone() else {
         return finish(domain, &row, None, NodeEnd::Gone);
     };
+    let owned = domain.owns_sdk_host(&agent);
+    if owned || crate::sdk_owner::runs_through_sdk(&state, &agent) {
+        return close_sdk_node(domain, timing, now, &state, task, &agent, kind, row, owned).await;
+    }
     let orchestrator = domain.live.node(&agent.0).is_some_and(|node| node.is_orchestrator);
     if orchestrator || !domain.launched_by_alondra(&agent)? {
         return finish(domain, &row, Some(&agent), NodeEnd::UsersOwn);
@@ -252,12 +256,20 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
     let session_over = state.node_session_closed(task);
     let mut close_now = session_over;
-    match (&kind, &task.wrap_up.post_merge_work) {
-        (Due::Cleanup, Some(work)) if !session_over => match watch_post_merge_work(domain, &state, timing, now, task, &agent, work)? {
+    match (&kind, state.post_merge_owed(task), &task.wrap_up.post_merge_work) {
+        (Due::Cleanup, true, Some(work)) if !session_over => match watch_post_merge_work(
+            domain, &state, timing, now, task, &agent, work,
+            domain.live.node(&agent.0).is_some_and(|node| node.busy),
+            Some(&|text: &str| { let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, text, false); }),
+        )? {
             Watch::Hold => return hold_while_working_after_merge(domain, now, row),
             Watch::CloseNow => close_now = true,
         },
-        _ => forget_post_merge_check(domain, task_id)?,
+        (Due::Cleanup, true, None) if !session_over => return hold_while_working_after_merge(domain, now, row),
+        _ => {
+            close_now |= matches!(post_merge_answer(domain, &state, task_id)?, Some(Card::Retry));
+            forget_post_merge_check(domain, task_id)?;
+        }
     }
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;
@@ -342,6 +354,68 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
 }
 
+/// A node that runs through the Agent SDK is a process of Alondra's own: it is closed only by
+/// stopping its host through its owner, never with `claude rm`, a push or the process table. A
+/// cancelled task's node stops at once. A finished one stops once it owes no work after the merge
+/// and, unless it confirmed its cleanup or the user chose to close it, once its lifecycle shows
+/// nothing running: background work keeps it open, with no clock that cuts it. Its end is recorded
+/// once the host and everything in its process group have exited. A host this daemon does not own
+/// is already gone with the daemon that owned it.
+#[allow(clippy::too_many_arguments)]
+async fn close_sdk_node(
+    domain: &DomainRuntime, timing: &Timing, now: i64, state: &DomainState, task: &Task, agent: &AgentId, kind: Due,
+    row: TaskClosing, owned: bool,
+) -> Result<()> {
+    let cleanup = matches!(kind, Due::Cleanup);
+    if cleanup {
+        let working = sdk_working(state, task);
+        let user_closed = matches!(post_merge_answer(domain, state, &task.id)?, Some(Card::Retry));
+        if state.post_merge_owed(task) && !user_closed {
+            let Some(work) = &task.wrap_up.post_merge_work else {
+                return hold_while_working_after_merge(domain, now, row);
+            };
+            if let Watch::Hold = watch_post_merge_work(domain, state, timing, now, task, agent, work, working, None)? {
+                return hold_while_working_after_merge(domain, now, row);
+            }
+        } else if working && task.wrap_up.cleaned_at.is_none() && !user_closed {
+            return hold_while_working_after_merge(domain, now, row);
+        }
+    }
+    forget_post_merge_check(domain, &task.id)?;
+    let stopped = if owned { blocking(|| domain.stop_sdk_host(agent)) } else { Ok(()) };
+    match stopped {
+        Ok(()) => finish_with_worktree(domain, timing, now, task, agent, row, cleanup, if owned { NodeEnd::Closed } else { NodeEnd::Gone }).await,
+        Err(why) => {
+            let why = why.to_string();
+            failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup)
+        }
+    }
+}
+
+/// Runs `wait`, which waits for processes to exit, without stalling the runtime's other tasks.
+fn blocking<T>(wait: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+        _ => wait(),
+    }
+}
+
+/// Whether the lifecycle of an SDK task shows its execution still at work: a turn, background
+/// work it owns, a continuation it owes or an input it has not taken yet.
+fn sdk_working(state: &DomainState, task: &Task) -> bool {
+    use alondra_domain::ActivityView;
+    state.lifecycle_journal.get(&task.id)
+        .and_then(|journal| alondra_core::domain::replay(&task.id, journal).ok())
+        .is_some_and(|lifecycle| matches!(lifecycle.activity(),
+            ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
+}
+
+/// What the user answered on the card about the task's work after the merge, if it was raised.
+fn post_merge_answer(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> Result<Option<Card>> {
+    let check = domain.store.lock().expect("domain store poisoned").post_merge_check(task)?;
+    Ok(check.and_then(|check| check.problem_id).map(|id| card(state, &id)))
+}
+
 /// The session is gone; the worktree Alondra made for the task goes too, which `claude rm` leaves
 /// because Claude Code did not make it. The task finishes only once it is gone, so a worktree with
 /// work not saved is a failed close and is tried again, never forgotten.
@@ -378,8 +452,10 @@ fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<(
 /// `post_merge_ask` Alondra asks the node whether it still runs; a node that is not working and
 /// does not answer within `post_merge_answer` gets a card in front of the user, who closes it or
 /// leaves it for another round. Declaring again, even with the same reason, is the answer.
+#[allow(clippy::too_many_arguments)]
 fn watch_post_merge_work(
     domain: &DomainRuntime, state: &DomainState, timing: &Timing, now: i64, task: &Task, agent: &AgentId, work: &PostMergeWork,
+    working: bool, ask: Option<&dyn Fn(&str)>,
 ) -> Result<Watch> {
     let declared_at = work.declared_at as i64;
     let stored = domain.store.lock().expect("domain store poisoned").post_merge_check(&task.id)?;
@@ -403,13 +479,15 @@ fn watch_post_merge_work(
             }
         }
     } else if let Some(asked) = check.asked_at {
-        let working = domain.live.node(&agent.0).is_some_and(|node| node.busy);
         if !working && now - asked >= millis(timing.post_merge_answer) {
             check.problem_id = raise_post_merge_card(domain, task, &work.reason, now - check.since);
         }
     } else if now - check.since >= millis(timing.post_merge_ask) {
         let text = still_working_text(&work.reason, &task.id, now - check.since, timing.post_merge_answer);
-        let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, &text, false);
+        match ask {
+            Some(ask) => ask(&text),
+            None => log!("{agent} runs through the Agent SDK and cannot be asked yet whether its work after the merge still runs"),
+        }
         check.asked_at = Some(now);
     }
     domain.store.lock().expect("domain store poisoned").save_post_merge_check(&check)?;
@@ -438,7 +516,7 @@ Alondra asks the user whether to close this session.",
 }
 
 fn raise_post_merge_card(domain: &DomainRuntime, task: &Task, reason: &str, held: i64) -> Option<String> {
-    let id = format!("problem-post-merge-{}-{}", task.id, crate::auth::random_hex(6));
+    let id = format!("{POST_MERGE_PROBLEM_PREFIX}{}-{}", task.id, crate::auth::random_hex(6));
     let need = clip(&format!("Decide whether to close the session of “{}”", task.title), CardSpec::NEED_MAX);
     let why = clip(&format!(
         "Its PR is merged and its node has said for {} that it is still working: “{reason}”. It does not answer whether it still is.",
@@ -452,8 +530,8 @@ a few hours.",
         held = elapsed(held),
     );
     let options = vec![
-        QuestionOption { id: "close".into(), label: "Close the node".into(), description: None },
-        QuestionOption { id: "leave".into(), label: "Leave it".into(), description: None },
+        QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the node".into(), description: None },
+        QuestionOption { id: POST_MERGE_LEAVE.into(), label: "Leave it".into(), description: None },
     ];
     match domain.raise_problem(&id, Some(&format!("post-merge:{}", task.id)), Scope::Task { task_id: task.id.clone() }, need, why, diagnosis, options) {
         Ok(_) => Some(id),

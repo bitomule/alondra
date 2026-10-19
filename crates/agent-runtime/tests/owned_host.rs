@@ -1,4 +1,5 @@
 use alondra_agent_runtime::owned_host::{AdoptedHost, OwnedHost, VerifiedArtifact};
+use alondra_process_group::Member;
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -170,17 +171,49 @@ fn failed_spawn_clears_only_fresh_material_and_releases_all_lock_copies() {
     drop(file);
     assert!(!directory.join("s").exists());
 }
-#[test]
-fn observed_host_exit_and_wait_do_not_require_descendant_pipe_eof() {
-    let directory = support::directory();
-    let mut running = Running::new(&directory);
+fn identity(directory: &support::Directory) -> (i32, i32) {
+    let line = message(&directory.join("s"), b"identity\n").unwrap();
+    let (pid, group) = line.trim().split_once(':').unwrap();
+    (pid.parse().unwrap(), group.parse().unwrap())
+}
+fn spawn_descendant(running: &mut Running) -> Member {
     running.descendant = true;
-    let child = message(&directory.join("s"), b"descendant\n").unwrap();
-    assert!(child.trim().parse::<u32>().unwrap() > 0);
+    let pid = message(&running.directory.join("s"), b"descendant\n")
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
     assert_eq!(
-        message(&directory.join("d"), b"ping\n").unwrap(),
+        message(&running.directory.join("d"), b"ping\n").unwrap(),
         "alive:false:false\n"
     );
+    let (_, group) = identity(running.directory);
+    alondra_process_group::members(group)
+        .unwrap()
+        .into_iter()
+        .find(|member| member.pid == pid)
+        .expect("the descendant runs in the host's process group")
+}
+fn assert_ended(running: &mut Running, descendant: &Member) {
+    assert!(
+        !alondra_process_group::alive(descendant).unwrap(),
+        "descendant-fixture {descendant} survived the leader"
+    );
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(running.directory.join("descendant.done"))
+        .unwrap()
+        .lock()
+        .unwrap();
+    running.descendant = false;
+    assert!(UnixStream::connect(running.directory.join("d")).is_err());
+}
+#[test]
+fn wait_ends_what_the_host_left_in_its_group_before_reaping_it() {
+    let directory = support::directory();
+    let mut running = Running::new(&directory);
+    let descendant = spawn_descendant(&mut running);
     message(&directory.join("s"), b"exit\n").unwrap();
     let status = running.host.as_mut().unwrap().wait().unwrap();
     assert!(status.success());
@@ -188,12 +221,22 @@ fn observed_host_exit_and_wait_do_not_require_descendant_pipe_eof() {
         running.host.as_mut().unwrap().observed_exit().unwrap(),
         Some(status)
     );
-    assert_eq!(
-        message(&directory.join("d"), b"ping\n").unwrap(),
-        "alive:true:true\n",
-        "both cancelled readers produced real EPIPE while fixture work remains alive"
-    );
-    running.stop_descendant().unwrap();
+    assert_ended(&mut running, &descendant);
+}
+#[test]
+fn a_host_killed_before_its_own_cleanup_still_has_its_group_ended() {
+    let directory = support::directory();
+    let mut running = Running::new(&directory);
+    let descendant = spawn_descendant(&mut running);
+    let (leader, _) = identity(&directory);
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(leader).unwrap(),
+        rustix::process::Signal::KILL,
+    )
+    .unwrap();
+    let status = running.host.as_mut().unwrap().wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert_ended(&mut running, &descendant);
 }
 #[test]
 fn owned_stop_is_live_then_exited_idempotent_and_never_signals_after_reaping() {

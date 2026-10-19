@@ -299,6 +299,9 @@ impl FleetGate {
 
     /// The user paused a working node: it stops at once and only the user brings it back.
     pub(crate) fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
+        if crate::fleet_pause::through_sdk(domain, session) {
+            return Err("This node runs through the Agent SDK and cannot be paused yet: answer its card, or cancel its task");
+        }
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
         let mut inner = self.lock_with(domain);
         crate::fleet_pause::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);

@@ -41,6 +41,19 @@ def result(message, failed=False):
         lifecycle(entry, 'completed')
     pending.clear()
 
+def consume(message):
+    global serial
+    serial += 1
+    send(dict(type='assistant', session_id=session_id,
+              uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+              parent_tool_use_id=None,
+              message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant',
+                           model='fixture', content=[dict(type='text', text='Fixture consumed input')],
+                           stop_reason=None, stop_sequence=None,
+                           usage=dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)),
+              user_message_uuid=message['uuid'],
+              user_message_uuids=[entry['uuid'] for entry in pending]))
+
 for raw in sys.stdin:
     message = json.loads(raw)
     if message['type'] == 'control_request':
@@ -79,20 +92,13 @@ for raw in sys.stdin:
         elif text == 'failed-delivery':
             result(message, failed=True)
         elif text == 'consume-and-hold':
-            serial += 1
-            send(dict(type='assistant', session_id=session_id,
-                      uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
-                      parent_tool_use_id=None,
-                      message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant',
-                                   model='fixture', content=[dict(type='text', text='Fixture consumed input')],
-                                   stop_reason=None, stop_sequence=None,
-                                   usage=dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)),
-                      user_message_uuid=message['uuid'],
-                      user_message_uuids=[entry['uuid'] for entry in pending]))
+            consume(message)
         elif text == 'permission':
             permission = message
             send(dict(type='control_request', request_id='fixture-permission', request=dict(subtype='can_use_tool', tool_name='Bash', input=dict(command='fixture'), tool_use_id='fixture-tool')))
         elif text == 'background':
+            # Like a native turn that starts an agent of its own: it takes the input, then the work starts.
+            consume(message)
             send(dict(type='system', subtype='task_started', task_id='fixture-background', description='Fixture owned work', task_type='local_agent', uuid='00000000-0000-4000-8000-000000000101', session_id=session_id))
         else:
             if len(pending) > 1:

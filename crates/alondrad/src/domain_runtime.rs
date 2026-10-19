@@ -107,6 +107,31 @@ impl DomainRuntime {
         let _ = self.sdk.set((backend, Arc::downgrade(self)));
     }
     /// The SDK backend and the runtime its owners run on, when this daemon has one.
+    /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
+    /// daemon that owns it.
+    pub(crate) fn stop_sdk_owners(&self) {
+        let owners = std::mem::take(&mut *self.sdk_owners.lock().expect("SDK owners poisoned"));
+        log!("stopping {} SDK host(s)", owners.len());
+        for mut owner in owners {
+            match owner.stop() {
+                Ok(()) => log!("the SDK host of {} and its process group exited", owner.agent()),
+                Err(error) => log!("the SDK host of {} did not stop with the daemon: {error}", owner.agent()),
+            }
+        }
+    }
+    /// Whether this daemon owns the SDK host of `agent`.
+    pub(crate) fn owns_sdk_host(&self, agent: &AgentId) -> bool {
+        self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent)
+    }
+    /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
+    /// with nothing to stop when this daemon owns no host for it.
+    pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
+        let owner = {
+            let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
+            owners.iter().position(|owner| owner.agent() == agent).map(|at| owners.remove(at))
+        };
+        owner.map_or(Ok(()), |mut owner| owner.stop())
+    }
     pub(crate) fn sdk(&self) -> Option<(&crate::sdk_owner::SdkBackend, Arc<DomainRuntime>)> {
         let (backend, runtime) = self.sdk.get()?;
         Some((backend, runtime.upgrade()?))

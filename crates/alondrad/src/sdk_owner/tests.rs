@@ -94,11 +94,15 @@ impl Slice {
     }
 
     fn launch(&self) -> Driver {
+        self.launch_with("Write the release notes")
+    }
+
+    fn launch_with(&self, prompt: &str) -> Driver {
         start(Arc::clone(&self.domain), &self.backend, Launch {
             task: TASK.into(),
             name: "Release notes".into(),
             directory: self.worktree.to_str().unwrap().into(),
-            prompt: "Write the release notes".into(),
+            prompt: prompt.into(),
         })
         .unwrap()
     }
@@ -348,6 +352,77 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     driver.stop().unwrap();
 }
 
+#[test]
+fn stopping_the_owners_leaves_no_process_of_their_hosts() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let group = driver.worker.host_group().expect("the driver has its host");
+    let processes = alondra_process_group::members(group).unwrap();
+    assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.domain.stop_sdk_owners();
+    let left: Vec<String> =
+        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "SDK host processes survived the daemon shutdown: {left:?}");
+}
+
+/// The closer reaches an SDK node only through its owner: `claude rm` and the session listing are
+/// never asked about one.
+struct NoClaudeSessions;
+impl crate::node_close::Sessions for NoClaudeSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+        panic!("the closer ran claude {args:?} for an SDK node")
+    }
+    fn leftovers<'a>(&'a self, session_id: &'a str) -> crate::node_close::Answer<'a, Option<String>> {
+        panic!("the closer looked for leftovers of {session_id}, an SDK node")
+    }
+}
+
+#[tokio::test]
+async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the_task() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("background");
+    while !slice.domain.state().unwrap().lifecycle_journal[&TASK.into()].iter().any(|record| matches!(record, LifecycleRecord::WorkStarted { .. })) {
+        driver.observe().unwrap();
+    }
+    let group = driver.worker.host_group().unwrap();
+    let processes = alondra_process_group::members(group).unwrap();
+    assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
+    let agent = driver.agent().clone();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
+    assert!(task.ending(), "the cancelled task waits for the receipts of its node's end");
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)), "the cancelled task with background work ended");
+    assert!(!slice.domain.owns_sdk_host(&agent));
+    let left: Vec<String> =
+        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
+}
+
+#[tokio::test]
+async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_the_task() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let group = driver.worker.host_group().unwrap();
+    let processes = alondra_process_group::members(group).unwrap();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    let state = slice.domain.state().unwrap();
+    let cancelled = slice.domain.execute_with(&user(), &envelope(&state, "client-cancel", Command::CancelTask { task_id: TASK.into() }), None, None, || Ok(()));
+    assert!(cancelled.is_ok(), "the user's cancellation commits: {cancelled:?}");
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
+    let left: Vec<String> =
+        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
+}
+
 /// The owner generation currently fencing the slice's execution, read straight from SQL.
 fn owner_generation(database: &Path) -> i64 {
     Connection::open(database).unwrap().query_row("SELECT owner_generation FROM provider_execution_owners", [], |row| row.get(0)).unwrap()
@@ -375,6 +450,7 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     slice.settle(&mut driver);
     assert_eq!(slice.prompts(), ["Write the release notes"], "the launch prompt reached the host once");
     assert_eq!(owner_generation(&slice.database), 1, "the launch owned the execution as generation 1");
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
     // The daemon dies: drop its driver without stopping the host, which keeps running.
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
@@ -388,6 +464,9 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "the adopted turn ended with its own card");
     adopted.stop().unwrap();
+    let left: Vec<String> =
+        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the adopted host's processes survived its stop: {left:?}");
 }
 
 // B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the

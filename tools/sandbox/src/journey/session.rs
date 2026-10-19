@@ -74,7 +74,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         state(report, &user, "t-s3", WORKING)?;
         act(report, fakes, &node, "the node delivers PR #23", &Step::work(23, "restart.txt"))?;
         let (card, _) = review_card(report, &user, &node)?;
-        report.step("Mac 1's daemon stops and starts again on the same HOME", || restart(sandbox, 1))?;
+        report.step("Mac 1's daemon dies and starts again on the same HOME", || restart(sandbox, 1))?;
         wait(report, "the review card is still in Inbox", || {
             let inbox = user.inbox()?;
             Ok((inbox.iter().any(|id| *id == card).then_some(()), format!("{inbox:?}")))
@@ -114,12 +114,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     });
 }
 
-/// Stops Mac `number`'s daemon and starts it again with the script the sandbox started it with.
+/// Kills Mac `number`'s daemon, as a crash would, and starts it again with the script the sandbox
+/// started it with. A crash leaves the SDK hosts running for the daemon that comes back to adopt;
+/// a daemon that is only stopped stops them.
 pub(super) fn restart(sandbox: &Sandbox, number: usize) -> Result<()> {
     let target = sandbox.mac(number)?;
     let home = sandbox.dir.join(format!("mac-{number}"));
     let pid: u32 = fs::read_to_string(home.join("alondrad.pid"))?.trim().parse().context("alondrad.pid")?;
-    Command::new("kill").arg(pid.to_string()).status()?;
+    Command::new("kill").args(["-KILL", &pid.to_string()]).status()?;
     let daemon = format!("{}/daemon", target.local);
     let agent = crate::sandbox::http();
     wait_for("the daemon to stop", Duration::from_secs(30), || Ok(agent.get(&daemon).call().is_err().then_some(())))?;

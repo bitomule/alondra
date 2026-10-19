@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alondra-process-group.workspace = true
 alondra-store.workspace = true
 libc.workspace = true
 rustix = { version = "1.1.5", features = ["process", "event", "net"] }

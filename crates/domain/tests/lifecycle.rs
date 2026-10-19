@@ -1817,3 +1817,44 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn work_after_the_merge_is_owed_from_its_declaration_and_only_a_fact_ends_it() {
+    let mut task = running();
+    apply(&mut task, Event::PostMergeDeclared { operation: operation("release") });
+    assert_eq!(task.post_merge(), Some(&operation("release")));
+    assert_eq!(
+        task.apply(task.revision(), Event::PostMergeDeclared { operation: operation("again") }),
+        Err(Refusal::DuplicateObligation)
+    );
+    apply(
+        &mut task,
+        Event::Finish {
+            intent: FinishIntent::Cancel,
+            cleanup: operation("cleanup"),
+            post_merge: None,
+        },
+    );
+    assert!(task.drain().any(|obligation| *obligation == DrainObligation::PostMerge(operation("release"))));
+    assert_eq!(
+        task.apply(
+            task.revision(),
+            Event::DrainObserved { obligation: DrainObligation::PostMerge(operation("release")) }
+        ),
+        Err(Refusal::DrainWithoutFact),
+        "no drain ends work after the merge without the fact that ended it"
+    );
+    for obligation in [
+        DrainObligation::Execution(InstanceId::new("instance").unwrap()),
+        DrainObligation::Cleanup(operation("cleanup")),
+    ] {
+        apply(&mut task, Event::DrainObserved { obligation });
+    }
+    assert_eq!(task.phase(), TaskPhase::Finishing, "the ending still owes the work after the merge");
+    apply(
+        &mut task,
+        Event::PostMergeEnded { operation: operation("release"), fact: PostMergeFact::UserDecision },
+    );
+    assert_eq!(task.phase(), TaskPhase::Cancelled);
+    assert_eq!(task.post_merge(), None);
+}

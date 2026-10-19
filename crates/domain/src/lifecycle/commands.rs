@@ -304,71 +304,24 @@ impl TaskLifecycle {
                 cleanup,
                 post_merge,
             } => self.finish(intent, cleanup, post_merge)?,
-            Event::DrainObserved { obligation } => {
-                let State::Finishing(finishing) = &mut self.state else {
+            Event::PostMergeDeclared { operation } => {
+                if matches!(self.state, State::Unstarted(_) | State::Finishing(_) | State::Completed | State::Cancelled) {
                     return Err(Refusal::InvalidState);
-                };
-                let mut remaining = finishing.remaining.values();
-                if !remaining.remove(&obligation) {
-                    return Err(Refusal::UnknownObligation);
                 }
-                if let Some(execution) = finishing.session.execution_mut() {
-                    match &obligation {
-                        DrainObligation::Execution(_) => execution.resource = ResourceEvidence::Released,
-                        DrainObligation::Work(ended) => {
-                            execution.activity = match &execution.activity {
-                                Activity::Turn {
-                                    id,
-                                    work,
-                                    continuations,
-                                } => {
-                                    let mut work = work.clone();
-                                    work.remove(ended);
-                                    Activity::Turn {
-                                        id: id.clone(),
-                                        work,
-                                        continuations: continuations.clone(),
-                                    }
-                                }
-                                Activity::OwnWork {
-                                    work,
-                                    continuations,
-                                } => {
-                                    let mut work = work.values();
-                                    work.remove(ended);
-                                    if work.is_empty() {
-                                        Activity::Resting
-                                    } else {
-                                        Activity::OwnWork {
-                                            work: NonEmpty::new(work)?,
-                                            continuations: continuations.clone(),
-                                        }
-                                    }
-                                }
-                                activity => activity.clone(),
-                            };
-                        }
-                        DrainObligation::Callback(id) => {
-                            execution.callbacks.retain(|state| callback_id(state) != id);
-                            remove_callback_wake(&mut execution.activity, id)?;
-                        }
-                        DrainObligation::ExternalEffect(operation) => {
-                            execution.effects.remove(operation);
-                        }
-                        DrainObligation::Merge(_)
-                        | DrainObligation::Cleanup(_)
-                        | DrainObligation::PostMerge(_) => {}
-                    }
+                if self.post_merge.is_some() {
+                    return Err(Refusal::DuplicateObligation);
                 }
-                if remaining.is_empty() {
-                    self.state = match finishing.intent {
-                        FinishIntent::Complete => State::Completed,
-                        FinishIntent::Cancel => State::Cancelled,
-                    };
+                self.post_merge = Some(operation);
+            }
+            Event::PostMergeEnded { operation, fact: _ } => {
+                if self.post_merge.as_ref() == Some(&operation) {
+                    self.post_merge = None;
                 } else {
-                    finishing.remaining = NonEmpty::new(remaining)?;
+                    self.discharge(DrainObligation::PostMerge(operation))?;
                 }
             }
+            Event::DrainObserved { obligation: DrainObligation::PostMerge(_) } => return Err(Refusal::DrainWithoutFact),
+            Event::DrainObserved { obligation } => self.discharge(obligation)?,
             Event::RetireReleasedExecution {
                 problem_card,
                 input,
@@ -684,6 +637,74 @@ impl TaskLifecycle {
         Ok(())
     }
 
+    /// Takes `obligation` off what the ending still owes; the last one ends the task.
+    fn discharge(&mut self, obligation: DrainObligation) -> Result<(), Refusal> {
+        let State::Finishing(finishing) = &mut self.state else {
+            return Err(Refusal::InvalidState);
+        };
+        let mut remaining = finishing.remaining.values();
+        if !remaining.remove(&obligation) {
+            return Err(Refusal::UnknownObligation);
+        }
+        if let Some(execution) = finishing.session.execution_mut() {
+            match &obligation {
+                DrainObligation::Execution(_) => execution.resource = ResourceEvidence::Released,
+                DrainObligation::Work(ended) => {
+                    execution.activity = match &execution.activity {
+                        Activity::Turn {
+                            id,
+                            work,
+                            continuations,
+                        } => {
+                            let mut work = work.clone();
+                            work.remove(ended);
+                            Activity::Turn {
+                                id: id.clone(),
+                                work,
+                                continuations: continuations.clone(),
+                            }
+                        }
+                        Activity::OwnWork {
+                            work,
+                            continuations,
+                        } => {
+                            let mut work = work.values();
+                            work.remove(ended);
+                            if work.is_empty() {
+                                Activity::Resting
+                            } else {
+                                Activity::OwnWork {
+                                    work: NonEmpty::new(work)?,
+                                    continuations: continuations.clone(),
+                                }
+                            }
+                        }
+                        activity => activity.clone(),
+                    };
+                }
+                DrainObligation::Callback(id) => {
+                    execution.callbacks.retain(|state| callback_id(state) != id);
+                    remove_callback_wake(&mut execution.activity, id)?;
+                }
+                DrainObligation::ExternalEffect(operation) => {
+                    execution.effects.remove(operation);
+                }
+                DrainObligation::Merge(_)
+                | DrainObligation::Cleanup(_)
+                | DrainObligation::PostMerge(_) => {}
+            }
+        }
+        if remaining.is_empty() {
+            self.state = match finishing.intent {
+                FinishIntent::Complete => State::Completed,
+                FinishIntent::Cancel => State::Cancelled,
+            };
+        } else {
+            finishing.remaining = NonEmpty::new(remaining)?;
+        }
+        Ok(())
+    }
+
     fn finish(
         &mut self,
         intent: FinishIntent,
@@ -720,9 +741,8 @@ impl TaskLifecycle {
             .cloned()
             .map_or(Session::Absent(VecDeque::new()), Session::Present);
         let mut remaining = BTreeSet::from([DrainObligation::Cleanup(cleanup)]);
-        if let Some(operation) = post_merge {
-            remaining.insert(DrainObligation::PostMerge(operation));
-        }
+        let declared = self.post_merge.take();
+        remaining.extend(post_merge.into_iter().chain(declared).map(DrainObligation::PostMerge));
         if let Some(execution) = session.execution() {
             if execution.resource != ResourceEvidence::Released {
                 remaining.insert(DrainObligation::Execution(execution.stamp.instance().clone()));

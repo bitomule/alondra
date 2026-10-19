@@ -415,13 +415,17 @@ fn stale(error: &anyhow::Error) -> bool {
 pub(crate) struct Owner {
     stopped: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    host: Option<alondra_agent_runtime::owned_host::HostStop>,
+    agent: AgentId,
+    thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
 }
 
 impl Owner {
     pub(crate) fn spawn(mut driver: Driver) -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
         let domain = Arc::clone(&driver.domain);
+        let host = driver.worker.stopper();
+        let agent = driver.agent.clone();
         let flag = Arc::clone(&stopped);
         let thread = std::thread::Builder::new()
             .name(format!("sdk-owner-{}", driver.task))
@@ -433,21 +437,49 @@ impl Owner {
                         break;
                     }
                 }
-                // The daemon detaches from the host, leaving it and its Claude running: a daemon
-                // that comes back adopts them. Stopping the host when the task ends is phase 5d.
+                // Told to stop, the owner stops its host and waits for it. Ended otherwise, it
+                // detaches and leaves the host and its Claude running for a daemon that comes back
+                // to adopt, unless the host it launched has already exited: then it ends what is
+                // left of the host's group and reaps it.
+                if !told() && !driver.worker.host_exited() {
+                    return Ok(());
+                }
+                let stopped = driver.stop();
+                if let Err(error) = &stopped {
+                    log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
+                }
+                stopped
             })
             .expect("spawning the SDK owner");
-        Self { stopped, domain, thread: Some(thread) }
+        Self { stopped, domain, host, agent, thread: Some(thread) }
+    }
+
+    pub(crate) fn agent(&self) -> &AgentId {
+        &self.agent
+    }
+
+    /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
+    /// until the owner has seen the host exit and its whole process group end. An error says the
+    /// group did not empty, or the owner could not see it end.
+    pub(crate) fn stop(&mut self) -> Result<(), Failed> {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.domain.seals.wake();
+        if let Some(host) = &self.host
+            && let Err(error) = host.request()
+        {
+            log!("could not ask the SDK host of {} to stop: {error}", self.agent);
+        }
+        match self.thread.take().map(std::thread::JoinHandle::join) {
+            None => Ok(()),
+            Some(Ok(stopped)) => stopped,
+            Some(Err(_)) => Err(Failed(format!("the SDK owner of {} panicked", self.agent))),
+        }
     }
 }
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.domain.seals.wake();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.stop();
     }
 }
 

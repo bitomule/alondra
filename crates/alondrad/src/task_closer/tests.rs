@@ -684,6 +684,20 @@ async fn after_three_hours_alondra_asks_the_node_and_an_idle_node_that_does_not_
 }
 
 #[tokio::test]
+async fn the_clock_only_asks_and_never_ends_the_work_after_the_merge() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    for now in [T0, T0 + 3 * HOUR, T0 + 3 * HOUR + 30 * MINUTE, T0 + 8 * HOUR, T0 + 13 * HOUR + 30 * MINUTE] {
+        rig.pass(now).await;
+    }
+    let state = rig.domain.state().unwrap();
+    let owed = state.post_merge_owed(&rig.task());
+    assert!(owed && rig.sessions.removals() == 0 && rig.task().state != TaskState::Done,
+        "post-merge obligation discharged without a fact: owed {owed}, node closed {} times, task {:?}", rig.sessions.removals(), rig.task().state);
+    assert_eq!((rig.asked_whether_it_still_runs(), rig.post_merge_cards().len()), (1, 1), "the clock scheduled the question and the card");
+}
+
+#[tokio::test]
 async fn a_node_that_declares_again_or_is_working_never_reaches_the_user_and_leave_it_starts_another_round() {
     let rig = Rig::new(thirty_minutes());
     rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));

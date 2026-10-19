@@ -620,6 +620,9 @@ async fn execute_external(
         }
         Verb::Pause => {
             let now = alondra_core::now_millis();
+            if domain.read().index().node(&AgentId(action.subject.clone())).is_some_and(|node| node.through_sdk) {
+                return Ok(error_value_lang(lang, "unsupported", "This node runs through the Agent SDK and cannot be paused yet: answer its card, or cancel its task"));
+            }
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
                 domain.live.gate.pause_by_user(domain, &action.subject, now)
             } else {

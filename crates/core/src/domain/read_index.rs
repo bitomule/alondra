@@ -605,6 +605,12 @@ fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &AgentId) -> b
 /// on demand, card by card and task by task.
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
+    for task in state.tasks.values() {
+        let owed = state.lifecycle_journal.get(&task.id)
+            .and_then(|journal| super::replay(&task.id, journal).ok())
+            .is_some_and(|lifecycle| lifecycle.post_merge().is_some());
+        assert_eq!(task.wrap_up.post_merge_work.is_some(), owed, "the work after the merge {} shows matches what its lifecycle owes", task.id);
+    }
     let index = ReadIndex::build(state);
     let ids = |items: &[InboxItem]| -> Vec<InteractionId> {
         items.iter().map(|item| {

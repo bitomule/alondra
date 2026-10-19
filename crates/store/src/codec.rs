@@ -101,6 +101,40 @@ impl From<PlanReviewOutcomeRecord> for PlanReviewOutcome {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+pub(super) enum PostMergeFactRecord {
+    NodeDeclaredEnd,
+    Cleanup,
+    UserDecision,
+    SessionOver,
+}
+impl From<&PostMergeFact> for PostMergeFactRecord {
+    fn from(fact: &PostMergeFact) -> Self {
+        match fact {
+            PostMergeFact::NodeDeclaredEnd => Self::NodeDeclaredEnd,
+            PostMergeFact::Cleanup => Self::Cleanup,
+            PostMergeFact::UserDecision => Self::UserDecision,
+            PostMergeFact::SessionOver => Self::SessionOver,
+        }
+    }
+}
+impl From<PostMergeFactRecord> for PostMergeFact {
+    fn from(fact: PostMergeFactRecord) -> Self {
+        match fact {
+            PostMergeFactRecord::NodeDeclaredEnd => Self::NodeDeclaredEnd,
+            PostMergeFactRecord::Cleanup => Self::Cleanup,
+            PostMergeFactRecord::UserDecision => Self::UserDecision,
+            PostMergeFactRecord::SessionOver => Self::SessionOver,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub(super) enum FinishRecord {
     Complete,
     Cancel,
@@ -473,6 +507,13 @@ pub(super) enum EventRecord {
     DrainObserved {
         obligation: DrainRecord,
     },
+    PostMergeDeclared {
+        operation: String,
+    },
+    PostMergeEnded {
+        operation: String,
+        fact: PostMergeFactRecord,
+    },
     RetireReleasedExecution {
         problem_card: String,
         input: String,
@@ -571,6 +612,13 @@ impl From<&Event> for EventRecord {
             },
             Event::DrainObserved { obligation } => Self::DrainObserved {
                 obligation: DrainRecord::from(obligation),
+            },
+            Event::PostMergeDeclared { operation } => Self::PostMergeDeclared {
+                operation: operation.as_str().to_owned(),
+            },
+            Event::PostMergeEnded { operation, fact } => Self::PostMergeEnded {
+                operation: operation.as_str().to_owned(),
+                fact: fact.into(),
             },
             Event::RetireReleasedExecution {
                 problem_card,
@@ -683,6 +731,13 @@ impl EventRecord {
             },
             EventRecord::DrainObserved { obligation } => Event::DrainObserved {
                 obligation: obligation.decode()?,
+            },
+            EventRecord::PostMergeDeclared { operation } => Event::PostMergeDeclared {
+                operation: OperationId::new(operation).map_err(Error::from)?,
+            },
+            EventRecord::PostMergeEnded { operation, fact } => Event::PostMergeEnded {
+                operation: OperationId::new(operation).map_err(Error::from)?,
+                fact: fact.into(),
             },
             EventRecord::RetireReleasedExecution {
                 problem_card,
@@ -887,6 +942,26 @@ mod tests {
                 obligation: DrainObligation::Cleanup(OperationId::new("cleanup").unwrap()),
             },
         );
+        roundtrip(
+            &current,
+            Event::PostMergeDeclared {
+                operation: OperationId::new("post_merge").unwrap(),
+            },
+        );
+        for fact in [
+            PostMergeFact::NodeDeclaredEnd,
+            PostMergeFact::Cleanup,
+            PostMergeFact::UserDecision,
+            PostMergeFact::SessionOver,
+        ] {
+            roundtrip(
+                &current,
+                Event::PostMergeEnded {
+                    operation: OperationId::new("post_merge").unwrap(),
+                    fact,
+                },
+            );
+        }
         roundtrip(
             &current,
             Event::RetireReleasedExecution {

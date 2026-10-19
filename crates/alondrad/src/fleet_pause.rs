@@ -125,8 +125,19 @@ pub(crate) fn session_of(state: &DomainState, task: &TaskId) -> Option<String> {
     state.tasks.get(task)?.agent_id.as_ref().map(|agent| agent.0.clone())
 }
 
-/// Stops a node's turn and records it as paused.
+/// Whether `session` is a node that runs through the Agent SDK: its processes are its owner's to
+/// stop, never a push's or the process table's.
+pub(crate) fn through_sdk(domain: &DomainRuntime, session: &str) -> bool {
+    domain.read().index().node(&alondra_core::domain::AgentId(session.to_owned())).is_some_and(|node| node.through_sdk)
+}
+
+/// Stops a node's turn and records it as paused. A node that runs through the Agent SDK is never
+/// paused this way.
 pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, task: TaskId, reason: Reason, now: Millis) {
+    if through_sdk(domain, session) {
+        log!("{session} runs through the Agent SDK: it is not paused by interrupting it");
+        return;
+    }
     let cut = cut_of(domain, session);
     let turn_since = domain.live.mods.session(session).and_then(|reported| reported.working_since);
     if domain.live.pushes.interrupt(session).is_err() {
@@ -169,6 +180,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
 fn clean_up(domain: &DomainRuntime, pauses: &mut Pauses, now: Millis) {
     let due: Vec<(String, Cleanup)> = pauses.paused.iter()
         .filter(|(_, paused)| matches!(paused.reason, Reason::Memory | Reason::ByUser))
+        .filter(|(session, _)| !through_sdk(domain, session))
         .filter(|(_, paused)| match paused.cleanup {
             Cleanup::Pending => now - paused.since >= TERMINATE_AFTER,
             Cleanup::Terminated => now - paused.since >= KILL_AFTER,

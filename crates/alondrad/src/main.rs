@@ -594,6 +594,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         pr_poll,
     ));
     tokio::spawn(machine::run(gauges, state_domain.clone()));
+    let owners = state_domain.clone();
     tokio::spawn(client.run(Arc::new(client_routes::GhView)));
     let orchestrator = config.wake.then(|| {
         tokio::spawn(domain_orchestrator::run(
@@ -607,9 +608,37 @@ async fn run_domain(config: &Config) -> Result<()> {
         .map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
-    tokio::select! {
+    let stopped = tokio::select! {
         stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector) => stopped,
         () = replaced(config) => relaunch_now(),
+        signal = terminated() => {
+            log!("{signal} received: stopping the SDK hosts, then exiting");
+            stop_sdk_owners(owners).await;
+            std::process::exit(0)
+        }
+    };
+    stopped
+}
+
+/// Resolves on the first SIGTERM or SIGINT, naming it.
+async fn terminated() -> &'static str {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut interrupt)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+        log!("could not listen for SIGTERM and SIGINT; the daemon stops only when killed");
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = interrupt.recv() => "SIGINT",
+    }
+}
+
+/// A daemon that is stopped stops its SDK hosts and waits for each to exit. One that relaunches
+/// into a new binary, or exits on an error, leaves them running for the daemon that comes back to
+/// adopt.
+async fn stop_sdk_owners(domain: Arc<domain_runtime::DomainRuntime>) {
+    if let Err(error) = tokio::task::spawn_blocking(move || domain.stop_sdk_owners()).await {
+        log!("stopping the SDK hosts failed: {error}");
     }
 }
 

@@ -108,6 +108,12 @@ pub const START_RETRY: &str = "retry";
 pub const START_CANCEL: &str = "cancel";
 pub const START_WITHOUT: &str = "start_without";
 
+/// The card that asks the user whether to close a node that says it still runs work after its PR
+/// merged and does not answer whether it still does. Choosing `POST_MERGE_CLOSE` ends that work.
+pub const POST_MERGE_PROBLEM_PREFIX: &str = "problem-post-merge-";
+pub const POST_MERGE_CLOSE: &str = "close";
+pub const POST_MERGE_LEAVE: &str = "leave";
+
 /// How many times Alondra starts a failed task again by itself, and the wait before each.
 pub const START_RETRIES: [i64; 3] = [60_000, 5 * 60_000, 15 * 60_000];
 
