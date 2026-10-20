@@ -66,7 +66,10 @@ pub(crate) async fn deliver_from_runtime(
     waited: Duration,
 ) -> Result<()> {
     let to_sdk_node = message.recipient_kind == "agent" && domain.state().is_ok_and(|state| {
-        message.agent_id.as_ref().is_some_and(|agent| crate::sdk_owner::runs_through_sdk(&state, &AgentId(agent.clone())))
+        message.agent_id.as_ref().is_some_and(|agent| {
+            let agent = AgentId(agent.clone());
+            crate::sdk_owner::runs_through_sdk(&state, &agent) || crate::sdk_handover::successor(domain, &agent).is_some()
+        })
     });
     // A node of `claude --bg` takes its messages through its mod's connection, and the orchestrator
     // through its own delivery.
@@ -102,6 +105,7 @@ fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result
     let agent = message.agent_id.clone().ok_or((State::Discarded, "no_agent"))?;
     let task = message.task_id.clone().map(TaskId::from)
         .or_else(|| state.tasks.values().find(|t| t.agent_id.as_ref().is_some_and(|node| node.0 == agent) && !t.state.terminal()).map(|t| t.id.clone()))
+        .or_else(|| crate::sdk_handover::successor(domain, &AgentId(agent.clone())).map(|(task, _)| task))
         .ok_or((State::Discarded, "no_task"))?;
     let text = crate::domain_transport::render(&state, message);
     match crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, &text, &format!("tell-outbox-{}", message.id)) {

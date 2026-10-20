@@ -268,6 +268,12 @@ impl<'connection> OwnerTransaction<'connection> {
         pending.settle(&mut self.journal).map_err(application_error)
     }
 
+    /// Runs `step` on this transaction's connection inside the journal's guard.
+    pub(super) fn sql<T>(&mut self, step: impl FnOnce(&Connection) -> anyhow::Result<T>) -> std::result::Result<T, StoreError> {
+        let conn = self.conn;
+        self.journal.inspect(|| step(conn).map_err(StoreError::Storage))
+    }
+
     /// After `AdmitExecution`, what launches it, in the same transaction: the task's worktree,
     /// the text of its first input with the provider's metadata for it, the launch's dispatch in
     /// that worktree and the owner's reservation. The commit issues the launch permit and grant.
@@ -326,6 +332,11 @@ impl<'connection> OwnerTransaction<'connection> {
                 .map_err(|error| StoreError::Storage(error.into()))
         })?;
         Ok(Adoption { stamp, directory, commands, controls })
+    }
+
+    /// The commit issues again the permit of the task's next unclaimed dispatch.
+    pub(crate) fn reissue_permit(&mut self, task: &TaskId) -> std::result::Result<(), StoreError> {
+        Ok(self.journal.reissue_permit(task)?)
     }
 
     /// Resolves a claimed dispatch with the host's answer, fenced by the generation it was

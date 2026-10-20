@@ -55,6 +55,9 @@ fn kept(candidate: &Candidate, reason: &str, detail: Option<&str>) -> Value {
 }
 
 fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &AgentId, now: i64) -> Option<(Why, Option<String>)> {
+    if crate::sdk_handover::moved(domain, agent) {
+        return None;
+    }
     let tasks: Vec<&Task> = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).collect();
     let ended = |task: &&Task| task.over();
     if !tasks.is_empty() {
@@ -109,7 +112,7 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
         let node = domain.live.node(session);
         if node.as_ref().is_some_and(|node| node.is_orchestrator) || !domain.launched_by_alondra(&known.id).unwrap_or(false)
             || !crate::node_revival::has_open_task(domain, session) || domain.live.mods.connected(session)
-            || !crate::node_revival::session_ended_in(domain, claude_home, session)
+            || !crate::node_revival::session_ended_in(domain, claude_home, session) || crate::sdk_handover::moved(domain, &known.id)
         {
             continue;
         }

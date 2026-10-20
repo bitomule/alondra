@@ -755,6 +755,16 @@ impl<'connection> LifecycleTransaction<'connection> {
         }
         provider_binding::for_execution(&self.transaction, stamp)
     }
+    /// The commit issues the permit of the task's next dispatch again: one a daemon that ended
+    /// before claiming it never sent, whose permit lived only in that daemon.
+    pub fn reissue_permit(&mut self, task: &TaskId) -> Result<()> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            through_sdk(aggregate.execution().ok_or(Error::MissingIntent)?)?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
     pub fn reserve_owner(&mut self, stamp: &ExecutionStamp, expected_previous: u64) -> Result<()> {
         staging!(self, {
             if self.owners.iter().any(|owner| owner.execution == *stamp) {

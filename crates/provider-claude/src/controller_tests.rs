@@ -91,6 +91,7 @@ impl DurableAdapter for FixtureAdapter {
             .put_conversation(
                 serde_json::to_vec(&SessionRecord {
                     session_id: MessageUuid::new(SESSION).unwrap(),
+                    continued: false,
                 })
                 .unwrap(),
             )

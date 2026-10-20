@@ -103,7 +103,7 @@ pub(crate) fn load(home: &Path) -> Result<Runtime> {
     }
 }
 
-fn save(home: &Path, runtime: &Runtime) -> Result<()> {
+pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
     let next = home.join(format!("{FILE}.next"));
     std::fs::write(&next, serde_json::to_vec(runtime)?)?;
     std::fs::rename(&next, home.join(FILE))?;

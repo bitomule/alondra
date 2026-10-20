@@ -23,7 +23,7 @@ history = sum(1 for _ in open(transcript)) if os.path.exists(transcript) else 0
 if resumed and not history:
     raise RuntimeError('No conversation found with session ID: ' + resumed)
 with open(capture + '.starts', 'a') as stream:
-    stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history)) + '\n')
+    stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history, cwd=os.getcwd())) + '\n')
     stream.flush()
     os.fsync(stream.fileno())
 pending = []

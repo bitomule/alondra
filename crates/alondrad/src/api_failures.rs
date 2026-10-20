@@ -198,7 +198,7 @@ pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
                 _ => resume_text("unknown", None),
             };
             log!("the user asked to try {} again after its Claude API errors", agent.0);
-            if domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, &text, true).is_err() {
+            if crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, &text, true).is_err() {
                 domain.live.losses.report(&agent.0);
             }
         }

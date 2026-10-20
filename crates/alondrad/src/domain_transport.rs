@@ -380,12 +380,13 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
 }
 
 /// The lines for this session's pending outbox messages that this connection has not carried yet.
+/// A session that moves to the SDK with them is carried none: they go with its move.
 fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>) -> Result<Vec<String>> {
     let pending: Vec<OutboxMessage> = domain.store.lock().expect("domain store poisoned").pending_messages()?.into_iter()
         .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(session)
             && !sent.contains(&message.id))
         .collect();
-    if pending.is_empty() {
+    if pending.is_empty() || crate::sdk_handover::holds_messages(domain, &AgentId(session.to_owned())) {
         return Ok(vec![]);
     }
     let state = domain.state()?;
@@ -399,6 +400,14 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
         let text = crate::node_push::stamped(&crate::node_push::author_of(&actor), at, &render(&state, &message));
         crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &text, from_user(&state, &message))
     }).collect())
+}
+
+/// What an outbox message says to its node, stamped with who sent it and when, as its node mod
+/// carries it.
+pub(crate) fn node_text(domain: &DomainRuntime, state: &DomainState, message: &OutboxMessage) -> Result<String> {
+    let origin = domain.store.lock().expect("domain store poisoned").message_origin(message.id)?;
+    let (at, actor) = origin.unwrap_or_else(|| (alondra_core::now_millis(), String::new()));
+    Ok(crate::node_push::stamped(&crate::node_push::author_of(&actor), at, &render(state, message)))
 }
 
 /// The mod took these messages: the outbox ones become handed, the direct ones stop being resent.

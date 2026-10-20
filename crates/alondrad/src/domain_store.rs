@@ -9,6 +9,8 @@ mod owner;
 pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 pub(crate) mod model_metrics;
 mod lifecycle_migration;
+mod handover;
+pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
 mod repository;
 
 use alondra_core::domain::*;
@@ -603,6 +605,7 @@ impl DomainStore {
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
+        tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(EVENTS_VIEW)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;

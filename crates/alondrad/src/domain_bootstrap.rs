@@ -116,6 +116,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/devices/pending/{id}/deny", post(deny_pending_device))
         .route("/models", get(models))
         .route("/cleanup", post(cleanup))
+        .route("/sdk-handover", get(sdk_handover))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
         .route("/service/bootstrap", get(service_bootstrap))
         .route("/service/approve-device", post(service_approve_device))
@@ -537,6 +538,23 @@ async fn models(
     match tokio::task::spawn_blocking(move || domain.model_report(query.since, alondra_core::now_millis())).await {
         Ok(Ok(report)) => Json(report).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the model report could not be read")),
+    }
+}
+
+/// What the move to the Agent SDK does with each task in progress, for `alondra handover
+/// --dry-run`: local, and it changes nothing.
+async fn sdk_handover(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let domain = state.domain();
+    match tokio::task::spawn_blocking(move || crate::sdk_handover::dry_run(&domain).map(|rows| (domain.sdk().is_some(), rows))).await {
+        Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
+        _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
     }
 }
 

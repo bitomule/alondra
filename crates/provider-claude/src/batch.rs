@@ -68,6 +68,7 @@ impl<O: HostOwner> BatchHost<O> {
         let control = configuration.control()?;
         let session = SessionRecord {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
+            continued: false,
         };
         let mut host = OwnedHost::launch_confined(
             owner,

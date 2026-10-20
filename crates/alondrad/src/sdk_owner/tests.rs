@@ -124,7 +124,7 @@ impl Slice {
             prompt: prompt.into(),
             plugin: self.plugin.clone(),
             options: LaunchOptions::default(),
-        }, capabilities)
+        }, capabilities, None)
         .unwrap()
     }
 
@@ -732,6 +732,28 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     adopted.stop().unwrap();
 }
 
+// B5: the store issued the permit of a client's answer and the daemon died before claiming it:
+// the permit lived only in that daemon. The adopting owner gets it again and the answer reaches
+// the same Claude once.
+#[test]
+fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_owner() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first");
+    assert_eq!(driver.pending_permits(), 1, "the store issued the answer's permit to this daemon");
+    drop(driver);
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(adopted.pending_permits(), 1, "the adopting owner holds the permit again");
+    adopted.step(&|| false).unwrap();
+    slice.settle(&mut adopted);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "the answer reached the same Claude once: {prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    adopted.stop().unwrap();
+}
+
 // B4: the host offered a client's answer but the daemon crashed before recording its receipt. A
 // fresh daemon adopts and reconciles it from the retained receipt: it is handed, and the host is
 // not asked to offer it a second time.
@@ -857,7 +879,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
-    }, capabilities()).unwrap();
+    }, capabilities(), None).unwrap();
     slice.settle(&mut driver);
     let launched = |slice: &Slice| -> Vec<String> {
         let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();

@@ -13,6 +13,7 @@ mod direct_client;
 mod iroh_client;
 mod claude_auth;
 mod cleanup;
+mod handover;
 mod doctor;
 mod delivery;
 mod help;
@@ -163,6 +164,13 @@ enum Cmd {
         after_help = examples(&["alondra cleanup --dry-run", "alondra cleanup"]))]
     Cleanup {
         #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
+        dry_run: bool,
+    },
+    #[command(about = tr!("What moving to the Agent SDK does with each task in progress", "Qué hace el paso al Agent SDK con cada tarea en curso"),
+        long_about = tr!("List each task in progress and whether its node moves to the Agent SDK now, waits until it stops (and why) or stays as it is. Only a dry run: the daemon moves each node by itself.", "Lista cada tarea en curso y si su nodo pasa al Agent SDK ahora, espera a detenerse (y por qué) o se queda como está. Solo es un ensayo: el daemon pasa cada nodo por sí mismo."),
+        after_help = examples(&["alondra handover --dry-run"]))]
+    Handover {
+        #[arg(long, required = true, help = tr!("Only show what would happen; required, since the daemon moves each node by itself", "Solo enseña lo que pasaría; obligatorio, porque el daemon pasa cada nodo por sí mismo"))]
         dry_run: bool,
     },
     #[command(about = tr!("How each model the orchestrator chose did: outcomes, questions, time and cost", "Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste"),
@@ -333,7 +341,7 @@ fn main() -> Result<()> {
         Some(_) => !cli.json,
     };
     let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. } | Cmd::Attach { .. }
-        | Cmd::Close { .. } | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. }));
+        | Cmd::Close { .. } | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
         eprintln!("{warning}");
@@ -354,7 +362,7 @@ fn main() -> Result<()> {
 /// The commands that print a document with `--json`; any other one refuses the flag.
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
-        Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. }
+        Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
@@ -412,6 +420,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             RelayCmd::Off => commands::relay_off(no_input),
         },
         Some(Cmd::Cleanup { dry_run }) => cleanup::run(dry_run, json),
+        Some(Cmd::Handover { .. }) => handover::run(json),
         Some(Cmd::Models { since }) => models::run(since.as_deref(), json),
         Some(Cmd::State { command }) => {
             let home = client::config().home.clone();

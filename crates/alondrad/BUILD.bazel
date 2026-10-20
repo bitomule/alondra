@@ -32,6 +32,7 @@ rust_binary(
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
         "//crates/foundation:foundation",
+        "//crates/process-group:process_group",
         "//crates/provider-claude:provider_claude",
         "//crates/provider-contract:provider_contract",
         "//crates/store:store",

@@ -103,8 +103,9 @@ through `claude --bg`. `tools/e2e_sdk_backend.py` sets it up:
   and Alondra's CLI) and the Mac's `sdk-backend.json`.
 
 Claude gets a synthetic HOME, configuration and temporary folder and the public fixture key: never
-the real login, Keychain or `~/.claude.json`. A daemon outside a sandbox that finds an
-`sdk-backend.json` refuses to start.
+the real login, Keychain or `~/.claude.json`. Only a sandbox daemon keeps a synthetic HOME: outside
+one, the configuration's native Claude runs in the user's real HOME with their default profile, and
+`alondrad --preflight` checks the configuration as the daemon would admit it.
 
 `make e2e-sdk` (`//tests/sandbox:sdk_journey`, opt-in, macOS arm64) starts such a sandbox and runs
 the `sdk` journey: the phone sends a request, the native Claude's first turn ends with the card

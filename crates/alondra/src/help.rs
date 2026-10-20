@@ -19,7 +19,7 @@ fn groups() -> [(&'static str, &'static [&'static str]); 3] {
     ]
 }
 
-const MORE: &[&str] = &["cleanup", "models", "state", "delivery", "orchestrator"];
+const MORE: &[&str] = &["cleanup", "handover", "models", "state", "delivery", "orchestrator"];
 
 /// `name  about  (verb · verb)` for each command, aligned.
 fn lines(cmd: &Command, names: &[&str]) -> String {
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(named, visible);
         let help = cmd.clone().render_help().to_string();
         assert!(help.contains("  config       Show or change settings  (list · get · set · unset)"), "{help}");
-        assert!(help.contains("cleanup · models · state · delivery · orchestrator      (alondra help more)"), "{help}");
+        assert!(help.contains("cleanup · handover · models · state · delivery · orchestrator      (alondra help more)"), "{help}");
         let more = more(&cmd);
         assert!(more.contains("  orchestrator Stop, acknowledge or retry an orchestrator run  (cancel · acknowledge · retry)"), "{more}");
         assert!(!more.contains("doctor"), "{more}");

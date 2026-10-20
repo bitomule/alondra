@@ -97,6 +97,7 @@ mod result_files;
 mod push_gate;
 mod push_retract;
 mod relaunch;
+mod sdk_handover;
 mod sdk_owner;
 #[cfg(target_os = "macos")]
 mod schedule_clock;
@@ -219,7 +220,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         relaunch::keep_launcher(&daemon, &config.home);
     }
     ensure_domain_protocol(&config.home)?;
-    sdk_owner::backend::load(&config.home, config.sandbox)?;
+    sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
     let _domain = domain_runtime::DomainRuntime::open(&config.home)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
@@ -495,8 +496,8 @@ async fn run_domain(config: &Config) -> Result<()> {
         },
         None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
     }
-    if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox)? {
-        log!("the SDK backend is on: every task this sandbox daemon launches runs through the Agent SDK");
+    if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())? {
+        log!("the SDK backend is on (configuration {}): every task this daemon launches runs through the Agent SDK", backend.configuration_digest());
         domain.enable_sdk(backend.clone());
         // Adopt the live host of every task a previous daemon left running, so a restart keeps the
         // same Claude and its session instead of starting over.
@@ -585,6 +586,7 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
     tokio::spawn(node_revival::run(state_domain.clone(), revival));
+    tokio::spawn(sdk_handover::run(state_domain.clone()));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };
     tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), closer));
     let merges_domain = domain.clone();

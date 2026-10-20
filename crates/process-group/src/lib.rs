@@ -54,6 +54,37 @@ pub fn members(group: i32) -> io::Result<Vec<Member>> {
     }
 }
 
+/// The process `pid` names right now, with the moment it started; none once it is gone.
+pub fn process(pid: i32) -> io::Result<Option<Member>> {
+    Ok(inspect(pid)?.map(|(member, _)| member))
+}
+
+/// The parent of the process `pid` names right now.
+pub fn parent(pid: i32) -> io::Result<Option<Member>> {
+    match parent_pid(pid)? {
+        Some(parent) => process(parent),
+        None => Ok(None),
+    }
+}
+
+fn parent_pid(pid: i32) -> io::Result<Option<i32>> {
+    let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = c_int::try_from(size_of::<libc::proc_bsdinfo>()).expect("proc_bsdinfo fits in c_int");
+    clear_errno();
+    // SAFETY: the buffer is a zeroed proc_bsdinfo of `size` bytes, the flavor's exact layout.
+    let written = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast::<c_void>(), size) };
+    if written != size {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ESRCH) | Some(0) | None => Ok(None),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: the kernel filled all `size` bytes.
+    let info = unsafe { info.assume_init() };
+    Ok(Some(i32::try_from(info.pbi_ppid).map_err(|_| io::ErrorKind::InvalidData)?))
+}
+
 /// Whether `member` is still that same process and has not exited.
 pub fn alive(member: &Member) -> io::Result<bool> {
     Ok(inspect(member.pid)?.is_some_and(|(now, _)| now.started == member.started && !now.zombie))
@@ -200,6 +231,19 @@ mod tests {
         let me = peer(&here).unwrap().expect("this process is alive");
         assert_eq!(me.pid, i32::try_from(std::process::id()).unwrap());
         assert!(alive(&me).unwrap());
+    }
+
+    #[test]
+    fn a_process_is_named_by_its_start_and_its_parent_is_found() {
+        let mut child = Command::new("/bin/sleep").arg("600").stdin(Stdio::null()).spawn().unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let named = process(pid).unwrap().expect("the child runs");
+        assert!(alive(&named).unwrap());
+        assert_eq!(parent(pid).unwrap().map(|parent| parent.pid), Some(i32::try_from(std::process::id()).unwrap()));
+        kill_child(pid);
+        child.wait().unwrap();
+        assert!(!alive(&named).unwrap(), "a reaped process is gone");
+        assert!(process(pid).unwrap().is_none_or(|now| now.started != named.started), "a reused PID is another process");
     }
 
     fn kill_child(pid: i32) {

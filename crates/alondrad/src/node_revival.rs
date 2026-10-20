@@ -102,7 +102,7 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
             }
         }
         for (session, text) in crate::domain_transport::behind_hung_work(&domain, now, &mut reminded) {
-            if domain.live.pushes.message(&session, crate::node_push::ALONDRA, &text, false).is_err() {
+            if crate::sdk_handover::tell(&domain, &session, crate::node_push::ALONDRA, &text, false).is_err() {
                 log!("could not send {session} back to its task: its connection is gone");
             }
         }
@@ -158,6 +158,7 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .filter(|agent| matches!(agent.phase, NodePhase::Working | NodePhase::Delivered { in_turn: true }))
         .map(|agent| agent.id.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
+        .filter(|session| !crate::sdk_handover::moved(domain, &AgentId(session.clone())))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
         .filter(|session| domain.live.gate.paused(&domain, session).is_none())
         .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
@@ -192,6 +193,10 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
                 tokio::time::sleep(DISK_RECHECK).await;
             }
             if !until_admitted(domain, session, || still_stalled(domain, session)).await {
+                break 'rounds;
+            }
+            if domain.sdk().is_some() {
+                bring_back_through_sdk(domain, session, Some(CONTINUE.to_owned()));
                 break 'rounds;
             }
             let previous = domain.live.mods.session(session).and_then(|reported| reported.connection);
@@ -238,6 +243,28 @@ async fn until_admitted(domain: &DomainRuntime, session: &str, still: impl Fn() 
     }
 }
 
+/// With an SDK backend a node Alondra brings back moves to the SDK instead of being restarted:
+/// `text` opens its same session there. With nothing to tell it, its session rests until its next
+/// input, which moves it then.
+fn bring_back_through_sdk(domain: &DomainRuntime, session: &str, text: Option<String>) {
+    let agent = AgentId(session.to_owned());
+    let Some(text) = text else {
+        move_node(domain, session, NodeEvent::Listed { listed: alondra_core::domain::Listed::Done });
+        return;
+    };
+    let Some(task) = domain.state().ok().and_then(|state| crate::fleet_gate::open_task_of(&state, session)) else { return };
+    let stamped = crate::node_push::stamped(crate::node_push::ALONDRA, alondra_core::now_millis(), &text);
+    if let Err(error) = crate::sdk_handover::plan(domain, &agent, &task, stamped, None, true) {
+        log!("{session} was not brought back through the Agent SDK: {error:#}");
+    }
+}
+
+/// What a node that comes back is told: the gate's resume it missed, else a word to carry on when
+/// its task still needs work from it rather than an answer from the user.
+fn carry_on_text(domain: &DomainRuntime, session: &str) -> Option<String> {
+    domain.live.gate.take_owed(session).or_else(|| needs_work(domain, session).then(|| CARRY_ON.to_owned()))
+}
+
 async fn tell_to_continue(domain: &DomainRuntime, session: &str) {
     say(domain, session, CONTINUE, false).await;
 }
@@ -262,7 +289,7 @@ fn needs_work(domain: &DomainRuntime, session: &str) -> bool {
 /// The mod's connection is recorded a moment before its push link attaches.
 async fn say(domain: &DomainRuntime, session: &str, text: &str, as_user: bool) {
     for _ in 0..250 {
-        if domain.live.pushes.message(session, crate::node_push::ALONDRA, text, as_user).is_ok() {
+        if crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, as_user).is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -282,6 +309,7 @@ pub(crate) fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let agent = AgentId(session.to_owned());
     !crate::sdk_owner::runs_through_sdk(&state, &agent)
+        && !crate::sdk_handover::moved(domain, &agent)
         && state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
         && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
         && !domain.live.is_closed(session)
@@ -309,6 +337,16 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
                 tokio::time::sleep(timing.pauses[attempt - 1]).await;
             }
             if closed_by_user(domain, session) || !until_usage_clear(domain, session).await {
+                return;
+            }
+            if domain.sdk().is_some() {
+                let text = carry_on_text(domain, session);
+                if text.is_some() && (!until_admitted(domain, session, || needed(domain, session) && !session_ended(domain, session)).await
+                    || closed_by_user(domain, session))
+                {
+                    return;
+                }
+                bring_back_through_sdk(domain, session, text);
                 return;
             }
             if !until_admitted(domain, session, || needed(domain, session) && !session_ended(domain, session)).await

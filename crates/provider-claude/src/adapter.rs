@@ -294,6 +294,12 @@ impl ClaudeWorker {
     pub fn reconcile(&mut self, command: &[u8]) -> Result<Handoff, AdapterError> {
         self.adapter.reconcile(command)
     }
+    /// The conversation this worker stages next continues the existing native session `session`
+    /// (a `claude --bg` node's): its first host resumes it, in the same working directory.
+    pub fn continue_session(&mut self, session: &str) -> Result<(), AdapterError> {
+        self.adapter.continuing = Some(MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?);
+        Ok(())
+    }
     pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
         if metadata.binding().map_err(storage)? != *self.binding() {
             return Err(AdapterError::InvalidObservation);
@@ -536,6 +542,8 @@ struct ClaudeAdapter {
     connection: Option<Connection>,
     normalizer: Normalizer,
     ended: Option<(EndedHost, String)>,
+    /// The existing native session the conversation this worker stages continues.
+    continuing: Option<MessageUuid>,
 }
 impl ClaudeConfiguration {
     /// Checks the configuration and makes the private control material of one host.
@@ -581,6 +589,7 @@ impl ClaudeAdapter {
                 host_ended: false,
             },
             ended: None,
+            continuing: None,
         })
     }
     fn deadline(&self) -> Result<Instant, AdapterError> {
@@ -665,7 +674,7 @@ impl ClaudeAdapter {
         if std::path::Path::new(&retained.native.cwd) != self.configuration.native_directory {
             return Err(refuse("native working directory differs"));
         }
-        let session = SessionRecord { session_id: MessageUuid::new(&retained.native.session_id).map_err(|_| refuse("native session id"))? };
+        let session = SessionRecord { session_id: MessageUuid::new(&retained.native.session_id).map_err(|_| refuse("native session id"))?, continued: stored.continued };
         if session.session_id != stored.session_id {
             return Err(refuse("native session differs from the stored conversation"));
         }
@@ -903,8 +912,9 @@ impl DurableAdapter for ClaudeAdapter {
             }
             Ok(None) => metadata
                 .put_conversation(
-                    serde_json::to_vec(&SessionRecord {
-                        session_id: random_uuid()?,
+                    serde_json::to_vec(&match &self.continuing {
+                        Some(session) => SessionRecord { session_id: session.clone(), continued: true },
+                        None => SessionRecord { session_id: random_uuid()?, continued: false },
                     })
                     .map_err(|_| AdapterError::InvalidObservation)?,
                 )
@@ -1022,6 +1032,9 @@ pub(super) fn bootstrap(
     if let Some(continued) = continued {
         bootstrap["journal_base"] = continued.journal_base.into();
         bootstrap["native"]["resume"] = continued.resume.into();
+    }
+    if session.continued {
+        bootstrap["native"]["resume"] = true.into();
     }
     match (orchestrator, &configuration.worker) {
         (Some(_), Some(_)) => return Err(std::io::Error::other("a host runs the orchestrator or a task, never both")),

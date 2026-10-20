@@ -397,14 +397,24 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_some() {
-        if let Some(old) = &replaced {
-            let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
-            let backend = backend.clone();
-            crate::task_closer::blocking(|| {
-                domain.stop_sdk_host(old)?;
-                crate::sdk_owner::end_stopped_host(runtime, &backend, task.id.clone())
-            })
-            .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
+        match &replaced {
+            Some(old) if crate::sdk_owner::runs_through_sdk(&current, old) => {
+                let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
+                let backend = backend.clone();
+                crate::task_closer::blocking(|| {
+                    domain.stop_sdk_host(old)?;
+                    crate::sdk_owner::end_stopped_host(runtime, &backend, task.id.clone())
+                })
+                .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
+            }
+            Some(old) => {
+                stop_replaced(domain, old, launcher).await.map_err(|reason| DomainError::new("replace_failed", format!(
+                    "Alondra could not stop the claude --bg node of {}, so no node was started through the Agent SDK: {reason}. It is still assigned to that node.", task.id)))?;
+                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
+                    .map_err(|error| DomainError::new("storage_unavailable", format!(
+                        "the claude --bg node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
+            }
+            None => {}
         }
         if let Some(checked) = checked {
             checked();

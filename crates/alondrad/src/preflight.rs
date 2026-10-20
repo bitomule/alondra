@@ -1,5 +1,6 @@
 //! `alondrad --preflight`: the startup this binary would do, run against a private snapshot of
-//! HOME so a running daemon, its HOME lock and its data are never touched.
+//! HOME so a running daemon, its HOME lock and its data are never touched. An SDK backend
+//! configuration in HOME is checked as this binary would admit it.
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -16,13 +17,24 @@ const DATABASES: [&str; 5] = [
 ];
 
 pub fn run(config: &Config) -> Result<String> {
+    run_for(config, &crate::options::user_home())
+}
+
+/// `run` for a user whose HOME is `user_home`, where a production SDK backend runs Claude.
+fn run_for(config: &Config, user_home: &Path) -> Result<String> {
     crate::domain_cutover::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
+    let backend = crate::sdk_owner::backend::load(&config.home, config.sandbox, user_home)
+        .context("the SDK backend configuration is not one this build admits")?;
     let scratch = Scratch::new()?;
     snapshot(&config.home, &scratch.0)?;
     let mut copy = config.clone();
     copy.home = scratch.0.clone();
-    start(&copy)
+    let started = start(&copy)?;
+    Ok(match backend {
+        Some(backend) => format!("{started}; SDK backend configuration {} admitted", backend.configuration_digest()),
+        None => started,
+    })
 }
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
@@ -228,6 +240,27 @@ mod tests {
         .unwrap();
         drop(_store);
         (home, config)
+    }
+
+    #[test]
+    fn preflight_admits_a_production_sdk_backend_and_refuses_one_whose_artifact_changed() {
+        let (home, config) = committed_domain_home("sdk-backend");
+        let user = home.join("user");
+        let artifact = home.join("artifact");
+        std::fs::write(&artifact, b"artifact").unwrap();
+        let sha256 = crate::sdk_owner::backend::digest(&artifact).unwrap();
+        let backend = serde_json::json!({
+            "node": artifact, "node_sha256": sha256, "host": artifact, "host_sha256": sha256, "native": artifact, "native_sha256": sha256,
+            "host_environment": {}, "native_environment": {"HOME": user}, "state_root": home.join("state"), "io_timeout_seconds": 30,
+        });
+        std::fs::write(home.join(crate::sdk_owner::backend::FILE), backend.to_string()).unwrap();
+        let before = contents(&home);
+        let admitted = run_for(&config, &user).unwrap();
+        assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");
+        assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
+        std::fs::write(&artifact, b"another artifact").unwrap();
+        let refused = format!("{:#}", run_for(&config, &user).unwrap_err());
+        assert!(refused.contains("does not have the SHA256"), "{refused}");
     }
 
     #[test]

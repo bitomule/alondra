@@ -86,6 +86,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     if crate::sdk_owner::runs_through_sdk(&state, agent) {
         return tell_through_sdk(domain, &state, home, user, name, agent, body);
     }
+    if let Some((_, successor)) = crate::sdk_handover::successor(domain, agent) {
+        return tell_through_sdk(domain, &state, home, user, name, &successor, body);
+    }
     if domain.live.is_closed(&agent.0) {
         return Err(refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"));
     }
@@ -106,14 +109,17 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         return Err(refused("session_stalled", format!("{name} stopped processing in the middle of a turn, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
     }
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
-    let acked = domain.live.pushes.message(&agent.0, &author, &text, as_user)
+    let told = crate::sdk_handover::tell(domain, &agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     if as_user {
         domain.live.gate.release_by_user_message(domain, &agent.0);
     }
-    let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
-        Ok(Ok(())) => State::Handed,
-        _ => State::Dispatching,
+    let delivered = match told {
+        crate::sdk_handover::Told::Pushed(acked) => match tokio::time::timeout(ACK_WAIT, acked).await {
+            Ok(Ok(())) => State::Handed,
+            _ => State::Dispatching,
+        },
+        crate::sdk_handover::Told::Moving => State::Dispatching,
     };
     Ok(read_after(domain, user, &body, json!({"delivery_state": delivered})))
 }

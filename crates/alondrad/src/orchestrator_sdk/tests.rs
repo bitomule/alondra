@@ -2,7 +2,7 @@
 //! a fake native Claude that answers each prompt as its marker says. A held turn waits on a FIFO
 //! the test writes, never on a clock.
 use super::*;
-use crate::domain_orchestrator::{Executor, Failure, load, stub_claude};
+use crate::domain_orchestrator::{Executor, Failure, Run, Runtime, load, save, stub_claude};
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrator_process::Ownership;
 use crate::test_support::Directory;
@@ -209,6 +209,34 @@ async fn every_batch_is_a_new_conversation_and_carries_what_the_next_needs() {
     assert!(lengths.windows(2).all(|pair| pair[0] == pair[1]), "a batch does not grow with the batches before it: {lengths:?}");
     let context = load(&f.executor.home).unwrap().last_context;
     assert_eq!(context, Some(crate::domain_orchestrator::BatchContext { first: 25, last: 25, window: None }), "each batch records the context it read");
+}
+
+// The first daemon with an SDK backend finds the claude -p batch the daemon it replaced left
+// running. That batch is not run again, as any interrupted batch: what it may have done is
+// uncertain. Since every batch is a conversation of its own, no orchestrator session moves to the
+// SDK: the next batch simply runs through the SDK host, and claude -p never runs again.
+#[tokio::test]
+async fn after_the_update_a_claude_p_batch_left_running_is_not_repeated_and_the_next_runs_through_the_sdk() {
+    let f = fixture();
+    f.tell("m-1", "Where do I put change 1?");
+    let pending = f.domain().store.lock().unwrap().pending_messages().unwrap().into_iter().find(|message| message.recipient_kind == "orchestrator").unwrap().id;
+    let claim = f.domain().store.lock().unwrap().claim_message(pending).unwrap().unwrap();
+    save(&f.executor.home, &Runtime {
+        session_id: Some("0f0f0f0f-0000-4000-8000-000000000001".into()),
+        active_run: Some(Run { id: "claude-p-run".into(), message_ids: vec![claim.message.id], attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true }),
+        ..Runtime::default()
+    }).unwrap();
+    f.executor.recover().unwrap();
+    assert_eq!(f.pending(), 0, "the interrupted claude -p batch is not offered again");
+    assert_eq!(load(&f.executor.home).unwrap().pending_resolutions[0].run_id, "claude-p-run", "the next batch is told it was resolved");
+    f.tell("m-2", "Where do I put change 2?");
+    f.tick().await;
+    let prompts = f.prompts();
+    assert_eq!(prompts.len(), 1, "one batch ran, through the SDK host: {prompts:?}");
+    assert!(prompts[0].contains("Where do I put change 2?") && prompts[0].contains("Previous interrupted inbox batches have already been resolved and are NOT replayed"), "{}", prompts[0]);
+    let arguments = f.arguments();
+    assert!(!arguments.iter().any(|argument| argument.starts_with("--resume")), "the claude -p conversation is not resumed: {arguments:?}");
+    assert!(!f.executor.home.join("runtime/orchestrator/starts").exists(), "claude -p never ran");
 }
 
 #[tokio::test]

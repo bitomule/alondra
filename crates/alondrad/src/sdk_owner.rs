@@ -160,10 +160,22 @@ pub(crate) struct Driver {
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
 /// runs through the SDK, and any failure before it is the launch's own, never a `claude --bg`.
 pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch) -> Result<Driver, Failed> {
-    start_bound(domain, backend, launch, capabilities())
+    start_bound(domain, backend, launch, capabilities(), None)
 }
 
-fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>) -> Result<Driver, Failed> {
+/// The `claude --bg` node whose session an SDK execution continues: its id, which is the session.
+pub(crate) struct Continuation {
+    pub(crate) node: AgentId,
+}
+
+/// Admits an SDK execution that continues the existing Claude session of `continuation`'s node, in
+/// the node's own folder, and records the move's admission in the same transaction. The launch's
+/// prompt is the first input: it opens that session with `resume`.
+pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, continuation: Continuation) -> Result<Driver, Failed> {
+    start_bound(domain, backend, launch, capabilities(), Some(continuation))
+}
+
+fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
@@ -174,20 +186,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         expected_revision: 0,
         command,
     };
-    // One binding for the daemon's SDK host: the store keeps one active binding per host, so a
-    // binding of each launch would revoke every task after the first.
-    let binding = ProviderBinding::new(
-        format!("{DRIVER}-{HOST}"),
-        DRIVER.into(),
-        HOST.into(),
-        "sandbox".into(),
-        1,
-        3,
-        capabilities,
-        "native-login".into(),
-        1,
-    )
-    .map_err(|error| Failed(format!("the provider binding: {error:?}")))?;
+    let binding = binding(backend, capabilities)?;
     let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options)))?;
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
@@ -201,6 +200,9 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = ClaudeWorker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    if let Some(continuation) = &continuation {
+        worker.continue_session(&continuation.node.0).map_err(adapter("continuing the node's session"))?;
+    }
     let admit = envelope("admit", Command::AdmitExecution {
         task_id: launch.task.clone(),
         agent_id: agent.clone(),
@@ -212,10 +214,17 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         .own(scope.clone(), |owner| {
             owner.stage_command(&Actor::System, &admit, Attached::None)?;
             owner.launch(&launch.task, &launch.prompt, &launch.directory, &binding, &mut worker)?;
+            if let Some(continuation) = &continuation {
+                owner.record_sdk_admitted(&continuation.node, &launch.task, &agent)?;
+            }
             let lifecycle = owner.lifecycle(&launch.task)?;
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
         })
         .map_err(failed("admitting the execution"))?;
+    #[cfg(test)]
+    if continuation.is_some() && *domain.handovers.crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted) {
+        return Err(Failed("the daemon died after the admission's commit".into()));
+    }
     let mut driver = Driver::new(domain, worker, scope, launch.task, agent);
     let mut sealed = driver.sealed();
     let grant = sealed.owners.pop().ok_or_else(|| Failed("the admission issued no owner grant".into()))?;
@@ -228,7 +237,28 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     Ok(driver)
 }
 
-/// The launch of a sandbox daemon with an SDK backend: the task runs through the SDK or does not
+/// One binding per SDK configuration, named by its digest: the store keeps one active binding per
+/// provider instance, so a binding of each launch would revoke every task after the first, and a
+/// configuration that changes (a new release's host) binds the next executions while the earlier
+/// ones keep the binding they were admitted under.
+fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>) -> Result<ProviderBinding, Failed> {
+    let configuration = backend.configuration_digest();
+    let short = &configuration[..16];
+    ProviderBinding::new(
+        format!("{DRIVER}-{HOST}-{short}"),
+        DRIVER.into(),
+        format!("{HOST}-{short}"),
+        configuration,
+        1,
+        3,
+        capabilities,
+        "native-login".into(),
+        1,
+    )
+    .map_err(|error| Failed(format!("the provider binding: {error:?}")))
+}
+
+/// The launch of a daemon with an SDK backend: the task runs through the SDK or does not
 /// start, with the reason. It never falls back to `claude --bg`.
 pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<serde_json::Value, DomainError> {
     let Some((backend, runtime)) = domain.sdk() else {
@@ -257,6 +287,50 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
     take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed("the ended host was not replaced".into()))
 }
 
+/// Launches the first host of the task's SDK execution, which a daemon that ended right after
+/// admitting it never started (its folder holds no host): the launch it never sent goes now, with
+/// a new owner generation.
+pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: &std::path::Path) -> Result<Driver, Failed> {
+    let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
+    let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node".into()))?;
+    let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
+    let (adoption, _) = domain
+        .own(scope.clone(), |owner| {
+            let adoption = owner.adopt(&task)?;
+            owner.reissue_permit(&task)?;
+            Ok(adoption)
+        })
+        .map_err(failed("reserving the next owner"))?;
+    let mut sealed = domain.seals.take(&task);
+    let grant = sealed.owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
+    let permit = sealed.permits.pop().ok_or_else(|| Failed("the reservation issued no launch permit".into()))?;
+    let instance = adoption.stamp.instance().as_str().to_owned();
+    let options = LaunchOptions::load(&backend.state_root.join(&instance))?;
+    let mut configuration = configuration(backend, &adoption.directory, &instance, false, Some(worker_profile(plugin, &options)))?;
+    let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
+    configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
+    domain.seals.take(&task);
+    worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
+    let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+    driver.dispatch(permit)?;
+    let read = driver.domain.read();
+    driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+        .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
+    drop(read);
+    Ok(driver)
+}
+
+/// Whether the host of the task's current SDK execution was ever started: its folder holds the
+/// lock every host takes, which stays after it ends.
+pub(crate) fn host_started(backend: &SdkBackend, domain: &DomainRuntime, task: &TaskId) -> bool {
+    let read = domain.read();
+    let instance = read.state().lifecycle_journal.get(task).and_then(|journal| replay(task, journal).ok())
+        .and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.instance().as_str().to_owned()));
+    instance.is_none_or(|instance| backend.state_root.join(instance).join("host.lock").exists())
+}
+
 /// Commits what became of the task's host, which its owner stopped: the evidence its journal kept,
 /// each dispatch resolved from it, and the host's end, which closes its open requests and their
 /// cards. No host takes its place: the task's next execution is a new one, as when its node is
@@ -269,8 +343,17 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
-    let (adoption, _) = domain.own(scope.clone(), |owner| owner.adopt(&task)).map_err(failed("reserving the next owner"))?;
-    let grant = domain.seals.take(&task).owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
+    let (adoption, _) = domain
+        .own(scope.clone(), |owner| {
+            let adoption = owner.adopt(&task)?;
+            if relaunch {
+                owner.reissue_permit(&task)?;
+            }
+            Ok(adoption)
+        })
+        .map_err(failed("reserving the next owner"))?;
+    let mut reserved = domain.seals.take(&task);
+    let grant = reserved.owners.pop().ok_or_else(|| Failed("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
     let stamp = adoption.stamp;
     let options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
@@ -289,6 +372,7 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
         }
         worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+        driver.permits.extend(reserved.permits);
         for command in adoption.commands {
             let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
             let intent = command.intent_id;
@@ -380,7 +464,7 @@ pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
         .tasks
         .values()
         .filter(|task| {
-            task.agent_id.is_some()
+            task.agent_id.as_ref().is_some_and(|agent| !domain.owns_sdk_host(agent))
                 && state.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| {
                     lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
                         && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
@@ -388,9 +472,15 @@ pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
         })
         .map(|task| task.id.clone())
         .collect();
-    let plugin = crate::plugins::node();
+    let plugin = crate::plugins::node_in(domain.home());
     for task in tasks {
-        match adopt(Arc::clone(domain), backend, task.clone(), plugin.as_deref()) {
+        let taken = if host_started(backend, domain, &task) {
+            adopt(Arc::clone(domain), backend, task.clone(), plugin.as_deref())
+        } else {
+            plugin.as_deref().ok_or_else(|| Failed("Alondra's node plugin, which its host loads, was not found".into()))
+                .and_then(|plugin| launch_admitted(Arc::clone(domain), backend, task.clone(), plugin))
+        };
+        match taken {
             Ok(driver) => {
                 domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
                 domain.live.forget_closed_task(&task.0);

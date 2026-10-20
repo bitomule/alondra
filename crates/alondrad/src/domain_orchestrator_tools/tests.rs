@@ -1455,6 +1455,30 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     assert!(prompt.contains("- [ ] Guards") && prompt.contains("- [ ] Index matches the state"), "the whole plan: {prompt}");
 }
 
+// With an SDK backend, replacing a claude --bg node stops it, frees the task from it and admits a
+// node of the SDK in its folder: the claude --bg node never goes down the SDK node's replacement,
+// which only stops an SDK host.
+#[tokio::test]
+async fn replacing_a_claude_bg_node_with_the_sdk_on_stops_it_and_starts_an_sdk_node() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let hosts = crate::test_support::Directory::for_unix_socket();
+    let (backend, _) = crate::sdk_owner::tests::fixture_backend(&f.home, &hosts);
+    f.domain.enable_sdk(backend);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    let answer = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(*claude.stopped.lock().unwrap(), ["agent-b"], "the claude --bg node is stopped");
+    assert!(claude.calls.lock().unwrap().is_empty(), "no claude --bg takes its place");
+    let agent = AgentId::from(answer["agent_id"].as_str().unwrap());
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id.as_ref(), Some(&agent));
+    assert!(crate::sdk_owner::runs_through_sdk(&state, &agent) && f.domain.owns_sdk_host(&agent), "a node of the SDK runs the task");
+    assert!(f.domain.live.is_closed("agent-b"), "the old node is closed and not brought back");
+    f.domain.stop_sdk_owners();
+}
+
 // With an SDK backend, a launch runs through the SDK or does not start, with its reason: it never
 // falls back to `claude --bg`, and no node takes the task.
 #[tokio::test]

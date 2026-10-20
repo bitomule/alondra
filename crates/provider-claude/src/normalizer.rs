@@ -647,6 +647,7 @@ mod tests {
     fn session() -> SessionRecord {
         SessionRecord {
             session_id: MessageUuid::new(SESSION).unwrap(),
+            continued: false,
         }
     }
     fn state() -> Checkpoint {
@@ -1118,6 +1119,7 @@ mod diagnostic_tests {
     fn session() -> SessionRecord {
         SessionRecord {
             session_id: MessageUuid::new(SESSION).unwrap(),
+            continued: false,
         }
     }
     fn state() -> Checkpoint {

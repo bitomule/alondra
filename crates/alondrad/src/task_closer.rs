@@ -268,7 +268,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         (Due::Cleanup, true, Some(work)) if !session_over => match watch_post_merge_work(
             domain, &state, timing, now, task, &agent, work,
             domain.live.node(&agent.0).is_some_and(|node| node.busy),
-            Some(&|text: &str| { let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, text, false); }),
+            Some(&|text: &str| { let _ = crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, text, false); }),
         )? {
             Watch::Hold => return hold_while_working_after_merge(domain, now, row),
             Watch::CloseNow => close_now = true,
@@ -667,7 +667,7 @@ fn tell_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &A
             log!("could not tell the node of {} why its task does not close: {error}", task.id);
         }
     } else {
-        let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, text, false);
+        let _ = crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, text, false);
     }
 }
 

@@ -21,7 +21,12 @@ pub(crate) fn copy_path(database: &Path) -> PathBuf {
 /// A consistent private copy of the database, through SQLite's backup, made before anything of it
 /// changes. An earlier copy is replaced only by a complete new one.
 pub(super) fn keep_copy(conn: &Connection, database: &Path) -> Result<PathBuf> {
-    let copy = copy_path(database);
+    keep_copy_as(conn, database, &copy_path(database))
+}
+
+/// `keep_copy` at `copy`.
+pub(super) fn keep_copy_as(conn: &Connection, database: &Path, copy: &Path) -> Result<PathBuf> {
+    let copy = copy.to_path_buf();
     let mut partial = copy.clone().into_os_string();
     partial.push(".partial");
     let partial = PathBuf::from(partial);

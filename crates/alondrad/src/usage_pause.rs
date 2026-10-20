@@ -450,7 +450,7 @@ pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
     let now = now_millis();
     for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
         if !domain.live.gate.hold_back(domain, &node.session_id, crate::fleet_pause::Reason::Usage, now)
-            && domain.live.pushes.message(&node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err()
+            && crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err()
         {
             domain.live.losses.report(&node.session_id);
         }

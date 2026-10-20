@@ -587,7 +587,7 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
     let text = crate::fleet_pause::resume_text(&paused, now);
-    if domain.live.pushes.message(session, crate::node_push::ALONDRA, &text, true).is_err() {
+    if crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, &text, true).is_err() {
         inner.saved.pauses.owed.insert(session.to_owned(), text);
         domain.live.losses.report(session);
     }
@@ -595,7 +595,7 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
 
 /// Tells the nodes admitted back while unreachable to carry on, once they are connected again.
 fn deliver_owed(domain: &DomainRuntime, inner: &mut Inner) {
-    inner.saved.pauses.owed.retain(|session, text| domain.live.pushes.message(session, crate::node_push::ALONDRA, text, true).is_err());
+    inner.saved.pauses.owed.retain(|session, text| crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, true).is_err());
 }
 
 fn admit(inner: &mut Inner, key: Key, now: Millis) {
