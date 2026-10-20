@@ -1,12 +1,15 @@
-//! Stand-ins for `claude` and `gh` that a sandbox started with `FAKES=1` puts first on its
-//! daemons' PATH: no model and no GitHub. They drive the real `alondra` binaries the way Claude
-//! Code and its plugin do, follow the scripts a run writes, and write down every call.
+//! Stand-ins for `claude` and `gh`: no model and no GitHub. A sandbox started with `FAKES=1` puts
+//! them first on its daemons' PATH, and its SDK backend runs the fake `claude` as the native
+//! Claude Code. They drive the real `alondra` binaries the way Claude Code and its plugin do,
+//! follow the scripts a run writes, and write down every call.
 mod claude;
 mod gh;
 mod mcp;
+pub mod native;
 pub mod node;
 mod orchestrator;
 pub mod script;
+mod work;
 
 use std::{
     fs,

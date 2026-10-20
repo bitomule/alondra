@@ -1,13 +1,14 @@
-//! The steps journeys share: waits on what other processes apply, and the milestones of a task.
+//! The steps journeys share: waits on what other processes apply, and the milestones of a task. A
+//! task's node is the scripted native Claude of an Agent SDK host (`fake::native`).
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::{PATIENCE, Report, User, user::mentions};
+use super::{PATIENCE, Report, User, user::{collect, mentions}};
 use crate::fake::{
     Fakes,
-    node::{self, Node, State},
+    native::{self, Order, Session},
     script::{RequestScript, Step, TaskScript},
 };
 
@@ -47,23 +48,17 @@ pub fn request(report: &mut Report, fakes: &Fakes, user: &User, script: &Request
     report.step(&format!("the phone sends the request “{text}”"), || user.request(&script.request_id, text).map(drop))
 }
 
-/// The node Alondra launched for `task`, once Alondra bound it.
-pub fn launched(report: &mut Report, fakes: &Fakes, task: &str) -> Result<Node> {
-    wait(report, &format!("the orchestrator creates {task} and Alondra launches its node"), || {
-        let node = fakes.node_of(task)?;
-        let seen = match &node {
-            Some(node) => format!("node {} is {:?}", node.short, node.state),
-            None => format!("no node; orchestrator did {:?}", fakes.orchestrator_actions()?.last().map(|a| a["text"].clone())),
+/// The session of `task`'s node, once its native Claude runs with its bearer and took its mission.
+pub fn launched(report: &mut Report, fakes: &Fakes, task: &str) -> Result<Session> {
+    wait(report, &format!("the orchestrator creates {task} and Alondra starts its node through the SDK host"), || {
+        let session = fakes.session_of(task)?;
+        let seen = match &session {
+            Some(session) => format!("session {} is {:?}, took {} inputs", session.short, session.state, fakes.received(&session.short)?.len()),
+            None => format!("no session; orchestrator did {:?}", fakes.orchestrator_actions()?.last().map(|a| a["text"].clone())),
         };
-        Ok((node.filter(|node| node.state == State::Running && bound(node)), seen))
+        let took = |session: &Session| fakes.received(&session.short).is_ok_and(|inputs| !inputs.is_empty());
+        Ok((session.filter(|session| session.running() && session.capability().is_some() && took(session)), seen))
     })
-}
-
-fn bound(node: &Node) -> bool {
-    std::fs::read(&node.settings)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|settings| settings["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_some())
 }
 
 /// Waits until the task's view reads `state`.
@@ -74,23 +69,22 @@ pub fn state(report: &mut Report, user: &User, task: &str, state: &str) -> Resul
     })
 }
 
-/// Runs `steps` on the node; each must be taken.
-pub fn act(report: &mut Report, fakes: &Fakes, node: &Node, what: &str, steps: &[Step]) -> Result<()> {
+/// Has the session take `steps` in its turn; each must be taken.
+pub fn act(report: &mut Report, fakes: &Fakes, session: &Session, what: &str, steps: &[Step]) -> Result<()> {
     report.step(what, || {
-        for step in steps {
-            let outcome = node::act(fakes, node, step)?;
+        for outcome in native::order(fakes, session, &Order { steps: steps.to_vec(), end_turn: false })? {
             if !outcome.ok {
-                bail!("{} was refused: {}", serde_json::to_string(step)?, outcome.text);
+                bail!("{} was refused: {}", serde_json::to_string(&outcome.step)?, outcome.text);
             }
         }
-        node::finish_turn(fakes, node)
+        Ok(())
     })
 }
 
-/// Runs one step that Alondra must refuse; its refusal text must mention `expected`.
-pub fn refused(report: &mut Report, fakes: &Fakes, node: &Node, what: &str, step: &Step, expected: &str) -> Result<String> {
+/// Has the session take one step that Alondra must refuse; its refusal text must mention `expected`.
+pub fn refused(report: &mut Report, fakes: &Fakes, session: &Session, what: &str, step: &Step, expected: &str) -> Result<String> {
     report.step(what, || {
-        let outcome = node::act(fakes, node, step)?;
+        let outcome = native::order(fakes, session, &Order { steps: vec![step.clone()], end_turn: false })?.pop().context("no outcome")?;
         if outcome.ok {
             bail!("{} was taken: {}", serde_json::to_string(step)?, outcome.text);
         }
@@ -101,9 +95,16 @@ pub fn refused(report: &mut Report, fakes: &Fakes, node: &Node, what: &str, step
     })
 }
 
+/// Whether the session took an input that holds `text`.
+pub fn told(fakes: &Fakes, session: &Session, text: &str) -> Result<(Option<()>, String)> {
+    let received = fakes.received(&session.short)?;
+    let found = received.iter().any(|input| input.text.contains(text));
+    Ok((found.then_some(()), format!("{:?}", received.iter().map(|input| &input.text).collect::<Vec<_>>())))
+}
+
 /// The node's review card in Inbox and its view.
-pub fn review_card(report: &mut Report, user: &User, node: &Node) -> Result<(String, Value)> {
-    let prefix = format!("result-{}-", node.short);
+pub fn review_card(report: &mut Report, user: &User, session: &Session) -> Result<(String, Value)> {
+    let prefix = format!("result-{}-", session.short);
     let card = wait(report, "the review card waits in Inbox", || {
         let inbox = user.inbox()?;
         Ok((inbox.iter().rev().find(|id| id.starts_with(&prefix)).cloned(), format!("{inbox:?}")))
@@ -133,45 +134,74 @@ pub fn merged(report: &mut Report, fakes: &Fakes, number: u64, head: &str) -> Re
     })
 }
 
-/// After the merge: the node cleans up when asked, `claude rm` removes it, and the task finishes.
-pub fn closed(report: &mut Report, fakes: &Fakes, user: &User, node: &Node, task: &str, card: &str) -> Result<()> {
+/// Whether Fleet lists the session.
+pub fn in_fleet(user: &User, session: &Session) -> Result<bool> {
+    let fleet = user.view("fleet")?;
+    Ok(mentions(&fleet, &session.short) || mentions(&fleet, &session.session_id))
+}
+
+/// Waits until Alondra ended the session's native Claude, through its host, and Fleet no longer
+/// lists it.
+pub fn ended(report: &mut Report, fakes: &Fakes, user: &User, session: &Session) -> Result<()> {
+    wait(report, &format!("Alondra ends node {}'s native Claude and it leaves Fleet", session.short), || {
+        let now = fakes.session(&session.short)?;
+        let listed = in_fleet(user, &now)?;
+        Ok(((!now.running() && !listed).then_some(()), format!("session {:?}, alive {}, in Fleet {listed}", now.state, now.alive())))
+    })
+}
+
+/// After the merge: the node cleans up when asked, Alondra ends its session and removes its
+/// worktree, and the task finishes.
+pub fn closed(report: &mut Report, fakes: &Fakes, user: &User, session: &Session, task: &str, card: &str) -> Result<()> {
     wait(report, "Alondra asks the node to clean up and it calls cleanup_done", || {
-        let asked = fakes.pushed(&node.short)?.iter().any(|push| push.text.as_deref().is_some_and(|t| t.contains("cleanup_done")));
-        let done = fakes.outcomes(&node.short)?.iter().any(|o| o.step == Step::Cleanup && o.ok);
+        let asked = fakes.received(&session.short)?.iter().any(|input| input.text.contains("cleanup_done") || input.text.contains("is finished and is closing"));
+        let done = fakes.session_outcomes(&session.short)?.iter().any(|o| o.step == Step::Cleanup && o.ok);
         Ok(((asked && done).then_some(()), format!("asked: {asked}, cleanup_done taken: {done}")))
     })?;
-    wait(report, &format!("Alondra runs claude rm {}", node.short), || {
-        let rm = fakes.calls()?.iter().any(|call| call.tool == "claude" && call.args == ["rm", node.short.as_str()]);
-        let state = fakes.node(&node.short)?.state;
-        Ok(((rm && state == State::Removed).then_some(()), format!("rm called: {rm}, node {state:?}")))
-    })?;
+    ended(report, fakes, user, session)?;
     state(report, user, task, FINISHED)?;
-    report.step("the card leaves Inbox and the node leaves Fleet", || {
+    report.step("the card leaves Inbox and the task's worktree is gone", || {
         let inbox = user.inbox()?;
         if inbox.iter().any(|id| id == card) {
             bail!("{card} is still in Inbox: {inbox:?}");
         }
-        let fleet = user.view("fleet")?;
-        if mentions(&fleet, &node.short) || mentions(&fleet, &node.session_id) {
-            bail!("Fleet still lists {}", node.short);
+        if session.cwd.exists() {
+            bail!("{} is still there", session.cwd.display());
         }
         Ok(())
     })
 }
 
 /// The commit the node's worktree is at.
-pub fn head(node: &Node) -> Result<String> {
-    crate::fake::git(node.worktree.as_deref().unwrap_or(&node.cwd), &["rev-parse", "HEAD"])
+pub fn head(session: &Session) -> Result<String> {
+    crate::fake::git(&session.cwd, &["rev-parse", "HEAD"])
 }
 
-/// The whole cycle from a bound node to a finished task, with PR `number`.
-pub fn deliver_merge_close(report: &mut Report, fakes: &Fakes, user: &User, node: &Node, task: &str, number: u64) -> Result<()> {
+/// The whole cycle from a running node to a finished task, with PR `number`.
+pub fn deliver_merge_close(report: &mut Report, fakes: &Fakes, user: &User, session: &Session, task: &str, number: u64) -> Result<()> {
     state(report, user, task, WORKING)?;
-    act(report, fakes, node, &format!("the node commits, pushes, opens PR #{number}, registers it and delivers"), &Step::work(number, &format!("{task}.txt")))?;
-    let (card, view) = review_card(report, user, node)?;
+    act(report, fakes, session, &format!("the node commits, pushes, opens PR #{number}, registers it and delivers"), &Step::work(number, &format!("{task}.txt")))?;
+    let (card, view) = review_card(report, user, session)?;
     state(report, user, task, IN_REVIEW)?;
-    let head = head(node)?;
+    let head = head(session)?;
     press(report, user, &view, "merge:", None, None, &format!("the user merges PR #{number} from the card"))?;
     merged(report, fakes, number, &head)?;
-    closed(report, fakes, user, node, task, &card)
+    closed(report, fakes, user, session, task, &card)
+}
+
+/// The card waiting in Inbox whose id starts with `prefix`.
+pub fn card_in_inbox(user: &User, prefix: &str) -> Result<(Option<String>, String)> {
+    let inbox = user.inbox()?;
+    Ok((inbox.iter().find(|id| id.starts_with(prefix)).cloned(), format!("{inbox:?}")))
+}
+
+/// The enabled «Interrupt» Fleet offers on the node of the task titled `title`.
+pub fn interrupt_of(fleet: &Value, title: &str) -> Option<Value> {
+    let mut rows = vec![];
+    collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
+    rows.into_iter().rev().find_map(|row| {
+        let mut found = vec![];
+        collect(&row, &mut |item| item.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with("interrupt:")) && item.get("enabled") != Some(&Value::Bool(false)), &mut found);
+        found.into_iter().next()
+    })
 }

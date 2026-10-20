@@ -15,7 +15,6 @@ pub mod automerge;
 pub mod config;
 pub mod event;
 pub mod issues;
-pub mod keeper;
 pub mod launcher;
 pub mod local_network_card;
 pub mod close_problem;
@@ -23,7 +22,7 @@ pub mod machine_incident;
 pub mod model;
 pub mod model_label;
 pub mod model_report;
-pub mod mods;
+pub mod claude_code;
 pub mod node_guard;
 pub mod options;
 pub mod projects_folder;
@@ -51,7 +50,7 @@ pub use view::View;
 
 pub const DEFAULT_PORT: u16 = 47800;
 
-/// How long alondrad waits for `claude --bg` to launch a node.
+/// How long the launch of a node can take, its Agent SDK host's start included.
 pub const LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Set in every session Alondra launches, so its hooks and its tools say it is Alondra's.

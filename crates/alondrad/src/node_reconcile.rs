@@ -39,8 +39,9 @@ pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
 
 /// Lists the real sessions once and hands the node machine what it says of every live node
 /// Alondra launched, and of every other live node whose session is gone and that holds no open
-/// task, so it closes without ever being brought back. False when the listing could not be read:
-/// nothing is moved then.
+/// task, so it closes without ever being brought back. A node of the Agent SDK is never in the
+/// listing and is left to its host. False when the listing could not be read: nothing is moved
+/// then.
 pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> bool {
     let asked = alondra_core::now_millis();
     let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
@@ -58,6 +59,7 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
     let open_task = |agent: &AgentId| state.tasks.values().any(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
     let listed: BTreeMap<AgentId, Listed> = state.agents.values()
         .filter(|agent| agent.phase.live() && Some(&agent.id) != state.orchestrator_session.as_ref())
+        .filter(|agent| !crate::sdk_owner::runs_through_sdk(&state, &agent.id))
         .map(|agent| (agent, sessions.get(&agent.id.0).copied().unwrap_or(Listed::Absent)))
         .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (matches!(listed, Listed::Absent | Listed::Done) && !open_task(&agent.id)))
         .map(|(agent, listed)| (agent.id.clone(), listed))
@@ -295,28 +297,17 @@ mod tests {
         assert!(read_meanwhile <= TAKES / 2, "the sweep read {read_meanwhile} notices while another caller took the store {TAKES} times");
     }
 
-    struct Respawn {
-        domain: std::sync::Arc<DomainRuntime>,
-        hello: serde_json::Value,
-        asked: Mutex<Vec<String>>,
-        link: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+    /// The daemon gets the Agent SDK, whose moves stop once planned: what bringing a node back
+    /// asks for is seen in its plan. The folder of its hosts, kept while the test runs.
+    fn moving_to_the_sdk(domain: &std::sync::Arc<DomainRuntime>, home: &std::path::Path) -> crate::test_support::Directory {
+        let state = crate::test_support::Directory::for_unix_socket();
+        domain.enable_sdk(crate::sdk_owner::tests::fixture_backend(home, &state).0);
+        *domain.handovers.crash_after.lock().unwrap() = Some(crate::domain_store::HandoverStep::Planned);
+        state
     }
 
-    impl crate::orchestrate::Launcher for Respawn {
-        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-            unreachable!("bringing a session back launches nothing new")
-        }
-
-        async fn stop(&self, _: &str) {}
-
-        async fn respawn(&self, short: &str) -> Result<(), String> {
-            self.asked.lock().unwrap().push(short.to_owned());
-            let hello: crate::node_reports::Hello = serde_json::from_value(self.hello.clone()).unwrap();
-            let session = hello.session_id.clone();
-            let connection = self.domain.connect_node(hello, alondra_core::now_millis());
-            *self.link.lock().unwrap() = Some(self.domain.live.pushes.attach(&session, connection));
-            Ok(())
-        }
+    fn moves(domain: &DomainRuntime, node: &str) -> Vec<crate::domain_store::HandoverPlan> {
+        domain.store.lock().unwrap().handovers().unwrap().into_iter().filter(|handover| handover.node.0 == node).map(|handover| handover.plan).collect()
     }
 
     fn tasks_view(domain: &DomainRuntime) -> String {
@@ -357,14 +348,7 @@ mod tests {
         domain.live.mods.disconnect(node, connection);
     }
 
-    const QUICK: crate::node_revival::Timing = crate::node_revival::Timing {
-        grace: Duration::from_millis(30), settle: Duration::from_millis(500), pauses: [Duration::from_millis(5); 2],
-    };
-
-    fn told(claude_code: &Respawn) -> String {
-        let line = claude_code.link.lock().unwrap().as_mut().unwrap().try_recv().expect("a resumed session starts no turn by itself");
-        serde_json::from_str::<serde_json::Value>(&line).unwrap()["text"].as_str().unwrap().to_owned()
-    }
+    const QUICK: crate::node_revival::Timing = crate::node_revival::Timing { grace: Duration::from_millis(30) };
 
     /// 10–12 October, “El orquestador deja de verse”: the node ended its turn paused for the usage
     /// limit, with its work uncommitted in its worktree. Eight hours later Claude Code stopped the
@@ -372,11 +356,12 @@ mod tests {
     /// usage came back the session was resumed, and nothing told it to carry on: it sat idle until
     /// Claude Code stopped it again eight hours later.
     #[tokio::test]
-    async fn a_paused_node_whose_session_claude_code_stopped_comes_back_and_carries_on_in_its_worktree() {
+    async fn a_paused_node_whose_session_claude_code_stopped_comes_back_through_the_sdk_and_carries_on_in_its_worktree() {
         const NODE: &str = "c0ffee00-81db-4cdb-8e95-6a2aaab612d3";
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = std::sync::Arc::new(open(&home));
+        let _hosts = moving_to_the_sdk(&domain, &home);
         launch(&domain, NODE);
         let (worktree, hello, connection) = in_worktree(&domain, &home, NODE);
         paused_for_usage(&domain, NODE);
@@ -388,36 +373,36 @@ mod tests {
         let tasks = tasks_view(&domain);
         assert!(!tasks.contains("Sin conexión") && tasks.contains("Por el límite de uso"), "it says what it waits for: {tasks}");
 
-        let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
-        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
-        assert!(claude_code.asked.lock().unwrap().is_empty(), "a paused node comes back through the gate, not revival");
-        crate::fleet_gate::pass(&domain, &home, &claude_code).await.unwrap();
+        crate::node_revival::revive(&domain, NODE, &QUICK).await;
+        assert!(moves(&domain, NODE).is_empty(), "a paused node comes back through the gate, not revival");
+        crate::fleet_gate::pass(&domain, &home).await.unwrap();
         assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "the gate resumed it");
-        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
-        assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee00"], "the same session is resumed, conversation and all");
-        assert_eq!(domain.live.mods.session(NODE).and_then(|reported| reported.cwd).as_deref(), worktree.to_str(), "in the same worktree");
-        assert!(told(&claude_code).ends_with("Your Claude usage limit has reset. Carry on with what you were doing."));
+        crate::node_revival::revive(&domain, NODE, &QUICK).await;
+        let moves = moves(&domain, NODE);
+        assert_eq!(moves.len(), 1, "the same session moves to the SDK, conversation and all: {moves:?}");
+        assert_eq!(moves[0].session, NODE);
+        assert_eq!(Some(moves[0].cwd.as_str()), worktree.to_str(), "in the same worktree");
+        assert!(moves[0].input.ends_with("Your Claude usage limit has reset. Carry on with what you were doing."), "{}", moves[0].input);
         assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "its pause is over");
         assert_eq!(std::fs::read_to_string(worktree.join("staged.rs")).unwrap(), "uncommitted work");
     }
 
     /// The same without a pause: a node whose turn ended with its task still open and nothing for
-    /// the user waits on the card with its last words; it loses its session to Claude Code, and once
-    /// resumed nothing is typed into it: the user's answer is what it waits for.
+    /// the user waits on the card with its last words; it loses its session to Claude Code, and
+    /// nothing is typed into it: the user's answer is what it waits for.
     #[tokio::test]
     async fn a_resumed_session_waiting_on_the_card_with_its_words_is_left_to_the_user() {
         const NODE: &str = "c0ffee01-81db-4cdb-8e95-6a2aaab612d3";
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = std::sync::Arc::new(open(&home));
+        let _hosts = moving_to_the_sdk(&domain, &home);
         launch(&domain, NODE);
-        let (_, hello, connection) = in_worktree(&domain, &home, NODE);
+        let (_, _, connection) = in_worktree(&domain, &home, NODE);
         run(&domain, Actor::System, "turn-end", Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::TurnEnded, at: alondra_core::now_millis() });
         retired(&domain, NODE, connection);
-        let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
-        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
-        assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee01"]);
-        assert!(claude_code.link.lock().unwrap().as_mut().unwrap().try_recv().is_err(), "nothing is typed into it");
+        crate::node_revival::revive(&domain, NODE, &QUICK).await;
+        assert!(moves(&domain, NODE).is_empty(), "nothing is typed into it: it moves to the SDK with the user's answer");
         let state = domain.state().unwrap();
         assert!(state.open_user_card(&format!("t-{NODE}").into()).is_some_and(|card| card.id.0.starts_with(alondra_core::domain::UNHEARD_PREFIX)));
     }

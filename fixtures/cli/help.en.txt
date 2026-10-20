@@ -11,7 +11,6 @@ Daily
   status       Questions, tasks and fleet, as text
   answer       Answer a question
   send         Send a message to a task, a node or the orchestrator
-  attach       Open a node's terminal
   close        Close a node's session
   cancel       Cancel tasks
 

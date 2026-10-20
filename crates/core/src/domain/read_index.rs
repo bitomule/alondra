@@ -597,7 +597,7 @@ pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
 
 /// Whether the latest admission of `task` gave `node` an execution of its own: only the SDK's
 /// carry one, `claude --bg` nodes are admitted without.
-fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &AgentId) -> bool {
+pub(super) fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &AgentId) -> bool {
     state.lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
         LifecycleRecord::Admitted { node: admitted, execution } => Some(admitted == node && execution.is_some()),
         _ => None,

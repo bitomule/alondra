@@ -6,7 +6,7 @@
 //! has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
+    BackgroundItem, Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
     TurnSignal,
 };
 use crate::pr::{PrState, PullRequest};
@@ -448,40 +448,6 @@ pub fn watching(v: &View, node: &Node, now: Millis) -> bool {
     node.attached || (talking_with_user(v, node) && node.last_prompt_at.is_some_and(|at| now - at <= WATCH_WINDOW_MS))
 }
 
-/// The node's terminal is parked on a menu (a permission, a question, a dialog) that no Alondra
-/// question stands for, and nobody is at that terminal: it has to reach the clients as a card.
-pub fn unseen_menu(v: &View, node: &Node, now: Millis) -> bool {
-    let on_menu = node.waiting_permission || node.menu_waiting.is_some();
-    let carded = v.questions.values().any(|q| q.session_id == node.session_id && q.status.is_open() && !q.to_orchestrator);
-    node.in_daemon && on_menu && !carded && !watching(v, node, now)
-}
-
-pub const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
-const STALLED_PREFIX: &str = "[Alondra] Stalled node";
-
-/// What Alondra does about a stalled node: nudge it once, and if it stalls again before anyone
-/// writes to it, hand it to the orchestrator.
-#[derive(Debug, Clone, PartialEq)]
-pub enum StallMove {
-    Nudge,
-    TellOrchestrator { orchestrator: String },
-}
-
-pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
-    if node.state != NodeState::Stalled || node.attached {
-        return None;
-    }
-    let orchestrator = || view.orchestrator_node();
-    let told = |orchestrator: &Node, tag: &str| {
-        view.messages.values().any(|m| m.session_id == orchestrator.session_id && m.from == MessageFrom::Alondra && m.text.starts_with(STALLED_PREFIX) && m.text.contains(tag))
-    };
-    if let Some(tool) = node.tool.as_ref().filter(|_| node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck)) {
-        let o = orchestrator()?;
-        return (!told(o, &stuck_tag(node, tool.since))).then(|| StallMove::TellOrchestrator { orchestrator: o.session_id.clone() });
-    }
-    nudge_then_orchestrator(view, node)
-}
-
 /// What the node declared in its episode covers the task: a declaration covers the task it
 /// named, or every task of the node when it named none. A wait for the machine covers them all.
 pub fn declared_for(node: &Node, task: &Task) -> bool {
@@ -531,219 +497,6 @@ pub fn awaits_merge<'a>(view: &'a View, node: &Node, now: Millis) -> Option<(&'a
         return None;
     }
     view.tasks_of(&node.session_id).find_map(|t| Some((t, view.awaitable_merge(t)?)))
-}
-
-/// What a quiet node with work left hears about the PRs its last words name: one merged after
-/// its turn began, which it cannot know about, and one with no card, which the user does not
-/// see. Once per PR. A merge counts as a merge notice for its task, so the node's declarations
-/// before it lapse when it lands.
-pub fn stale_wait_messages(view: &View, node: &Node, user: &str, now: Millis) -> Vec<Message> {
-    let Some(open) = view.tasks_of(&node.session_id).find(|t| !t.state.finished()) else { return vec![] };
-    if !quiet(view, node, now) || !view.may_alondra_write(node) {
-        return vec![];
-    }
-    let told = |url: &str, since: Millis| view.messages.values().any(|m| m.session_id == node.session_id && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.contains(url));
-    let mut next_id = view.next_message_id() - 1;
-    let mut said = vec![];
-    for named in view.named_prs(node) {
-        let (text, about) = match named {
-            crate::tasks::Named::Card(p) => {
-                let Some(merged) = p.merged_at.filter(|m| p.state == PrState::Merged && *m > node.turn_since && !told(&p.url, *m)) else { continue };
-                let of = view.pr_task_of(p).map(|t| format!(" of {} “{}”", t.id, t.title)).unwrap_or_default();
-                let text = format!(
-                    "[Alondra] {} (PR #{}{of}), which your last message waits on, was merged {} min ago. Carry on with what waited for it.",
-                    p.url,
-                    p.number,
-                    (now - merged) / MINUTE
-                );
-                let task = (p.session_id != node.session_id).then(|| open.id.clone());
-                (text, Some(crate::model::MessageAbout::PrMerged { pr_id: p.id, task }))
-            }
-            crate::tasks::Named::Uncarded(url) => {
-                if told(&url, 0) {
-                    continue;
-                }
-                let text = format!(
-                    "[Alondra] {url}, which your last message names, has no card in Alondra, so {user} does not see it. If it waits for {user}'s review, deliver it with `present_result`: that gives it its card."
-                );
-                (text, None)
-            }
-        };
-        next_id += 1;
-        said.push(Message {
-            id: next_id,
-            session_id: node.session_id.clone(),
-            from: MessageFrom::Alondra,
-            text,
-            answers_question: None,
-            created_at: now,
-            handed_at: None,
-            delivered_at: None,
-            about,
-            attachments: vec![],
-        });
-    }
-    said
-}
-
-/// What Alondra does about a node idle when it should work: what it does about a stalled one,
-/// keyed on its running task instead of its state.
-pub fn idle_move(view: &View, node: &Node, now: Millis) -> Option<StallMove> {
-    idle_task(view, node, now)?;
-    nudge_then_orchestrator(view, node)
-}
-
-/// Nudge the node once in its episode; if it stops again undeclared after the nudge reached it,
-/// hand it to the orchestrator.
-fn nudge_then_orchestrator(view: &View, node: &Node) -> Option<StallMove> {
-    let since = node.episode_since;
-    let alondra_wrote = |session: &str, prefix: &str, about: Option<&str>| {
-        view.messages.values().any(|m| {
-            m.session_id == session && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.starts_with(prefix) && about.is_none_or(|a| m.text.contains(a))
-        })
-    };
-    let nudge = view.messages.values().filter(|m| m.session_id == node.session_id && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.starts_with(NUDGE_PREFIX)).last();
-    let Some(nudge) = nudge else { return Some(StallMove::Nudge) };
-    let stopped_after_nudge = nudge.handed_at.zip(node.last_stop_at).is_some_and(|(handed, stop)| stop > handed);
-    if !stopped_after_nudge {
-        return None;
-    }
-    let orchestrator = view.orchestrator_node()?;
-    let tag = stalled_tag(node);
-    (!alondra_wrote(&orchestrator.session_id, STALLED_PREFIX, Some(&tag))).then(|| StallMove::TellOrchestrator { orchestrator: orchestrator.session_id.clone() })
-}
-
-fn stalled_tag(node: &Node) -> String {
-    format!("({})", node.short_id)
-}
-
-fn stuck_tag(node: &Node, since: Millis) -> String {
-    format!("({} call@{since})", node.short_id)
-}
-
-pub fn stuck_text(node: &Node, user: &str, now: Millis) -> Option<String> {
-    let tool = node.tool.as_ref()?;
-    let minutes = (now - tool.since) / MINUTE;
-    let call = format!("{} {}", tool.name, tool.summary.as_deref().unwrap_or("")).trim().to_string();
-    Some(format!(
-        "{STALLED_PREFIX}: {} {} has been inside one call for {minutes} min: {call}. If it is hung, `interrupt` \
-         stops the call and `send` moves the node on; a legitimately long call is left alone. When you cannot tell, it is a question for {user}.",
-        node.display_name(),
-        stuck_tag(node, tool.since)
-    ))
-}
-
-pub fn nudge_text(user: &str) -> String {
-    format!(
-        "{NUDGE_PREFIX} {user} anything through Alondra, so they cannot tell whether you are \
-         waiting on them; your terminal does not reach them. The Alondra tools declare your state: `ask` for a decision \
-         (one decision per card, with options), `request_input` for a file or text only {user} has, `request_action` \
-         for something {user} does outside Alondra, `present_result` with is_final true when you are done, \
-         `wait_for_machine` when you are waiting for resources. If you are \
-         still working on your own (a build, an upload, a review, a long command), there is nothing to send."
-    )
-}
-
-pub fn stalled_text(node: &Node, user: &str) -> String {
-    let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
-    format!(
-        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything, and Alondra already nudged it once. \
-         Its last message:\n\n{said}\n\n`send` moves it on when that message tells you what comes next; otherwise it is \
-         a question for {user}.",
-        node.display_name(),
-        stalled_tag(node)
-    )
-}
-
-/// Shares the stalled prefix and tag, so the orchestrator hears about a node once whichever way
-/// it was found idle.
-pub fn idle_text(node: &Node, task: &Task, user: &str) -> String {
-    let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
-    format!(
-        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything while its task “{}” is running, and \
-         Alondra already nudged it once. Its last message:\n\n{said}\n\n`send` moves it on when that message tells you what \
-         comes next; otherwise it is a question for {user}.",
-        node.display_name(),
-        stalled_tag(node),
-        task.title
-    )
-}
-
-/// The message a stall move, or a move on a node idle when it should work, puts in a session.
-pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
-    let stuck = node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck);
-    let task = idle_task(view, node, at);
-    let (session_id, text) = match stall_move(view, node).or_else(|| task.and_then(|_| nudge_then_orchestrator(view, node)))? {
-        StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
-        StallMove::TellOrchestrator { orchestrator } if stuck => (orchestrator, stuck_text(node, user, at)?),
-        StallMove::TellOrchestrator { orchestrator } => (orchestrator, task.map_or_else(|| stalled_text(node, user), |t| idle_text(node, t, user))),
-    };
-    view.alondra_message(&session_id, text, at)
-}
-
-pub const HUNG_PREFIX: &str = "[Alondra] A background task may be hung";
-/// How long a node has, after Alondra's message reached it, to stop a hung task before the
-/// orchestrator hears about it.
-pub const HUNG_REPLY_MS: Millis = 20 * MINUTE;
-
-fn hung_tag(node: &Node, item: &BackgroundItem) -> String {
-    format!("({} bg@{})", node.short_id, item.started_at)
-}
-
-fn kind_word(kind: BackgroundKind) -> &'static str {
-    match kind {
-        BackgroundKind::Agent => "subagent",
-        BackgroundKind::Shell => "shell",
-        BackgroundKind::Other => "task",
-    }
-}
-
-fn hung_node_text(item: &BackgroundItem, tag: &str, now: Millis) -> String {
-    format!(
-        "{HUNG_PREFIX}: your background {} \"{}\" {tag} has been running for {} min while you do nothing else. If it is \
-         stuck (a wait loop that can never end, a watcher on something that already finished), stop it with the tool that \
-         stops background tasks and carry on. If it is legitimately long, leave it.",
-        kind_word(item.kind),
-        item.label,
-        (now - item.started_at) / MINUTE
-    )
-}
-
-fn hung_orchestrator_text(node: &Node, item: &BackgroundItem, tag: &str, user: &str, now: Millis) -> String {
-    format!(
-        "{HUNG_PREFIX}: {} {tag} still has its background {} \"{}\" running after {} min, and Alondra asked it {} min ago \
-         to stop it if it is stuck. `send` tells the node what to do; `interrupt` does not stop background tasks. When you \
-         cannot tell whether it is legitimate, it is a question for {user}.",
-        node.display_name(),
-        kind_word(item.kind),
-        item.label,
-        (now - item.started_at) / MINUTE,
-        HUNG_REPLY_MS / MINUTE
-    )
-}
-
-/// The next message about a background task that may be hung: first to the node, then, if the
-/// task is still hung `HUNG_REPLY_MS` after that message reached the node, to the orchestrator.
-pub fn hung_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
-    if !node.alive || node.attached || node.is_orchestrator || watching(view, node, at) {
-        return None;
-    }
-    let wrote = |session: &str, tag: &str| {
-        view.messages.values().filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(HUNG_PREFIX) && m.text.contains(tag)).last()
-    };
-    let orchestrator = view.orchestrator_node();
-    let (session_id, text) = background(node, at).into_iter().filter(|b| b.suspect).find_map(|b| {
-        let tag = hung_tag(node, &b);
-        match wrote(&node.session_id, &tag) {
-            None => Some((node.session_id.clone(), hung_node_text(&b, &tag, at))),
-            Some(told) => {
-                let o = orchestrator?;
-                let ignored = told.handed_at.is_some_and(|handed| at - handed > HUNG_REPLY_MS);
-                (ignored && wrote(&o.session_id, &tag).is_none()).then(|| (o.session_id.clone(), hung_orchestrator_text(node, &b, &tag, user, at)))
-            }
-        }
-    })?;
-    view.alondra_message(&session_id, text, at)
 }
 
 #[cfg(test)]
@@ -993,36 +746,6 @@ mod tests {
         Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(prompt.into()), ..Default::default() })
     }
 
-    #[test]
-    fn a_hung_background_task_is_raised_with_the_node_first_and_then_with_the_orchestrator() {
-        let min = 60_000;
-        let mut v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], None);
-        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        let next = |v: &View, at: Millis| hung_message(v, &v.nodes["s"], "Ana", at);
-
-        assert_eq!(next(&v, T0 + 20 * min), None, "not hung yet");
-        let to_node = next(&v, T0 + 40 * min).expect("hung after 30 idle min");
-        assert_eq!(to_node.session_id, "s");
-        assert!(to_node.text.starts_with(HUNG_PREFIX) && to_node.text.contains("shell \"wait for the build\""), "{}", to_node.text);
-        v.apply(52, T0 + 40 * min, &Event::MessageQueued(to_node.clone()));
-        assert_eq!(next(&v, T0 + 40 * min), None, "the node is told once");
-
-        v.apply(53, T0 + 41 * min, &Event::MessageHanded { id: to_node.id });
-        v.apply(54, T0 + 41 * min, &hook("UserPromptSubmit"));
-        v.apply(55, T0 + 42 * min, &hook("Stop"));
-        assert_eq!(next(&v, T0 + 60 * min), None, "the node worked on it recently");
-
-        let to_orchestrator = next(&v, T0 + 73 * min).expect("still hung 30 min after the node's last move");
-        assert_eq!(to_orchestrator.session_id, "o");
-        assert!(to_orchestrator.text.contains("Ana") && to_orchestrator.text.contains("bg@"), "{}", to_orchestrator.text);
-        v.apply(56, T0 + 73 * min, &Event::MessageQueued(to_orchestrator));
-        assert_eq!(next(&v, T0 + 90 * min), None, "the orchestrator is told once");
-
-        let fresh_start = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
-        assert_eq!(next(&fresh_start, T0 + 40 * min), None, "a stopped task raises nothing");
-    }
-
     fn background(events: &[Event]) -> Vec<Event> {
         let mut all = vec![daemon("working", "active", 0, None)];
         all.extend_from_slice(events);
@@ -1053,54 +776,6 @@ mod tests {
         }
     }
 
-    fn alondra_says(v: &mut View, session: &str, text: String, seq: u64) {
-        let id = v.next_message_id();
-        let m = Message { id, session_id: session.into(), from: MessageFrom::Alondra, text, answers_question: None, created_at: T0 + seq as Millis * 1000, handed_at: None, delivered_at: None, about: None, attachments: vec![] };
-        v.apply(seq, T0 + seq as Millis * 1000, &Event::MessageQueued(m));
-    }
-
-    #[test]
-    fn a_stalled_node_is_nudged_once_and_then_handed_to_the_orchestrator() {
-        let with_orchestrator = |v: &mut View| {
-            v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-            v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        };
-        let stalled = || run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
-
-        let v = stalled();
-        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge), "first stall");
-
-        let mut v = stalled();
-        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "nudged, no orchestrator alive");
-
-        let mut v = stalled();
-        with_orchestrator(&mut v);
-        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the nudge has not reached the node yet");
-        let nudge = *v.messages.keys().next_back().unwrap();
-        v.apply(61, T0 + 61_000, &Event::MessageHanded { id: nudge });
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the nudge reached it and it has not stopped since");
-        v.apply(62, T0 + 62_000, &typed(&nudge_text("Ana")));
-        v.apply(63, T0 + 63_000, &hook("Stop"));
-        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::TellOrchestrator { orchestrator: "o".into() }), "stalled again after the nudge");
-        let text = stalled_text(&v.nodes["s"], "Ana");
-        alondra_says(&mut v, "o", text, 64);
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the orchestrator already has it");
-
-        let mut v = stalled();
-        with_orchestrator(&mut v);
-        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
-        let [queued, handed] = message(MessageFrom::Orchestrator);
-        for (i, e) in [queued, handed, hook("UserPromptSubmit"), hook("Stop")].iter().enumerate() {
-            v.apply(70 + i as u64, T0 + (70 + i as Millis) * 1000, e);
-        }
-        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge), "the orchestrator sent it on and it stalled again");
-
-        let v = run(&background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), None);
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "not stalled");
-    }
-
     fn typed(text: &str) -> Event {
         Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(text.into()), ..Default::default() })
     }
@@ -1128,42 +803,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_watched_node_is_never_stalled_nor_handed_on_until_the_user_leaves() {
-        let min = 60_000;
-        let v = run(&background(&[typed("what is left?"), hook("Stop")]), Some((5 * min, false)));
-        assert_ne!(v.nodes["s"].state, NodeState::Stalled, "typed 5 min ago");
-        let v = run(&background(&[typed("what is left?"), hook("Stop")]), Some((11 * min, false)));
-        assert_eq!(v.nodes["s"].state, NodeState::Stalled, "left 11 min ago: back to Alondra");
-
-        let mut v = run(&background(&[hook("UserPromptSubmit"), call("Bash")]), Some((50 * min, false)));
-        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        v.apply(52, T0 + 50 * min, &attach(true));
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "a stuck call the user is looking at");
-        v.apply(53, T0 + 51 * min, &attach(false));
-        assert!(stall_move(&v, &v.nodes["s"]).is_some(), "after the user leaves");
-    }
-
     fn menu(waiting: Option<&str>) -> Event {
         Event::MenuSeen { session_id: "s".into(), waiting_for: waiting.map(str::to_string) }
     }
 
     #[test]
-    fn a_menu_nobody_is_looking_at_must_reach_the_clients() {
-        let cases: Vec<(&str, Vec<Event>, bool, NodeState)> = vec![
-            ("the daemon says it waits on a permission", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt"))]), true, NodeState::WaitingAnswer),
-            ("a permission request Alondra did not hold", background(&[hook("UserPromptSubmit"), hook("PermissionRequest")]), true, NodeState::WaitingAnswer),
-            ("the menu is already a card", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), question(false, QuestionOrigin::Permission)]), false, NodeState::WaitingAnswer),
-            ("the user is at the terminal", background(&[hook("UserPromptSubmit"), attach(true), menu(Some("dialog open"))]), false, NodeState::WaitingAnswer),
-            ("the menu was answered and work goes on", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), tool("PreToolUse", "t")]), false, NodeState::Working),
-            ("the daemon says nothing is pending", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), menu(None)]), false, NodeState::Working),
-            ("a foreground session", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], false, NodeState::WaitingAnswer),
+    fn a_menu_keeps_the_node_waiting_for_an_answer_until_it_is_answered() {
+        let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
+            ("the daemon says it waits on a permission", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt"))]), NodeState::WaitingAnswer),
+            ("a permission request Alondra did not hold", background(&[hook("UserPromptSubmit"), hook("PermissionRequest")]), NodeState::WaitingAnswer),
+            ("the menu is already a card", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), question(false, QuestionOrigin::Permission)]), NodeState::WaitingAnswer),
+            ("the user is at the terminal", background(&[hook("UserPromptSubmit"), attach(true), menu(Some("dialog open"))]), NodeState::WaitingAnswer),
+            ("the menu was answered and work goes on", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), tool("PreToolUse", "t")]), NodeState::Working),
+            ("the daemon says nothing is pending", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), menu(None)]), NodeState::Working),
+            ("a foreground session", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], NodeState::WaitingAnswer),
         ];
-        for (what, events, expected, state) in cases {
+        for (what, events, state) in cases {
             let v = run(&events, None);
-            let at = T0 + events.len() as Millis * 1000;
-            assert_eq!(unseen_menu(&v, &v.nodes["s"], at), expected, "{what}");
             assert_eq!(v.nodes["s"].state, state, "{what}");
         }
     }
@@ -1229,35 +885,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stuck_call_goes_to_the_orchestrator_once() {
-        let mut v = run(&background(&[hook("UserPromptSubmit"), call("Bash")]), Some((50 * 60_000, false)));
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "no orchestrator alive");
-        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::TellOrchestrator { orchestrator: "o".into() }));
-        let m = stall_message(&v, &v.nodes["s"], "Ana", T0 + 50 * 60_000).unwrap();
-        assert!(m.text.contains("inside one call for 49 min: Bash"), "{}", m.text);
-        v.apply(52, T0 + 50 * 60_000, &Event::MessageQueued(m));
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None);
-    }
-
-    #[test]
     fn a_declared_wait_lapses_when_nothing_happens_and_the_machine_is_fine() {
         let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop")], Some((21 * 60_000, false)));
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-    }
-
-    #[test]
-    fn a_sweep_records_the_clock_only_when_time_changed_something() {
-        let min = 60_000;
-        let mut v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop")], None);
-        let later = T0 + 25 * min;
-        assert!(!v.due(T0 + 5 * min, false));
-        assert!(!v.due(later, true), "a strained machine keeps the wait");
-        assert!(v.due(later, false));
-        v.apply(9, later, &Event::Clock { machine_strained: false });
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-        assert!(!v.due(later + min, false));
     }
 
     #[test]
@@ -1424,37 +1054,6 @@ mod tests {
     }
 
     #[test]
-    fn every_alondra_message_refuses_a_done_node() {
-        let min = 60_000;
-        let mut v = run(&background(&[daemon_running(&[(BackgroundKind::Shell, T0)]), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), Some((40 * min, false)));
-        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        let at = T0 + 40 * min;
-        let node = v.nodes["s"].clone();
-        assert_eq!(node.state, NodeState::Done);
-        assert!(super::background(&node, at).iter().all(|b| b.suspect), "a hung task would be raised on a live node");
-        assert!(!v.may_alondra_write(&node));
-        assert_eq!(v.alondra_message("s", nudge_text("Ana"), at), None, "a nudge");
-        assert_eq!(hung_message(&v, &node, "Ana", at), None, "a hung task");
-        assert_eq!(stall_message(&v, &node, "Ana", at), None, "a stall move");
-        assert!(v.alondra_message("o", "[Alondra] Fleet updates".into(), at).is_some(), "the orchestrator still hears from Alondra");
-
-        let mut v = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
-        assert_eq!(v.nodes["s"].state, NodeState::Stalled);
-        let nudge = v.alondra_message("s", nudge_text("Ana"), T0 + 10_000).expect("a stalled node is nudged");
-        v.apply(10, T0 + 10_000, &Event::MessageQueued(nudge));
-        v.apply(11, T0 + 11_000, &report(ReportKind::Final));
-        assert_eq!(v.nodes["s"].state, NodeState::Done);
-        assert_eq!(v.deliverable_messages("s").count(), 0, "the nudge queued before it finished is not typed in");
-        let [from_user, user_handed] = message(MessageFrom::User);
-        v.apply(12, T0 + 12_000, &from_user);
-        assert_eq!(v.deliverable_messages("s").map(|m| m.from).collect::<Vec<_>>(), [MessageFrom::User]);
-        v.apply(13, T0 + 13_000, &user_handed);
-        assert_eq!(v.nodes["s"].state, NodeState::Working, "David reopened it");
-        assert_eq!(v.deliverable_messages("s").count(), 0, "the old nudge stays void once it is reopened");
-    }
-
-    #[test]
     fn a_state_this_build_does_not_know_reads_as_unclear() {
         let s: NodeState = serde_json::from_str("\"being_watched\"").unwrap();
         assert_eq!(s, NodeState::Unclear);
@@ -1495,43 +1094,5 @@ mod tests {
             let now = T0 + events.len() as Millis * 1000;
             assert_eq!(idle_task(&v, &v.nodes["s"], now).map(|t| t.id.as_str()), idle.then_some("t-s"), "{what}");
         }
-    }
-
-    #[test]
-    fn an_idle_node_is_nudged_then_handed_on_by_its_running_task_whatever_its_state() {
-        let named = Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("n".into()), pid: Some(7), ..Default::default() });
-        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true, task: None, title: None, session: None };
-        let mut v = run(&[launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop")], None);
-        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
-        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        let checks = |v: &mut View, seq: u64, state: CheckState| {
-            let mut pr = v.prs[&1].clone();
-            pr.fetched = true;
-            pr.checks = vec![crate::pr::Check { name: "ci".into(), state, url: None }];
-            v.apply(seq, T0 + seq as Millis * 1000, &Event::PrUpdated(pr));
-        };
-        let at = |seq: u64| T0 + seq as Millis * 1000;
-        assert_eq!(v.session_task("s").map(|t| t.state), Some(TaskState::Running), "an auto-merge PR leaves its task running");
-
-        checks(&mut v, 52, CheckState::Running);
-        assert_eq!(idle_task(&v, &v.nodes["s"], at(52)), None, "its PR waits on its checks, not on the node");
-        assert_eq!(v.nodes["s"].state, NodeState::WaitingMerge, "Alondra waits on GitHub");
-        checks(&mut v, 53, CheckState::Failed);
-        assert_eq!(v.nodes["s"].state, NodeState::Stalled, "its task should move, and what the apps read says so");
-        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge));
-        assert_eq!(idle_move(&v, &v.nodes["s"], at(53)), Some(StallMove::Nudge), "failed checks are the node's to fix");
-        let nudge = stall_message(&v, &v.nodes["s"], "Ana", at(53)).unwrap();
-        assert_eq!((nudge.session_id.as_str(), nudge.text.clone()), ("s", nudge_text("Ana")));
-
-        v.apply(54, at(54), &Event::MessageQueued(nudge.clone()));
-        assert_eq!(stall_message(&v, &v.nodes["s"], "Ana", at(54)), None, "one nudge until it reaches the node");
-        v.apply(55, at(55), &Event::MessageHanded { id: nudge.id });
-        v.apply(56, at(56), &typed(&nudge_text("Ana")));
-        v.apply(57, at(57), &hook("Stop"));
-        let handed_on = stall_message(&v, &v.nodes["s"], "Ana", at(57)).unwrap();
-        assert_eq!(handed_on.session_id, "o", "idle again after the nudge");
-        assert!(handed_on.text.starts_with(STALLED_PREFIX) && handed_on.text.contains("while its task “n” is running"), "{}", handed_on.text);
-        v.apply(58, at(58), &Event::MessageQueued(handed_on));
-        assert_eq!(stall_message(&v, &v.nodes["s"], "Ana", at(58)), None, "the orchestrator already has it");
     }
 }

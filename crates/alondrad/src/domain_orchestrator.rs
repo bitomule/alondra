@@ -5,7 +5,7 @@
 //! invocation never completes a Task.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
-use crate::orchestrator_process::{self as process, BatchEnd, Invocation, Ownership};
+use crate::orchestrator_process::{self as process, BatchEnd, Ownership};
 use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
@@ -123,7 +123,6 @@ pub(crate) struct Executor {
     pub domain: Arc<DomainRuntime>,
     pub home: PathBuf,
     pub claude_home: PathBuf,
-    pub executable: PathBuf,
 }
 
 /// A notice for the orchestrator is read once Alondra handed it over (or gave it up): it no
@@ -291,7 +290,7 @@ impl Executor {
     }
 
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
-    pub(crate) async fn tick(&self, ownership: &Ownership) -> Result<()> {
+    pub(crate) async fn tick(&self) -> Result<()> {
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
         let now = now_millis();
@@ -379,14 +378,7 @@ impl Executor {
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
-                let mut mark_spawned = Some(mark_spawned);
-                process::execute(Invocation {
-                    executable: &self.executable, cwd: &directory, home: &self.home,
-                    plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
-                    domain: true, projects_root: projects_root.as_deref(),
-                    capability: Some(capability.expose_for_child_environment()),
-                    session: &session, resume: false, execution: &run_id, prompt: &prompt, ownership,
-                }, |_| mark_spawned.take().map_or(Ok(()), |mark| mark()), || Ok(()), cancel).await
+                process::Output::not_started(crate::sdk_owner::NO_HOST)
             }
         };
         let changes = self.domain.end_execution(&run_id);
@@ -682,7 +674,7 @@ pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
 }
 
 pub(crate) fn executor(domain: Arc<DomainRuntime>, home: &Path) -> Executor {
-    Executor { domain, home: home.to_owned(), claude_home: crate::watcher::claude_home(), executable: PathBuf::from("claude") }
+    Executor { domain, home: home.to_owned(), claude_home: crate::watcher::claude_home() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,9 +707,9 @@ pub(crate) fn decide(executor: &Executor, decision: Decision, body: Option<&serd
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf) -> Result<()> {
-    let executor = Executor { domain, home: home.clone(), claude_home, executable: PathBuf::from("claude") };
+    let executor = Executor { domain, home: home.clone(), claude_home };
     let directory = home.join("runtime/orchestrator");
-    let ownership = loop {
+    let _ownership = loop {
         match Ownership::acquire(&directory) {
             Ok(Some(lock)) => break lock,
             Ok(None) => {
@@ -739,7 +731,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
     let mut changed = executor.domain.subscribe();
     let mut usage = executor.domain.live.usage_pause.subscribe();
     loop {
-        if let Err(error) = executor.tick(&ownership).await {
+        if let Err(error) = executor.tick().await {
             log!("orchestrator: {error:#}");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
@@ -751,75 +743,294 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
     }
 }
 
-/// A fake `claude` for the runner: it checks the v2 environment, records the prompt it was
-/// handed and answers with `body`, and the plugins it needs are registered.
+/// An executor whose batches run through the pinned Node host with the official SDK and the fake
+/// orchestrator Claude (`agent-host/orchestrator-fake-claude.py`), which answers each prompt as its
+/// marker says. A wrapper around the fake records each start with the capability it got, and,
+/// from files beside its capture, puts a marker in front of every prompt (`.marker`, or
+/// `.marker-once` for the next start only), holds the first prompt before Claude sees it
+/// (`.hold-before`) or adds fields to every result (`.result-extra`). A held turn waits on a FIFO
+/// the test writes, never on a clock.
 #[cfg(test)]
-pub(crate) fn stub_claude(root: &Path, body: &str) -> (PathBuf, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
-    let claude_home = root.join("claude-home");
-    let repo = root.join("assets");
-    for plugin in [crate::plugins::NODE, crate::plugins::ORCHESTRATOR] {
-        std::fs::create_dir_all(repo.join(plugin).join(".claude-plugin")).unwrap();
-        std::fs::write(repo.join(plugin).join(".claude-plugin/plugin.json"), "{}").unwrap();
+pub(crate) mod testing {
+    use super::*;
+    use crate::orchestrator_process::Ownership;
+    use crate::test_support::Directory;
+    use alondra_core::domain::{CardKind, CardSpec, LaunchPlan};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    const WRAPPER: &str = r#"#!/usr/bin/python3
+import json
+import os
+import sys
+
+capture = os.environ['FIXTURE_CAPTURE']
+with open(capture + '.starts', 'a') as stream:
+    stream.write(os.environ.get('ALONDRA_DOMAIN_CAPABILITY', '') + '\n')
+marker = None
+for name in ('.marker', '.marker-once'):
+    if os.path.exists(capture + name):
+        with open(capture + name) as stream:
+            marker = stream.read().strip()
+        if name == '.marker-once':
+            os.remove(capture + name)
+        break
+hold_before = os.path.exists(capture + '.hold-before')
+extra = json.load(open(capture + '.result-extra')) if os.path.exists(capture + '.result-extra') else {}
+
+
+class Inputs:
+    def __iter__(self):
+        for raw in sys.__stdin__:
+            message = json.loads(raw)
+            if message.get('type') == 'user':
+                if hold_before:
+                    with open(os.environ['FIXTURE_HELD'], 'w') as held:
+                        held.write('held\n')
+                    with open(os.environ['FIXTURE_RELEASE']) as release:
+                        release.read(1)
+                if marker:
+                    message['message']['content'] = marker + ' ' + message['message']['content']
+            yield json.dumps(message) + '\n'
+
+
+class Outputs:
+    def write(self, text):
+        for line in text.splitlines(True):
+            if extra and line.strip():
+                value = json.loads(line)
+                if value.get('type') == 'result':
+                    value.update(extra)
+                    line = json.dumps(value, ensure_ascii=False) + '\n'
+            sys.__stdout__.write(line)
+
+    def flush(self):
+        sys.__stdout__.flush()
+
+
+sys.stdin = Inputs()
+sys.stdout = Outputs()
+fake = FAKE
+sys.argv = [fake] + sys.argv[1:]
+exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
+"#;
+
+    fn runfile(name: &str) -> PathBuf {
+        std::fs::canonicalize(std::env::var(name).unwrap_or_else(|_| panic!("{name} names a runfile"))).unwrap()
     }
-    std::fs::create_dir_all(claude_home.join("plugins")).unwrap();
-    std::fs::write(claude_home.join("plugins/known_marketplaces.json"),
-        serde_json::json!({"alondra":{"installLocation":repo}}).to_string()).unwrap();
-    let executable = root.join("fake-claude");
-    std::fs::write(&executable, format!(r#"#!/bin/sh
-test "$ALONDRA_DOMAIN_PROTOCOL" = 2 || exit 89
-test -n "$ALONDRA_DOMAIN_CAPABILITY" || exit 88
-printf '%s\n' "$ALONDRA_DOMAIN_CAPABILITY" >> capabilities
-while [ "$#" -gt 0 ]; do
-case "$1" in --session-id|--resume) printf '%s %s\n' "$1" "$2" >> sessions; shift; session="$1";; esac
-shift
-done
-cat > received-prompt
-printf 'start\n' >> starts
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}}'
-{body}
-"#)).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    (claude_home, executable)
+
+    fn fifo(path: &Path) {
+        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(path).status().unwrap().success());
+    }
+
+    /// Alondra's node and orchestrator plugins, registered in the returned Claude home.
+    pub(crate) fn registered_plugins(root: &Path) -> PathBuf {
+        let claude_home = root.join("claude-home");
+        let repo = root.join("assets");
+        for plugin in [crate::plugins::NODE, crate::plugins::ORCHESTRATOR] {
+            std::fs::create_dir_all(repo.join(plugin).join(".claude-plugin")).unwrap();
+            std::fs::write(repo.join(plugin).join(".claude-plugin/plugin.json"), "{}").unwrap();
+        }
+        std::fs::create_dir_all(claude_home.join("plugins")).unwrap();
+        std::fs::write(claude_home.join("plugins/known_marketplaces.json"), serde_json::json!({"alondra":{"installLocation":repo}}).to_string()).unwrap();
+        claude_home
+    }
+
+    pub(crate) struct Fixture {
+        pub(crate) executor: Executor,
+        _ownership: Ownership,
+        pub(crate) capture: PathBuf,
+        pub(crate) held: PathBuf,
+        pub(crate) release: PathBuf,
+        pub(crate) claude_home: PathBuf,
+        _state: Directory,
+        pub(crate) root: Directory,
+    }
+
+    /// A daemon home of its own whose orchestrator runs through the SDK.
+    pub(crate) fn fixture() -> Fixture {
+        let root = Directory::new();
+        std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        Fixture::over(root, domain, home)
+    }
+
+    impl Fixture {
+        /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live in `root`.
+        pub(crate) fn over(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf) -> Self {
+            let claude_home = registered_plugins(&root);
+            let fake = root.join("orchestrator-fake-claude.py");
+            std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &fake).unwrap();
+            let native = root.join("native");
+            std::fs::write(&native, WRAPPER.replace("FAKE", &format!("{:?}", fake.to_str().unwrap()))).unwrap();
+            std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let (capture, held, release) = (root.join("capture.json"), root.join("held"), root.join("release"));
+            fifo(&held);
+            fifo(&release);
+            let environment = BTreeMap::from([("HOME".to_owned(), root.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+            let mut native_environment = environment.clone();
+            for (name, path) in [("FIXTURE_CAPTURE", &capture), ("FIXTURE_HELD", &held), ("FIXTURE_RELEASE", &release)] {
+                native_environment.insert(name.into(), path.to_str().unwrap().into());
+            }
+            let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
+            let state = Directory::for_unix_socket();
+            let backend = crate::sdk_owner::SdkBackend {
+                node_sha256: crate::sdk_owner::backend::digest(&node).unwrap(),
+                host_sha256: crate::sdk_owner::backend::digest(&host).unwrap(),
+                native_sha256: crate::sdk_owner::backend::digest(&native).unwrap(),
+                node,
+                host,
+                native,
+                host_environment: environment,
+                native_environment,
+                confinement: None,
+                state_root: state.join("h"),
+                io_timeout_seconds: 30,
+                installed_native: false,
+            };
+            domain.enable_sdk(backend);
+            let ownership = Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
+            Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _state: state, root }
+        }
+
+        pub(crate) fn domain(&self) -> &DomainRuntime {
+            &self.executor.domain
+        }
+
+        pub(crate) fn run(&self, actor: Actor, id: &str, command: Command) {
+            let state = self.domain().state().unwrap();
+            self.domain().execute(&actor, &CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+                command_id: id.into(), expected_revision: state.revision, command,
+            }, None, || Ok(())).unwrap();
+        }
+
+        /// A node working on task `t` asks the orchestrator `body`: one orchestrator inbox message.
+        pub(crate) fn ask(&self, n: u32, body: &str) {
+            if self.domain().state().unwrap().tasks.is_empty() {
+                self.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
+                self.run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+                self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+                    task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
+                    review_prs: false, dependencies: BTreeSet::new(), stack: None,
+                    launch: Some(LaunchPlan::new("node", "/tmp")),
+                });
+            }
+            self.run(Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
+                attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
+                recipient: Recipient::Orchestrator, body: body.into(), blocking: false,
+                options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None }],
+                card: CardSpec::derived(CardKind::Provide, "Answer the question"),
+            });
+        }
+
+        /// A message from the user: once the orchestrator handled it, `settle` closes it.
+        pub(crate) fn tell(&self, id: &str, body: &str) {
+            self.run(Actor::User { user_id: "u".into() }, id, Command::CreateRequest { request_id: id.into(), body: body.into(), auto_merge: false, maintenance: false, message: true });
+        }
+
+        fn lines(&self, suffix: &str) -> Vec<String> {
+            match std::fs::read_to_string(format!("{}{suffix}", self.capture.display())) {
+                Ok(text) => text.lines().map(str::to_owned).collect(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
+                Err(error) => panic!("{error}"),
+            }
+        }
+
+        /// Every prompt the fake Claude got, in order.
+        pub(crate) fn prompts(&self) -> Vec<String> {
+            self.lines(".prompts").iter().map(|line| serde_json::from_str(line).unwrap()).collect()
+        }
+
+        /// The capability each start of the fake Claude got, one per start.
+        pub(crate) fn starts(&self) -> Vec<String> {
+            self.lines(".starts")
+        }
+
+        /// What the last start of the fake Claude was launched with.
+        pub(crate) fn arguments(&self) -> Vec<String> {
+            let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.capture).unwrap()).unwrap();
+            serde_json::from_value(capture["args"].clone()).unwrap()
+        }
+
+        /// Every prompt from now on starts with `marker` until `clear_marker`.
+        pub(crate) fn mark(&self, marker: &str) {
+            std::fs::write(format!("{}.marker", self.capture.display()), marker).unwrap();
+        }
+
+        /// Only the next start's prompts start with `marker`.
+        pub(crate) fn mark_once(&self, marker: &str) {
+            std::fs::write(format!("{}.marker-once", self.capture.display()), marker).unwrap();
+        }
+
+        pub(crate) fn clear_marker(&self) {
+            std::fs::remove_file(format!("{}.marker", self.capture.display())).unwrap();
+        }
+
+        /// The next starts hold their first prompt before Claude sees it, until `release`.
+        pub(crate) fn hold_before_claude(&self) {
+            std::fs::write(format!("{}.hold-before", self.capture.display()), "").unwrap();
+        }
+
+        /// Every result the fake Claude reports carries `fields` too.
+        pub(crate) fn add_to_results(&self, fields: serde_json::Value) {
+            std::fs::write(format!("{}.result-extra", self.capture.display()), fields.to_string()).unwrap();
+        }
+
+        pub(crate) fn pending(&self) -> usize {
+            self.domain().store.lock().unwrap().pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").count()
+        }
+
+        pub(crate) fn attempts(&self) -> Vec<String> {
+            self.domain().store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
+                .filter(|i| i.recipient_kind == "orchestrator").map(|i| i.state).collect()
+        }
+
+        pub(crate) fn cards(&self, prefix: &str) -> Vec<String> {
+            self.domain().state().unwrap().interactions.keys().filter(|id| id.0.starts_with(prefix)).map(|id| id.0.clone()).collect()
+        }
+
+        pub(crate) fn unresolved(&self) -> Vec<String> {
+            let state = self.domain().state().unwrap();
+            let requests: Vec<RequestId> = state.requests.keys().cloned().collect();
+            let suggestions: Vec<InteractionId> = state.interactions.keys().cloned().collect();
+            crate::orchestrator_inbox::unresolved(&state, &requests, &suggestions)
+        }
+
+        pub(crate) async fn tick(&self) {
+            self.executor.tick().await.unwrap();
+        }
+
+        /// Blocks until the fake Claude holds its turn.
+        pub(crate) fn wait_held(&self) {
+            let mut text = String::new();
+            std::fs::File::open(&self.held).unwrap().read_to_string(&mut text).unwrap();
+            assert_eq!(text, "held\n");
+        }
+
+        /// Waits, off the runtime, until the fake Claude holds its turn.
+        pub(crate) async fn held(&self) {
+            let held = self.held.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut text = String::new();
+                std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
+            }).await.unwrap();
+        }
+
+        pub(crate) fn release(&self) {
+            std::fs::OpenOptions::new().write(true).open(&self.release).unwrap().write_all(b"go").unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
-pub(crate) const STUB_SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":25}}}'
-printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
-
-#[cfg(test)]
 mod tests {
+    use super::testing::{Fixture, fixture};
     use super::*;
     use alondra_core::domain::*;
-    use std::collections::BTreeSet;
-
-    const SUCCESS: &str = STUB_SUCCESS;
-
-    /// Claude created a task and then died: the batch changed something.
-    const CREATED_THEN_EXIT: &str = r#"printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_create","name":"mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","input":{"request_id":"r","title":"Push badge"}}],"usage":{"input_tokens":3}}}'
-exit 1"#;
-
-    /// Recorded from the 2026-10-08 runs 5e2de560, 6d5f82fa and c5d61e48: the prompt reached
-    /// Claude too late and the resumed conversation had nothing to continue.
-    const NO_DEFERRED_MARKER: &str = r#"printf '%s\n' 'Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.' >&2
-printf '%s\n' 'Error: No deferred tool marker found in the resumed session. Either the session was not deferred, the marker is stale (tool already ran), or it exceeds the tail-scan window. Provide a prompt to continue the conversation.' >&2
-exit 1"#;
-
-    struct Fixture { root: crate::test_support::Directory, executor: Executor, ownership: Ownership }
-    impl Drop for Fixture {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
-    }
-
-    fn fixture(body: &str) -> Fixture {
-        let root = crate::test_support::Directory::new();
-        let home = root.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        let (claude_home, executable) = stub_claude(&root, body);
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        let directory = home.join("runtime/orchestrator");
-        let ownership = Ownership::acquire(&directory).unwrap().unwrap();
-        Fixture { root, executor: Executor { domain, home, claude_home, executable }, ownership }
-    }
 
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
@@ -830,21 +1041,8 @@ exit 1"#;
     }
 
     /// A question from an Agent to the orchestrator: one orchestrator inbox message.
-    fn ask_orchestrator(domain: &DomainRuntime, n: u32) {
-        if n == 1 {
-            command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
-            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
-                task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
-                review_prs: false, dependencies: BTreeSet::new(), stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
-            });
-        }
-        command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
-            attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::Orchestrator, body: format!("Where do I put change {n}?"), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
-        });
+    fn ask_orchestrator(f: &Fixture, n: u32) {
+        f.ask(n, &format!("Where do I put change {n}?"));
     }
 
     fn outbox(domain: &DomainRuntime) -> Vec<(i64, String)> {
@@ -875,17 +1073,26 @@ exit 1"#;
             .filter(|i| i.recipient_kind == "orchestrator").map(|i| (i.message_id, i.state, i.reason)).collect()
     }
 
+    fn last_prompt(f: &Fixture) -> String {
+        f.prompts().pop().expect("a batch reached Claude")
+    }
+
+    fn again(f: &Fixture) {
+        let mut runtime = load(&f.executor.home).unwrap();
+        runtime.retry_at = None;
+        save(&f.executor.home, &runtime).unwrap();
+    }
+
     #[tokio::test]
     async fn a_batch_reaches_one_invocation_with_a_bound_capability_and_is_handed_once() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        ask_orchestrator(domain, 2);
+        ask_orchestrator(&f, 1);
+        ask_orchestrator(&f, 2);
         assert_eq!(outbox(domain).len(), 2);
-        f.executor.tick(&f.ownership).await.unwrap();
-        let dir = f.executor.home.join("runtime/orchestrator");
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1);
-        let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1);
+        let prompt = last_prompt(&f);
         assert!(!prompt.contains("data_epoch=") && prompt.contains("Where do I put change 1?")
             && prompt.contains("Where do I put change 2?") && !prompt.contains("inbox message")
             && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
@@ -903,7 +1110,7 @@ exit 1"#;
                 assert_eq!(store.orchestrator_delivery(item.attempt_id).unwrap().as_deref(), Some(session.as_str()), "each message records the session it was handed to");
             }
         }
-        let token = std::fs::read_to_string(dir.join("capabilities")).unwrap().trim().to_owned();
+        let token = f.starts()[0].clone();
         assert_eq!(token.len(), 64);
         assert!(domain.resolve_bearer(&token).is_err(), "the execution's bearer is revoked when it ends");
         for n in [1, 2] {
@@ -911,113 +1118,63 @@ exit 1"#;
                 attachments: vec![], interaction_id: format!("q{n}").into(), option_id: "here".into(), inputs: Default::default(),
             });
         }
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "the reminders are a batch of their own");
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "nothing pending, no launch");
-        ask_orchestrator(domain, 3);
-        f.executor.tick(&f.ownership).await.unwrap();
-        let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "the reminders are a batch of their own");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "nothing pending, no launch");
+        ask_orchestrator(&f, 3);
+        f.tick().await;
+        let prompt = last_prompt(&f);
         assert!(prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
             && !prompt.contains("Where do I put change 1?") && !prompt.contains("inbox message"), "{prompt}");
         assert_ne!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "every batch is a conversation of its own");
     }
 
-    const NOTE_AND_CONTEXT: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":3,"cache_read_input_tokens":40000}}}'
-printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":5,"cache_creation_input_tokens":200,"cache_read_input_tokens":40000}}}'
-printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"result":"PR 12 waits for its review.","modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
-
-    /// The context of a batch is what Alondra writes in its prompt: each starts its own
-    /// conversation, with the note the previous one left and the questions the orchestrator
-    /// still waits on, and nothing of the conversations before it.
-    #[tokio::test]
-    async fn every_batch_is_a_new_conversation_and_carries_what_the_next_needs() {
-        let f = fixture(NOTE_AND_CONTEXT);
-        let domain = &f.executor.domain;
-        let dir = f.executor.home.join("runtime/orchestrator");
-        let mut prompts = vec![];
-        for n in 1..=5 {
-            command(domain, Actor::User { user_id: "u".into() }, &format!("m-{n}"), Command::CreateRequest {
-                request_id: format!("m-{n}").into(), body: format!("Where do I put change {n}?"), auto_merge: false, maintenance: false, message: true,
-            });
-            f.executor.tick(&f.ownership).await.unwrap();
-            prompts.push(std::fs::read_to_string(dir.join("received-prompt")).unwrap());
-            if n == 1 {
-                command(domain, Actor::Orchestrator { generation: 0 }, "question", Command::AskQuestion {
-                    attachments: vec![], interaction_id: "q-waits".into(), scope: Scope::Orchestrator { request_id: None },
-                    recipient: Recipient::User, body: "Which repository is change 1 for?".into(), blocking: false,
-                    options: vec![QuestionOption { id: "web".into(), label: "Web".into(), description: None }, QuestionOption { id: "ios".into(), label: "iOS".into(), description: None }],
-                    card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose the repository"),
-                });
-            }
-        }
-        let sessions = std::fs::read_to_string(dir.join("sessions")).unwrap();
-        let sessions: Vec<&str> = sessions.lines().collect();
-        assert_eq!(sessions.len(), 5, "{sessions:?}");
-        assert!(sessions.iter().all(|line| line.starts_with("--session-id ")), "no batch resumes a conversation: {sessions:?}");
-        assert_eq!(sessions.iter().collect::<BTreeSet<_>>().len(), 5, "five batches, five conversations: {sessions:?}");
-        for prompt in &prompts[1..] {
-            assert!(prompt.contains("YOUR NOTE FROM THE PREVIOUS BATCH:\nPR 12 waits for its review.\n"), "the note of the batch before: {prompt}");
-            assert!(prompt.contains("your question q-waits, still unanswered: Which repository is change 1 for?"), "{prompt}");
-        }
-        let lengths: Vec<usize> = prompts[1..].iter().map(String::len).collect();
-        assert!(lengths.windows(2).all(|pair| pair[0] == pair[1]), "a batch does not grow with the batches before it: {lengths:?}");
-        assert_eq!(load(&f.executor.home).unwrap().last_context, Some(BatchContext { first: 40003, last: 40205, window: Some(1000000) }),
-            "each batch records the context it read");
-    }
-
     /// Recorded from the 2026-10-03 run e8ab8f90: Read on the projects root was refused, the
     /// orchestrator went on to create and launch its task, and Claude reported success.
-    const REFUSED_READ_THEN_SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu","name":"Read","input":{"file_path":"/Users/example/Projects"}}],"usage":{"input_tokens":2}}}'
-printf '%s\n' '{"type":"user","session_id":"'"$session"'","message":{"role":"user","content":[{"type":"tool_result","content":"/Users/example/Projects is outside /Users/example/.alondra/runtime/orchestrator; --restricted confines the file tools to the working directory.","is_error":true,"tool_use_id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu"}]}}'
-printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_create","name":"mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","input":{"request_id":"r","title":"Push badge"}}],"usage":{"input_tokens":3}}}'
-printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"text","text":"Task created and launched."}],"usage":{"input_tokens":4}}}'
-printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Task created and launched.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu","tool_input":{"file_path":"/Users/example/Projects"}}],"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
-
     #[tokio::test]
     async fn a_run_that_worked_around_a_refused_read_is_handed_and_frees_the_orchestrator() {
-        let f = fixture(REFUSED_READ_THEN_SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
         let projects = f.root.join("projects");
         std::fs::create_dir_all(&projects).unwrap();
         std::fs::write(alondra_core::options::path_in(&f.executor.home), format!("projects_root = {:?}\n", projects.to_str().unwrap())).unwrap();
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
-        let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
+        f.add_to_results(serde_json::json!({"permission_denials": [{"tool_name": "Read", "tool_use_id": "toolu_01RqEHPzQNkeM7Upm8Mc7Yqu",
+            "tool_input": {"file_path": "/Users/example/Projects"}}]}));
+        ask_orchestrator(&f, 1);
+        f.tick().await;
+        let prompt = last_prompt(&f);
         assert!(prompt.contains(&format!("Projects root, readable with Read, Glob and Grep: {}\n", projects.display())), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none(), "{runtime:?}");
         assert_eq!(runtime.last_error, None);
         assert_eq!(runtime.consecutive_failures, 0);
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
-        ask_orchestrator(domain, 2);
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).unwrap().lines().count(), 2,
-            "the next batch runs at once");
+        ask_orchestrator(&f, 2);
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "the next batch runs at once");
     }
 
     #[tokio::test]
     async fn a_run_that_cannot_be_prepared_is_released_for_retry_instead_of_left_running() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
+        ask_orchestrator(&f, 1);
         let blocked = f.executor.home.join("domain-capabilities.json.next");
         std::fs::create_dir_all(blocked.join("occupied")).unwrap();
-        f.executor.tick(&f.ownership).await.unwrap();
+        f.tick().await;
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none(), "{runtime:?}");
         assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("capability")), "{runtime:?}");
         assert!(runtime.retry_at.is_some());
-        assert!(!f.executor.home.join("runtime/orchestrator/starts").exists());
+        assert!(f.starts().is_empty(), "Claude is not started");
         assert!(attempts(domain).iter().all(|(_, state, reason)| state == "retryable" && reason.as_deref() == Some("orchestrator_launch_failed")));
         assert_eq!(status(&f.executor).unwrap()["phase"], "failed");
         assert_eq!(status(&f.executor).unwrap()["failure"], "launch");
 
         std::fs::remove_dir_all(&blocked).unwrap();
-        let mut runtime = load(&f.executor.home).unwrap();
-        runtime.retry_at = None;
-        save(&f.executor.home, &runtime).unwrap();
-        f.executor.tick(&f.ownership).await.unwrap();
+        again(&f);
+        f.tick().await;
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
         assert!(unhandled(domain).is_empty());
@@ -1025,13 +1182,13 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn stale_orchestrator_messages_expire_before_execution_but_boundary_messages_remain() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        ask_orchestrator(domain, 2);
+        ask_orchestrator(&f, 1);
+        ask_orchestrator(&f, 2);
         command(domain, Actor::System, "user-info", Command::PublishInformation {
             interaction_id: "info-user".into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: CardSpec::derived(CardKind::Know, "Read the update"),
         });
         let cutoff = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS);
         {
@@ -1051,7 +1208,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
             ).unwrap();
         }
 
-        f.executor.tick(&f.ownership).await.unwrap();
+        f.tick().await;
 
         let store = domain.store.lock().unwrap();
         assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "discarded");
@@ -1060,16 +1217,15 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
             "user notifications retain their separate delivery policy");
         assert!(store.pending_messages().unwrap().iter().all(|message| message.id != 1));
         drop(store);
-        assert_eq!(std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).unwrap().lines().count(), 1,
-            "the fresh message remains eligible for execution");
+        assert_eq!(f.starts().len(), 1, "the fresh message remains eligible for execution");
     }
 
     #[test]
     fn orchestrator_claim_rechecks_expiry_and_keeps_the_exact_cutoff_eligible() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        ask_orchestrator(domain, 2);
+        ask_orchestrator(&f, 1);
+        ask_orchestrator(&f, 2);
         let created_at = 1_000;
         let mut store = domain.store.lock().unwrap();
         store.set_message_created_at_for_test(1, created_at).unwrap();
@@ -1093,30 +1249,36 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     fn answer_problem(domain: &DomainRuntime, run_id: &str, option: &str) {
         let state = domain.state().unwrap();
-        domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
-            protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+        domain.execute(&Actor::User { user_id: "device:phone".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("answer-{option}").into(),
             expected_revision: state.revision,
-            command: alondra_core::domain::Command::AnswerQuestion {
+            command: Command::AnswerQuestion {
                 attachments: vec![], interaction_id: format!("{PROBLEM_PREFIX}{run_id}").into(), option_id: option.into(),
                 inputs: Default::default(),
             },
         }, None, || Ok(())).unwrap();
     }
 
+    /// Claude created a task and then died: the batch changed something.
+    const CREATED_THEN_EXIT: &str = "fixture:tool-then-exit";
+    /// Claude died before it answered: the batch changed nothing.
+    const DIED_BEFORE_ANSWERING: &str = "fixture:exit-before-init";
+
     #[tokio::test]
     async fn a_failed_batch_is_a_problem_card_and_its_answer_is_the_decision() {
         for (option, replays) in [("retry", true), ("continue", false)] {
-            let f = fixture(CREATED_THEN_EXIT);
+            let f = fixture();
+            f.mark(CREATED_THEN_EXIT);
             let domain = &f.executor.domain;
-            ask_orchestrator(domain, 1);
-            f.executor.tick(&f.ownership).await.unwrap();
+            ask_orchestrator(&f, 1);
+            f.tick().await;
             let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
             let id = format!("{PROBLEM_PREFIX}{}", run.id);
             let problem = domain.state().unwrap().interactions[&id.clone().into()].clone();
-            assert_eq!(problem.card.kind, alondra_core::domain::CardKind::Problem);
-            assert_eq!(problem.author, alondra_core::domain::Author::System);
+            assert_eq!(problem.card.kind, CardKind::Problem);
+            assert_eq!(problem.author, Author::System);
             let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem is asked like a question") };
             assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["continue", "retry"]);
             assert_eq!(problem.card.recommended.as_deref(), Some("continue"));
@@ -1136,26 +1298,24 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_run_that_changed_nothing_runs_the_batch_again_with_its_prompt_and_asks_nobody() {
-        let f = fixture(NO_DEFERRED_MARKER);
+        let f = fixture();
+        f.mark(DIED_BEFORE_ANSWERING);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
+        ask_orchestrator(&f, 1);
+        f.tick().await;
         assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)),
             "a run that changed nothing is not a decision for the user");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.retry_at.is_some(), "{runtime:?}");
         assert_eq!(runtime.failure, Some(Failure::Launch));
-        assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("No deferred tool marker")), "{runtime:?}");
+        assert!(runtime.last_error.is_some(), "{runtime:?}");
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "retryable"));
 
-        let script = std::fs::read_to_string(&f.executor.executable).unwrap().replace(NO_DEFERRED_MARKER, SUCCESS);
-        std::fs::write(&f.executor.executable, script).unwrap();
-        let mut runtime = load(&f.executor.home).unwrap();
-        runtime.retry_at = None;
-        save(&f.executor.home, &runtime).unwrap();
-        f.executor.tick(&f.ownership).await.unwrap();
-        let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
-        assert!(prompt.contains("Where do I put change 1?"), "{prompt}");
+        f.clear_marker();
+        again(&f);
+        f.tick().await;
+        let prompt = last_prompt(&f);
+        assert!(prompt.contains("Where do I put change 1?") && !prompt.contains(DIED_BEFORE_ANSWERING), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
         assert!(unhandled(domain).is_empty());
@@ -1163,45 +1323,39 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn claude_failing_to_start_three_times_in_a_row_tells_the_user_once_and_a_good_run_takes_it_back() {
-        let f = fixture(NO_DEFERRED_MARKER);
+        let f = fixture();
+        f.mark(DIED_BEFORE_ANSWERING);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
+        ask_orchestrator(&f, 1);
         let stuck = || domain.state().unwrap().interactions.values()
             .filter(|i| i.id.0.starts_with(STUCK_PROBLEM_PREFIX) && !i.withdrawn).map(|i| i.id.clone()).collect::<Vec<_>>();
-        let again = || {
-            let mut runtime = load(&f.executor.home).unwrap();
-            runtime.retry_at = None;
-            save(&f.executor.home, &runtime).unwrap();
-        };
         for failure in 1..=4 {
-            f.executor.tick(&f.ownership).await.unwrap();
+            f.tick().await;
             assert_eq!(stuck().len(), usize::from(failure >= STUCK_AFTER), "after {failure} failed starts");
-            again();
+            again(&f);
         }
         let problem = stuck().remove(0);
         let state = domain.state().unwrap();
         let card = &state.interactions[&problem];
-        assert_eq!(card.card.kind, alondra_core::domain::CardKind::Problem);
+        assert_eq!(card.card.kind, CardKind::Problem);
         assert_eq!(card.card.recommended.as_deref(), Some(STUCK_RETRY));
         assert!(StuckProblem::from_body(&card.body).is_some_and(|body| body.failures == STUCK_AFTER), "{}", card.body);
 
-        let script = std::fs::read_to_string(&f.executor.executable).unwrap().replace(NO_DEFERRED_MARKER, SUCCESS);
-        std::fs::write(&f.executor.executable, script).unwrap();
-        f.executor.tick(&f.ownership).await.unwrap();
+        f.clear_marker();
+        f.tick().await;
         assert!(stuck().is_empty(), "the orchestrator works again: nothing is left for the user");
         assert!(load(&f.executor.home).unwrap().stuck_problem.is_none());
     }
 
     #[tokio::test]
     async fn trying_again_now_from_the_card_starts_the_orchestrator_without_waiting_for_its_backoff() {
-        let f = fixture(NO_DEFERRED_MARKER);
+        let f = fixture();
+        f.mark(DIED_BEFORE_ANSWERING);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
+        ask_orchestrator(&f, 1);
         for _ in 0..STUCK_AFTER {
-            let mut runtime = load(&f.executor.home).unwrap();
-            runtime.retry_at = None;
-            save(&f.executor.home, &runtime).unwrap();
-            f.executor.tick(&f.ownership).await.unwrap();
+            again(&f);
+            f.tick().await;
         }
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.retry_at.is_some(), "{runtime:?}");
@@ -1217,21 +1371,19 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(runtime.retry_at.is_none() && runtime.stuck_problem.is_none(), "{runtime:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_run_stopped_before_it_changed_anything_is_settled_without_a_card() {
-        let f = fixture("printf 'cancel\\n' > cancel-now\nexec sleep 30");
+        let f = fixture();
+        f.hold_before_claude();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        let home = f.executor.home.clone();
-        let canceller = tokio::spawn(async move {
-            let marker = home.join("runtime/orchestrator/cancel-now");
-            while !marker.exists() { tokio::time::sleep(Duration::from_millis(20)).await; }
-            let mut runtime = load(&home).unwrap();
-            runtime.cancel_requested = true;
-            save(&home, &runtime).unwrap();
-        });
-        f.executor.tick(&f.ownership).await.unwrap();
-        canceller.await.unwrap();
+        ask_orchestrator(&f, 1);
+        let canceller = async {
+            f.held().await;
+            let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
+            f.executor.cancel(&run).unwrap();
+        };
+        let ((), ()) = tokio::join!(f.tick(), canceller);
+        assert!(f.prompts().is_empty(), "Claude never saw the batch");
         assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)));
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && !runtime.cancel_requested, "{runtime:?}");
@@ -1241,10 +1393,11 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_batch_settled_elsewhere_withdraws_its_problem() {
-        let f = fixture(CREATED_THEN_EXIT);
+        let f = fixture();
+        f.mark(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
+        ask_orchestrator(&f, 1);
+        f.tick().await;
         let run = load(&f.executor.home).unwrap().active_run.unwrap();
         f.executor.acknowledge(&run.id).unwrap();
         f.executor.apply_problem_answers().unwrap();
@@ -1253,18 +1406,19 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_failed_execution_is_ambiguous_until_acknowledged_and_resolved_at_restart() {
-        let f = fixture(CREATED_THEN_EXIT);
+        let f = fixture();
+        f.mark(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
+        ask_orchestrator(&f, 1);
+        f.tick().await;
         let runtime = load(&f.executor.home).unwrap();
         let run = runtime.active_run.clone().expect("an ambiguous execution stays claimed");
         assert!(runtime.last_error.is_some());
         assert_eq!(runtime.failure, Some(Failure::Interrupted));
         assert!(attempts(domain).iter().all(|(_, state, reason)| state == "uncertain" && reason.as_deref() == Some("orchestrator_execution_ambiguous")));
         assert!(outbox(domain).is_empty(), "an ambiguous batch is not offered again");
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).unwrap().lines().count(), 1);
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1);
         assert!(f.executor.acknowledge("other-run").is_err());
         f.executor.acknowledge(&run.id).unwrap();
         let runtime = load(&f.executor.home).unwrap();
@@ -1272,11 +1426,10 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert_eq!(runtime.pending_resolutions, vec![Resolution { run_id: run.id.clone(), message_ids: run.message_ids.clone() }]);
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "discarded"));
 
-        let script = std::fs::read_to_string(&f.executor.executable).unwrap().replace("exit 1", SUCCESS);
-        std::fs::write(&f.executor.executable, script).unwrap();
-        ask_orchestrator(domain, 2);
-        f.executor.tick(&f.ownership).await.unwrap();
-        let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
+        f.clear_marker();
+        ask_orchestrator(&f, 2);
+        f.tick().await;
+        let prompt = last_prompt(&f);
         assert!(prompt.contains("Previous interrupted inbox batches have already been resolved")
             && !prompt.contains(&run.id) && !prompt.contains("inbox message IDs"), "{prompt}");
         assert!(prompt.contains("Where do I put change 2?") && !prompt.contains("Where do I put change 1?")
@@ -1285,7 +1438,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
         // A daemon restart during an execution resolves it without the user.
         let mut runtime = load(&f.executor.home).unwrap();
-        ask_orchestrator(domain, 3);
+        ask_orchestrator(&f, 3);
         let pending = unhandled(domain)[0].0;
         let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
         runtime.active_run = Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
@@ -1300,7 +1453,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn an_interrupted_batch_is_not_replayed_but_one_fresh_run_sees_its_open_request() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "bc2466f2".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false,
@@ -1316,10 +1469,9 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         f.executor.recover().unwrap();
         assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
 
-        f.executor.tick(&f.ownership).await.unwrap();
-        let dir = f.executor.home.join("runtime/orchestrator");
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1);
-        let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1);
+        let prompt = last_prompt(&f);
         assert!(prompt.contains("Previous interrupted inbox batches have already been resolved")
             && prompt.contains("An open Request below with no Task of its own was not turned into work")
             && prompt.contains("request bc2466f2: Make the editor readable\n")
@@ -1328,16 +1480,16 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(runtime.pending_resolutions.is_empty() && runtime.active_run.is_none() && runtime.last_error.is_none());
 
         assert_eq!(reminders(domain), ["request-unsplit-bc2466f2-1"], "the request it left without a task goes back once, in the same step");
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "the reminder is a batch of its own");
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2, "then it is the user's question: one fresh run, not a loop");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "the reminder is a batch of its own");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "then it is the user's question: one fresh run, not a loop");
     }
 
     #[test]
     fn each_open_request_carries_the_choices_it_was_asked_with() {
-        let f = fixture(SUCCESS);
-        ask_orchestrator(&f.executor.domain, 1);
+        let f = fixture();
+        ask_orchestrator(&f, 1);
         let state = f.executor.domain.state().unwrap();
         let text = summary(&state, |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
         assert!(text.contains("request r: Work\n  options: project App · Effort: hard\ntask t"), "{text}");
@@ -1345,7 +1497,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[test]
     fn a_request_not_split_yet_reaches_the_orchestrator_whole() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let long = format!("{} end of the message", "word ".repeat(80));
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "long", Command::CreateRequest {
             request_id: "long".into(), body: long.clone(), auto_merge: false, maintenance: false, message: false,
@@ -1356,12 +1508,13 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn the_user_decides_on_an_ambiguous_execution_through_its_status() {
-        let f = fixture(CREATED_THEN_EXIT);
+        let f = fixture();
+        f.mark(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
         assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
-        ask_orchestrator(domain, 1);
+        ask_orchestrator(&f, 1);
         assert_eq!(status(&f.executor).unwrap()["queue_depth"], 1);
-        f.executor.tick(&f.ownership).await.unwrap();
+        f.tick().await;
         let run = load(&f.executor.home).unwrap().active_run.unwrap();
         let shown = status(&f.executor).unwrap();
         assert_eq!((shown["phase"].as_str(), shown["can_retry"].as_bool(), shown["can_cancel"].as_bool()), (Some("failed"), Some(true), Some(false)));
@@ -1378,14 +1531,16 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
         assert_eq!(decision_route("/orchestrator/retry"), Some(Decision::Retry));
         assert_eq!(decision_route("/orchestrator/messages"), None);
+        assert!(domain.state().unwrap().interactions.keys().any(|id| id.0 == format!("{PROBLEM_PREFIX}{}", run.id)));
     }
 
     #[tokio::test]
     async fn a_retry_offers_the_batch_again_and_a_cancel_is_ambiguous() {
-        let f = fixture(CREATED_THEN_EXIT);
+        let f = fixture();
+        f.mark(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
+        ask_orchestrator(&f, 1);
+        f.tick().await;
         let run = load(&f.executor.home).unwrap().active_run.unwrap();
         f.executor.retry(&run.id).unwrap();
         assert_eq!(outbox(domain).len(), 1);
@@ -1394,62 +1549,71 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(f.executor.cancel("nothing").is_err(), "cancel needs a running execution");
     }
 
-    fn starts(f: &Fixture) -> usize {
-        std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).map(|starts| starts.lines().count()).unwrap_or(0)
-    }
-
     #[tokio::test]
     async fn no_batch_starts_while_usage_is_exhausted_and_it_runs_once_when_usage_is_back() {
-        let f = fixture(SUCCESS);
+        let f = fixture();
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
+        ask_orchestrator(&f, 1);
         domain.live.usage_pause.exhaust(Some(now_millis() + 3_600_000), now_millis());
-        f.executor.tick(&f.ownership).await.unwrap();
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 0, "paused: Claude is not started");
+        f.tick().await;
+        f.tick().await;
+        assert_eq!(f.starts().len(), 0, "paused: Claude is not started");
         assert_eq!(outbox(domain).len(), 1, "and the batch waits, untouched");
         assert!(load(&f.executor.home).unwrap().active_run.is_none());
 
         domain.live.usage_pause.resume(now_millis());
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 1, "resumed: the pending batch runs");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1, "resumed: the pending batch runs");
         assert!(unhandled(domain).is_empty());
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 2, "and only once: the next run is the reminder of the question it left open");
-    }
-
-    fn limited_once(reset_seconds: i64) -> String {
-        format!(r#"if [ -f limited ]; then
-{STUB_SUCCESS}
-else
-touch limited
-printf '%s\n' '{{"type":"rate_limit_event","session_id":"'"$session"'","rate_limit_info":{{"status":"rejected","resetsAt":{reset_seconds},"rateLimitType":"five_hour"}}}}'
-printf '%s\n' '{{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":true,"result":"You have hit your session limit"}}'
-exit 1
-fi"#)
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "and only once: the next run is the reminder of the question it left open");
     }
 
     #[tokio::test]
     async fn a_run_that_hits_the_limit_before_working_pauses_everything_and_is_retried_after_the_reset() {
-        let reset = now_millis() / 1000 + 3_600;
-        let f = fixture(&limited_once(reset));
+        let f = fixture();
+        f.mark_once("fixture:limited");
         let domain = &f.executor.domain;
-        ask_orchestrator(domain, 1);
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 1);
-        assert_eq!(domain.live.usage_pause.current().map(|e| e.until), Some(reset * 1000), "until is the reset Claude reported");
+        ask_orchestrator(&f, 1);
+        let before = now_millis() / 1000;
+        f.tick().await;
+        let after = now_millis() / 1000;
+        assert_eq!(f.starts().len(), 1);
+        let until = domain.live.usage_pause.current().map(|e| e.until).expect("usage pauses everything");
+        assert!(until % 1000 == 0 && ((before + 3_600) * 1000..=(after + 3_600) * 1000).contains(&until),
+            "until is the reset Claude reported, an hour after the run: {until}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.failure.is_none() && runtime.consecutive_failures == 0 && runtime.retry_at.is_none(), "{runtime:?}");
         assert_eq!(outbox(domain).iter().map(|(_, state)| state.as_str()).collect::<Vec<_>>(), ["retryable"]);
         assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)), "a limit is not a Problem for the user to decide");
 
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 1, "nothing runs until the reset");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1, "nothing runs until the reset");
 
         domain.live.usage_pause.resume(now_millis());
-        f.executor.tick(&f.ownership).await.unwrap();
-        assert_eq!(starts(&f), 2, "the same batch is retried");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "the same batch is retried");
         assert!(unhandled(domain).is_empty());
         assert!(attempts(domain).iter().any(|(_, state, _)| state == "handed"));
+    }
+
+    #[tokio::test]
+    async fn without_an_sdk_backend_a_batch_does_not_start_and_is_offered_again() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let claude_home = super::testing::registered_plugins(&root);
+        let _ownership = crate::orchestrator_process::Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
+        let executor = Executor { domain: domain.clone(), home: home.clone(), claude_home };
+        command(&domain, Actor::User { user_id: "u".into() }, "m-1", Command::CreateRequest {
+            request_id: "m-1".into(), body: "Where do I put change 1?".into(), auto_merge: false, maintenance: false, message: true,
+        });
+        executor.tick().await.unwrap();
+        let runtime = load(&home).unwrap();
+        assert_eq!(runtime.failure, Some(Failure::Launch), "{runtime:?}");
+        assert_eq!(runtime.last_error.as_deref(), Some(crate::sdk_owner::NO_HOST));
+        assert!(runtime.active_run.is_none() && runtime.retry_at.is_some(), "{runtime:?}");
+        assert!(attempts(&domain).iter().all(|(_, state, _)| state == "retryable"));
     }
 }

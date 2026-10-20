@@ -1,5 +1,4 @@
-//! Local v2-only HTTP bootstrap. This path never constructs a legacy Hub;
-//! the routes are the shared domain handlers with a committed host.
+//! Local HTTP bootstrap: the routes are the shared domain handlers.
 use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{AttachmentRef, DomainError};
@@ -95,9 +94,6 @@ impl crate::domain_api::DomainHost for DomainDaemon {
     }
     fn home(&self) -> &Path {
         &self.home
-    }
-    fn cutover_committed(&self) -> bool {
-        true
     }
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> {
         Some(&self.client)
@@ -380,7 +376,7 @@ async fn daemon(
         "views_protocol": crate::views::this_service().views_protocol,
         "update":crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
-        "mods": crate::mods_check::status(),
+        "claude": crate::claude_check::status(),
         "direct": state.service.get().filter(|_| state.direct.get().is_some()).map(|service| json!({
             "port": service.direct_config().port, "bonjour": crate::direct::bonjour::status()})),
         "iroh": state.service.get().filter(|service| service.iroh_config().enabled).map(|_| crate::iroh_endpoint::status())}),
@@ -754,10 +750,9 @@ async fn orchestrator_launch(
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::LaunchBody>, JsonRejection>,
 ) -> Response {
-    let actor = match tool_caller(&state, &peer, &headers, Some("launch")) {
-        Ok(actor) => actor,
-        Err(refused) => return refused,
-    };
+    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("launch")) {
+        return refused;
+    }
     let Ok(Json(body)) = body else {
         return crate::domain_api::domain_error(DomainError::new(
             "invalid_input",
@@ -774,10 +769,8 @@ async fn orchestrator_launch(
         crate::domain_orchestrator_tools::launch_replacing(
             state.domain(),
             state.home.clone(),
-            actor,
             body,
             choices,
-            Arc::new(crate::orchestrate::ClaudeCli),
         )
         .await,
     )

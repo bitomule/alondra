@@ -112,15 +112,6 @@ fn is_review(r: &Report) -> bool {
 }
 
 impl View {
-    pub fn orchestrator_node(&self) -> Option<&Node> {
-        if self.orchestrator.is_some() { self.nodes.get(crate::orchestrator::NODE_ID) }
-        else { self.nodes.values().find(|n| n.is_orchestrator && (n.alive || n.in_daemon)) }
-    }
-
-    pub fn orchestrator_destination(&self) -> Option<&str> {
-        self.orchestrator_node().map(|n| n.session_id.as_str())
-    }
-
     /// Structural invariants that must survive every committed batch and every snapshot.
     /// Historical refused task facts are recorded as anomalies; they never change these fields.
     pub fn integrity_issues(&self) -> Vec<String> {
@@ -173,14 +164,6 @@ impl View {
             }
         }
         issues
-    }
-
-    /// Every attachment copy an item Alondra still keeps refers to.
-    pub fn stored_files(&self) -> std::collections::HashSet<std::path::PathBuf> {
-        let questions = self.questions.values().flat_map(|q| &q.attachments);
-        let reports = self.reports.values().flat_map(|r| &r.attachments);
-        let messages = self.messages.values().flat_map(|m| &m.attachments);
-        questions.chain(reports).chain(messages).filter_map(|a| a.stored_path.as_ref().map(std::path::PathBuf::from)).collect()
     }
 
     /// Backfills `created_at` on nodes loaded from a snapshot taken before that field existed
@@ -676,15 +659,6 @@ impl View {
         }
     }
 
-    /// Whether time alone has changed what some node shows, so a sweep at `now` has to record
-    /// an `Event::Clock`.
-    pub fn due(&self, now: Millis, machine_strained: bool) -> bool {
-        self.nodes.values().any(|n| {
-            let o = states::evaluate_with(self, n, now, Trigger::Clock, machine_strained);
-            o.state != n.state || o.status != n.status || o.orchestrator != n.orchestrator_state || o.drop_tool
-        })
-    }
-
     /// A change to a PR card can change its node's state: the card is a decision waiting for the user.
     fn pr_node(&self, id: u64) -> Option<(String, Trigger)> {
         let sid = &self.prs.get(&id)?.session_id;
@@ -1027,11 +1001,6 @@ impl View {
         node.evidence = Some(outcome.evidence);
     }
 
-    /// Open PR cards the user has to act on: not merged, closed, set aside or waiting for new commits.
-    pub fn prs_awaiting_user(&self) -> impl Iterator<Item = &crate::pr::PullRequest> {
-        self.prs.values().filter(|p| p.state == crate::pr::PrState::Open && !p.awaiting_push())
-    }
-
     /// The open PR card that is home to a task's cards: the one of the task's PRs the card links,
     /// else the task's newest. PRs Alondra merges on its own have no card. `parked` counts a card
     /// waiting for the node's next push.
@@ -1044,19 +1013,6 @@ impl View {
             .collect();
         let linked = links.iter().filter_map(|u| crate::pr::parse_url(u)).find_map(|(repo, number)| homes.iter().find(|p| p.repo == repo && p.number == number));
         linked.or_else(|| homes.iter().max_by_key(|p| p.id)).map(|p| p.id)
-    }
-
-    /// The PR card a question of the node shows in: the open card of its task's PR the node said
-    /// it is about. A question that only links a PR, questions Claude Code itself raised
-    /// (permissions, plans, menus) and questions for the orchestrator stay cards of their own.
-    pub fn question_pr(&self, q: &Question) -> Option<u64> {
-        if q.origin != QuestionOrigin::Ask || q.to_orchestrator {
-            return None;
-        }
-        let number = q.about_pr?;
-        let task = self.question_task(q)?;
-        let home = |p: &&crate::pr::PullRequest| p.number == number && p.state == crate::pr::PrState::Open && !p.auto_merge && !p.awaiting_push();
-        task.prs.iter().filter_map(|id| self.prs.get(id)).find(home).map(|p| p.id)
     }
 
     /// The report links a PR the user already merged or closed on its card, and no open one: it
@@ -1075,13 +1031,6 @@ impl View {
     fn about_approved_artifact(&self, r: &Report) -> bool {
         let artifacts = crate::artifact::in_report(r);
         !artifacts.is_empty() && artifacts.iter().all(|url| self.approved_artifacts.contains_key(url))
-    }
-
-    /// Unread reports that send an artifact for David to review. Each is a review card of its
-    /// own: its node waits until David approves it or sends it his comments, and nothing but that
-    /// verdict takes it out of the inbox.
-    pub fn reviews_awaiting_user(&self) -> impl Iterator<Item = &Report> {
-        self.reports.values().filter(|r| self.awaits_review(r))
     }
 
     pub fn awaits_review(&self, r: &Report) -> bool {
@@ -1103,17 +1052,6 @@ impl View {
         let links: Vec<String> = r.links.iter().map(|l| l.url.clone()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")].into_iter().flat_map(crate::pr::urls_in)).collect();
         let links: Vec<&str> = links.iter().map(String::as_str).collect();
         self.task_pr_home(self.report_task(r)?, &links, true)
-    }
-
-    /// Unread reports that reach the inbox: not progress, not carried by a question or another
-    /// report, and not inside a PR card that waits off the inbox for new commits.
-    pub fn inbox_reports(&self) -> impl Iterator<Item = &Report> {
-        let absorbed = self.absorbed_reports();
-        let stacked = self.stacked_reports();
-        self.reports.values().rev().filter(move |r| {
-            let parked = !r.looks_like_question && self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked && !self.left_out.contains(&r.session_id)
-        })
     }
 
     /// A report of a task another card can carry: unread, not progress, not for the orchestrator,
@@ -1162,12 +1100,6 @@ impl View {
         group
     }
 
-    /// Reports carried by the head of their task's stack: they leave the inbox with it.
-    pub fn stacked_reports(&self) -> std::collections::HashSet<u64> {
-        let absorbed = self.absorbed_reports();
-        self.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).flat_map(|r| self.stack_beside(r, &absorbed)).collect()
-    }
-
     /// Reports some open question has taken in: they leave the inbox while it is open.
     pub fn absorbed_reports(&self) -> std::collections::HashSet<u64> {
         self.open_questions().flat_map(|q| self.question_reports(q)).collect()
@@ -1187,23 +1119,6 @@ impl View {
     /// done node. Alondra itself never types into one.
     pub fn may_alondra_write(&self, node: &Node) -> bool {
         node.is_orchestrator || node.state != NodeState::Done
-    }
-
-    /// The only way Alondra writes to a session: nothing when the node is done or unknown.
-    pub fn alondra_message(&self, session_id: &str, text: String, at: Millis) -> Option<Message> {
-        let node = self.nodes.get(session_id)?;
-        self.may_alondra_write(node).then(|| Message {
-            id: self.next_message_id(),
-            session_id: session_id.to_string(),
-            from: MessageFrom::Alondra,
-            text,
-            answers_question: None,
-            created_at: at,
-            handed_at: None,
-            delivered_at: None,
-            about: None,
-            attachments: vec![],
-        })
     }
 
     /// What may be typed into the session now: everything from David or the orchestrator, and
@@ -1241,64 +1156,6 @@ impl View {
     pub fn merge_notice_due(&self, session_id: &str) -> Option<Millis> {
         self.pending_messages(session_id).filter(|m| self.is_merge_notice(m)).map(|m| m.created_at).max()
     }
-
-    /// Messages waiting for an interactive session: Alondra cannot type into a terminal it did not
-    /// start, so they wait for the session's next Stop hook (see `turn_end_delivery`).
-    pub fn held_for_turn_end(&self, session_id: &str) -> usize {
-        if self.orchestrator.is_some() && session_id == crate::orchestrator::NODE_ID { return 0; }
-        match self.nodes.get(session_id) {
-            Some(n) if !n.in_daemon => self.deliverable_messages(session_id).count(),
-            _ => 0,
-        }
-    }
-
-    /// What an interactive session's Stop hook hands it: the ids of its pending messages (with the
-    /// question each one answers) and the text that keeps its turn going. Background jobs get
-    /// their messages typed in by `wake` instead, so they get nothing here.
-    pub fn turn_end_delivery(&self, session_id: &str, user: &str) -> Option<(Vec<(u64, Option<u64>)>, String)> {
-        if self.nodes.get(session_id)?.in_daemon {
-            return None;
-        }
-        let pending: Vec<&Message> = self.deliverable_messages(session_id).collect();
-        if pending.is_empty() {
-            return None;
-        }
-        let ids=pending.iter().map(|m|m.id).collect::<Vec<_>>();
-        Some((pending.iter().map(|m|(m.id,m.answers_question)).collect(),self.message_batch_text(&ids,user)))
-    }
-
-    pub fn message_batch_text(&self, ids:&[u64], user:&str) -> String {
-        let said = ids.iter().filter_map(|id|self.messages.get(id))
-            .map(|m| {
-                let from = match m.from {
-                    crate::model::MessageFrom::User => user,
-                    crate::model::MessageFrom::Orchestrator => "the orchestrator",
-                    crate::model::MessageFrom::Alondra => "Alondra",
-                };
-                format!("From {from}:\n{}", m.text)
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let text = format!("Messages sent to you through Alondra while you worked. Act on them before you stop:\n\n{said}");
-        text
-    }
-
-    pub fn resolve_node(&self, key: &str) -> Option<&Node> {
-        if let Some(n) = self.nodes.get(key) {
-            return Some(n);
-        }
-        let by_short: Vec<&Node> = self.nodes.values().filter(|n| n.short_id == key).collect();
-        if by_short.len() == 1 {
-            return Some(by_short[0]);
-        }
-        let mut by_name: Vec<&Node> = self
-            .nodes
-            .values()
-            .filter(|n| n.name.as_deref() == Some(key))
-            .collect();
-        by_name.sort_by_key(|n| std::cmp::Reverse((n.alive, n.last_seen)));
-        by_name.first().copied()
-    }
 }
 
 #[cfg(test)]
@@ -1334,24 +1191,6 @@ mod tests {
         assert!(v.integrity_issues().is_empty());
         v.board.tasks.get_mut("t-1").unwrap().state = crate::tasks::TaskState::NeedsYou;
         assert!(v.integrity_issues().iter().any(|i| i.contains("blocker disagrees")));
-    }
-
-    #[test]
-    fn hooks_name_an_exact_task_or_every_open_candidate() {
-        let mut v = View::default();
-        for (seq, id) in [(1, "t-a"), (2, "t-b")] {
-            v.apply(seq, seq as i64, &Event::TaskCreated(crate::tasks::NewTask {
-                id: id.into(), request: "r-1".into(), title: id.into(), brief: None,
-                depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
-                launched: false, launched_as: None, start: None,
-            }));
-        }
-        assert_eq!(v.hook_task_ids("s", None, None), vec!["t-a", "t-b"]);
-        assert_eq!(v.hook_task_ids("s", None, Some("t-b")), vec!["t-b"]);
-        assert_eq!(v.hook_task_ids("s", None, Some("not-mine")), vec!["t-a", "t-b"]);
-        v.board.tasks.get_mut("t-a").unwrap().state = crate::tasks::TaskState::Done;
-        v.board.tasks.get_mut("t-b").unwrap().state = crate::tasks::TaskState::Done;
-        assert!(v.hook_task_ids("s", None, None).is_empty());
     }
 
     /// A node from a snapshot older than `created_at` gets `state_since` as a stand-in, so it
@@ -1501,14 +1340,12 @@ mod tests {
         v.apply(8, 8000, &hook("s", "Stop"));
         assert!(v.reports[&1].read, "merged: nothing left for the user to do on it");
         assert!(!v.reports[&2].read, "only set aside: the user has not settled it");
-        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), vec![2]);
         let Event::ReportPosted(mut flagged) = report(3, "https://github.com/a/b/pull/61") else { unreachable!() };
         flagged.kind = ReportKind::Notice;
         flagged.body = Some("Please send me the deployment key.".into());
         flagged.looks_like_question = true;
         v.apply(9, 9000, &Event::ReportPosted(flagged));
         assert!(!v.reports[&3].read, "a new unanswered request survives a settled PR");
-        assert!(v.inbox_reports().any(|r| r.id == 3));
         v.approved_artifacts.insert(ARTIFACT.into(), 9000);
         let Event::ReportPosted(mut flagged_artifact) = report(4, ARTIFACT) else { unreachable!() };
         flagged_artifact.kind = ReportKind::Document;
@@ -1608,24 +1445,6 @@ mod tests {
         assert!(!v.nodes["s"].alive);
         assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
         assert_eq!(v.questions[&2].status, QuestionStatus::Open);
-    }
-
-    #[test]
-    fn session_end_settles_a_recorded_tasks_orphaned_permission_blocker() {
-        let mut v = View::default();
-        v.apply(1, 1, &Event::TasksRecorded);
-        v.record(2, &Event::TaskCreated(crate::tasks::NewTask {
-            id: "t-s".into(), request: "r-s".into(), title: "Task".into(), brief: None,
-            depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
-            launched: false, launched_as: None, start: None,
-        }));
-        v.record(3, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Permission)));
-        assert_eq!(v.board.tasks["t-s"].state, crate::tasks::TaskState::NeedsYou);
-        v.record(4, &hook("s", "SessionEnd"));
-        assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
-        assert_ne!(v.board.tasks["t-s"].state, crate::tasks::TaskState::NeedsYou, "{:?}", v.board.tasks["t-s"]);
-        assert!(v.board.tasks["t-s"].blocker.is_none());
-        assert!(v.integrity_issues().is_empty());
     }
 
     #[test]
@@ -1778,22 +1597,6 @@ mod tests {
         h.cwd = Some("/Users/d/Projects/Lumo".into());
         v.apply(2, 2000, &Event::Hook(h));
         assert_eq!(v.nodes["s"].cwd.as_deref(), Some("/Users/d/Projects"));
-    }
-
-    #[test]
-    fn resolve_prefers_live_node_with_same_name() {
-        let mut v = View::default();
-        for (i, sid) in ["old", "new"].iter().enumerate() {
-            v.apply(i as u64 + 1, i as i64, &Event::DaemonSeen(DaemonObservation {
-                session_id: sid.to_string(),
-                short_id: sid.to_string(),
-                name: Some("lumo/x".into()),
-                pid: Some(100 + i as i32),
-                ..Default::default()
-            }));
-        }
-        v.nodes.get_mut("old").unwrap().alive = false;
-        assert_eq!(v.resolve_node("lumo/x").unwrap().session_id, "new");
     }
 
     #[test]
@@ -1977,38 +1780,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_question_shows_in_the_card_of_the_pr_it_is_about() {
-        use crate::model::Link;
-        const PR: &str = "https://github.com/a/b/pull/24";
-        let link = |url: &str| vec![Link { url: url.into(), title: None }];
-        let cases: Vec<(&str, &str, QuestionOrigin, Option<u64>, Vec<Link>, Vec<Event>, Option<u64>)> = vec![
-            ("about the PR", "s", QuestionOrigin::Ask, Some(24), vec![], vec![], Some(1)),
-            ("about the task's other PR", "s", QuestionOrigin::Ask, Some(25), link(PR), vec![], Some(2)),
-            ("only links the PR: a card of its own", "s", QuestionOrigin::Ask, None, link(PR), vec![], None),
-            ("about nothing: a card of its own", "s", QuestionOrigin::Ask, None, vec![], vec![], None),
-            ("about another node's PR", "s", QuestionOrigin::Ask, Some(26), vec![], vec![], None),
-            ("another node's question about the PR: its own card", "t", QuestionOrigin::Ask, Some(24), vec![], vec![], None),
-            ("another node's question about its own PR", "t", QuestionOrigin::Ask, Some(26), vec![], vec![], Some(3)),
-            ("a permission prompt", "s", QuestionOrigin::Permission, None, vec![], vec![], None),
-            ("the PR waits for new commits", "s", QuestionOrigin::Ask, Some(24), vec![], vec![Event::PrChangesRequested { id: 1 }], None),
-            ("the PR card was set aside", "s", QuestionOrigin::Ask, Some(24), vec![], vec![Event::PrDismissed { id: 1 }], None),
-        ];
-        for (what, asker, origin, about_pr, links, events, expected) in cases {
-            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
-            for (seq, url, sid) in [(3, PR, "s"), (4, "https://github.com/a/b/pull/25", "s"), (5, "https://github.com/a/b/pull/26", "t")] {
-                v.apply(seq, 2000, &Event::PrOpened { url: url.into(), session_id: sid.into(), task: None });
-            }
-            for (i, e) in events.iter().enumerate() {
-                v.apply(6 + i as u64, 3000, e);
-            }
-            let mut q = question(1, asker, origin);
-            q.links = links;
-            q.about_pr = about_pr;
-            assert_eq!(v.question_pr(&q), expected, "{what}");
-        }
-    }
-
     fn report_about(id: u64, sid: &str, kind: ReportKind, at: Millis, links: &[&str], title: &str, body: &str) -> Event {
         let Event::ReportPosted(mut r) = report(id, sid, kind, at) else { unreachable!() };
         r.links = links.iter().map(|url| crate::model::Link { url: (*url).into(), title: None }).collect();
@@ -2018,150 +1789,6 @@ mod tests {
     }
 
     const ARTIFACT: &str = "https://claude.ai/code/artifact/plan-1";
-
-    /// R#146 "PR #50: salir de un nodo…" and the card of alondra#50, 24 Sep: two cards for one PR.
-    /// A report of the task goes into the task's PR card, whatever it links.
-    #[test]
-    fn a_report_of_a_task_with_an_open_pr_card_lives_inside_that_card() {
-        const PR: &str = "https://github.com/a/b/pull/24";
-        let cases: Vec<(&str, &str, Vec<&str>, Vec<Event>, Option<u64>, bool)> = vec![
-            ("links the PR", "s", vec![PR], vec![], Some(1), true),
-            ("links nothing", "s", vec![], vec![], Some(1), true),
-            ("links another PR", "s", vec!["https://github.com/a/b/pull/25"], vec![], Some(1), true),
-            ("another node's report linking the PR", "t", vec![PR], vec![], None, true),
-            ("an artifact to review", "s", vec![ARTIFACT, PR], vec![], None, true),
-            ("the card waits for new commits", "s", vec![PR], vec![Event::PrChangesRequested { id: 1 }], Some(1), true),
-        ];
-        for (what, sid, links, before, inside, in_inbox) in cases {
-            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
-            v.apply(3, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None });
-            for (i, e) in before.iter().enumerate() {
-                v.apply(4 + i as u64, 3000, e);
-            }
-            v.apply(10, 10_000, &report_about(7, sid, ReportKind::Notice, 10_000, &links, "Ready", ""));
-            assert_eq!(v.report_pr(&v.reports[&7]), inside, "{what}");
-            assert_eq!(v.inbox_reports().any(|r| r.id == 7), in_inbox, "{what}");
-        }
-    }
-
-    /// R#113 "Los menús que Alondra no veía ya llegan como tarjeta…" and then Q#123 "Siguiente:
-    /// ¿uso de la suscripción…?" (23 Sep): two cards for one task.
-    #[test]
-    fn a_question_carries_the_reports_of_its_task() {
-        const PR: &str = "https://github.com/a/b/pull/24";
-        let q = || Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask));
-        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
-            ("a report before the question", vec![report(7, "s", ReportKind::Final, 3000), q()], true),
-            ("a report after the question", vec![q(), report(7, "s", ReportKind::Notice, 3000)], true),
-            ("another node's report", vec![report(7, "t", ReportKind::Final, 3000), q()], false),
-            ("a read report", vec![report(7, "s", ReportKind::Final, 3000), Event::ReportRead { id: 7 }, q()], false),
-            ("a report inside its PR card", vec![Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None }, report_about(7, "s", ReportKind::Final, 3000, &[PR], "Listo", ""), q()], false),
-            ("an artifact to review", vec![report_about(7, "s", ReportKind::Document, 3000, &[ARTIFACT], "Plan", ""), q()], false),
-        ];
-        for (what, events, carries) in cases {
-            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
-            for (i, e) in events.iter().enumerate() {
-                v.apply(10 + i as u64, 3000, e);
-            }
-            assert_eq!(v.question_reports(&v.questions[&1]).contains(&7), carries, "{what}");
-            let pr_card = v.report_pr(&v.reports[&7]).is_some();
-            assert_eq!(v.inbox_reports().any(|r| r.id == 7), !carries && !v.reports[&7].read, "{what}{}", if pr_card { " (in its PR card)" } else { "" });
-        }
-    }
-
-    /// R#232, a document linking an artifact, stacked under question #237 (24 Sep): answering the
-    /// question read it and the review card was gone before David saw it. Only his verdict takes
-    /// a review card out of the inbox.
-    #[test]
-    fn answering_a_question_never_takes_a_review_card_with_it() {
-        let mut v = run(&[hook("s", "UserPromptSubmit"), report_about(7, "s", ReportKind::Document, 1500, &[ARTIFACT], "Plan", ""), report(8, "s", ReportKind::Notice, 1600)]);
-        v.apply(10, 2000, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask)));
-        assert_eq!(v.question_reports(&v.questions[&1]), [8]);
-        assert!(v.reviews_awaiting_user().any(|r| r.id == 7));
-        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
-        assert!(v.report_stack(&v.reports[&7]).is_empty(), "the review card carries nothing a question took");
-    }
-
-    #[test]
-    fn a_flagged_request_remains_its_own_card_when_an_older_question_is_answered() {
-        let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask))]);
-        let Event::ReportPosted(mut flagged) = report(7, "s", ReportKind::Notice, 3000) else { unreachable!() };
-        flagged.looks_like_question = true;
-        v.apply(3, 3000, &Event::ReportPosted(flagged));
-        assert!(v.question_reports(&v.questions[&1]).is_empty());
-        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
-        v.apply(4, 4000, &Event::QuestionAnswered { id: 1, answer: Answer { text: "Yes".into(), option: None, by: None, device: None, at: 4000 } });
-        assert!(!v.reports[&7].read);
-        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
-    }
-
-    #[test]
-    fn a_flagged_request_is_not_stacked_under_an_ordinary_report() {
-        let mut v = run(&[hook("s", "UserPromptSubmit")]);
-        let Event::ReportPosted(mut flagged) = report(7, "s", ReportKind::Notice, 2000) else { unreachable!() };
-        flagged.looks_like_question = true;
-        v.apply(2, 2000, &Event::ReportPosted(flagged));
-        v.apply(3, 3000, &report(8, "s", ReportKind::Notice, 3000));
-        assert!(v.report_stack(&v.reports[&8]).is_empty());
-        v.apply(4, 4000, &Event::ReportRead { id: 8 });
-        assert!(!v.reports[&7].read);
-        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
-    }
-
-    /// R#223 (document, with its attachment) and R#224 "Informe … entregado (#223)" (alondra/
-    /// estados-por-tarea, 24 Sep): the final report hid the document.
-    #[test]
-    fn a_document_heads_its_stack_and_short_notices_go_under_it() {
-        let cases = [
-            ("final after the document", [(ReportKind::Document, 1), (ReportKind::Final, 2)], 1, vec![2]),
-            ("notice after the document", [(ReportKind::Document, 1), (ReportKind::Notice, 2)], 1, vec![2]),
-            ("document after the notice", [(ReportKind::Notice, 1), (ReportKind::Document, 2)], 2, vec![1]),
-            ("two finals: the newest heads", [(ReportKind::Final, 1), (ReportKind::Final, 2)], 2, vec![1]),
-        ];
-        for (what, posted, head, under) in cases {
-            let mut v = run(&[hook("s", "UserPromptSubmit")]);
-            let [(first, a), (second, b)] = posted;
-            v.apply(2, 2000, &report_about(a, "s", first, 2000, &[], "Estados por tarea", ""));
-            v.apply(3, 3000, &report_about(b, "s", second, 3000, &[], "Entregado", ""));
-            assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [head], "{what}");
-            assert_eq!(v.report_stack(&v.reports[&head]), under, "{what}");
-        }
-    }
-
-    /// R#29 "Auditoría de jev rehecha…" and R#30 "Annex to the jev audit…" (23 Sep): one delivery,
-    /// two cards. A task's reports are one card; a review card stays apart.
-    #[test]
-    fn a_tasks_reports_are_one_card_and_a_review_card_stays_apart() {
-        let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
-        v.apply(3, 2000, &report_about(1, "s", ReportKind::Final, 2000, &[], "Auditoría", ""));
-        v.apply(4, 3000, &report_about(2, "s", ReportKind::Final, 3000, &[], "Anexo", ""));
-        v.apply(5, 3500, &report_about(3, "t", ReportKind::Notice, 3500, &[], "Otra cosa", ""));
-        v.apply(6, 3600, &report_about(4, "s", ReportKind::Document, 3600, &[ARTIFACT], "Plan", ""));
-        v.apply(7, 4000, &report_about(5, "s", ReportKind::Notice, 4000, &[], "Otro anexo", ""));
-        let inbox = |v: &View| v.inbox_reports().map(|r| r.id).collect::<Vec<_>>();
-        assert_eq!(inbox(&v), [5, 4, 3], "the newest carries the task's others; the review and the other node's stay apart");
-        assert_eq!(v.report_stack(&v.reports[&5]), [1, 2]);
-        assert!(v.report_stack(&v.reports[&2]).is_empty(), "only the newest carries the others");
-
-        v.apply(8, 5000, &Event::ReportRead { id: 5 });
-        assert!(v.reports[&1].read && v.reports[&2].read, "reading the newest reads the ones it carries");
-        assert!(!v.reports[&3].read && !v.reports[&4].read);
-        assert_eq!(inbox(&v), [4, 3]);
-    }
-
-    #[test]
-    fn a_question_does_not_take_a_report_out_of_its_pr_card() {
-        const PR: &str = "https://github.com/a/b/pull/24";
-        let mut v = run(&[hook("s", "UserPromptSubmit")]);
-        v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None });
-        v.apply(3, 3000, &report_about(7, "s", ReportKind::Notice, 3000, &[PR], "Ready", ""));
-        let mut q = question(1, "s", QuestionOrigin::Ask);
-        q.about_pr = Some(24);
-        v.apply(4, 4000, &Event::QuestionAsked(q));
-        assert!(v.question_reports(&v.questions[&1]).is_empty());
-        assert_eq!(v.report_pr(&v.reports[&7]), Some(1));
-        assert_eq!(v.question_pr(&v.questions[&1]), Some(1), "the question is in the PR card too");
-    }
 
     #[test]
     fn a_pr_card_that_leaves_for_good_takes_its_reports_along() {
@@ -2229,44 +1856,6 @@ mod tests {
         assert_eq!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &hook("s", "Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-    }
-
-    #[test]
-    fn messages_for_an_interactive_session_wait_for_its_turn_to_end() {
-        let queued = |id: u64, sid: &str| {
-            Event::MessageQueued(Message {
-                id,
-                session_id: sid.into(),
-                from: crate::model::MessageFrom::User,
-                text: "go on".into(),
-                answers_question: None,
-                created_at: 3000,
-                handed_at: None,
-                delivered_at: None,
-                about: None,
-                attachments: vec![],
-            })
-        };
-        let mut v = View::default();
-        v.apply(1, 1000, &hook("interactive", "UserPromptSubmit"));
-        v.apply(2, 1000, &Event::DaemonSeen(DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() }));
-        for (i, sid) in ["interactive", "interactive", "job"].iter().enumerate() {
-            v.apply(3 + i as u64, 3000, &queued(i as u64 + 1, sid));
-        }
-        assert_eq!(v.held_for_turn_end("interactive"), 2);
-        assert_eq!(v.held_for_turn_end("job"), 0, "a background job gets them typed in");
-        assert_eq!(v.held_for_turn_end("nobody"), 0);
-
-        let (ids, text) = v.turn_end_delivery("interactive", "Ana").unwrap();
-        assert_eq!(ids, vec![(1, None), (2, None)]);
-        assert_eq!(text.matches("From Ana:\ngo on").count(), 2, "{text}");
-        assert_eq!(v.turn_end_delivery("job", "Ana"), None, "wake types into background jobs");
-        assert_eq!(v.turn_end_delivery("nobody", "Ana"), None);
-
-        v.apply(6, 4000, &Event::MessageHanded { id: 1 });
-        assert_eq!(v.held_for_turn_end("interactive"), 1);
-        v.apply(7, 4000, &Event::MessageHanded { id: 2 });
-        assert_eq!(v.turn_end_delivery("interactive", "Ana"), None, "a handed message is not handed again");
     }
 
     #[test]

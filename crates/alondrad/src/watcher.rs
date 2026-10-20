@@ -30,10 +30,6 @@ pub(crate) fn use_claude_home_for_test(home: &std::path::Path) {
     TEST_CLAUDE_HOME.with(|current| *current.borrow_mut() = Some(home.to_path_buf()));
 }
 
-pub fn pid_alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-}
-
 pub(crate) fn parse_rfc3339_millis(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>().ok());

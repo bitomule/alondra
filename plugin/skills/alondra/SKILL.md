@@ -347,5 +347,5 @@ runs `find` as `bfs` and `ps | grep find` does not see it. Put this rule in ever
 
 Probes and end-to-end tests run against a sandbox, never the user's live Alondra: anything they
 send lands in the user's real inbox. `make e2e-sandbox` in the Alondra repo starts a throwaway
-daemon and prints the `claude --bg --name test/<probe> …` line for a probe node. Name probes
-`test/<something>` and remove them and their worktrees when done.
+daemon whose nodes run through its Agent SDK host; `tools/sandbox/README.md` says how to start a
+probe node there. Name probes `test/<something>` and remove them and their worktrees when done.

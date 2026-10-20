@@ -129,7 +129,7 @@ def fetch_previous(ver, into):
 
 def unpack(archive, into, signed=True, published=False):
     """A release already published may predate the launcher; the one about to ship may not."""
-    allowed = (release.PUBLIC_FILES, release.PRE_LAUNCHER_FILES) if published else (release.PUBLIC_FILES,)
+    allowed = release.PUBLISHED_FILES if published else (release.PUBLIC_FILES,)
     release.validate_archive(archive, allowed)
     into.mkdir(parents=True)
     with tarfile.open(archive) as tar:
@@ -486,12 +486,12 @@ os.execv('/usr/bin/python3', ['/usr/bin/python3', script] + sys.argv[1:])
 
 
 class SdkArtifacts:
-    """What Bazel builds for the case: the pinned Node, the host bundle, the native Claude fixtures
-    and the sandbox tool whose fakes stand in for Claude Code and GitHub."""
+    """What the case needs besides the release: the native Claude fixtures and the sandbox tool
+    whose fakes stand in for Claude Code and GitHub. The host is the one the new release installs."""
 
-    def __init__(self, node, host, fixtures, tool):
-        self.node, self.host, self.fixtures, self.tool = (pathlib.Path(path).resolve() for path in (node, host, fixtures, tool))
-        for path in (self.node, self.host, self.tool, *(self.fixtures / name for name in FIXTURES)):
+    def __init__(self, fixtures, tool):
+        self.fixtures, self.tool = (pathlib.Path(path).resolve() for path in (fixtures, tool))
+        for path in (self.tool, *(self.fixtures / name for name in FIXTURES)):
             if not path.is_file():
                 raise Failed(f'{path} does not exist: build it with Bazel first')
 
@@ -500,7 +500,7 @@ FIXTURES = ('persistent-fake-claude.py', 'orchestrator-fake-claude.py')
 
 
 def keg_from_archive(archive, keg, published):
-    allowed = (release.PUBLIC_FILES, release.PRE_LAUNCHER_FILES) if published else (release.PUBLIC_FILES,)
+    allowed = release.PUBLISHED_FILES if published else (release.PUBLIC_FILES,)
     release.validate_archive(archive, allowed)
     with tarfile.open(archive) as tar:
         for member in (member for member in tar.getmembers() if member.isfile()):
@@ -511,13 +511,14 @@ def keg_from_archive(archive, keg, published):
             target.chmod(member.mode & 0o755)
 
 
-def keg_from_build(binary, cli, keg):
+def keg_from_build(binary, cli, host, keg):
     (keg / 'bin').mkdir(parents=True)
     shutil.copy2(binary, keg / 'bin/alondrad')
     shutil.copy2(cli, keg / 'bin/alondra')
     if binary.with_name(LAUNCHER).exists():
         shutil.copy2(binary.with_name(LAUNCHER), keg / 'bin' / LAUNCHER)
     release.stage_assets(release.ROOT, keg / 'libexec/alondra')
+    release.stage_host(host, host.with_name('alondra-host.manifest.json'), keg / 'libexec/alondra')
 
 
 def checksum(path):
@@ -708,7 +709,7 @@ class HandoverWorld:
 
     def env(self):
         env = self.rehearsal.env(self.home, self.port)
-        env.update(HOME=str(self.root / 'fakehome'), ALONDRA_WAKE='1',
+        env.update(HOME=str(self.root / 'fakehome'), ALONDRA_WAKE='1', ALONDRA_IGNORE_MAC_LOAD='1',
                    PATH=f'{self.fakes}:{self.root / "stubs"}:/usr/bin:/bin:/usr/sbin:/sbin')
         return env
 
@@ -719,14 +720,19 @@ class HandoverWorld:
         return result['stdout']
 
     def lay_out(self, old, new_keg, make_new_keg):
+        """The Mac with `old` installed and `new_keg` ready to take its place, or with only the new
+        release installed when there is no `old`."""
         root = self.root
         for directory in ('bin', 'fakes/scripts', 'stubs', 'fakehome/.claude/plugins', 'opt'):
             (root / directory).mkdir(parents=True)
         self.state_root.mkdir(mode=0o700)
-        old_keg = root / 'Cellar/alondra' / old['version']
-        keg_from_archive(old['archive'], old_keg, published=True)
         make_new_keg(new_keg)
-        link(root / 'opt/alondra', old_keg)
+        if old:
+            old_keg = root / 'Cellar/alondra' / old['version']
+            keg_from_archive(old['archive'], old_keg, published=True)
+            link(root / 'opt/alondra', old_keg)
+        else:
+            link(root / 'opt/alondra', new_keg)
         shutil.copy2(self.sdk.tool, root / 'bin/alondra-sandbox')
         (root / 'bin/alondra').symlink_to(root / 'opt/alondra/bin/alondra')
         for name, command in (('claude', 'fake-claude'), ('gh', 'fake-gh')):
@@ -819,12 +825,13 @@ class HandoverWorld:
         path = self.runtime / f'capture.transcript-{session}'
         return path.read_text().splitlines()[1:] if path.exists() else []
 
-    def install_sdk_backend(self):
-        """What the new release's installation writes (phase 5l): the pinned Node and host bundle,
-        and a native Claude that records every start and the session it resumed."""
+    def install_sdk_backend(self, keg):
+        """The host the new release installed in `keg`, which checks its own bytes when it starts,
+        with a gate it loads through NODE_OPTIONS that holds its start for the crash after
+        `sdk_admitted`, and a native Claude that records every start and the session it resumed:
+        the configuration replaces only the user's Claude Code and adds the gate."""
         self.runtime.mkdir()
-        shutil.copy2(self.sdk.node, self.runtime / 'node')
-        shutil.copy2(self.sdk.host, self.runtime / 'persistent.cjs')
+        host = keg / 'libexec/alondra' / release.HOST
         for name in FIXTURES:
             shutil.copy2(self.sdk.fixtures / name, self.runtime / name)
         write_executable(self.runtime / 'claude', NATIVE)
@@ -833,8 +840,8 @@ class HandoverWorld:
         host_environment = dict(environment, NODE_OPTIONS=f'--require={self.runtime / "gate.cjs"}',
                                 ALONDRA_REHEARSAL_HOST_GATE=str(self.host_gate))
         backend = {
-            'node': str(self.runtime / 'node'), 'node_sha256': checksum(self.runtime / 'node'),
-            'host': str(self.runtime / 'persistent.cjs'), 'host_sha256': checksum(self.runtime / 'persistent.cjs'),
+            'node': str(host), 'node_sha256': checksum(host),
+            'host': str(host), 'host_sha256': checksum(host),
             'native': str(self.runtime / 'claude'), 'native_sha256': checksum(self.runtime / 'claude'),
             'host_environment': host_environment, 'native_environment': dict(environment, FIXTURE_CAPTURE=str(self.capture)),
             'state_root': str(self.state_root), 'io_timeout_seconds': 300,
@@ -874,8 +881,67 @@ def sdk_handover(rehearsal, old, new, sdk):
     world.root.mkdir()
     try:
         return run_handover(world, old, new)
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
     finally:
         world.stop_everything()
+
+
+def log_tail(log, lines=40):
+    """The end of a case's daemon log, which goes with the rehearsal's folder: each line once, in
+    the order it first appeared, so a line repeated every second does not hide the rest."""
+    if not log.is_file():
+        return f'(no daemon log at {log})'
+    seen, kept = set(), []
+    for line in log.read_text(errors='replace').splitlines():
+        text = line.split(' ', 1)[-1]
+        if text not in seen:
+            seen.add(text)
+            kept.append(line)
+    return 'the daemon log ends:\n' + '\n'.join(kept[-lines:])
+
+
+FRESH_SDK_CASE = 'fresh-sdk'
+FRESH_TASK = 't-fresh'
+
+
+def fresh_sdk(rehearsal, new, sdk):
+    """A Mac that installs the new release: no `sdk-backend.json` and no Node on the PATH. A request
+    becomes a task whose node runs through the host the release installed, with the Claude Code on
+    the daemon's PATH, here the sandbox's fake."""
+    world = HandoverWorld(rehearsal, rehearsal.work / FRESH_SDK_CASE, sdk)
+    world.root.mkdir()
+    try:
+        world.lay_out(None, new['keg'], new['make_keg'])
+        if shutil.which('node', path=world.env()['PATH']):
+            raise Failed('node is on the PATH the daemon gets: the case needs a Mac without it')
+        world.home.mkdir(mode=0o700)
+        world.provision()
+        world.start(new['version'])
+        world.tool('phone', '--mac', '1', 'pair', '--direct')
+        world.request(FRESH_TASK, 'Write the changelog')
+        session = until('the task runs through the host the release installed', lambda: (fresh_session(world), fresh_sessions(world)), within=PATIENCE)
+        agent = next(row['agent_id'] for row in rows(world.home, 'tasks') if row['id'] == FRESH_TASK)
+        if not str(agent).startswith('sdk-'):
+            raise Failed(f'{FRESH_TASK} runs on {agent}, not on a node of the Agent SDK')
+        if (world.home / 'sdk-backend.json').exists():
+            raise Failed('the case wrote an sdk-backend.json: the release must run without one')
+        old_path = [call for call in world.calls() if call.get('tool') == 'claude' and any(arg in ('--bg', '-p') for arg in call.get('args', []))]
+        if old_path:
+            raise Failed(f'the new release ran claude the old way: {old_path[0]["args"]}')
+        return {'task': FRESH_TASK, 'node': agent, 'session': session['session_id'], 'cwd': session['cwd'], 'host': str(new['keg'] / 'libexec/alondra' / release.HOST)}
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
+    finally:
+        world.stop_everything()
+
+
+def fresh_sessions(world):
+    return [read_json(path) for path in sorted((world.fakes / 'sessions').glob('*/session.json'))]
+
+
+def fresh_session(world):
+    return next((session for session in fresh_sessions(world) if session.get('task_id') == FRESH_TASK and session.get('starts', 0) >= 1), None)
 
 
 def run_handover(world, old, new):
@@ -894,7 +960,7 @@ def run_handover(world, old, new):
     until('the asking nodes wait for the user', lambda: (all(world.task_state(task) == 'needs_you' for task in cards),
                                                        {task: world.task_state(task) for task in SEEDED}))
     sessions = {task: world.node(task)['session_id'] for task in SEEDED}
-    world.install_sdk_backend()
+    world.install_sdk_backend(new['keg'])
     for session in sessions.values():
         (world.runtime / f'capture.transcript-{session}').write_text(TRANSCRIPT)
     before = domain_snapshot(world.home)
@@ -1063,6 +1129,12 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         moved = result['cases'][SDK_CASE]
         print(f'{SDK_CASE}: {len(moved["moved"])} claude --bg nodes moved to the Agent SDK with their sessions, '
               f'the daemon killed after {", ".join(moved["crashed_after"])}')
+        keg = work / FRESH_SDK_CASE / 'Cellar/alondra' / new['version']
+        try:
+            result['cases'][FRESH_SDK_CASE] = fresh_sdk(rehearsal, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
+        except Failed as error:
+            raise Failed(f'case {FRESH_SDK_CASE}: {error}') from None
+        print(f'{FRESH_SDK_CASE}: a fresh {new["version"]} ran {FRESH_TASK} through its own Agent SDK host, without Node on the PATH')
     return result
 
 
@@ -1076,8 +1148,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--new', type=pathlib.Path, help='Release archive, or an alondrad binary')
     parser.add_argument('--cli', type=pathlib.Path, help='The alondra CLI built with an alondrad binary given as --new')
-    parser.add_argument('--sdk-node', type=pathlib.Path, help='The pinned Node of the SDK host (Bazel //agent-host:pinned_node)')
-    parser.add_argument('--sdk-host', type=pathlib.Path, help='The SDK host bundle (Bazel //agent-host:persistent.cjs)')
+    parser.add_argument('--host', type=pathlib.Path, help='The release host built with an alondrad binary given as --new (Bazel //agent-host:release_host)')
     parser.add_argument('--sdk-fixtures', type=pathlib.Path, help='The folder with the native Claude fixtures (agent-host)')
     parser.add_argument('--sandbox-tool', type=pathlib.Path, help='alondra-sandbox, whose fakes stand in for Claude Code and GitHub')
     parser.add_argument('--from', dest='previous',
@@ -1100,16 +1171,16 @@ def main():
     work = pathlib.Path(tempfile.mkdtemp(prefix='alondra-ur-', dir='/private/tmp'))
     try:
         archive = args.new.resolve() if args.new.name.endswith('.tar.gz') else None
-        if not archive and args.cli is None:
-            parser.error('--cli is required with an alondrad binary')
-        if None in (args.sdk_node, args.sdk_host, args.sdk_fixtures, args.sandbox_tool):
-            parser.error(f'--sdk-node, --sdk-host, --sdk-fixtures and --sandbox-tool are required: the {SDK_CASE} case needs them')
-        sdk = SdkArtifacts(args.sdk_node, args.sdk_host, args.sdk_fixtures, args.sandbox_tool)
+        if not archive and None in (args.cli, args.host):
+            parser.error('--cli and --host are required with an alondrad binary')
+        if None in (args.sdk_fixtures, args.sandbox_tool):
+            parser.error(f'--sdk-fixtures and --sandbox-tool are required: the {SDK_CASE} case needs them')
+        sdk = SdkArtifacts(args.sdk_fixtures, args.sandbox_tool)
         new_binary = unpack(archive, work / 'new') if archive else args.new.resolve()
         if archive:
             new_keg = lambda keg: keg_from_archive(archive, keg, published=False)
         else:
-            new_keg = lambda keg: keg_from_build(new_binary, args.cli.resolve(), keg)
+            new_keg = lambda keg: keg_from_build(new_binary, args.cli.resolve(), args.host.resolve(), keg)
         new_version = binary_version(new_binary)
         old_version = args.previous if args.previous not in (None, 'latest') else \
             previous_version(args.previous or new_version, published_tags())

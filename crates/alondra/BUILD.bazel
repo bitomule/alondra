@@ -1,12 +1,13 @@
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("//:version.bzl", "VERSION")
 
 rust_binary(
     name = "alondra",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//launchd:alondra.plist.in"],
     edition = "2024",
-    version = "0.1.0",
+    version = VERSION,
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
 )

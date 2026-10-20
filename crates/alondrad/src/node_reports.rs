@@ -14,9 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// How long a launch waits for the mod's `session.start` before it counts the mods as not loaded.
-pub(crate) const MODS_DEADLINE: Duration = Duration::from_secs(30);
-
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "event")]
 pub(crate) enum Report {
@@ -405,7 +402,7 @@ impl Reports {
                 session.answer = Some(Answer { text: answer, at: now, aborted });
             }
             Report::ToolStart { tool, tool_use_id, input } => {
-                let summary = crate::http::tool_summary(Some(&tool), Some(&input));
+                let summary = crate::hook_text::tool_summary(Some(&tool), Some(&input));
                 session.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
             }
             Report::Background { tasks } => {
@@ -596,46 +593,6 @@ impl Reports {
     /// Whether the session's mod said it loaded: only Alondra's launches carry the node mod.
     pub(crate) fn is_node(&self, session_id: &str) -> bool {
         self.sessions.lock().expect("node reports poisoned").get(session_id).is_some_and(|session| session.started_at.is_some())
-    }
-
-    fn launched(&self, key: &str) -> Option<String> {
-        self.launches.lock().expect("launch keys poisoned").get(key).cloned()
-    }
-
-    /// The session whose mod reported the launch's key within `deadline`: the id Claude chose
-    /// for it, which is how a launch binds to its session.
-    pub(crate) async fn wait_launched(&self, key: &str, deadline: Duration) -> Option<String> {
-        tokio::time::timeout(deadline, async {
-            loop {
-                let started = self.started.notified();
-                tokio::pin!(started);
-                started.as_mut().enable();
-                if let Some(session) = self.launched(key) {
-                    return session;
-                }
-                started.await;
-            }
-        })
-        .await
-        .ok()
-    }
-
-    /// Whether the session holds a connection other than `previous` within `deadline`: what a
-    /// restart of a session that still held one has to wait for.
-    pub(crate) async fn wait_reconnected(&self, session_id: &str, previous: Option<u64>, deadline: Duration) -> bool {
-        tokio::time::timeout(deadline, async {
-            loop {
-                let started = self.started.notified();
-                tokio::pin!(started);
-                started.as_mut().enable();
-                if self.session(session_id).is_some_and(|session| session.connection.is_some() && session.connection != previous) {
-                    return;
-                }
-                started.await;
-            }
-        })
-        .await
-        .is_ok()
     }
 
     /// Whether the session holds a connection within `deadline`.
@@ -845,23 +802,16 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
     }
 
-    #[tokio::test]
-    async fn a_launch_binds_to_the_session_whose_mod_reports_its_key_and_gives_up_after_the_deadline() {
-        let reports = std::sync::Arc::new(Reports::default());
-        assert_eq!(reports.wait_launched("silent", Duration::from_millis(20)).await, None, "no session.start before the deadline");
-        let waiting = tokio::spawn({
-            let reports = reports.clone();
-            async move { reports.wait_launched("launch-1", MODS_DEADLINE).await }
-        });
-        tokio::task::yield_now().await;
-        reports.apply(report(json!({"session_id": "other", "event": "session.start", "version": "2.1.287", "launch_key": "launch-2"})), 1);
+    #[test]
+    fn a_session_whose_mod_reports_a_launch_key_at_start_or_at_reconnection_is_alondras() {
+        let reports = Reports::default();
+        reports.apply(report(json!({"session_id": "other", "event": "session.start", "version": "2.1.287"})), 1);
         reports.apply(report(json!({"session_id": "real-session-id", "event": "session.start", "version": "2.1.287", "launch_key": "launch-1"})), 2);
-        assert_eq!(waiting.await.unwrap().as_deref(), Some("real-session-id"), "the id is Claude's, with no banner and no listing");
-        assert_eq!(reports.wait_launched("launch-1", Duration::ZERO).await.as_deref(), Some("real-session-id"), "a session that already reported does not wait");
+        assert!(reports.started_with_a_launch_key("real-session-id") && !reports.started_with_a_launch_key("other"));
         let mut reconnected = hello("after-a-restart");
         reconnected.launch_key = Some("launch-3".into());
         reports.connect(reconnected, 3);
-        assert_eq!(reports.wait_launched("launch-3", Duration::ZERO).await.as_deref(), Some("after-a-restart"), "a connection carries the key too");
+        assert!(reports.started_with_a_launch_key("after-a-restart"), "a connection carries the key too");
         assert!(reports.is_node("after-a-restart") && !reports.is_node("stranger"));
     }
 
@@ -911,20 +861,6 @@ mod tests {
         assert!(!reports.session("s").unwrap().silent(quiet + 4), "a fresh connection is activity");
         reports.connect(hello("s"), quiet + 5);
         assert_eq!(reports.session("s").unwrap().working_since, None, "a restarted session is not mid-turn");
-    }
-
-    #[tokio::test]
-    async fn waiting_for_a_reconnection_ignores_the_connection_it_replaces() {
-        let reports = std::sync::Arc::new(Reports::default());
-        let old = reports.connect(hello("s"), 1);
-        assert!(!reports.wait_reconnected("s", Some(old), Duration::from_millis(20)).await);
-        let waiting = tokio::spawn({
-            let reports = reports.clone();
-            async move { reports.wait_reconnected("s", Some(old), Duration::from_secs(5)).await }
-        });
-        tokio::task::yield_now().await;
-        reports.connect(hello("s"), 2);
-        assert!(waiting.await.unwrap());
     }
 
     const HOUR: Millis = 60 * 60 * 1000;

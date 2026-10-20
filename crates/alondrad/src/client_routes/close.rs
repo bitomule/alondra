@@ -1,4 +1,5 @@
-//! The close route: closing a session by hand, from the apps or the CLI.
+//! The close route: closing a `claude --bg` session of an earlier release by hand, from the apps
+//! or the CLI. A node of the Agent SDK ends with its task.
 use super::{Client, Reply};
 pub(crate) use crate::node_close::Answer;
 use crate::node_close::{CloseOutcome, Reason, Sessions, close_node};
@@ -30,6 +31,9 @@ impl Client {
         let Some(known) = self.domain.state()?.agents.get(&agent).cloned() else {
             return Ok(Reply::error(DomainError::new("not_found", "agent does not exist")));
         };
+        if self.domain.read().index().node(&agent).is_some_and(|node| node.through_sdk) {
+            return Ok(refused("This node runs through the Agent SDK and ends with its task: cancel its task to stop it", vec![]));
+        }
         let sessions = self.sessions();
         let name = self.domain.live.node(agent_id).and_then(|node| node.name.clone()).unwrap_or(known.name);
         Ok(match close_node(&self.domain, sessions.as_ref(), &agent, true).await? {

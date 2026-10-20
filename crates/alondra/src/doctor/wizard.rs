@@ -23,7 +23,7 @@ pub struct Step {
 pub fn steps() -> Vec<Step> {
     vec![
         Step { name: tr!("This Mac", "Este Mac"), checks: &["mac"], show: Show::Always },
-        Step { name: "Claude Code", checks: &["claude", "orchestrator"], show: Show::Always },
+        Step { name: "Claude Code", checks: &["claude"], show: Show::Always },
         Step { name: "", checks: &["claude.profile"], show: Show::Wizard },
         Step { name: tr!("Claude Code sign-in", "Sesión de Claude Code"), checks: &["claude.signin"], show: Show::Always },
         Step { name: tr!("Projects folder", "Carpeta de proyectos"), checks: &["projects"], show: Show::Wizard },
@@ -32,7 +32,7 @@ pub fn steps() -> Vec<Step> {
             checks: &["config", "service", "alondrad", "state", "startup", "upgrade", "update", "hooks"],
             show: Show::Always,
         },
-        Step { name: tr!("Claude plugin", "Plugin de Claude"), checks: &["plugin", "mods"], show: Show::Always },
+        Step { name: tr!("Claude plugin", "Plugin de Claude"), checks: &["plugin", "validate"], show: Show::Always },
         Step { name: tr!("Ready for your devices", "Listo para tus dispositivos"), checks: &["identity"], show: Show::Wizard },
         Step {
             name: tr!("Notifications and access away from home", "Notificaciones y acceso desde fuera de casa"),
@@ -41,7 +41,7 @@ pub fn steps() -> Vec<Step> {
         },
         Step { name: tr!("Devices", "Dispositivos"), checks: &["devices", "notifications"], show: Show::Fix },
         Step { name: tr!("Direct connection", "Conexión directa"), checks: &["direct"], show: Show::Problems },
-        Step { name: tr!("Tools", "Herramientas"), checks: &["tmux", "tuicr"], show: Show::Problems },
+        Step { name: tr!("Tools", "Herramientas"), checks: &["tuicr"], show: Show::Problems },
     ]
 }
 

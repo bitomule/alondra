@@ -67,15 +67,50 @@ impl BgSessions for ClaudeSessions {
 
     fn stop<'a>(&'a self, session: &'a str) -> Answer<'a, Result<(), String>> {
         Box::pin(async move {
-            use crate::orchestrate::Launcher;
             let short: String = session.chars().take(8).collect();
-            crate::orchestrate::ClaudeCli.stop_checked(&short).await
+            stop_checked(&short).await
         })
     }
 
     fn alive(&self, process: &HandoverProcess) -> bool {
         alondra_process_group::alive(&member(process)).unwrap_or(true)
     }
+}
+
+/// Stops a `claude --bg` session for good and says whether it did: `claude stop` answered and
+/// `claude agents` no longer shows it running.
+async fn stop_checked(short: &str) -> Result<(), String> {
+    let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
+        .stdin(std::process::Stdio::null()).output();
+    match tokio::time::timeout(std::time::Duration::from_secs(20), stop).await {
+        Ok(Ok(out)) if out.status.success() => {}
+        Ok(Ok(out)) => return Err(format!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        Ok(Err(error)) => return Err(format!("claude stop {short} failed: {error}")),
+        Err(_) => return Err(format!("claude stop {short} did not answer in 20 s")),
+    }
+    for _ in 0..5 {
+        let list = tokio::process::Command::new("claude").args(["agents", "--json", "--all"]).kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        let listing = match tokio::time::timeout(std::time::Duration::from_secs(20), list).await {
+            Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+            Ok(Ok(out)) => return Err(format!("claude agents failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+            Ok(Err(error)) => return Err(format!("claude agents failed: {error}")),
+            Err(_) => return Err("claude agents did not answer in 20 s".into()),
+        };
+        if !still_running(&listing, short) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err(format!("claude agents still shows {short} running after claude stop"))
+}
+
+/// Whether `claude agents --json` lists `short` in a state that still runs a turn or waits for one.
+pub(crate) fn still_running(agents_json: &str, short: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(agents_json).ok().and_then(|list| list.as_array().cloned()).is_some_and(|list| list.iter().any(|agent| {
+        agent.get("id").and_then(serde_json::Value::as_str) == Some(short)
+            && matches!(agent.get("state").and_then(serde_json::Value::as_str), Some("working" | "idle" | "blocked"))
+    }))
 }
 
 /// The daemon's moves: one advances at a time.
@@ -87,10 +122,23 @@ pub(crate) struct Handovers {
     /// admission dies after its commit, before its host starts.
     #[cfg(test)]
     pub(crate) crash_after: std::sync::Mutex<Option<HandoverStep>>,
+    #[cfg(test)]
+    pub(crate) turn_deadline: std::sync::Mutex<Option<std::time::Duration>>,
 }
 
+/// How long a `claude --bg` node in a turn gets to end it before Alondra interrupts it to stop it.
+const TURN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Handovers {
-    fn sessions(&self) -> Arc<dyn BgSessions> {
+    pub(crate) fn turn_deadline(&self) -> std::time::Duration {
+        #[cfg(test)]
+        if let Some(deadline) = *self.turn_deadline.lock().unwrap() {
+            return deadline;
+        }
+        TURN_DEADLINE
+    }
+
+    pub(crate) fn sessions(&self) -> Arc<dyn BgSessions> {
         Arc::clone(self.sessions.get_or_init(|| Arc::new(ClaudeSessions)))
     }
 
@@ -400,6 +448,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
         prompt: handover.plan.input.clone(),
         plugin,
         options,
+        model: None,
     };
     let continuation = crate::sdk_owner::Continuation { node: handover.node.clone() };
     let driver = tokio::task::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))

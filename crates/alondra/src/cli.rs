@@ -31,28 +31,6 @@ fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Actio
     view.sections.iter().find_map(|section| scan(&section.items, &predicate))
 }
 
-fn local_attach(view: &View) -> Option<String> {
-    fn scan(items: &[Item]) -> Option<String> {
-        for item in items {
-            let card_actions: Vec<Action>;
-            let actions: &[Action] = match item {
-                Item::Card(card) => { card_actions = card.actions.iter().cloned().map(Action::from).collect(); &card_actions }
-                Item::Actions(bar) => &bar.actions,
-                Item::Row(row) => &row.actions,
-                Item::Form(form) => std::slice::from_ref(&form.submit),
-                _ => &[],
-            };
-            for action in actions {
-                if let Some(Link::Local { local: alondra_core::views::LocalLink::Attach { session } }) = &action.link {
-                    return Some(session.clone());
-                }
-            }
-        }
-        None
-    }
-    view.sections.iter().find_map(|section| scan(&section.items))
-}
-
 fn submit(client: &Client, view: &View, action: &Action, option: Option<&str>, input: Value) -> Result<Value> {
     anyhow::ensure!(action.enabled, "{}", action.disabled_reason.as_deref().unwrap_or("This action is unavailable"));
     client.action(&view.data_epoch, &action.id, option, input)
@@ -173,18 +151,11 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
     for section in &fleet.sections { rows(&section.items, &mut found); }
     found.retain(|(id, _)| id != "orchestrator");
     let exact: Vec<_> = found.iter().filter(|(id, title)| id == name || title.eq_ignore_ascii_case(name) || id.rsplit('-').next() == Some(name)).collect();
-    let mut matches: Vec<(String, String)> = if exact.is_empty() {
+    let matches: Vec<(String, String)> = if exact.is_empty() {
         found.iter().filter(|(id, _)| id.starts_with(name)).cloned().collect()
     } else {
         exact.into_iter().map(|(id, title)| (id.clone(), title.clone())).collect()
     };
-    if matches.is_empty() {
-        for (id, _) in &found {
-            if client.views(&format!("node:{id}"), None).ok().and_then(|view| local_attach(&view)).as_deref() == Some(name) {
-                matches.push((id.clone(), String::new()));
-            }
-        }
-    }
     match matches.as_slice() {
         [one] => Ok((Some(one.0.clone()), Some(one.0.clone()))),
         [] => bail!(trf!("No node is called {name}; for the orchestrator use orchestrator", "Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
@@ -263,15 +234,6 @@ fn closed_notice(answer: &Value, name: &str) -> Result<String> {
     } else {
         trf!("Closed {name}", "Cerrado {name}")
     })
-}
-
-pub fn attach(name: &str) -> Result<()> {
-    let client = Client::for_user(Duration::from_secs(10));
-    let (agent, _runtime) = if orchestrator_view(&client, name).is_some() { (None, None) } else { resolved(&client, name)? };
-    let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
-    let view = client.views(&format!("node:{agent}"), None)?;
-    let session = local_attach(&view).context("This node has no attachable session")?;
-    crate::attach::attach(&session, crate::attach::Over::Shell)
 }
 
 pub fn recover(action: Recovery, run_id: &str) -> Result<()> {

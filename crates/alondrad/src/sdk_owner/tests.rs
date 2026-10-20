@@ -40,8 +40,116 @@ pub(crate) fn fixture_backend(home: &Path, state: &Path) -> (SdkBackend, PathBuf
         confinement: None,
         state_root: state.join("h"),
         io_timeout_seconds: 30,
+        installed_native: false,
     };
     (backend, capture)
+}
+
+/// A domain whose launches start through the fixture backend: what the native Claude was started
+/// with, the prompts it got, and every host of the domain stopped when this is dropped. Declare it
+/// before the directories it lives in, so its hosts stop first.
+pub(crate) struct SdkLaunches {
+    domain: Arc<DomainRuntime>,
+    pub(crate) capture: PathBuf,
+    state_root: PathBuf,
+    _state: Directory,
+}
+
+impl SdkLaunches {
+    pub(crate) fn enable(domain: &Arc<DomainRuntime>, home: &Path) -> Self {
+        let state = Directory::for_unix_socket();
+        let (backend, capture) = fixture_backend(home, &state);
+        let state_root = backend.state_root.clone();
+        domain.enable_sdk(backend);
+        Self { domain: Arc::clone(domain), capture, state_root, _state: state }
+    }
+
+    /// The arguments the last native Claude was started with.
+    pub(crate) fn args(&self) -> Vec<String> {
+        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.capture).unwrap()).unwrap();
+        serde_json::from_value(capture["args"].clone()).unwrap()
+    }
+
+    /// The value the last native Claude got for `flag`.
+    pub(crate) fn flag(&self, flag: &str) -> Option<String> {
+        let args = self.args();
+        args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1)).cloned()
+            .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{flag}=")).map(str::to_owned)))
+    }
+
+    /// Every prompt the native Claudes got, in order.
+    pub(crate) fn prompts(&self) -> Vec<String> {
+        std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    /// Each native Claude the hosts started: its session, the one it resumed and its folder.
+    pub(crate) fn starts(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    /// What the launch of `agent`'s execution kept beside its host.
+    pub(crate) fn options(&self, agent: &str) -> LaunchOptions {
+        LaunchOptions::load(&self.state_root.join(agent)).unwrap()
+    }
+
+    /// Waits on the domain until `task`'s turn has ended with `turns` turn-end cards.
+    pub(crate) async fn until_turns_ended(&self, task: &str, turns: usize) {
+        let mut changed = self.domain.subscribe();
+        let ended = |domain: &DomainRuntime| domain.read().state().interactions.keys()
+            .filter(|card| card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{task}-"))).count() >= turns;
+        while !ended(&self.domain) {
+            changed.changed().await.unwrap();
+        }
+    }
+
+    /// Waits on the domain until `task`'s first turn ended with Claude's answer.
+    pub(crate) async fn until_answered(&self, task: &str) {
+        self.until_turns_ended(task, 1).await;
+    }
+}
+
+impl Drop for SdkLaunches {
+    fn drop(&mut self) {
+        self.domain.stop_sdk_owners();
+    }
+}
+
+const HOLDING_NATIVE: &str = r#"#!/usr/bin/python3
+import json, os, subprocess, sys
+fake = subprocess.Popen([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'native-fake')] + sys.argv[1:], stdin=subprocess.PIPE, close_fds=False)
+for raw in sys.stdin:
+    if json.loads(raw).get('type') == 'user':
+        continue
+    fake.stdin.write(raw.encode())
+    fake.stdin.flush()
+fake.stdin.close()
+sys.exit(fake.wait())
+"#;
+
+impl SdkLaunches {
+    /// `enable`, with a native Claude that keeps every prompt from the fake one: each node starts
+    /// and never begins a turn, so it holds its slot until its task ends.
+    pub(crate) fn enable_holding(domain: &Arc<DomainRuntime>, home: &Path) -> Self {
+        let state = Directory::for_unix_socket();
+        let (mut backend, capture) = fixture_backend(home, &state);
+        let fake = home.join("native-fake");
+        std::fs::rename(&backend.native, &fake).unwrap();
+        std::fs::write(&backend.native, HOLDING_NATIVE).unwrap();
+        std::fs::set_permissions(&backend.native, std::fs::Permissions::from_mode(0o700)).unwrap();
+        backend.native_sha256 = backend::digest(&backend.native).unwrap();
+        let state_root = backend.state_root.clone();
+        domain.enable_sdk(backend);
+        Self { domain: Arc::clone(domain), capture, state_root, _state: state }
+    }
+}
+
+impl SdkLaunches {
+    /// While `refused`, no new host gets the folder it needs, so every start fails before the
+    /// domain registers a node; hosts that run already go on.
+    pub(crate) fn refuse_starts(&self, refused: bool) {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.state_root).unwrap();
+        std::fs::set_permissions(&self.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    }
 }
 
 struct Slice {
@@ -124,6 +232,7 @@ impl Slice {
             prompt: prompt.into(),
             plugin: self.plugin.clone(),
             options: LaunchOptions::default(),
+            model: None,
         }, capabilities, None)
         .unwrap()
     }
@@ -367,6 +476,39 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     driver.stop().unwrap();
 }
 
+// The node asks the user during its turn and the turn ends: the card that asks how it goes on
+// waits out of sight behind the node's question, the user's answer reaches Claude as its next
+// input, and that card goes with it.
+#[test]
+fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_the_answer_reaches_claude() {
+    use alondra_core::domain::{CardKind, CardSpec, QuestionOption, Recipient, Scope};
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+    slice.run(&Actor::Agent { agent_id: driver.agent().clone() }, "ask", Command::AskQuestion {
+        attachments: vec![], interaction_id: "q-name".into(), scope: Scope::Task { task_id: TASK.into() }, recipient: Recipient::User,
+        body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name"),
+    });
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Keep it short"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .unwrap();
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let inbox = |domain: &DomainRuntime| domain.read().index().waiting().iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    assert_eq!(inbox(&slice.domain), ["interaction:q-name"], "only the node's question waits for the user");
+    let behind = open_card(&slice.domain, TURN_ENDED_PREFIX).expect("the lifecycle still requires its card").id;
+
+    answer(&slice.domain, &"q-name".into(), "short");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert!(prompts.last().is_some_and(|last| last.contains("Short.")), "{prompts:?}");
+    assert!(slice.domain.read().state().interactions[&behind].withdrawn, "the card behind the question went with the answer");
+    driver.stop().unwrap();
+}
+
 // A3: the writer stops between the commit of the turn end and its publication. A runtime opened
 // on the same database gets the host's unacknowledged event again: the exact replay publishes
 // the committed card once and acknowledges it, with no second card.
@@ -574,6 +716,45 @@ async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
     slice.settle(&mut driver);
     let last = slice.prompts().last().cloned().unwrap();
     assert!(last.starts_with("[From Alondra · ") && last.contains("is finished and is closing"), "{last}");
+    driver.stop().unwrap();
+}
+
+// The node pushes to its PR after it delivered: the GitHub observer takes the delivery back, and
+// the input that hand-back gives the task is what the node's Claude is told, once. Before, that
+// input had no text, the store refused the observer's commit for the dispatch it lacked, and the
+// daemon died on it at every start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    slice.run(&node, "register", Command::RegisterPr {
+        task_id: TASK.into(), pr_id: "pr-notes".into(), host: "github.example.invalid".into(), repository: "synthetic/notes".into(),
+        number: 7, head: "head-a".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }],
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into() });
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    slice.run(&Actor::System, "observe", Command::ObservePrState {
+        pr_id: "pr-notes".into(), head: "head-b".into(), base: "main".into(), state: PrState::Open, merged_head: None,
+    });
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].final_presentation, None, "the delivery behind the PR was taken back");
+    assert!(state.interactions[&InteractionId::from("final")].withdrawn);
+    assert!(slice.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|message| message.recipient_kind != "agent"),
+        "the node is told through its input, not a second message");
+    let restarted = DomainRuntime::open_at(&slice._home, &slice.database).unwrap();
+    assert_eq!(restarted.state().unwrap().tasks[&TaskId::from(TASK)].final_presentation, None, "a daemon start reads what was committed");
+    assert_eq!(driver.pending_permits(), 1, "the input leaves for the node's host");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let told: Vec<String> = slice.prompts().into_iter().filter(|prompt| prompt.contains("Pull request #7 has commits")).collect();
+    assert_eq!(told, vec![delivery_withdrawn_behind_pr(7)]);
     driver.stop().unwrap();
 }
 
@@ -861,6 +1042,7 @@ fn a_second_task_starts_through_the_same_sdk_host() {
         prompt: "Write the upgrade guide".into(),
         plugin: slice.plugin.clone(),
         options: LaunchOptions::default(),
+        model: None,
     })
     .expect("the second task starts too");
     slice.settle(&mut second);
@@ -879,6 +1061,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
+        model: None,
     }, capabilities(), None).unwrap();
     slice.settle(&mut driver);
     let launched = |slice: &Slice| -> Vec<String> {
@@ -920,6 +1103,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     let mut replacement = start(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(),
+        model: None,
     }).unwrap();
     slice.settle(&mut replacement);
     let state = slice.domain.state().unwrap();
@@ -928,17 +1112,6 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     assert_eq!(lifecycle(&slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
     assert!(slice.answer(&card, Hold::ALLOW, None).is_err(), "the old generation's card takes no answer");
     replacement.stop().unwrap();
-}
-
-struct NoClaude(PathBuf);
-impl crate::orchestrate::Launcher for NoClaude {
-    async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
-        panic!("a task of a daemon with the Agent SDK never starts as claude --bg")
-    }
-    async fn stop(&self, _: &str) {}
-    fn plugin(&self) -> Option<PathBuf> {
-        Some(self.0.clone())
-    }
 }
 
 // The orchestrator's replace goes through the launch every source uses: the owner stops the old
@@ -951,7 +1124,7 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
     let old = driver.agent().clone();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     let body = serde_json::from_value(serde_json::json!({"task": TASK, "replace": true, "model": "sonnet", "effort": "high", "reason": "Release notes are short prose"})).unwrap();
-    let launched = crate::domain_orchestrator_tools::launch(&slice.domain, &slice._home, &Actor::Orchestrator { generation: 0 }, body, |_| None, &NoClaude(slice.plugin.clone())).await;
+    let launched = crate::domain_orchestrator_tools::launch(&slice.domain, &slice._home, body, |_| None).await;
     assert!(launched.is_ok(), "{launched:?}");
     assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
     assert!(!slice.domain.owns_sdk_host(&old), "the old host is stopped");
@@ -1175,6 +1348,77 @@ fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session
     let starts = slice.starts();
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
     assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
+    resumed.stop().unwrap();
+}
+
+// The native Claude crashes alone mid-turn: its host lives on with nothing to run. Its owner ends
+// it as a host that ended with its Claude, and a host that resumes the same session takes its
+// place: the task asks how to go on, and «Carry on» reaches that session. Before, the owner refused
+// the Claude's exit from a live host and stopped, leaving the task «working».
+#[test]
+fn a_claude_that_crashes_under_its_live_host_is_resumed_by_a_new_host() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let (session, native) = (slice.starts()[0]["session"].as_str().unwrap().to_owned(), slice.starts()[0]["pid"].to_string());
+    assert!(std::process::Command::new("/bin/kill").args(["-KILL", &native]).status().unwrap().success());
+    while driver.observe().is_ok() {}
+    assert!(!driver.worker.host_exited(), "the host outlived its Claude");
+    assert!(driver.host_to_replace(), "the owner takes the Claude's exit as the end of its host");
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended Claude runs");
+    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
+    answer(&slice.domain, &card.id, CARRY_ON);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    assert!(slice.prompts().last().unwrap().starts_with("Go on with your task"), "{:?}", slice.prompts());
+    resumed.stop().unwrap();
+}
+
+/// The descriptor of this process that is connected to the socket at `path`.
+fn connected_to(path: &Path) -> libc::c_int {
+    use std::os::unix::ffi::OsStrExt;
+    (0..4096)
+        .find(|fd| {
+            // SAFETY: getpeername writes at most `length` bytes into the zeroed address it is given.
+            let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+            let mut length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            let named = unsafe { libc::getpeername(*fd, (&raw mut address).cast(), &mut length) } == 0;
+            let peer: Vec<u8> = address.sun_path.iter().take_while(|byte| **byte != 0).map(|byte| *byte as u8).collect();
+            named && i32::from(address.sun_family) == libc::AF_UNIX && peer == path.as_os_str().as_bytes()
+        })
+        .expect("a connection to the host")
+}
+
+// The host and its Claude die together, and the owner's read of the host fails before the host's
+// exit can be observed. The connection failing is the fact the owner acts on: the replacement
+// waits for the host's exit and reads its lock, and a host that resumes the session takes its place.
+// Before, the owner took a host whose exit it could not see yet as alive, detached, and the task
+// stayed «working» until the daemon restarted. Here the host closes its end and lives on, which
+// orders the two facts with no clock: the connection fails first, the host ends only when stopped.
+#[test]
+fn a_host_whose_connection_fails_before_its_exit_is_seen_is_replaced() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let socket = connected_to(&slice.backend.state_root.join(&driver.agent().0).join("s"));
+    // SAFETY: four bytes from a live array to a descriptor the driver keeps open.
+    assert_eq!(unsafe { libc::write(socket, [0u8; 4].as_ptr().cast(), 4) }, 4, "a frame of no length, which the host refuses by closing");
+    while driver.observe().is_ok() {}
+    assert!(!driver.worker.host_exited(), "the read failed while the host's exit was not observable");
+    assert!(driver.host_to_replace(), "the failed connection ends the host for its owner");
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended host runs");
+    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
+    answer(&slice.domain, &card.id, CARRY_ON);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
     resumed.stop().unwrap();
 }
 

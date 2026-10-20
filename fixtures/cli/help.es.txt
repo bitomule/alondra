@@ -11,7 +11,6 @@ Día a día
   status       Preguntas, tareas y flota, en texto
   answer       Contesta una pregunta
   send         Manda un mensaje a una tarea, a un nodo o al orquestador
-  attach       Abre el terminal de un nodo
   close        Cierra la sesión de un nodo
   cancel       Cancela tareas
 

@@ -3,8 +3,10 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -29,7 +31,7 @@ class PublicPayloadTests(unittest.TestCase):
             stage = pathlib.Path(temp)
             r.stage_assets(r.ROOT, stage)
             files = {str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_file()}
-            self.assertEqual(files, r.PUBLIC_FILES - r.BINARIES)
+            self.assertEqual(files, r.PUBLIC_FILES - r.BINARIES - {r.HOST_MANIFEST})
             self.assertFalse(any(p.is_symlink() for p in stage.rglob('*')))
             wrapper = stage / 'plugin-orchestrator/bin/alondra'
             self.assertEqual(wrapper.read_bytes(), (r.ROOT / 'plugin/bin/alondra').read_bytes())
@@ -39,11 +41,44 @@ class PublicPayloadTests(unittest.TestCase):
             (stage / 'alondra').write_bytes(b'fake binary')
             (stage / 'alondrad').write_bytes(b'fake daemon')
             (stage / 'alondrad-launcher').write_bytes(b'fake launcher')
+            built = stage / 'built.json'
+            built.write_text(json.dumps({'laboratory': False, 'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64}))
+            host = pathlib.Path(temp) / 'alondra-host'
+            host.write_bytes(b'fake host')
+            r.stage_host(host, built, stage)
+            built.unlink()
+            manifest = json.loads((stage / r.HOST_MANIFEST).read_text())
+            self.assertEqual(manifest, {'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64, 'sha256': r.sha(host)})
             package = stage / 'package.tar.gz'
             with tarfile.open(package, 'w:gz') as output:
                 for name in sorted(r.PUBLIC_FILES):
                     output.add(stage / name, arcname=name)
             r.validate_archive(package)
+
+    def test_a_laboratory_host_is_never_staged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            built = pathlib.Path(temp) / 'built.json'
+            built.write_text(json.dumps({'laboratory': True, 'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64}))
+            (pathlib.Path(temp) / 'host').write_bytes(b'host')
+            with self.assertRaisesRegex(ValueError, 'release host'):
+                r.stage_host(pathlib.Path(temp) / 'host', built, pathlib.Path(temp) / 'stage')
+
+    def test_a_published_release_without_the_sdk_host_passes_only_as_an_older_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'test.tar.gz'
+            with tarfile.open(path, 'w:gz') as output:
+                for name in sorted(r.PRE_SDK_FILES):
+                    item = tarfile.TarInfo(name)
+                    item.size = len(name)
+                    output.addfile(item, io.BytesIO(name.encode()))
+            with self.assertRaisesRegex(ValueError, 'alondra-host'):
+                r.validate_archive(path)
+            r.validate_archive(path, r.PUBLISHED_FILES)
+
+    def test_bazel_stamps_the_version_cargo_ships(self):
+        cargo = tomllib.loads((r.ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+        stamped = re.search(r'^VERSION = "([^"]+)"$', (r.ROOT / 'version.bzl').read_text(), re.M)[1]
+        self.assertEqual(stamped, cargo, 'bump version.bzl with the workspace version')
 
     def test_a_release_without_the_launcher_passes_only_when_an_older_set_is_allowed(self):
         with tempfile.TemporaryDirectory() as temp:

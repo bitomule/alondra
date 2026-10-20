@@ -53,6 +53,16 @@ js_run_binary(
     outs = ["host", "host.manifest.json"],
     args = ["$(location host.cjs)", "$(location host)", "$(location host.manifest.json)"],
 )
+# The host a release ships: the persistent host, Node and the SDK in one executable, signed ad hoc
+# under the hardened runtime with the entitlements the release's Developer ID signature keeps.
+js_run_binary(
+    name = "release_host",
+    tool = ":sea_tool",
+    srcs = ["persistent.cjs", "host-entitlements.plist"],
+    outs = ["alondra-host", "alondra-host.manifest.json"],
+    args = ["$(location persistent.cjs)", "$(location alondra-host)", "$(location alondra-host.manifest.json)", "$(location host-entitlements.plist)"],
+)
+exports_files(["host-entitlements.plist"])
 js_test(
     name = "sea_test",
     entry_point = "sea.test.mjs",

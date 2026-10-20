@@ -6,6 +6,13 @@ build --incompatible_strict_action_env
 build --macos_minimum_os=26.0
 build -c opt
 
+# What a release ships: the code generation of Cargo.toml's release profile (thin LTO, one codegen
+# unit, abort on panic, symbols stripped). deploy/brew/local-release.py checks every Rust action of
+# the shipped binaries carries it.
+build:release --@rules_rust//rust/settings:lto=thin
+build:release --@rules_rust//rust/settings:codegen_units=1
+build:release --@rules_rust//rust/settings:extra_rustc_flags=-Cpanic=abort,-Cstrip=symbols
+
 # Clippy resolves the APIs used by tests, including aliases and imported functions.
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
 build --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods

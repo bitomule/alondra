@@ -5,7 +5,7 @@
 
 use crate::model::Millis;
 use crate::pr::{CheckState, MergeMethod, PrState, PullRequest};
-use crate::tasks::{Task, TaskState};
+use crate::tasks::Task;
 use crate::view::View;
 
 /// Right after a PR is opened or pushed to, GitHub may not list the checks of its new head yet:
@@ -66,20 +66,6 @@ impl View {
     /// Alondra is waiting on GitHub to merge a PR of the task: the node is idle on purpose.
     pub fn auto_merge_pending(&self, task: &Task, now: Millis) -> bool {
         task.prs.iter().filter_map(|id| self.prs.get(id)).any(|p| matches!(self.auto_merge(p, now), Some(AutoMerge::Waiting(_) | AutoMerge::Ready(_))))
-    }
-
-    /// Merging the PR finishes its task: the node already said nothing follows the merge, and
-    /// nothing else of the task waits for David. Its node gets no merge notice, which would only
-    /// send it back to work (23-24 Sep: 11 of 12 such notices did).
-    pub fn merge_finishes_task(&self, pr: u64) -> bool {
-        let Some(task) = self.prs.get(&pr).and_then(|p| self.pr_task_of(p)) else { return false };
-        let others = task.prs.iter().filter(|id| **id != pr).filter_map(|id| self.prs.get(id)).any(|p| p.state == PrState::Open && !p.auto_merge);
-        let g = self.task_guards(task);
-        match task.state {
-            TaskState::Done => true,
-            TaskState::Running | TaskState::InReview => task.final_report.is_some() && !others && g.unreviewed_document.is_none(),
-            TaskState::NotStarted | TaskState::WaitingDependency | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => false,
-        }
     }
 }
 

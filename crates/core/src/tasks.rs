@@ -9,14 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Attachment, Millis};
 
 mod archive;
-mod define;
 mod derive;
 mod waits;
 
 pub use archive::Archive;
-pub use define::{Candidate, CandidateTask, Dependency, dependencies};
-pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, marked_tasks, task_id};
-pub use waits::{Named, merge_notice_text, pr_numbers_in};
+pub use derive::{Before, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -105,19 +102,6 @@ impl TaskState {
             TaskState::Running => "running",
             TaskState::NeedsYou => "needs_you",
             TaskState::InReview => "in_review",
-            TaskState::Closing => "closing",
-            TaskState::Done => "done",
-            TaskState::Cancelled => "cancelled",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TaskState::NotStarted => "not started",
-            TaskState::WaitingDependency => "waiting for another task",
-            TaskState::Running => "running",
-            TaskState::NeedsYou => "needs you",
-            TaskState::InReview => "in review",
             TaskState::Closing => "closing",
             TaskState::Done => "done",
             TaskState::Cancelled => "cancelled",
@@ -653,11 +637,6 @@ pub struct NewTask {
 impl Task {
     pub fn is_assigned_to(&self, session_id: &str) -> bool {
         self.assignee.as_ref().is_some_and(|a| a.session_id == session_id)
-    }
-
-    /// Alondra has yet to start it: it may start, and no node took it nor was launched for it.
-    pub fn needs_start(&self) -> bool {
-        self.recorded && self.start.is_some() && self.state == TaskState::Running && self.assignee.is_none() && !self.launched
     }
 
     /// A node took it, or was launched for it: it runs from now on if nobody had it yet.

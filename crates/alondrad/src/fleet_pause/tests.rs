@@ -4,7 +4,8 @@ use crate::machine_state::NoRoom;
 use crate::node_push::testing::Node;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure};
-use alondra_core::domain::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -54,20 +55,6 @@ fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
 
 fn user() -> Actor {
     Actor::User { user_id: "u".into() }
-}
-
-struct NoLaunch;
-
-impl crate::orchestrate::Launcher for NoLaunch {
-    async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-        unreachable!("nothing is launched")
-    }
-
-    async fn stop(&self, _: &str) {}
-
-    async fn respawn(&self, _: &str) -> Result<(), String> {
-        unreachable!("nothing is respawned")
-    }
 }
 
 /// A fleet of nodes on one Mac, each connected through a mod that acts like the real one: an
@@ -142,7 +129,7 @@ impl Fleet {
         let before = self.orchestrator_inbox();
         crate::machine_watch::pace(&self.domain, &machine);
         self.notices += self.orchestrator_inbox() - before;
-        crate::fleet_gate::pass_at(&self.domain, &self.home.0, &NoLaunch, now).await.unwrap();
+        crate::fleet_gate::pass_at(&self.domain, &self.home.0, now).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         for (session, node, seen) in &mut self.nodes {
             let lines: Vec<serde_json::Value> = node.lines.lock().unwrap().clone();
@@ -609,4 +596,163 @@ async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
     fleet.hold(50, base + 2_000, 15 * MIN).await;
     assert!(fleet.events("resume").is_empty(), "{:?}", fleet.events("resume"));
     assert!(api_cards(&fleet).is_empty());
+}
+
+const SDK_TASK: &str = "t-sdk-paused";
+
+/// A task of the Agent SDK whose turn runs, on the pinned host with the fake native Claude. Its
+/// owner is driven here step by step, so nothing reaches Claude unless a step hands it over.
+struct SdkNode {
+    driver: crate::sdk_owner::Driver,
+    domain: Arc<DomainRuntime>,
+    capture: PathBuf,
+    home: crate::test_support::Directory,
+    _state: crate::test_support::Directory,
+}
+
+impl SdkNode {
+    /// A node whose first turn the fake Claude holds open.
+    fn working() -> Self {
+        let home = crate::test_support::Directory::new();
+        std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
+        let state = crate::test_support::Directory::for_unix_socket();
+        let worktree = home.join("worktree");
+        std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
+        let (backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        domain.enable_sdk(backend.clone());
+        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
+            request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
+        run(&domain, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() });
+        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+            task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())) });
+        let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
+            task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
+            prompt: "consume-and-hold".into(), plugin: home.join("plugin"), options: Default::default(),
+            model: None,
+        }).unwrap();
+        let mut node = Self { driver, domain, capture, home, _state: state };
+        while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
+            node.driver.observe().unwrap();
+        }
+        node
+    }
+
+    fn lifecycle(&self) -> alondra_domain::TaskLifecycle {
+        let read = self.domain.read();
+        alondra_core::domain::replay(&SDK_TASK.into(), &read.state().lifecycle_journal[&TaskId::from(SDK_TASK)]).unwrap()
+    }
+
+    fn agent(&self) -> String {
+        self.driver.agent().0.clone()
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    fn pending_inputs(&self) -> usize {
+        self.lifecycle().pending_inputs().len()
+    }
+
+    /// Steps the owner as its thread does, until `done` holds: each step sends what may be sent,
+    /// or reads what the host has.
+    fn step_until(&mut self, done: impl Fn(&Self) -> bool) {
+        while !done(self) {
+            self.driver.step(&|| true).unwrap();
+        }
+    }
+
+    /// A few steps of the owner: each sends whatever it may send.
+    fn step(&mut self) {
+        for _ in 0..4 {
+            self.driver.step(&|| true).unwrap();
+        }
+    }
+
+    /// How many of the task's inputs the owner claimed to hand to its host.
+    fn dispatched_inputs(&self) -> i64 {
+        rusqlite::Connection::open(crate::domain_database_migration::active_path(&self.home)).unwrap()
+            .query_row("SELECT count(*) FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' AND status NOT IN ('prepared','revoked')", [SDK_TASK], |row| row.get(0)).unwrap()
+    }
+
+    /// Steps the owner until Claude got a prompt that says `text`.
+    fn until_told(&mut self, text: &str) {
+        self.step_until(|node| node.prompts().iter().any(|prompt| prompt.contains(text)));
+    }
+
+    fn turn_ended(&self) -> bool {
+        self.domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
+            .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnEnded { .. }))
+    }
+
+    /// The user pauses the node from Fleet; its turn is interrupted and ends.
+    fn pause(&mut self) {
+        self.domain.live.gate.pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
+        self.step_until(Self::turn_ended);
+        assert!(matches!(self.domain.state().unwrap().node_phase(&AgentId(self.agent())),
+            Some(NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }))), "{:?}", self.domain.state().unwrap().node_phase(&AgentId(self.agent())));
+    }
+}
+
+impl Drop for SdkNode {
+    fn drop(&mut self) {
+        let _ = self.driver.stop();
+    }
+}
+
+#[test]
+fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
+    let mut node = SdkNode::working();
+    node.pause();
+    crate::domain_messages::tell_sdk_node(&node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused").unwrap();
+    node.step();
+    assert_eq!(node.dispatched_inputs(), 0, "the owner hands nothing to the host while the node is paused");
+    assert_eq!(node.pending_inputs(), 2, "the resume text and what it was told wait for the end of the pause");
+    assert_eq!(node.prompts(), ["consume-and-hold"]);
+
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.until_told("Use the short changelog format");
+    let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
+    assert_eq!(resumed, 1, "{:?}", node.prompts());
+    assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_none());
+    assert!(!matches!(node.domain.state().unwrap().node_phase(&AgentId(node.agent())), Some(NodePhase::Paused(_))));
+}
+
+/// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
+/// how it goes on, Fleet says it is paused, and resuming it is the user's one step.
+#[test]
+fn pausing_an_sdk_node_raises_no_card_and_fleet_shows_it_paused() {
+    let mut node = SdkNode::working();
+    node.pause();
+    node.step();
+    let state = node.domain.state().unwrap();
+    let cards: Vec<_> = state.interactions.keys().filter(|id| id.0.starts_with(alondra_core::domain::TURN_ENDED_PREFIX)).collect();
+    assert!(cards.is_empty(), "a pause asks nothing: {cards:?}");
+    let read = node.domain.read();
+    let live = alondra_core::views::live::LiveSnapshot::default();
+    let fleet = alondra_core::views::build("fleet", alondra_core::views::RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
+        lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap();
+    let fleet = serde_json::to_string(&fleet).unwrap();
+    assert!(fleet.contains("\"Paused\""), "{fleet}");
+    drop(read);
+
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.until_told("resumed you");
+    assert_eq!(node.prompts().len(), 2, "{:?}", node.prompts());
+}
+
+#[tokio::test]
+async fn the_users_own_message_to_a_paused_sdk_node_ends_the_pause_and_reaches_claude() {
+    let mut node = SdkNode::working();
+    node.pause();
+    let body = serde_json::from_value(serde_json::json!({"text": "Use the short changelog format"})).unwrap();
+    crate::domain_messages::deliver(&node.domain, &node.home, &user(), "The user", &AgentId(node.agent()), body, true).await.unwrap();
+    assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_none(), "the user's words end the pause");
+    node.until_told("Use the short changelog format");
+    let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
+    assert!(resumed <= 1, "{:?}", node.prompts());
 }

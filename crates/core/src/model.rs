@@ -4,9 +4,6 @@ pub use alondra_foundation::Millis;
 
 pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
 pub const OTHERS_PROJECT: &str = "others";
-/// A node whose name starts with it is a test node: the real Alondra refuses its cards, and the
-/// apps leave out its session.
-pub const PROBE_PREFIX: &str = "test/";
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -25,20 +22,6 @@ pub enum NodeState {
 }
 
 impl NodeState {
-    pub fn label(self) -> &'static str {
-        match self {
-            NodeState::Working => "working",
-            NodeState::WaitingAnswer => "waiting for an answer",
-            NodeState::YourTurn => "your turn",
-            NodeState::WaitingMerge => "waiting for your review",
-            NodeState::Delivered => "delivering a result",
-            NodeState::WaitingMachine => "waiting for the machine",
-            NodeState::Done => "done",
-            NodeState::Unclear => "unclear what it wants",
-            NodeState::Stalled => "stalled",
-        }
-    }
-
     fn parse(value: &str) -> Self {
         match value {
             "working" => NodeState::Working,
@@ -76,16 +59,6 @@ pub enum OrchestratorState {
 }
 
 impl OrchestratorState {
-    pub fn label(self) -> &'static str {
-        match self {
-            OrchestratorState::OnDuty => "on duty",
-            OrchestratorState::Handling => "handling a request",
-            OrchestratorState::WaitingForYou => "waiting for you",
-            OrchestratorState::Offline => "offline",
-            OrchestratorState::Unknown => "unknown",
-        }
-    }
-
     pub fn node_state(self) -> NodeState {
         match self {
             OrchestratorState::Handling => NodeState::Working,
@@ -607,17 +580,6 @@ pub enum ReportKind {
     Final,
 }
 
-impl ReportKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            ReportKind::Notice => "notice",
-            ReportKind::Document => "document",
-            ReportKind::Progress => "progress",
-            ReportKind::Final => "finished",
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Report {
     pub id: u64,
@@ -762,19 +724,7 @@ impl MemoryCompressor {
     }
 }
 
-pub const STRAINED_FREE_PERCENT: u32 = 15;
-
-impl Machine {
-    pub fn strained(&self) -> bool {
-        self.unreliable
-            || self.memory_free_percent.is_some_and(|p| p < STRAINED_FREE_PERCENT)
-            || self.memory_pressure.is_some_and(|pressure| pressure != MemoryPressure::Normal)
-    }
-}
-
 /// Option labels the server writes on held questions and matches when they come back.
-/// Apps shipped before the switch to English send the Spanish labels, so `canonical`
-/// maps them onto the English ones.
 pub mod answer_option {
     pub const APPROVE: &str = "Approve";
     pub const REQUEST_CHANGES: &str = "Request changes";
@@ -786,44 +736,4 @@ pub mod answer_option {
     pub const DONE: &str = "Done";
     pub const CANNOT: &str = "I can't / explain";
     pub const WRITE_THE_REASON: &str = "Write the reason";
-
-    /// The two answers a "your turn" card offers: it is done, or the user explains what stops them.
-    pub fn for_action() -> Vec<super::QuestionOption> {
-        vec![
-            super::QuestionOption { label: DONE.into(), description: None },
-            super::QuestionOption { label: CANNOT.into(), description: Some(WRITE_THE_REASON.into()) },
-        ]
-    }
-
-    const LEGACY: [(&str, &str); 5] = [
-        ("Aprobar", APPROVE),
-        ("Pedir cambios", REQUEST_CHANGES),
-        ("Permitir", ALLOW),
-        ("Denegar", DENY),
-        ("Necesito más contexto", MORE_CONTEXT),
-    ];
-
-    pub fn canonical(label: &str) -> &str {
-        LEGACY.iter().find(|(old, _)| label.trim().eq_ignore_ascii_case(old)).map_or(label, |(_, new)| new)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn legacy_spanish_labels_map_onto_the_english_ones() {
-            assert_eq!(canonical("Aprobar"), APPROVE);
-            assert_eq!(canonical("Pedir cambios"), REQUEST_CHANGES);
-            assert_eq!(canonical("Permitir"), ALLOW);
-            assert_eq!(canonical("denegar "), DENY);
-            assert_eq!(canonical("Necesito más contexto"), MORE_CONTEXT);
-        }
-
-        #[test]
-        fn english_and_free_labels_pass_through() {
-            assert_eq!(canonical(APPROVE), APPROVE);
-            assert_eq!(canonical("Merge #150"), "Merge #150");
-        }
-    }
 }

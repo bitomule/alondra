@@ -516,12 +516,11 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
 }
 
 #[test]
-fn a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows() {
+fn a_reopened_store_keeps_its_rows() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     let expected = store.load().unwrap();
-    assert!(crate::store::Store::open(&fixture.path()).is_err());
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap(), expected);

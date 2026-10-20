@@ -1,6 +1,11 @@
-"""Gives one sandbox Mac the SDK backend (tools/e2e-sandbox.sh with SDK=1).
+"""Gives one sandbox Mac the SDK backend (tools/e2e-sandbox.sh).
 
 Usage: e2e_sdk_backend.py <sandbox dir> <Mac home> <node> <persistent.cjs> <native archive>
+       e2e_sdk_backend.py --fake <sandbox dir> <Mac home> <node> <persistent.cjs> <fake claude>
+
+With --fake (every sandbox Mac by default) the native Claude is the sandbox's scripted fake
+(tools/sandbox/src/fake/native.rs): the pinned Node and the host bundle, no model, no Seatbelt and a
+synthetic HOME. Otherwise (SDK=1):
 
 Copies the pinned Node and the host bundle, extracts the pinned native Claude from its npm archive
 (size and SHA256 checked), starts the local model double, writes the Seatbelt profile the whole host
@@ -17,6 +22,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 REPO = Path(__file__).resolve().parent.parent
 # The git of the Command Line Tools itself, not the /usr/bin shim that goes through xcrun.
@@ -69,16 +75,44 @@ def profile(runtime, home, tmp, state, work, port, orchestrator):
     ]) + '\n'
 
 
-def main():
-    sandbox, mac, node, host, archive = (Path(value).resolve() for value in sys.argv[1:6])
+def runtime_of(sandbox, node, host, exist_ok):
+    """The sandbox's copies of the pinned Node and the host bundle, with Claude's HOME and TMPDIR."""
     root = sandbox / 'sdk'
     runtime, home, tmp = root / 'runtime', root / 'home', root / 'tmp'
     for folder in [runtime, home, tmp]:
-        folder.mkdir(mode=0o700, parents=True)
-    shutil.copyfile(node, runtime / 'node')
-    (runtime / 'node').chmod(0o700)
-    shutil.copyfile(host, runtime / 'persistent.cjs')
-    (runtime / 'persistent.cjs').chmod(0o400)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=exist_ok)
+    if not (runtime / 'node').exists():
+        shutil.copyfile(node, runtime / 'node')
+        (runtime / 'node').chmod(0o700)
+    if not (runtime / 'persistent.cjs').exists():
+        shutil.copyfile(host, runtime / 'persistent.cjs')
+        (runtime / 'persistent.cjs').chmod(0o400)
+    return root, runtime, home, tmp
+
+
+def fake(sandbox, mac, node, host, native):
+    _, runtime, home, tmp = runtime_of(sandbox, node, host, exist_ok=True)
+    # Short enough for the host's Unix socket: <state root>/<execution UUID>/s.
+    state = Path(tempfile.mkdtemp(prefix='as-sdk-', dir=os.path.realpath('/tmp')))
+    (mac / 'sdk-state-root').write_text(str(state))
+    synthetic = {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
+    backend = {
+        'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
+        'host': str(runtime / 'persistent.cjs'), 'host_sha256': checksum(runtime / 'persistent.cjs'),
+        'native': str(native), 'native_sha256': checksum(native),
+        'host_environment': synthetic,
+        'native_environment': dict(synthetic, PATH='/usr/bin:/bin:/usr/sbin:/sbin', TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC'),
+        'state_root': str(state), 'io_timeout_seconds': 120,
+    }
+    (mac / 'sdk-backend.json').write_text(json.dumps(backend, indent=2) + '\n')
+
+
+def main():
+    if sys.argv[1] == '--fake':
+        fake(*(Path(value).resolve() for value in sys.argv[2:7]))
+        return
+    sandbox, mac, node, host, archive = (Path(value).resolve() for value in sys.argv[1:6])
+    root, runtime, home, tmp = runtime_of(sandbox, node, host, exist_ok=False)
     native_sha256 = fixture().native_from_archive(archive, runtime / 'claude')
     model = subprocess.Popen([sys.executable, '-I', str(REPO / 'tests/native/claude/model_double.py'), str(root / 'model-requests.jsonl'), str(sandbox / 'fakes' / 'scripts')],
                              stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=open(root / 'model.log', 'ab'), start_new_session=True)

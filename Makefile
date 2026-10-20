@@ -15,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -158,11 +158,14 @@ mac:
 
 
 # MACS=n daemons in service mode with a loopback relay and a synthetic phone (tools/e2e-sandbox.sh).
-# SDK=1 FAKES=1 gives Mac 1 the Agent SDK backend with the pinned native Claude (tools/e2e_sdk_backend.py).
-SDK_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs @claude_native_test//:archive
+# Every Mac runs its tasks through the Agent SDK host with the sandbox's scripted Claude; SDK=1
+# FAKES=1 gives Mac 1 the pinned native Claude instead (tools/e2e_sdk_backend.py).
+SDK_HOST_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs
+SDK_HOST_ENV = SDK_NODE=$(call in_execroot,//agent-host:pinned_node) SDK_HOST=$(call in_execroot,//agent-host:persistent.cjs)
 e2e-sandbox:
-	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(if $(filter 1,$(SDK)),$(SDK_TARGETS))
-	$(if $(filter 1,$(SDK)),SDK_NODE=$(call in_execroot,//agent-host:pinned_node) SDK_HOST=$(call in_execroot,//agent-host:persistent.cjs) SDK_ARCHIVE=$(call in_execroot,@claude_native_test//:archive)) \
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS) \
+		$(if $(filter 1,$(SDK)),@claude_native_test//:archive)
+	$(SDK_HOST_ENV) $(if $(filter 1,$(SDK)),SDK_ARCHIVE=$(call in_execroot,@claude_native_test//:archive)) \
 	tools/e2e-sandbox.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
@@ -202,8 +205,8 @@ e2e-wizard:
 # A document reviewed in the real TUI (inside tmux) against its own sandbox: the node gets the
 # comments and the TUI says they were sent (tools/e2e-doc-review.py). E2E_CAPTURES=<dir> keeps the screens.
 e2e-doc-review:
-	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	tools/e2e-doc-review.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
+	$(SDK_HOST_ENV) tools/e2e-doc-review.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # Every kind of card answered from one client against its own sandbox: each leaves at once and never
@@ -271,11 +274,11 @@ e2e-ios-cards:
 	bazelisk build $(E2E_IOS_APP)
 	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); $(call E2E_CARDS,ios)
 
-# «Allow always» with the real Claude Code (HOME in a temporary folder, a local server as the model)
+# «Allow always» on the permission cards of the sandbox's scripted nodes, through the Agent SDK host,
 # against its own sandbox: the cases of docs/permitir-siempre-design.md §9.4 (tools/e2e_allow_always.py).
 e2e-allow-always:
-	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	python3 tools/e2e_allow_always.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
+	$(SDK_HOST_ENV) python3 tools/e2e_allow_always.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # The iOS app loses its Mac with the app open (daemon frozen) and finds it again by itself, and at
@@ -306,8 +309,8 @@ e2e-journeys:
 # The tester agent drives each Mac's TUI in tmux and writes a report (tools/e2e-explore.sh):
 # MODEL (opus), BUDGET (USD, 5), FOCUS (extra instructions). Prints where the report is.
 e2e-explore:
-	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	tools/e2e-explore.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
+	$(SDK_HOST_ENV) tools/e2e-explore.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
 		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
@@ -315,29 +318,17 @@ e2e-sandbox-logs:
 	@dir=$${SANDBOX_DIR:-/tmp/alondra-sandbox}; \
 	if [ "$(MAC)" = relay ]; then tail -f $$dir/relay.log; else tail -f $$dir/mac-$${MAC:-1}/alondrad.log; fi
 
-# Full cutover rehearsal on a read-only snapshot of the live HOME; keeps only the report.
-# REHEARSAL_ROOT, LIVE_HOME and LEGACY override the defaults (tools/rehearse-cutover.sh).
-rehearse-cutover:
-	bazelisk build //crates/alondrad
-	tools/rehearse-cutover.sh $(call exe,//crates/alondrad)
-
 # The previous published release must restart into this build on copies of the live HOME, and its
 # claude --bg nodes move to the Agent SDK with their sessions, also with the daemon killed after each
-# step (deploy/brew/upgrade-rehearsal.py; the release runs it on the signed archive). Bazel stamps
-# 0.1.0, so the build replaces the newest published release unless FROM=version names another.
+# step (deploy/brew/upgrade-rehearsal.py; the release runs it on the signed archive). FROM=version
+# names the release to upgrade from; by default the newest published one.
 REHEARSAL_TARGETS = //crates/alondrad //crates/alondrad:alondrad-launcher //crates/alondra //tools/sandbox:alondra-sandbox \
-	//agent-host:pinned_node //agent-host:persistent.cjs
+	//agent-host:release_host
 upgrade-rehearsal:
 	bazelisk build $(REHEARSAL_TARGETS)
 	python3 deploy/brew/upgrade-rehearsal.py --new $(call exe,//crates/alondrad) --cli $(call exe,//crates/alondra) \
-		--sdk-node $(call in_execroot,//agent-host:pinned_node) --sdk-host $(call exe,//agent-host:persistent.cjs) \
+		--host $$(bazelisk cquery --output=files //agent-host:release_host 2>/dev/null | grep 'alondra-host$$') \
 		--sdk-fixtures agent-host --sandbox-tool $(call exe,//tools/sandbox:alondra-sandbox) --from $(or $(FROM),latest)
-
-# The one-command cutover of the live HOME to domain v2 (docs/domain-v2-live-cutover.md).
-# BACKUP_ROOT, LEGACY_DAEMON and LEGACY_CLI override the defaults (tools/cutover-live.sh).
-cutover-live:
-	bazelisk build //crates/alondrad
-	tools/cutover-live.sh $(call exe,//crates/alondrad)
 
 # Where each view's time and CPU go on a copy of a real domain:
 # sqlite3 -readonly ~/.alondra/domain.db ".backup /path/copy.db" && make views-measure DB=/path/copy.db

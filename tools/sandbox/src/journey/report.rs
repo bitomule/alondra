@@ -125,7 +125,7 @@ impl Report {
         self.write()?;
         let fakes_out = self.out.join("fakes");
         fs::create_dir_all(&fakes_out)?;
-        for name in ["calls.jsonl", "orchestrator/actions.jsonl", "github/prs.json"] {
+        for name in ["calls.jsonl", "orchestrator/actions.jsonl", "orchestrator/batches.jsonl", "github/prs.json"] {
             let from = fakes.dir.join(name);
             if from.exists() {
                 fs::copy(&from, fakes_out.join(name.replace('/', "-")))?;
@@ -138,6 +138,9 @@ impl Report {
                     fs::copy(dir.join(name), fakes_out.join(format!("node-{}-{name}", node.short)))?;
                 }
             }
+        }
+        for (name, from) in fakes.session_files()? {
+            fs::copy(from, fakes_out.join(name))?;
         }
         let failed: Vec<&str> = self.cases.iter().filter(|case| !case.ok).map(|case| case.id.as_str()).collect();
         if failed.is_empty() {

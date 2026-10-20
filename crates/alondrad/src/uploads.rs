@@ -3,17 +3,13 @@
 //! after attaching. A node receives the copy's absolute path and opens it with its Read tool,
 //! which shows it images and PDFs as well as text.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use alondra_core::Attachment;
 use sha2::{Digest, Sha256};
 
 pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
-
-/// A file uploaded and never sent (a draft given up on) is dropped after this long.
-pub const UNSENT_GRACE: Duration = Duration::from_secs(24 * 3600);
 
 const ID_LEN: usize = 16;
 
@@ -24,11 +20,6 @@ const CONVERTIBLE_EXTENSIONS: [&str; 5] = ["heic", "heif", "tif", "tiff", "bmp"]
 
 pub fn uploads_dir(home: &Path) -> PathBuf {
     home.join("files").join("uploads")
-}
-
-/// Messages too long to type into a node's terminal, each stored whole in its own folder.
-pub fn messages_dir(home: &Path) -> PathBuf {
-    home.join("files").join("messages")
 }
 
 fn extension(name: &str) -> String {
@@ -152,32 +143,6 @@ pub fn delivery_note(_user: &str, attachments: &[Attachment]) -> String {
     format!("\n\nAttached files: {}", files.join("; "))
 }
 
-/// Removes attachment directories nothing refers to any more: an item's files stay while the
-/// item is kept, and go once retention drops it. Directories younger than `grace` are kept
-/// even unreferenced, which covers an upload not sent yet and a node's copy made just before
-/// its question or report is recorded.
-pub fn sweep(home: &Path, referenced: &HashSet<PathBuf>, grace: Duration) -> usize {
-    let files = home.join("files");
-    let now = SystemTime::now();
-    let old = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).is_ok_and(|t| now.duration_since(t).unwrap_or_default() > grace);
-    let holds_a_reference = |dir: &Path| referenced.iter().any(|r| r.starts_with(dir));
-    let node_dirs = std::fs::read_dir(&files).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).filter(|p| {
-        p.file_name().is_some_and(|n| {
-            let n = n.to_string_lossy();
-            n.starts_with("q-") || n.starts_with("r-")
-        })
-    });
-    let uploads = std::fs::read_dir(uploads_dir(home)).into_iter().flatten().filter_map(Result::ok).map(|e| e.path());
-    let messages = std::fs::read_dir(messages_dir(home)).into_iter().flatten().filter_map(Result::ok).map(|e| e.path());
-    let mut removed = 0;
-    for dir in node_dirs.chain(uploads).chain(messages).filter(|p| p.is_dir()) {
-        if !holds_a_reference(&dir) && old(&dir) && std::fs::remove_dir_all(&dir).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,23 +219,6 @@ mod tests {
         let (_, a) = store(&home, "IMG_0001.HEIC", &std::fs::read(home.join("IMG_0001.HEIC")).unwrap()).unwrap();
         assert_eq!(a.name, "IMG_0001.jpg");
         assert!(is_image(&a.name));
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn retention_removes_only_old_files_nothing_refers_to() {
-        let home = home("sweep");
-        let (_, kept) = store(&home, "kept.png", b"k").unwrap();
-        let (_, dropped) = store(&home, "dropped.png", b"d").unwrap();
-        let node_copy = home.join("files").join("q-1").join("plan.md");
-        std::fs::create_dir_all(node_copy.parent().unwrap()).unwrap();
-        std::fs::write(&node_copy, b"p").unwrap();
-        let referenced: HashSet<PathBuf> = [PathBuf::from(kept.stored_path.clone().unwrap())].into();
-        assert_eq!(sweep(&home, &referenced, Duration::from_secs(3600)), 0, "young files are kept");
-        assert_eq!(sweep(&home, &referenced, Duration::ZERO), 2);
-        assert!(Path::new(kept.stored_path.as_ref().unwrap()).exists());
-        assert!(!Path::new(dropped.stored_path.as_ref().unwrap()).exists());
-        assert!(!node_copy.exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 }

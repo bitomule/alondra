@@ -14,7 +14,7 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control, native_exited};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -51,6 +51,9 @@ fn receipt(handoff: Handoff) -> DispatchReceipt {
     }
 }
 
+/// Why nothing starts on a daemon without an SDK backend, which only a broken install has.
+pub(crate) const NO_HOST: &str = "this Alondra has no Agent SDK host, so no task or orchestrator batch starts: reinstall Alondra (`brew reinstall alondra`)";
+
 /// Whether `agent` holds the current execution of a task that runs through the SDK.
 pub(crate) fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
     state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
@@ -71,6 +74,8 @@ pub(crate) struct Launch {
     /// Alondra's node plugin: its MCP server is how the task reaches Alondra.
     pub(crate) plugin: PathBuf,
     pub(crate) options: LaunchOptions,
+    /// The model the launch chose, recorded on the task when its execution is admitted.
+    pub(crate) model: Option<TaskModel>,
 }
 
 /// What the task's Claude is launched with besides its prompt: the model and effort the launch
@@ -176,6 +181,7 @@ pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 }
 
 fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
+    let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
@@ -209,6 +215,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         conversation: format!("sdk-conversation-{suffix}"),
         instance: agent.0.clone(),
         host: HOST.into(),
+        model: launch.model.clone(),
     });
     let (first, _) = domain
         .own(scope.clone(), |owner| {
@@ -262,7 +269,7 @@ fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>) -> Result<P
 /// start, with the reason. It never falls back to `claude --bg`.
 pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<serde_json::Value, DomainError> {
     let Some((backend, runtime)) = domain.sdk() else {
-        return Err(DomainError::new("unavailable", "this daemon has no SDK backend"));
+        return Err(DomainError::new("unavailable", NO_HOST));
     };
     let backend = backend.clone();
     let task = launch.task.clone();
@@ -291,6 +298,7 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
 /// admitting it never started (its folder holds no host): the launch it never sent goes now, with
 /// a new owner generation.
 pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: &std::path::Path) -> Result<Driver, Failed> {
+    let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
@@ -340,6 +348,7 @@ pub(crate) fn end_stopped_host(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 }
 
 fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool) -> Result<Option<Driver>, Failed> {
+    let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
@@ -600,7 +609,7 @@ impl Driver {
         let input = permit.input().clone();
         match self.domain.own(self.scope.clone(), |owner| owner.claim(permit)) {
             Ok(_) => {}
-            Err(StoreError::Storage(error)) if stale(&error) => return Ok(()),
+            Err(StoreError::Storage(error)) if stale(&error) || out_of_turn(&error) => return Ok(()),
             Err(error) => return Err(failed("claiming the dispatch")(error)),
         }
         let attempt = self.sealed().attempts.pop().ok_or_else(|| Failed("the claim issued no attempt".into()))?;
@@ -634,12 +643,15 @@ impl Driver {
                 self.host_closed = true;
                 return Err(Failed("the SDK host closed".into()));
             }
-            Err(error) if self.worker.host_exited() => {
+            Err(error) => {
                 self.host_closed = true;
-                return Err(Failed(format!("the SDK host exited: {error:?}")));
+                return Err(Failed(format!("the connection to the SDK host failed: {error:?}")));
             }
-            Err(error) => return Err(adapter("reading the SDK host")(error)),
         };
+        if native_exited(&batch) {
+            self.host_closed = true;
+            return Err(Failed("the SDK host's Claude exited".into()));
+        }
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let binding = self.worker.binding().clone();
         let (worker, home) = (&self.worker, self.domain.home());
@@ -655,6 +667,12 @@ impl Driver {
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
         }
         Ok(acceptance)
+    }
+
+    /// Whether the node is paused: what it is told waits for the user to resume it, or for their own
+    /// words, which end the pause.
+    fn paused(&self) -> bool {
+        matches!(self.domain.read().state().node_phase(&self.agent), Some(NodePhase::Paused(pause)) if !pause.released)
     }
 
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
@@ -675,15 +693,16 @@ impl Driver {
             || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
     }
 
-    /// One step: send a waiting control first, then a waiting dispatch, else read the host when
-    /// the lifecycle waits for it and the host has something, else wait for what the store
-    /// issues for this task.
+    /// One step: send a waiting control first, then a waiting dispatch unless a pause holds it,
+    /// else read the host when the lifecycle waits for it and the host has something, else wait
+    /// for what the store issues for this task.
     pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
         self.sealed();
         if let Some(permit) = self.controls.pop_front() {
             return self.control(permit);
         }
-        if let Some(permit) = self.permits.pop_front() {
+        let paused = self.paused();
+        if !paused && let Some(permit) = self.permits.pop_front() {
             return self.dispatch(permit);
         }
         if self.expects_host()? {
@@ -692,7 +711,7 @@ impl Driver {
             }
             return self.observe().map(drop);
         }
-        let sealed = self.domain.seals.wait(&self.task, stopped);
+        let sealed = self.domain.seals.wait(&self.task, || stopped() || paused && !self.paused());
         self.permits.extend(sealed.permits);
         self.controls.extend(sealed.control_permits);
         Ok(())
@@ -790,10 +809,18 @@ impl Driver {
     }
 
     /// Whether the owner should put a host that resumes the session in place of its own: its host
-    /// closed, and it was not itself a replacement handed nothing yet, which would only end again.
+    /// closed or its connection to it failed, which a host that is dying shows before its exit, and
+    /// it was not itself a replacement handed nothing yet, which would only end again. The
+    /// replacement stops what is left of the host and waits for its exit before it reads the host's
+    /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
         self.host_closed && !self.replacement
     }
+}
+
+/// Another input goes to the host first: the store issues this one's permit again once it may.
+fn out_of_turn(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::OfferOrder))
 }
 
 fn stale(error: &anyhow::Error) -> bool {

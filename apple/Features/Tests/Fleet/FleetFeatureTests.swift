@@ -44,7 +44,23 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(node.pending, 0)
         XCTAssertNil(node.activity, "what it does or said is on the node's screen")
         XCTAssertEqual(node.link, .view(key: "node:d887a34b-249e-4487-a89b-57de38c26372"))
-        XCTAssertTrue(node.close?.id?.hasPrefix("close:") == true)
+        XCTAssertNil(node.close, "a node ends with its task")
+    }
+
+    /// Fleet as a Mac with an earlier daemon sends it, whose first node still offers Close Node.
+    private func fleetWithClose() throws -> ViewDocument {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(Fixtures.document("fleet-ios"))) as? [String: Any])
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+        let close: [String: Any] = [
+            "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6", "label": "Close Node", "style": "destructive",
+            "presentation": "button", "input": ["kind": "none"], "attachments": false,
+            "confirm": ["title": "Close Node", "message": "Close this node?", "button": "Close Node"], "enabled": true,
+        ]
+        items[0]["actions"] = (items[0]["actions"] as? [[String: Any]] ?? []) + [close]
+        sections[0]["items"] = items
+        object["sections"] = sections
+        return try JSONDecoder().decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
     func testTheFleetListsOnlyNodesWithoutThePaceOrTheLimit() throws {
@@ -142,10 +158,10 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.search?.key, .search("ios"))
     }
 
-    func testClosingANodeAsksForConfirmationAndThenSendsTheCloseAction() async throws {
+    func testClosingANodeOfAnEarlierDaemonAsksForConfirmationAndThenSendsTheCloseAction() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        await store.send(.screen(.loaded(try fleetWithClose())))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close)
 
         await store.send(.perform(close))
@@ -174,7 +190,7 @@ final class FleetFeatureTests: XCTestCase {
     func testAClosedNodeLeavesTheListAtOnceAndAStaleListCannotBringItBack() async throws {
         let gate = Gate()
         let store = gated(gate, reply: #"{"protocol":1,"outcome":"applied","message":"Closed"}"#)
-        let fleet = try Fixtures.document("fleet-ios")
+        let fleet = try fleetWithClose()
         await store.send(.screen(.loaded(fleet)))
         let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
 
@@ -197,7 +213,7 @@ final class FleetFeatureTests: XCTestCase {
     func testAFailedCloseBringsTheNodeBack() async throws {
         let gate = Gate()
         let store = gated(gate, reply: #"{"protocol":1,"outcome":"rejected","message":"It is working"}"#)
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        await store.send(.screen(.loaded(try fleetWithClose())))
         let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
 
         await store.send(.perform(try XCTUnwrap(node.close)))
@@ -213,7 +229,7 @@ final class FleetFeatureTests: XCTestCase {
 
     func testANodeClosedFromItsScreenLeavesTheListUntilTheAppSettlesIt() async throws {
         let store = store()
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        await store.send(.screen(.loaded(try fleetWithClose())))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close?.id)
         let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: close)
 
@@ -241,7 +257,7 @@ final class FleetFeatureTests: XCTestCase {
         await store.send(.screen(.loaded(document)))
         let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
         let action = try XCTUnwrap(node.interrupt)
-        XCTAssertEqual(node.close?.id?.hasPrefix("close:"), true)
+        XCTAssertNil(node.close)
 
         await store.send(.perform(action))
         await store.skipReceivedActions()
@@ -260,7 +276,7 @@ final class FleetFeatureTests: XCTestCase {
 
     func testARefusedCloseReportsTheReasonForTheAlert() async throws {
         let store = store(reply: #"{"protocol":1,"outcome":"rejected","message":"It is working"}"#)
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        await store.send(.screen(.loaded(try fleetWithClose())))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close)
 
         await store.send(.perform(close))

@@ -354,7 +354,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    struct Fixture { root: crate::test_support::Directory, home: std::path::PathBuf, domain: DomainRuntime }
+    struct Fixture { root: crate::test_support::Directory, home: std::path::PathBuf, domain: std::sync::Arc<DomainRuntime> }
     impl Fixture {
         fn new() -> Self {
             let root = crate::test_support::Directory::new();
@@ -363,7 +363,7 @@ mod tests {
             fs::create_dir_all(&home).unwrap();
             fs::create_dir(&projects).unwrap();
             fs::write(options::path_in(&home), format!("projects_root = {:?}\n", projects.to_str().unwrap())).unwrap();
-            let domain = DomainRuntime::open(&home).unwrap();
+            let domain = std::sync::Arc::new(DomainRuntime::open(&home).unwrap());
             Self { root, home, domain }
         }
         fn draft() -> Value {
@@ -375,15 +375,6 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) { fs::remove_dir_all(&self.root).unwrap(); }
-    }
-
-    struct FakeClaude;
-    impl crate::orchestrate::Launcher for FakeClaude {
-        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-            Ok("backgrounded · ab1234 · scheduled/manual".into())
-        }
-        async fn stop(&self, _: &str) {}
-        fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
     }
 
     /// The repository is inside the projects folder, so saving the Schedule trusts it in Claude
@@ -414,9 +405,10 @@ mod tests {
         assert_eq!(accepted(), true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn encrypted_crud_and_manual_run_replay_original_receipts() {
         let fixture = Fixture::new();
+        let _sdk = crate::sdk_owner::tests::SdkLaunches::enable(&fixture.domain, &fixture.home);
         let draft = Fixture::draft();
         let digest = [7u8; 32];
         let create = || encrypted_mutation(&fixture.domain, &fixture.home, "phone",
@@ -447,8 +439,7 @@ mod tests {
         let detail = read(&fixture.domain, &path);
         assert_eq!(detail["body"]["schedule"]["status"], "launching");
         assert_eq!(detail["body"]["schedule"]["revision"], 2);
-        fixture.domain.live.mods.loaded_for("ab1234cd-0000-4000-8000-000000000000", Some(run_id));
-        crate::domain_schedule_runner::run_cycle(&fixture.domain, &fixture.home, false, &FakeClaude).await.unwrap();
+        crate::domain_schedule_runner::run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let finished = fixture.domain.state().unwrap();
         assert_eq!(finished.schedule.runs[&d::ScheduleRunId(run_id.into())].state, d::ScheduleRunState::Sent);
         assert_eq!(read(&fixture.domain, &path)["body"]["schedule"]["status"], "sent");
@@ -489,8 +480,7 @@ mod tests {
         assert_eq!(encrypted_mutation(&restarted, &fixture.home, "phone",
             "POST", &path, None, ("phone", "manual-disabled", &[12u8; 32]), || Ok(())), run);
         assert_eq!(restarted.state().unwrap().schedule.runs.len(), 1);
-        let launcher = FakeClaude;
-        crate::domain_schedule_runner::run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        crate::domain_schedule_runner::run_cycle(&restarted, &fixture.home, false).await.unwrap();
         assert!(restarted.state().unwrap().requests.is_empty());
     }
 

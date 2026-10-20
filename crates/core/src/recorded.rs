@@ -30,6 +30,15 @@ const CTRL_TRIVIAL_SID: &str = "128f3fa5-71f3-4376-8948-6ee1cf147c22";
 
 const MINUTE: Millis = 60_000;
 
+/// Whether time alone has changed what some node shows, so a sweep at `now` records an
+/// `Event::Clock`.
+fn due(view: &View, now: Millis) -> bool {
+    view.nodes.values().any(|n| {
+        let o = states::evaluate_with(view, n, now, states::Trigger::Clock, false);
+        o.state != n.state || o.status != n.status || o.orchestrator != n.orchestrator_state || o.drop_tool
+    })
+}
+
 fn records(fixture: &str) -> Vec<Recorded> {
     fixture.lines().map(|l| serde_json::from_str(l).expect("fixture line")).collect()
 }
@@ -52,7 +61,7 @@ fn replay(fixture: &str, sid: &str) -> (View, Vec<(u64, Millis, NodeState)>) {
         if let Some(mut t) = last_at {
             while t + MINUTE < r.at {
                 t += MINUTE;
-                if view.due(t, false) {
+                if due(&view, t) {
                     view.apply(seq, t, &Event::Clock { machine_strained: false });
                     record(&view, seq, t, &mut states);
                 }

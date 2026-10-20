@@ -375,32 +375,23 @@ struct DroppingSessions {
     domain: Arc<crate::domain_runtime::DomainRuntime>,
     session: String,
     connection: u64,
-    respawned: std::sync::Mutex<Vec<String>>,
+    /// Whether the revival could take the session each time it looked at it while it was removed.
+    free_to_revive: std::sync::Mutex<Vec<bool>>,
 }
 
-const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing {
-    grace: std::time::Duration::from_millis(10), settle: std::time::Duration::from_millis(10),
-    pauses: [std::time::Duration::from_millis(1), std::time::Duration::from_millis(1)],
-};
-
-impl crate::orchestrate::Launcher for DroppingSessions {
-    async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-        unreachable!("a revival never launches")
-    }
-    async fn stop(&self, _: &str) {}
-    async fn respawn(&self, short: &str) -> Result<(), String> {
-        self.respawned.lock().unwrap().push(short.into());
-        self.domain.connect_node(serde_json::from_value(json!({"session_id": self.session, "version": "2.1.287"})).unwrap(), 2);
-        Ok(())
-    }
-}
+const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing { grace: std::time::Duration::from_millis(10) };
 
 impl Sessions for DroppingSessions {
     fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
         Box::pin(async move {
             if args[0] == "rm" {
                 self.domain.live.mods.disconnect(&self.session, self.connection);
-                crate::node_revival::revive(&self.domain, &self.session, self, &REVIVAL).await;
+                let free = self.domain.live.begin_watch(&self.session);
+                if free {
+                    self.domain.live.end_watch(&self.session);
+                }
+                self.free_to_revive.lock().unwrap().push(free);
+                crate::node_revival::revive(&self.domain, &self.session, &REVIVAL).await;
             }
             self.inner.claude(args).await
         })
@@ -497,16 +488,16 @@ async fn a_node_closed_with_alondra_close_is_never_revived_while_or_after_it_is_
     let connection = fixture.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), 1);
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     let sessions = Arc::new(DroppingSessions { inner: FakeSessions::listing(&[&short]), domain: fixture.domain.clone(),
-        session: "agent-a".into(), connection, respawned: Default::default() });
+        session: "agent-a".into(), connection, free_to_revive: Default::default() });
     fixture.client.use_sessions(sessions.clone());
     assert!(fixture.domain.state().unwrap().tasks.values().any(|task| task.agent_id == Some("agent-a".into()) && !task.state.terminal()),
         "the node has an open task, which is what the revival restarts for");
 
     let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
-    assert!(sessions.respawned.lock().unwrap().is_empty(), "the revival left the session being closed alone");
-    crate::node_revival::revive(&fixture.domain, "agent-a", sessions.as_ref(), &REVIVAL).await;
-    assert!(sessions.respawned.lock().unwrap().is_empty(), "and never brings it back afterwards");
+    assert_eq!(*sessions.free_to_revive.lock().unwrap(), [false], "the revival left the session being closed alone");
+    crate::node_revival::revive(&fixture.domain, "agent-a", &REVIVAL).await;
+    assert!(!crate::node_revival::needed(&fixture.domain, "agent-a"), "and never brings it back afterwards");
 }
 
 #[tokio::test]
@@ -523,6 +514,37 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
     assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].phase.holds_slot());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_with_its_task() {
+    let fixture = Fixture::start().await;
+    let sdk = crate::sdk_owner::tests::SdkLaunches::enable(&fixture.domain, &fixture.home);
+    let worktree = fixture.home.join("worktree");
+    std::fs::create_dir(&worktree).unwrap();
+    fixture.user("request-sdk", Command::CreateRequest { request_id: "request-sdk".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
+    fixture.orchestrator("task-sdk", Command::CreateTask { plan_items: None,
+        task_id: "task-sdk".into(), request_id: "request-sdk".into(), title: "Write the release notes".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())),
+    });
+    let launched = crate::sdk_owner::launch(&fixture.domain, crate::sdk_owner::Launch {
+        task: "task-sdk".into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
+        prompt: "Write the release notes".into(), plugin: "/synthetic/plugin".into(), options: Default::default(),
+        model: None,
+    }).await.unwrap();
+    let agent = AgentId::from(launched["agent_id"].as_str().unwrap());
+    sdk.until_answered("task-sdk").await;
+    let sessions = FakeSessions::listing(&[]);
+    fixture.client.use_sessions(sessions.clone());
+
+    let (status, answer) = fixture.local_send(&format!("/agents/{}/close", agent.0), &json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert_eq!(answer["code"], "close_refused", "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("ends with its task"), "{answer}");
+    assert!(sessions.calls.lock().unwrap().is_empty(), "claude is never asked about an SDK node");
+    assert!(fixture.domain.owns_sdk_host(&agent), "its host goes on with the task");
+    assert_eq!(fixture.domain.state().unwrap().tasks[&"task-sdk".into()].agent_id, Some(agent));
 }
 
 #[tokio::test]
@@ -791,13 +813,11 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     assert_eq!(batch.len(), 1, "{pending:?}");
     assert!(batch[0].message.contains("request-1"), "{}", batch[0].message);
 
-    let root = fixture.home.join("stub");
-    std::fs::create_dir_all(&root).unwrap();
-    let (claude_home, executable) = crate::domain_orchestrator::stub_claude(&root, crate::domain_orchestrator::STUB_SUCCESS);
-    let executor = crate::domain_orchestrator::Executor { domain: fixture.domain.clone(), home: fixture.home.to_path_buf(), claude_home, executable };
-    let ownership = crate::orchestrator_process::Ownership::acquire(&fixture.home.join("runtime/orchestrator")).unwrap().unwrap();
-    executor.tick(&ownership).await.unwrap();
-    let prompt = std::fs::read_to_string(fixture.home.join("runtime/orchestrator/received-prompt")).unwrap();
+    let root = crate::test_support::Directory::new();
+    std::fs::create_dir(&root).unwrap();
+    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf());
+    orchestrator.tick().await;
+    let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("request request-1: Make the editor readable"), "{prompt}");
     assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter()
         .filter(|m| m.recipient_kind == "orchestrator")
@@ -1141,28 +1161,10 @@ fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64])
 /// 13 October: quill's (1d6d53c5) session ended and its restart waited at the fleet gate for
 /// memory ("waits at the fleet gate to come back: Pressure(Warning)", every 30 s), while its task
 /// and its screen said «Reconectando». A lost node held by the gate waits for the machine, queued
-/// with what holds it; «Reconectando» only once the gate lets it back and the restart runs.
+/// with what holds it, and is brought back only once the gate lets it.
 #[tokio::test]
-async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_reconnects_only_once_admitted() {
+async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_back_only_once_admitted() {
     use alondra_core::{MemoryPressure, domain::NodeEvent, domain::NodePhase};
-    struct Claude {
-        domain: Arc<DomainRuntime>,
-        go: tokio::sync::Notify,
-        asked: std::sync::atomic::AtomicUsize,
-    }
-    impl crate::orchestrate::Launcher for Claude {
-        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-            unreachable!("bringing a session back launches nothing new")
-        }
-        async fn stop(&self, _: &str) {}
-        async fn respawn(&self, _: &str) -> Result<(), String> {
-            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.go.notified().await;
-            let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-            self.domain.connect_node(hello, alondra_core::now_millis());
-            Ok(())
-        }
-    }
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
@@ -1175,11 +1177,10 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_reconne
     let now = alondra_core::now_millis();
     memory(&fixture, MemoryPressure::Warning, &[now - 120_000, now - 90_000, now - 61_000]);
 
-    let claude = Arc::new(Claude { domain: fixture.domain.clone(), go: tokio::sync::Notify::new(), asked: Default::default() });
-    let timing = crate::node_revival::Timing { grace: Duration::from_millis(30), settle: Duration::from_secs(5), pauses: [Duration::from_millis(5); 2] };
+    let timing = crate::node_revival::Timing { grace: Duration::from_millis(30) };
     let revival = tokio::spawn({
-        let (domain, claude) = (fixture.domain.clone(), claude.clone());
-        async move { crate::node_revival::revive(&domain, "agent-a", &*claude, &timing).await }
+        let domain = fixture.domain.clone();
+        async move { crate::node_revival::revive(&domain, "agent-a", &timing).await }
     });
     let queued = || fixture.domain.live.gate.live(&fixture.domain, alondra_core::now_millis()).unwrap().queued;
     for _ in 0..500 {
@@ -1189,25 +1190,15 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_reconne
     assert!(queued().iter().any(|queued| queued.task_id == "task-1"), "its restart waits at the gate");
     let phase = || fixture.domain.state().unwrap().agents[&agent].phase.clone();
     assert_eq!(phase(), NodePhase::Lost);
-    assert_eq!(claude.asked.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing restarts it while the Mac has no room");
+    assert!(!revival.is_finished(), "nothing brings it back while the Mac has no room");
     assert_eq!(node_shown(&fixture, "agent-a", "es").await[0].0, "Esperando máquina");
     let held = view_json(&fixture, "tasks", "es").await.to_string();
     assert!(held.contains("En cola · 1.º de 1") && held.contains("El Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
 
     memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
-    crate::fleet_gate::pass(&fixture.domain, &fixture.home, &*claude).await.unwrap();
-    for _ in 0..500 {
-        if claude.asked.load(std::sync::atomic::Ordering::SeqCst) > 0 { break; }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(phase(), NodePhase::Starting { reviving: true, idle_since: None }, "the gate let it back, and its slot counts");
-    assert_eq!(node_shown(&fixture, "agent-a", "es").await[0].0, "Reconectando");
-    let admitted = view_json(&fixture, "tasks", "es").await.to_string();
-    assert!(admitted.contains("Reconectando") && !admitted.contains("En cola"), "{admitted}");
-
-    claude.go.notify_one();
+    crate::fleet_gate::pass(&fixture.domain, &fixture.home).await.unwrap();
     revival.await.unwrap();
-    assert!(fixture.domain.live.mods.connected("agent-a"), "the restarted session connected back");
+    assert!(!queued().iter().any(|queued| queued.task_id == "task-1"), "the gate let it back");
 }
 
 #[tokio::test]

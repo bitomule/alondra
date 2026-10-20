@@ -2,147 +2,13 @@
 //! a fake native Claude that answers each prompt as its marker says. A held turn waits on a FIFO
 //! the test writes, never on a clock.
 use super::*;
-use crate::domain_orchestrator::{Executor, Failure, Run, Runtime, load, save, stub_claude};
-use crate::domain_runtime::DomainRuntime;
-use crate::orchestrator_process::Ownership;
-use crate::test_support::Directory;
+use crate::domain_orchestrator::testing::{Fixture, fixture};
+use crate::domain_orchestrator::{Failure, Run, Runtime, load, save};
 use alondra_core::domain::*;
 use alondra_core::orchestrator_cards::{UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
 use alondra_provider_contract::Handoff;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-
-fn runfile(name: &str) -> PathBuf {
-    std::fs::canonicalize(std::env::var(name).unwrap_or_else(|_| panic!("{name} names a runfile"))).unwrap()
-}
-
-struct Fixture {
-    root: Directory,
-    _state: Directory,
-    executor: Executor,
-    ownership: Ownership,
-    capture: PathBuf,
-    held: PathBuf,
-    release: PathBuf,
-    claude_home: PathBuf,
-}
-
-fn fifo(path: &Path) {
-    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(path).status().unwrap().success());
-}
-
-fn fixture() -> Fixture {
-    let root = Directory::new();
-    std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-    let home = root.join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    let (claude_home, executable) = stub_claude(&root, "exit 97");
-    let native = root.join("native");
-    std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &native).unwrap();
-    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let (capture, held, release) = (root.join("capture.json"), root.join("held"), root.join("release"));
-    fifo(&held);
-    fifo(&release);
-    let environment = BTreeMap::from([("HOME".to_owned(), root.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
-    let mut native_environment = environment.clone();
-    for (name, path) in [("FIXTURE_CAPTURE", &capture), ("FIXTURE_HELD", &held), ("FIXTURE_RELEASE", &release)] {
-        native_environment.insert(name.into(), path.to_str().unwrap().into());
-    }
-    let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
-    let state = Directory::for_unix_socket();
-    let backend = SdkBackend {
-        node_sha256: crate::sdk_owner::backend::digest(&node).unwrap(),
-        host_sha256: crate::sdk_owner::backend::digest(&host).unwrap(),
-        native_sha256: crate::sdk_owner::backend::digest(&native).unwrap(),
-        node,
-        host,
-        native,
-        host_environment: environment,
-        native_environment,
-        confinement: None,
-        state_root: state.join("h"),
-        io_timeout_seconds: 30,
-    };
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-    domain.enable_sdk(backend);
-    let ownership = Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
-    Fixture { root, _state: state, executor: Executor { domain, home, claude_home: claude_home.clone(), executable }, ownership, capture, held, release, claude_home }
-}
-
-impl Fixture {
-    fn domain(&self) -> &DomainRuntime {
-        &self.executor.domain
-    }
-    fn run(&self, actor: Actor, id: &str, command: Command) {
-        let state = self.domain().state().unwrap();
-        self.domain().execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-            command_id: id.into(), expected_revision: state.revision, command,
-        }, None, || Ok(())).unwrap();
-    }
-    /// A node working on task `t` asks the orchestrator `body`: one orchestrator inbox message.
-    fn ask(&self, n: u32, body: &str) {
-        if self.domain().state().unwrap().tasks.is_empty() {
-            self.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
-            self.run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
-                task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
-                review_prs: false, dependencies: BTreeSet::new(), stack: None,
-                launch: Some(LaunchPlan::new("node", "/tmp")),
-            });
-        }
-        self.run(Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
-            attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::Orchestrator, body: body.into(), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None }],
-            card: CardSpec::derived(CardKind::Provide, "Answer the question"),
-        });
-    }
-    /// A message from the user: once the orchestrator handled it, `settle` closes it.
-    fn tell(&self, id: &str, body: &str) {
-        self.run(Actor::User { user_id: "u".into() }, id, Command::CreateRequest { request_id: id.into(), body: body.into(), auto_merge: false, maintenance: false, message: true });
-    }
-    fn prompts(&self) -> Vec<String> {
-        match std::fs::read_to_string(format!("{}.prompts", self.capture.display())) {
-            Ok(text) => text.lines().map(|line| serde_json::from_str(line).unwrap()).collect(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
-            Err(error) => panic!("{error}"),
-        }
-    }
-    fn arguments(&self) -> Vec<String> {
-        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.capture).unwrap()).unwrap();
-        serde_json::from_value(capture["args"].clone()).unwrap()
-    }
-    fn pending(&self) -> usize {
-        self.domain().store.lock().unwrap().pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").count()
-    }
-    fn attempts(&self) -> Vec<String> {
-        self.domain().store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
-            .filter(|i| i.recipient_kind == "orchestrator").map(|i| i.state).collect()
-    }
-    fn cards(&self, prefix: &str) -> Vec<String> {
-        self.domain().state().unwrap().interactions.keys().filter(|id| id.0.starts_with(prefix)).map(|id| id.0.clone()).collect()
-    }
-    fn unresolved(&self) -> Vec<String> {
-        let state = self.domain().state().unwrap();
-        let requests: Vec<RequestId> = state.requests.keys().cloned().collect();
-        let suggestions: Vec<InteractionId> = state.interactions.keys().cloned().collect();
-        crate::orchestrator_inbox::unresolved(&state, &requests, &suggestions)
-    }
-    async fn tick(&self) {
-        self.executor.tick(&self.ownership).await.unwrap();
-    }
-    /// Blocks until the fake Claude holds its turn.
-    fn wait_held(&self) {
-        let mut text = String::new();
-        std::fs::File::open(&self.held).unwrap().read_to_string(&mut text).unwrap();
-        assert_eq!(text, "held\n");
-    }
-    fn release(&self) {
-        std::fs::OpenOptions::new().write(true).open(&self.release).unwrap().write_all(b"go").unwrap();
-    }
-}
 
 #[tokio::test]
 async fn a_batch_through_the_sdk_is_one_turn_and_is_handed_once() {
@@ -236,7 +102,6 @@ async fn after_the_update_a_claude_p_batch_left_running_is_not_repeated_and_the_
     assert!(prompts[0].contains("Where do I put change 2?") && prompts[0].contains("Previous interrupted inbox batches have already been resolved and are NOT replayed"), "{}", prompts[0]);
     let arguments = f.arguments();
     assert!(!arguments.iter().any(|argument| argument.starts_with("--resume")), "the claude -p conversation is not resumed: {arguments:?}");
-    assert!(!f.executor.home.join("runtime/orchestrator/starts").exists(), "claude -p never ran");
 }
 
 #[tokio::test]
@@ -301,6 +166,31 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
     host.stop().unwrap();
     assert_eq!(stream.end(true, "", session, false), process::BatchEnd::Handled);
     assert_eq!(f.prompts(), ["fixture:hold the first batch"], "the refused prompt never reached Claude");
+}
+
+#[test]
+fn the_projects_root_is_readable_and_never_writable() {
+    let f = fixture();
+    let epoch = f.domain().state().unwrap().data_epoch.clone();
+    let batch = |root: Option<&Path>| {
+        let (_, owner) = f.domain().store.lock().unwrap().claim_orchestrator_batch(&[], &crate::auth::random_hex(8), "00000000-0000-4000-8000-00000000c0de", epoch.clone()).unwrap();
+        let plugin = |name| crate::plugins::dir(&f.claude_home, name).unwrap();
+        Batch {
+            owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),
+            node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
+            projects_root: root.map(Path::to_path_buf), capability: "c".repeat(64), session: "00000000-0000-4000-8000-00000000c0de".into(), prompt: String::new(),
+        }
+    };
+    let rooted = profile(&batch(Some(Path::new("/Users/someone/Projects"))));
+    assert_eq!(rooted.tools, ["Skill", "Read", "Glob", "Grep"]);
+    assert_eq!(rooted.settings["permissions"], serde_json::json!({
+        "additionalDirectories": ["/Users/someone/Projects"],
+        "allow": ["Read(//Users/someone/Projects/**)", OWN_TOOLS],
+        "deny": ["Edit(//Users/someone/Projects/**)"],
+    }));
+    assert_eq!(rooted.settings["env"], serde_json::from_str::<serde_json::Value>(&alondra_core::launch_settings()).unwrap()["env"]);
+    let unrooted = profile(&batch(None));
+    assert_eq!(unrooted.settings["permissions"], serde_json::json!({"allow": [OWN_TOOLS]}), "nothing outside its folder is readable");
 }
 
 #[tokio::test]

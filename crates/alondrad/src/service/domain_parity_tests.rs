@@ -14,9 +14,9 @@ use std::{
     sync::atomic::{AtomicI64, Ordering},
 };
 
-fn execute(hub: &crate::hub::Hub, actor: Actor, id: &str, command: Command) {
-    let state = hub.domain.state().unwrap();
-    hub.domain
+fn execute(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
+    let state = domain.state().unwrap();
+    domain
         .execute(
             &actor,
             &CommandEnvelope {
@@ -124,15 +124,11 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         crate::auth::random_hex(8)
     ));
     std::fs::create_dir_all(&home).unwrap();
-    let config = alondra_core::config::Config::resolve(
-        home.clone(),
-        &Default::default(),
-        |_| None,
-        || Some("Fixture".into()),
-    );
-    let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
+    drop(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let domain = daemon.domain();
     execute(
-        &hub,
+        &domain,
         Actor::System,
         "agent",
         Command::RegisterAgent {
@@ -144,7 +140,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         user_id: "fixture".into(),
     };
     execute(
-        &hub,
+        &domain,
         user.clone(),
         "request",
         Command::CreateRequest {
@@ -153,7 +149,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         },
     );
     execute(
-        &hub,
+        &domain,
         Actor::Orchestrator { generation: 0 },
         "task",
         Command::CreateTask { plan_items: None,
@@ -168,7 +164,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         },
     );
     execute(
-        &hub,
+        &domain,
         Actor::System,
         "info",
         Command::PublishInformation {
@@ -182,7 +178,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         },
     );
     execute(
-        &hub,
+        &domain,
         Actor::Agent {
             agent_id: "agent-parity".into(),
         },
@@ -214,7 +210,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     execute(
-        &hub,
+        &domain,
         Actor::Agent {
             agent_id: "agent-parity".into(),
         },
@@ -248,8 +244,8 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    let app = crate::domain_api::routes::<crate::hub::Hub>()
-    .with_state(hub.clone())
+    let app = crate::domain_api::routes::<crate::domain_bootstrap::DomainDaemon>()
+    .with_state(daemon.clone())
     .layer(axum::middleware::from_fn_with_state(
         auth.clone(),
         crate::auth::guard,
@@ -269,7 +265,6 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "relay_url = \"{relay_url}\"\nmac_id = \"mac-parity\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n[[devices]]\ndevice_id = \"{}\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n",
         device_id,
     )).unwrap();
-    let domain = hub.domain.clone();
     let service = Service::open(&home, 0, auth.clone())
         .unwrap()
         .unwrap()
@@ -301,55 +296,16 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         )
         .await;
         if path == "/capabilities" {
-            assert!(local["body"].get("operation_results").is_none(),
-                "loopback does not expose encrypted transport receipts");
             assert_eq!(remote["body"]["operation_results"], true);
-            local["body"]["operation_results"] = json!(true);local["body"]["operation_journal"] = json!(true);
         }
         assert_eq!(remote, local, "local/encrypted mismatch for {path}");
     }
-    // This fixture intentionally has a v1 local Hub and a v2-only encrypted
-    // service. Schedule reads must expose the active authority of each mode.
     let local_schedule = local_get(&client, &base, &phone_key, device_id,
         "/schedules").await;
-    assert_eq!(local_schedule["status"], 409);
     let remote_schedule = encrypted(&service, &phone_key, &phone_agreement, &responses,
-        "schedule-v2-read", json!({"method":"GET","path":"/schedules"})).await;
+        "schedule-read", json!({"method":"GET","path":"/schedules"})).await;
     assert_eq!(remote_schedule["status"], 200);
-    let legacy_service = Service::open(&home, 0, auth.clone()).unwrap().unwrap().with_hub(hub.clone());
-    let before_schedule = domain.state().unwrap();
-    let blocked = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
-        "schedule-mixed-blocked", json!({"method":"POST","path":"/schedules",
-            "body":{"title":"Review","text":"Review project","frequency":"daily",
-                "hour":9,"minute":0}})).await;
-    assert_eq!(blocked["status"], 409, "{blocked}");
-    assert_eq!(blocked["body"]["code"], "incompatible_protocol", "{blocked}");
-    assert_eq!(domain.state().unwrap(), before_schedule);
-    // A legacy daemon must never write its v2 sidecar: a non-empty store blocks
-    // both cutover and legacy startup. Reads stay open, writes are typed rejections.
-    let legacy_command = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        data_epoch: before_schedule.data_epoch.clone(),
-        command_id: "legacy-read-once".into(),
-        expected_revision: before_schedule.revision,
-        command: Command::MarkRead {
-            interaction_id: "info-parity".into(),
-        },
-    };
-    let blocked_command = sealed(&legacy_service, &phone_key, "legacy-command-blocked",
-        json!({"method":"POST","path":"/commands","body":legacy_command}));
-    assert!(legacy_service.prepare_work(&blocked_command, Transport::Relay).is_err(),
-        "generic command paths are rejected before dispatch");
-    assert_eq!(domain.state().unwrap(), before_schedule);
-    let blocked_resolve = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
-        "legacy-resolve-blocked", json!({"method":"POST",
-            "path":"/delivery-attempts/1/resolve",
-            "body":{"protocol_version":2,"data_epoch":before_schedule.data_epoch,
-                "expected_version":1,"decision":"retry"}})).await;
-    assert_eq!(blocked_resolve["status"], 409);
-    assert_eq!(blocked_resolve["body"]["code"], "incompatible_protocol");
-    assert_eq!(domain.state().unwrap(), before_schedule);
-    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/capabilities").await["status"], 200);
+    assert_eq!(remote_schedule, local_schedule);
 
     let state = domain.state().unwrap();
     let command = CommandEnvelope {
@@ -559,9 +515,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         pending_after_read + 1
     );
     let updated_path = "/capabilities";
-    let mut updated_local = local_get(&client, &base, &phone_key, device_id, updated_path).await;
-    assert!(updated_local["body"].get("operation_results").is_none());
-    updated_local["body"]["operation_results"] = json!(true);updated_local["body"]["operation_journal"] = json!(true);
+    let updated_local = local_get(&client, &base, &phone_key, device_id, updated_path).await;
     assert_eq!(
         updated_local,
         encrypted(
@@ -611,7 +565,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let _ = local.await;
     drop(service);
     drop(domain);
-    drop(hub);
+    drop(daemon);
     drop(auth);
     std::fs::remove_dir_all(home).unwrap();
 }

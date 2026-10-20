@@ -695,7 +695,19 @@ impl DomainState {
 
     /// The nodes that take a slot: the one count the gate, Fleet, Tasks and the header share.
     pub fn slots(&self) -> Vec<&Agent> {
-        self.agents.values().filter(|a| a.phase.holds_slot() && Some(&a.id) != self.orchestrator_session.as_ref()).collect()
+        self.agents.values().filter(|a| Some(&a.id) != self.orchestrator_session.as_ref() && self.holds_slot(a)).collect()
+    }
+
+    /// A node of the Agent SDK takes a slot while its task's lifecycle holds one: no session phase
+    /// moves for it once it starts, so its phase only says whether it is paused, lost or ending.
+    fn holds_slot(&self, agent: &Agent) -> bool {
+        let sdk = self.tasks.values()
+            .find(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal() && super::read_index::admitted_through_sdk(self, &t.id, &agent.id));
+        match sdk {
+            Some(task) => !matches!(agent.phase, NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed)
+                && self.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| lifecycle.holds_slot()),
+            None => agent.phase.holds_slot(),
+        }
     }
 
     pub fn node_phase(&self, agent: &AgentId) -> Option<&NodePhase> {

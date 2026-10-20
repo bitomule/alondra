@@ -195,11 +195,14 @@ mod tests {
     #[test]
     fn a_legacy_home_is_refused_without_the_lock_and_left_alone() {
         let (home, config) = home("legacy");
-        let hub = crate::hub::Hub::open(config.clone()).unwrap();
-        hub.append(alondra_core::Event::Joined {
-            session_id: "s1".into(),
-        })
-        .unwrap();
+        rusqlite::Connection::open(home.join("alondra.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL);
+                 CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);
+                 INSERT INTO event_log(seq,at,kind,body) VALUES(1,1,'joined','{}');",
+            )
+            .unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
         let refused = run(&config).unwrap_err();
@@ -213,7 +216,6 @@ mod tests {
             before,
             "preflight must not write to the HOME it checks"
         );
-        drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
 

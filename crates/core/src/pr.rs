@@ -24,24 +24,6 @@ pub enum MergeMethod {
     Rebase,
 }
 
-impl MergeMethod {
-    pub fn flag(self) -> &'static str {
-        match self {
-            MergeMethod::Merge => "--merge",
-            MergeMethod::Squash => "--squash",
-            MergeMethod::Rebase => "--rebase",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            MergeMethod::Merge => "merge commit",
-            MergeMethod::Squash => "squash",
-            MergeMethod::Rebase => "rebase",
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckState {

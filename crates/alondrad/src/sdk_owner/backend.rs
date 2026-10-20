@@ -1,16 +1,29 @@
-//! The SDK backend's configuration names the pinned Node, the host bundle and the native Claude,
-//! each with its SHA256, and the exact environments they get. A daemon without it never builds an
-//! SDK backend. Outside a sandbox the native Claude runs as the user's own: in their real HOME and
-//! with their default profile, so it signs in as the user does; Seatbelt confinement stays optional.
-use anyhow::{Context, Result, ensure};
+//! The SDK backend names the host, the native Claude, each with its SHA256, and the exact
+//! environments they get. A release runs the host it installed beside its binaries with the
+//! Claude Code the user installed; a configuration file in the home replaces both (a sandbox, the
+//! upgrade rehearsal). Outside a sandbox the native Claude runs as the user's own: in their real
+//! HOME and with their default profile, so it signs in as the user does; Seatbelt confinement
+//! stays optional.
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
 
 pub(crate) const FILE: &str = "sdk-backend.json";
+/// The release's host: one executable, Node and the bundle together, in `libexec/alondra/sdk`.
+pub(crate) const HOST: &str = "alondra-host";
 /// Setting either selects another credential namespace than the user's default profile, even when
 /// it names the default folder.
 const DEFAULT_PROFILE: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"];
+/// The host's socket is `<state root>/<execution UUID>/s`, and a Unix socket path holds 103 bytes.
+const SOCKET_PATH_LIMIT: usize = 103;
+const EXECUTION_FOLDER: usize = "/00000000-0000-0000-0000-000000000000/s".len();
+/// What the daemon's environment carries for Alondra, or inherited from a Claude session it was
+/// started in: never the user's Claude's. The SDK sets its own session variables.
+const PRIVATE: [&str; 5] = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_SDK_READS_SESSION_STATE"];
+const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +42,55 @@ pub(crate) struct SdkBackend {
     /// Short enough for the host's Unix socket: each execution gets a private folder in it.
     pub(crate) state_root: PathBuf,
     pub(crate) io_timeout_seconds: u64,
+    /// The Claude Code the user installed, which updates itself: each host start takes it as it is
+    /// then.
+    #[serde(skip)]
+    pub(crate) installed_native: bool,
+}
+
+/// The backend a daemon runs: the configuration in `home` when there is one, else the host the
+/// release of `daemon` installed with the user's own Claude Code, found on `environment`'s PATH.
+pub(crate) fn resolve(home: &Path, sandbox: bool, user_home: &Path, daemon: &Path, environment: &BTreeMap<String, String>) -> Result<SdkBackend> {
+    if let Some(backend) = load(home, sandbox, user_home)? {
+        return Ok(backend);
+    }
+    ensure!(!sandbox, "a sandbox daemon runs only the SDK backend its {FILE} names");
+    installed(home, user_home, daemon, environment)
+}
+
+/// The host beside `daemon`: `<keg>/libexec/alondra/sdk/alondra-host`, through Homebrew's `opt`
+/// link, so the next start after an upgrade verifies the new release's host.
+pub(crate) fn installed_host(daemon: &Path) -> PathBuf {
+    let cli = crate::plugins::cli_beside(daemon);
+    let bin = cli.parent().unwrap_or(Path::new("/"));
+    bin.parent().unwrap_or(bin).join("libexec/alondra/sdk").join(HOST)
+}
+
+fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMap<String, String>) -> Result<SdkBackend> {
+    let host = installed_host(daemon);
+    ensure!(host.is_file(), "this release's Agent SDK host is missing at {}: reinstall Alondra (`brew reinstall alondra`)", host.display());
+    let mut native_environment: BTreeMap<String, String> = environment.iter()
+        .filter(|(key, _)| !DEFAULT_PROFILE.contains(&key.as_str()) && !PRIVATE.contains(&key.as_str()) && !key.starts_with("ALONDRA_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    native_environment.insert("HOME".into(), user_home.display().to_string());
+    let state_root = home.join("sdk");
+    ensure!(state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT,
+        "{} is too long a path for the Agent SDK host's socket: move ALONDRA_HOME to a shorter one", state_root.display());
+    Ok(SdkBackend {
+        node: host.clone(), node_sha256: String::new(), host, host_sha256: String::new(),
+        native: PathBuf::new(), native_sha256: String::new(),
+        host_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        native_environment,
+        confinement: None, state_root, io_timeout_seconds: 120, installed_native: true,
+    })
+}
+
+fn on_path(path: &str, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    path.split(':').filter(|folder| Path::new(folder).is_absolute())
+        .map(|folder| Path::new(folder).join(name))
+        .find(|candidate| std::fs::metadata(candidate).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
 }
 
 /// The configuration in `home`, checked: `None` without one. `user_home` is the HOME the native
@@ -71,6 +133,78 @@ impl SdkBackend {
         let canonical = serde_json::to_vec(self).expect("the SDK backend serializes");
         sha2::Sha256::digest(canonical).iter().map(|byte| format!("{byte:02x}")).collect()
     }
+
+    /// The backend one host starts with. The user's Claude Code is found on the PATH it runs with
+    /// and taken as it is now, by its SHA256, and refused unless it is a release the SDK runs; a
+    /// configuration file's native Claude is pinned and was checked when it was read.
+    pub(crate) fn for_start(&self) -> Result<SdkBackend> {
+        if !self.installed_native {
+            return Ok(self.clone());
+        }
+        let mut backend = self.clone();
+        backend.host_sha256 = installed_digest(&backend.host)?;
+        backend.node_sha256 = backend.host_sha256.clone();
+        backend.native = on_path(backend.native_environment.get("PATH").map(String::as_str).unwrap_or_default(), "claude")
+            .context("Claude Code (`claude`) is not on this daemon's PATH: install it, then run `alondra doctor --fix`")?;
+        backend.native_sha256 = digest(&backend.native)?;
+        compatible(&backend.native, &backend.native_sha256)?;
+        Ok(backend)
+    }
+}
+
+static CHECKED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+type FileState = (PathBuf, u64, std::time::SystemTime);
+static DIGESTS: Mutex<Option<HashMap<FileState, String>>> = Mutex::new(None);
+
+/// The SHA256 of the host a release installed, read once per file as it is on disk: the daemon
+/// starts without reading its 120 MB, and each host start checks it again as it runs it.
+fn installed_digest(host: &Path) -> Result<String> {
+    let meta = std::fs::metadata(host).with_context(|| format!("reading {}", host.display()))?;
+    let state = (host.to_path_buf(), meta.len(), meta.modified()?);
+    if let Some(known) = DIGESTS.lock().expect("host digests poisoned").as_ref().and_then(|known| known.get(&state).cloned()) {
+        return Ok(known);
+    }
+    let sha256 = digest(host)?;
+    DIGESTS.lock().expect("host digests poisoned").get_or_insert_default().insert(state, sha256.clone());
+    Ok(sha256)
+}
+
+/// The release `claude --version` names, once per binary: a Claude Code older than the one the
+/// pinned SDK needs is refused with what to do.
+fn compatible(native: &Path, sha256: &str) -> Result<String> {
+    if let Some(version) = CHECKED.lock().expect("checked releases poisoned").as_ref().and_then(|known| known.get(sha256).cloned()) {
+        return Ok(version);
+    }
+    let text = version_of(native)?;
+    if !alondra_core::claude_code::compatible(&text) {
+        bail!("Claude Code {} is older than {}, the release Alondra needs: update it with `claude update`",
+            text.trim(), alondra_core::claude_code::MIN_TEXT);
+    }
+    CHECKED.lock().expect("checked releases poisoned").get_or_insert_default().insert(sha256.to_owned(), text.clone());
+    Ok(text)
+}
+
+fn version_of(native: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(native).arg("--version")
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+        .spawn().with_context(|| format!("running {} --version", native.display()))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        let _ = sender.send(text);
+    });
+    let Ok(text) = receiver.recv_timeout(VERSION_TIMEOUT) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        bail!("Claude Code (`{} --version`) did not answer within {} s", native.display(), VERSION_TIMEOUT.as_secs());
+    };
+    let status = child.wait()?;
+    ensure!(status.success(), "Claude Code (`{} --version`) failed", native.display());
+    Ok(text)
 }
 
 pub(crate) fn digest(file: &Path) -> Result<String> {
@@ -141,6 +275,97 @@ mod tests {
         assert_eq!(first.configuration_digest(), load(&home, false, &user).unwrap().unwrap().configuration_digest(), "the same configuration, the same digest");
         std::fs::write(home.join(FILE), configuration(&home, serde_json::json!({"PATH": "/bin"})).to_string()).unwrap();
         assert_ne!(first.configuration_digest(), load(&home, false, &user).unwrap().unwrap().configuration_digest(), "another environment, another digest");
+    }
+
+    /// A Homebrew install: the keg with the daemon and its host, the `opt` link to it, and a
+    /// folder on PATH whose `claude` prints `version`.
+    fn release(root: &Path, version: &str) -> (PathBuf, PathBuf) {
+        let keg = root.join("Cellar/alondra/0.3.0");
+        std::fs::create_dir_all(keg.join("bin")).unwrap();
+        std::fs::create_dir_all(keg.join("libexec/alondra/sdk")).unwrap();
+        std::fs::write(keg.join("bin/alondrad"), b"daemon").unwrap();
+        std::fs::write(keg.join("libexec/alondra/sdk").join(HOST), b"host").unwrap();
+        std::fs::create_dir_all(root.join("opt")).unwrap();
+        std::os::unix::fs::symlink(&keg, root.join("opt/alondra")).unwrap();
+        let tools = root.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        claude_code(&tools, version);
+        (keg.join("bin/alondrad"), tools)
+    }
+
+    fn claude_code(tools: &Path, version: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let claude = tools.join("claude");
+        std::fs::write(&claude, format!("#!/bin/sh\necho '{version} (Claude Code)'\n")).unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_release_without_a_configuration_runs_its_own_host_with_the_users_claude_code() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let user = root.join("user");
+        let (daemon, tools) = release(&root, "2.1.300");
+        let environment = BTreeMap::from([
+            ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display())), ("LANG".to_owned(), "es_ES.UTF-8".to_owned()),
+            ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDE_CONFIG_DIR".to_owned(), user.join(".claude").display().to_string()),
+            ("CLAUDECODE".to_owned(), "1".to_owned()),
+        ]);
+        let backend = resolve(&home, false, &user, &daemon, &environment).expect("a release runs the host it installed");
+        let host = root.join("opt/alondra/libexec/alondra/sdk").join(HOST);
+        assert_eq!((&backend.node, &backend.host), (&host, &host), "one executable, by the link an upgrade moves");
+        assert_eq!(backend.state_root, home.join("sdk"));
+        assert!(backend.confinement.is_none());
+        assert!(backend.host_sha256.is_empty(), "the daemon starts without reading the host");
+        let started = backend.for_start().expect("Claude Code 2.1.300 runs the SDK");
+        assert_eq!((&started.node_sha256, &started.host_sha256), (&digest(&host).unwrap(), &digest(&host).unwrap()), "a host start reads it");
+        assert_eq!(started.native, tools.join("claude"), "the user's own Claude Code, found on the daemon's PATH");
+        assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
+        assert_eq!(started.native_environment.get("HOME").map(String::as_str), Some(user.to_str().unwrap()));
+        assert_eq!(started.native_environment.get("LANG").map(String::as_str), Some("es_ES.UTF-8"), "the user's environment");
+        for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDECODE"] {
+            assert!(!started.native_environment.contains_key(private), "{private} is not the user's Claude's");
+        }
+        claude_code(&tools, "2.1.301");
+        let updated = backend.for_start().unwrap();
+        assert_ne!(updated.native_sha256, started.native_sha256, "Claude Code updated itself: the next host takes the new one");
+        assert_ne!(updated.configuration_digest(), started.configuration_digest(), "and binds its executions to it");
+    }
+
+    #[test]
+    fn a_claude_code_the_sdk_cannot_run_keeps_hosts_from_starting_and_says_what_to_do() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (daemon, tools) = release(&root, "2.1.200");
+        let environment = BTreeMap::from([("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()))]);
+        let backend = resolve(&home, false, &root.join("user"), &daemon, &environment).expect("the daemon still starts");
+        let old = backend.for_start().unwrap_err().to_string();
+        assert!(old.contains("2.1.200") && old.contains("claude update"), "{old}");
+        let missing = BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+        let none = resolve(&home, false, &root.join("user"), &daemon, &missing).unwrap().for_start().unwrap_err().to_string();
+        assert!(none.contains("not on this daemon's PATH"), "{none}");
+        claude_code(&tools, "2.1.300");
+        assert!(backend.for_start().is_ok(), "once updated, the next start runs");
+    }
+
+    #[test]
+    fn a_configuration_file_replaces_the_release_and_a_sandbox_needs_one() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (daemon, _) = release(&root, "2.1.300");
+        assert!(resolve(&home, true, &home, &daemon, &BTreeMap::new()).unwrap_err().to_string().contains(FILE));
+        std::fs::write(home.join(FILE), configuration(&home, serde_json::json!({"HOME": home})).to_string()).unwrap();
+        let pinned = resolve(&home, false, &home, &daemon, &BTreeMap::new()).unwrap();
+        assert_eq!(pinned.host, home.join("artifact"));
+        assert!(!pinned.installed_native);
+        assert_eq!(pinned.for_start().unwrap().native, home.join("artifact"), "a pinned native Claude stays as it was checked");
+        std::fs::remove_dir_all(root.join("Cellar")).unwrap();
+        std::fs::remove_file(home.join(FILE)).unwrap();
+        let missing = resolve(&home, false, &home, &daemon, &BTreeMap::new()).unwrap_err().to_string();
+        assert!(missing.contains("brew reinstall alondra"), "{missing}");
     }
 
     // Claude Code keeps the user's sign-in per profile: naming the default folder in either

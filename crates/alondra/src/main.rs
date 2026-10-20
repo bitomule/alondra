@@ -4,7 +4,6 @@ mod test_support;
 
 #[macro_use]
 mod i18n;
-mod attach;
 mod account;
 mod cli;
 mod commands;
@@ -20,6 +19,7 @@ mod help;
 mod mcp;
 mod models;
 mod ops;
+mod pty;
 mod service_setup;
 mod service_pair;
 mod service_client;
@@ -119,10 +119,6 @@ enum Cmd {
         reply: bool,
         text: Vec<String>,
     },
-    #[command(about = tr!("Open a node's terminal", "Abre el terminal de un nodo"),
-        long_about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"),
-        after_help = examples(&["alondra attach login-fix"]))]
-    Attach { node: String },
     #[command(about = tr!("Close a node's session", "Cierra la sesión de un nodo"),
         long_about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"),
         after_help = examples(&["alondra close login-fix"]))]
@@ -340,7 +336,7 @@ fn main() -> Result<()> {
         None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys) => false,
         Some(_) => !cli.json,
     };
-    let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. } | Cmd::Attach { .. }
+    let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. }
         | Cmd::Close { .. } | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
@@ -392,7 +388,6 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Some(Cmd::Send { node, reply, text }) => cli::send(&node, &text.join(" "), reply),
-        Some(Cmd::Attach { node }) => cli::attach(&node),
         Some(Cmd::Close { node }) => cli::close(&node),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
         Some(Cmd::Device { command }) => match command {
@@ -845,8 +840,8 @@ mod api_tests {
         let Some(Cmd::Doctor { fix, yes, only, .. }) = parsed(&["doctor", "--fix", "--yes", "--only", "service,plugin"]).command else { panic!() };
         assert!(fix && yes);
         assert_eq!(only, ["service", "plugin"]);
-        let Some(Cmd::Doctor { skip, .. }) = parsed(&["doctor", "--skip", "mods", "--skip", "tuicr"]).command else { panic!() };
-        assert_eq!(skip, ["mods", "tuicr"]);
+        let Some(Cmd::Doctor { skip, .. }) = parsed(&["doctor", "--skip", "validate", "--skip", "tuicr"]).command else { panic!() };
+        assert_eq!(skip, ["validate", "tuicr"]);
         assert_eq!(refused(&["doctor", "--yes"]), ErrorKind::MissingRequiredArgument, "--yes only with --fix");
         assert_eq!(refused(&["doctor", "--only", "service", "--skip", "plugin"]), ErrorKind::ArgumentConflict);
         assert_eq!(refused(&["doctor", "--only", "everything"]), ErrorKind::InvalidValue);
@@ -882,8 +877,8 @@ mod delivery_cli_tests {
     #[test]
     fn delivery_confirmation_and_destination_flags_are_scoped() {
         assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2"]).is_err());
-        assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2","--terminal-checked"]).is_err());
-        let cli=Cli::try_parse_from(["alondra","delivery","retry","7","--mac","mac-b","--expected-version","2","--terminal-checked","--confirm-duplicate-risk"]).unwrap();
+        assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2","--checked"]).is_err());
+        let cli=Cli::try_parse_from(["alondra","delivery","retry","7","--mac","mac-b","--expected-version","2","--checked","--confirm-duplicate-risk"]).unwrap();
         assert!(matches!(cli.command,Some(Cmd::Delivery(delivery::Options{mac:Some(mac),..})) if mac=="mac-b"));
         assert!(Cli::try_parse_from(["alondra","answer","7","--mac","mac-b"]).is_err());
         let cli=Cli::try_parse_from(["alondra","delivery","list"]).unwrap();

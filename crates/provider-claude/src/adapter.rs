@@ -200,6 +200,16 @@ pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
         _ => None,
     }
 }
+/// Whether the host observed the exit of its Claude. The host outlives it with no session left to
+/// run, so its owner ends the host as one that ended with its Claude.
+pub fn native_exited(observation: &OrderedObservation) -> bool {
+    let Ok(length) = u32::try_from(observation.evidence.len()) else {
+        return false;
+    };
+    let mut framed = length.to_be_bytes().to_vec();
+    framed.extend_from_slice(&observation.evidence);
+    matches!(decoded(&framed).map(|frame| frame.body), Some(Body::Event(event)) if matches!(event.observation, WireObservation::ProcessExited { .. }))
+}
 struct PreparedDispatch {
     command: PreparedCommand,
     intent: i64,

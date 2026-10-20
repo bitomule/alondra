@@ -1,6 +1,6 @@
 //! One v2-only daemon on a temporary HOME. A fake Claude session speaks to it the
 //! way a real one does: through the real `alondra mcp-node` binary with the
-//! capability the scheduler issued, and through `alondra hook` on the hook socket.
+//! capability the daemon issued it, and through `alondra hook` on the hook socket.
 use crate::domain_bootstrap::{DomainDaemon, router};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::*;
@@ -10,7 +10,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 fn alondra_binary() -> PathBuf {
     let path = option_env!("CARGO_BIN_EXE_alondra")
@@ -151,14 +151,21 @@ fn next_line(reader: &mut Option<Pushed>, wait: std::time::Duration) -> Option<V
 
 const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
 
-struct CapturingLauncher(Mutex<Vec<Vec<String>>>);
-impl crate::orchestrate::Launcher for CapturingLauncher {
-    async fn run(&self, _: &str, args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-        self.0.lock().unwrap().push(args.to_vec());
-        Ok("backgrounded · ab1234 · scheduled/run".into())
-    }
-    async fn stop(&self, _: &str) {}
-    fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
+/// A `claude --bg` node of the previous release working on a task of its own: the node, the task
+/// and the bearer the daemon issued it, which the node's MCP server presents.
+fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, TaskId) {
+    daemon.execute(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+        request_id: "r-1".into(), body: title.into(), auto_merge: false, maintenance: false, message: false,
+    });
+    daemon.execute(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        plan_items: None, task_id: "t-1".into(), request_id: "r-1".into(), title: title.into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/work")),
+    });
+    node_event(home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work"}));
+    daemon.execute(Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "scheduled/run-1".into(), at: 0 });
+    daemon.execute(Actor::User { user_id: "u".into() }, "assign", Command::AssignTask { task_id: "t-1".into(), agent_id: SESSION.into(), model: None });
+    let capability = daemon.domain.bind_agent(SESSION).unwrap();
+    (capability.expose_for_child_environment().to_owned(), TaskId::from("t-1"))
 }
 
 fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> Value {
@@ -170,7 +177,7 @@ fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> V
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daemon_restart() {
+async fn a_claude_bg_node_commands_and_receives_its_answer_once_across_a_daemon_restart() {
     let scratch_directory = crate::test_support::Directory::new();
     let root = scratch_directory.parent().unwrap().join(format!("alondra-e2e-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
@@ -179,33 +186,17 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     std::fs::write(alondra_core::options::path_in(&home),
         format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
     let daemon = Daemon::start(&home).await;
-    daemon.execute(Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
-        id: "schedule-1".into(), title: "Nightly review".into(), text: "Review the project".into(),
-        project: None, options: BTreeMap::new(), disallowed_tools: vec![],
-        frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None, interval: None,
-        start_at: None, enabled: false, next_run: None, revision: 1, deleted_at: None,
-    }});
-    daemon.execute(Actor::System, "claim", Command::ClaimScheduleRun {
-        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Manual,
-        now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
-    });
-    let launcher = CapturingLauncher(Mutex::new(vec![]));
-    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work", "launch_key": "run-1"}));
-    crate::domain_schedule_runner::run_cycle(&daemon.domain, &home, false, &launcher).await.unwrap();
-    let args = launcher.0.lock().unwrap().pop().expect("one launch");
-    let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
-    let written: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
-    let capability = written["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().to_owned();
-    let from_settings = ("ALONDRA_DOMAIN_SETTINGS", settings.as_str());
+    let (capability, task) = bg_node_with_a_task(&daemon, &home, "Nightly review");
+    let node_bearer = ("ALONDRA_DOMAIN_CAPABILITY", capability.as_str());
     let session = SESSION.to_owned();
     let state = daemon.domain.state().unwrap();
-    let task = state.tasks.values().next().unwrap().clone();
+    let task = state.tasks[&task].clone();
     assert_eq!(task.agent_id.as_ref().unwrap().0, session);
     let epoch = state.data_epoch.0.clone();
 
     // The session reports through the MCP and asks the user a question.
     let scope = json!({"kind": "task", "task_id": task.id.0});
-    let replies = mcp(&home, daemon.port, from_settings, vec![
+    let replies = mcp(&home, daemon.port, node_bearer, vec![
         ("present_result", tool_args(&epoch, "info-1", 0, json!({"kind": "present_result", "task_id": task.id.0,
             "interaction_id": "info-1", "need": "The review started", "body": "Started the review", "targets": [{"kind": "text", "text": "Started the review"}], "is_final": false}))),
         ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
@@ -250,7 +241,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     let (mut helper, pushed) = connect(&home);
     let mut pushed = Some(pushed);
     assert!(next_line(&mut pushed, std::time::Duration::from_millis(500)).is_none(), "an acknowledged message is not written again");
-    let replies = mcp(&home, daemon.port, from_settings, vec![
+    let replies = mcp(&home, daemon.port, node_bearer, vec![
         ("present_result", tool_args(&epoch, "info-2", 0, json!({"kind": "present_result", "task_id": task.id.0,
             "interaction_id": "info-2", "need": "Acting on the answer", "body": "Acting on the answer", "targets": [{"kind": "text", "text": "Acting on the answer"}], "is_final": false}))),
     ]);
@@ -273,8 +264,6 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     let (refused, text) = tool_text(&replies[0]);
     assert!(refused && text.contains("forbidden"), "{text}");
     assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].phase.holds_slot());
-    let kept: Value = serde_json::from_slice(&std::fs::read(&settings).expect("its task is open: `claude respawn` passes the same file again")).unwrap();
-    assert!(kept["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_none(), "but the revoked bearer is gone from it");
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -556,30 +545,14 @@ fn document(home: &Path, name: &str, text: &str) -> (String, String) {
     (digest, format!("files/{name}"))
 }
 
-/// A node with a task and its bearer, launched by the scheduler without a model.
+/// A node with a task and its bearer, without a model.
 async fn node_with_a_task(daemon: &Daemon, home: &Path) -> (String, TaskId, String) {
-    daemon.execute(Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
-        id: "schedule-1".into(), title: "Write the design".into(), text: "Write the design".into(),
-        project: None, options: BTreeMap::new(), disallowed_tools: vec![],
-        frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None, interval: None,
-        start_at: None, enabled: false, next_run: None, revision: 1, deleted_at: None,
-    }});
-    daemon.execute(Actor::System, "claim", Command::ClaimScheduleRun {
-        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Manual,
-        now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
-    });
-    let launcher = CapturingLauncher(Mutex::new(vec![]));
-    node_event(home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work", "launch_key": "run-1"}));
-    crate::domain_schedule_runner::run_cycle(&daemon.domain, home, false, &launcher).await.unwrap();
-    let args = launcher.0.lock().unwrap().pop().expect("one launch");
-    let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
-    let state = daemon.domain.state().unwrap();
-    let task = state.tasks.values().next().unwrap().id.clone();
-    (settings, task, state.data_epoch.0.clone())
+    let (capability, task) = bg_node_with_a_task(daemon, home, "Write the design");
+    (capability, task, daemon.domain.state().unwrap().data_epoch.0.clone())
 }
 
-fn node_calls(home: &Path, daemon: &Daemon, settings: &str, calls: Vec<(&str, Value)>) {
-    for (index, reply) in mcp(home, daemon.port, ("ALONDRA_DOMAIN_SETTINGS", settings), calls).iter().enumerate() {
+fn node_calls(home: &Path, daemon: &Daemon, capability: &str, calls: Vec<(&str, Value)>) {
+    for (index, reply) in mcp(home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", capability), calls).iter().enumerate() {
         let (failed, text) = tool_text(reply);
         assert!(!failed, "call {index}: {text}");
     }
@@ -610,7 +583,7 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
     std::fs::write(alondra_core::options::path_in(&home),
         format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
     let daemon = Daemon::start(&home).await;
-    let (settings, task, epoch) = node_with_a_task(&daemon, &home).await;
+    let (capability, task, epoch) = node_with_a_task(&daemon, &home).await;
     let app = App::pair(&daemon);
     let comments: Value = serde_json::from_str(COMMENTS).unwrap();
     let (mut helper, pushed) = connect(&home);
@@ -634,7 +607,7 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
         "document_id": "design", "title": "Migration design", "revision_id": "design-r1", "content_digest": digest,
         "content_reference": reference, "role": "design"})))];
     calls.extend(ask("review-1", "design-r1", None));
-    node_calls(&home, &daemon, &settings, calls);
+    node_calls(&home, &daemon, &capability, calls);
     let reply = app.request_changes("review-1", comments.clone()).await;
     applied_done(&reply);
     let told = pushed_text(&home, &mut pushed);
@@ -646,7 +619,7 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
     let mut calls = vec![("revise_document", tool_args(&epoch, "doc-2", 0, json!({"kind": "revise_document", "task_id": task.0,
         "document_id": "design", "revision_id": "design-r2", "content_digest": digest, "content_reference": reference})))];
     calls.extend(ask("review-2", "design-r1", None));
-    node_calls(&home, &daemon, &settings, calls);
+    node_calls(&home, &daemon, &capability, calls);
     let reply = app.request_changes("review-2", comments.clone()).await;
     applied_done(&reply);
     let told = pushed_text(&home, &mut pushed);
@@ -654,9 +627,9 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
 
     // The node asks again about the newer revision, replacing the card the user had open.
     calls = ask("review-3", "design-r1", None);
-    node_calls(&home, &daemon, &settings, calls);
+    node_calls(&home, &daemon, &capability, calls);
     let open = app.changes_action("review-3").await;
-    node_calls(&home, &daemon, &settings, ask("review-4", "design-r2", Some("review-3")));
+    node_calls(&home, &daemon, &capability, ask("review-4", "design-r2", Some("review-3")));
     let reply = app.send_changes(open.clone(), comments.clone()).await;
     assert_eq!(reply["result"]["kind"], "changed", "{reply}");
     assert_eq!(reply["result"]["title"], "«Migration design» tiene una versión nueva", "{reply}");
@@ -668,12 +641,12 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
     assert!(told.contains("Split this step in two") && told.contains("Keep the old endpoint a release longer"), "{told}");
 
     // A result that delivers the document: the node presents revision 2 again while the user comments.
-    node_calls(&home, &daemon, &settings, vec![("present_result", tool_args(&epoch, "result-1", 0, json!({"kind": "present_result",
+    node_calls(&home, &daemon, &capability, vec![("present_result", tool_args(&epoch, "result-1", 0, json!({"kind": "present_result",
         "task_id": task.0, "interaction_id": "result-1", "need": "Review the migration design", "body": "The design",
         "targets": [{"kind": "document_revision", "document_id": "design", "revision_id": "design-r2"}], "is_final": true})))]);
     let open_result = app.changes_action("result-1").await;
     let (digest, reference) = document(&home, "design-3.md", "# Design\n\nMigrate the store in three steps\n");
-    node_calls(&home, &daemon, &settings, vec![
+    node_calls(&home, &daemon, &capability, vec![
         ("revise_document", tool_args(&epoch, "doc-3", 0, json!({"kind": "revise_document", "task_id": task.0,
             "document_id": "design", "revision_id": "design-r3", "content_digest": digest, "content_reference": reference}))),
         ("present_result", tool_args(&epoch, "result-2", 0, json!({"kind": "present_result",
@@ -763,14 +736,14 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     std::fs::write(alondra_core::options::path_in(&home),
         format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
     let daemon = Daemon::start(&home).await;
-    let (settings, task, epoch) = node_with_a_task(&daemon, &home).await;
+    let (capability, task, epoch) = node_with_a_task(&daemon, &home).await;
     let app = App::pair(&daemon);
     let scope = json!({"kind": "task", "task_id": task.0});
     let choice = |id: &str| json!({"id": id, "label": id, "description": format!("Go with {id}"), "inputs": []});
     let ask = |id: &str, need: &str| ("ask", tool_args(&epoch, id, 0, json!({"interaction_id": id, "scope": scope,
         "recipient": {"kind": "user"}, "need": need, "why": "The release waits for it.", "blocking": false,
         "options": [choice("stable"), choice("beta")]})));
-    node_calls(&home, &daemon, &settings, vec![
+    node_calls(&home, &daemon, &capability, vec![
         ask("option", "Pick the release channel"),
         ask("reply", "Name the new settings screen"),
         ask("clarify", "Pick the launch day"),
@@ -812,7 +785,7 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     let decision = permission.join().unwrap();
     assert_eq!(decision["hookSpecificOutput"]["decision"]["behavior"], "allow", "{decision}");
 
-    node_calls(&home, &daemon, &settings, vec![("withdraw", tool_args(&epoch, "withdraw-clarify", 0, json!({"interaction_id": "clarify"}))),
+    node_calls(&home, &daemon, &capability, vec![("withdraw", tool_args(&epoch, "withdraw-clarify", 0, json!({"interaction_id": "clarify"}))),
         ("present_result", tool_args(&epoch, "delivery", 0, json!({
         "task_id": task.0, "interaction_id": "delivery", "need": "Review the migration report", "body": "The store moved in one go.",
         "targets": [{"kind": "text", "text": "The store moved in one go."}], "is_final": true})))]);

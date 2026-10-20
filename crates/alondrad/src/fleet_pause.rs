@@ -131,11 +131,12 @@ pub(crate) fn through_sdk(domain: &DomainRuntime, session: &str) -> bool {
     domain.read().index().node(&alondra_core::domain::AgentId(session.to_owned())).is_some_and(|node| node.through_sdk)
 }
 
-/// Stops a node's turn and records it as paused. A node that runs through the Agent SDK is never
-/// paused this way.
+/// Stops a node's turn and records it as paused. A node of the Agent SDK is only recorded here:
+/// `hold_sdk_turn` stops it once the node machine holds the pause.
 pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, task: TaskId, reason: Reason, now: Millis) {
     if through_sdk(domain, session) {
-        log!("{session} runs through the Agent SDK: it is not paused by interrupting it");
+        log!("pausing {session} ({task}) for {reason:?}");
+        pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut: None, turn_since: None, cleanup: Cleanup::Done, released: false });
         return;
     }
     let cut = cut_of(domain, session);
@@ -145,6 +146,32 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
     }
     log!("pausing {session} ({task}) for {reason:?}{}", cut.as_ref().map(|cut| format!(", cutting {cut}")).unwrap_or_default());
     pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut, turn_since, cleanup: Cleanup::Pending, released: false });
+}
+
+/// Stops the turn of a node of the Agent SDK the node machine holds paused. What it goes on with
+/// when the pause ends is told first, and its owner holds it until then: the interrupted turn
+/// ends with its next step known, and no card asks the user how it goes on.
+pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paused) {
+    let text = resume_text(paused, paused.since);
+    let command = format!("pause-{session}-{}", paused.since);
+    if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &paused.task, crate::node_push::ALONDRA, &text, &command) {
+        log!("pausing {session}: what it goes on with was not recorded ({error:?})");
+    }
+    interrupt_sdk_node(domain, session);
+}
+
+fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
+    let Ok(state) = domain.state() else { return };
+    let envelope = alondra_core::domain::CommandEnvelope {
+        protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("pause-{session}-{}", crate::auth::random_hex(8)).into(),
+        expected_revision: state.revision,
+        command: alondra_core::domain::Command::InterruptTurn { agent_id: alondra_core::domain::AgentId(session.to_owned()) },
+    };
+    if let Err(error) = domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())) {
+        log!("pausing {session}: its turn was not interrupted ({error:?}); what it is told waits all the same");
+    }
 }
 
 /// One look at the pauses: forgets the nodes that went on or ended, stops again a node paused by

@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v293a0c3eda146abb",
+  "version": "vf91e500235d06d2d",
   "cursor": "cursor-1",
   "status": {
     "version": "v8f627439edfdda19",
@@ -317,27 +317,6 @@
               "enabled": true,
               "stamp": "Clarification requested",
               "key": "c",
-              "resolves_card": false
-            },
-            {
-              "id": "",
-              "label": "Attach to node",
-              "style": "plain",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "a",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "attach",
-                  "session": "alondra-ios"
-                }
-              },
               "resolves_card": false
             }
           ],

@@ -5,7 +5,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::launch_worktree::Workplace;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, ModelChooser, RequestId, TaskId, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, DomainError, DomainState, ModelChooser, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -50,19 +50,6 @@ pub(crate) fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>, what: O
         crate::domain_authority::Principal::Orchestrator { generation, .. } => Ok(Actor::Orchestrator { generation }),
         _ => Err(refused()),
     }
-}
-
-fn run(domain: &DomainRuntime, actor: &Actor, command: Command) -> Result<(), DomainError> {
-    let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
-    let envelope = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("orchestrator-tool-{}", crate::auth::random_hex(16)).into(),
-        expected_revision: state.revision, command,
-    };
-    domain.execute(actor, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| match error {
-        crate::domain_store::StoreError::Domain(error) => error,
-        crate::domain_store::StoreError::Storage(_) => DomainError::new("storage_unavailable", "domain transaction could not be completed"),
-    })
 }
 
 fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
@@ -172,21 +159,21 @@ pub(crate) enum Origin {
 
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
 /// bearer through its settings file and assigns it the Task.
-pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
-    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
-    launch_from(domain, home, actor, body, choices, launcher, Origin::Orchestrator).await
+pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+    choices: impl FnOnce(&RequestId) -> Option<Choices>) -> Result<Value, DomainError> {
+    launch_from(domain, home, body, choices, Origin::Orchestrator).await
 }
 
 /// `launch`, for either origin. An automatic launch holds the task's launch guard already.
-pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
-    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
+pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+    choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin) -> Result<Value, DomainError> {
     let task = body.task.clone();
     let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).ok().flatten().map(|plan| plan.cwd));
     let launched = if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
-        launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
+        launch_guarded(domain, home, body, choices, origin, None).await
     } else {
-        launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
+        launch_guarded(domain, home, body, choices, origin, None).await
     };
     match &launched {
         Ok(_) => remember_refusal(domain, &task, None),
@@ -237,10 +224,10 @@ impl Drop for Launching<'_> {
 /// node is about to be stopped, because waiting for that node's turn to end can take minutes.
 /// The replacement and the message that tells the orchestrator how it ended run in a task of
 /// their own, which neither a dropped call nor a panic in the replacement leaves untold.
-pub(crate) async fn launch_replacing<L: crate::orchestrate::Launcher + Send + 'static>(domain: Arc<DomainRuntime>, home: PathBuf, actor: Actor,
-    body: LaunchBody, choices: impl FnOnce(&RequestId) -> Option<Choices> + Send + 'static, launcher: Arc<L>) -> Result<Value, DomainError> {
+pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
+    body: LaunchBody, choices: impl FnOnce(&RequestId) -> Option<Choices> + Send + 'static) -> Result<Value, DomainError> {
     if !body.replace {
-        return launch(&domain, &home, &actor, body, choices, &*launcher).await;
+        return launch(&domain, &home, body, choices).await;
     }
     let task = body.task.clone();
     let (checked_tx, checked) = tokio::sync::oneshot::channel();
@@ -256,7 +243,7 @@ pub(crate) async fn launch_replacing<L: crate::orchestrate::Launcher + Send + 's
                         reached.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = checked_tx.send(());
                     });
-                    launch_guarded(&domain, &home, &actor, body, choices, &*launcher, Origin::Orchestrator, Some(on_checked)).await
+                    launch_guarded(&domain, &home, body, choices, Origin::Orchestrator, Some(on_checked)).await
                 }
             });
             let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
@@ -290,8 +277,8 @@ fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainErro
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
-    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin,
+async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+    choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin,
     checked: Option<Box<dyn FnOnce() + Send>>) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
@@ -350,7 +337,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let workplace = crate::launch_worktree::isolate(Path::new(&cwd), &crate::launch_worktree::slug(&task.id.0), known.as_deref(), pr_head).await
         .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
     let cwd = workplace.dir().to_string_lossy().into_owned();
-    let Some(plugin) = launcher.plugin() else {
+    let Some(plugin) = crate::plugins::node() else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
     };
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
@@ -401,7 +388,13 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         (Workplace::Given(_), None) => mission,
     };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
-    if domain.sdk().is_some() {
+    if domain.sdk().is_none() {
+        return Err(DomainError::new("unavailable", crate::sdk_owner::NO_HOST));
+    }
+    if let Some(checked) = checked {
+        checked();
+    }
+    {
         match &replaced {
             Some(old) if crate::sdk_owner::runs_through_sdk(&current, old) => {
                 let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
@@ -413,7 +406,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
                 .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
             }
             Some(old) => {
-                stop_replaced(domain, old, launcher).await.map_err(|reason| DomainError::new("replace_failed", format!(
+                stop_replaced(domain, old).await.map_err(|reason| DomainError::new("replace_failed", format!(
                     "Alondra could not stop the claude --bg node of {}, so no node was started through the Agent SDK: {reason}. It is still assigned to that node.", task.id)))?;
                 crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
@@ -421,15 +414,21 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
             }
             None => {}
         }
-        if let Some(checked) = checked {
-            checked();
-        }
         let options = crate::sdk_owner::LaunchOptions {
             model: resolved.flags.model.clone(),
             effort: resolved.flags.effort.clone(),
             disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
         };
-        let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd, prompt, plugin, options }).await?;
+        let name = body.title.clone().unwrap_or(name);
+        let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
+            model: resolved.launch_model() })
+            .await
+            .map_err(|error| match &replaced {
+                Some(_) => DomainError { message: format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",
+                    error.message, task.title, task.id, task.id), ..error },
+                None => error,
+            })?;
+        record_worktree(domain, &task.id, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()), &cwd);
         if origin == Origin::Auto {
             let _ = domain.store.lock().expect("domain store poisoned")
                 .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
@@ -445,130 +444,43 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
             reason, title: task.title.clone(),
         });
         crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
-        return Ok(launched);
+        Ok(launched)
     }
-    let key = format!("launch-{}", crate::auth::random_hex(8));
-    let settings = crate::domain_sessions::prepare(home, &key)
-        .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
-    let mut args: Vec<String> = ["--bg", "--name", &name, "--permission-mode", "auto"].map(String::from).into();
-    args.extend(resolved.launch_flags(None));
-    args.extend(crate::domain_sessions::flags(&[plugin.as_path()], &settings));
-    let denied = domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default();
-    if !denied.is_empty() {
-        args.extend(["--disallowedTools".into(), denied.join(" ")]);
-    }
-    args.push("--".into());
-    args.push(prompt);
-    let discard = |error: DomainError| {
-        crate::domain_sessions::release(&settings);
-        error
-    };
-    if let Some(checked) = checked {
-        checked();
-    }
-    if let Some(old) = &replaced {
-        stop_replaced(domain, old, launcher).await.map_err(|reason| discard(DomainError::new("replace_failed", format!(
-            "Alondra could not stop the node of {}, so no new node was started: {reason}. It is still assigned to that node; \
-             if that node ends later, the task is freed and you are told.", task.id))))?;
-        crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
-            .map_err(|error| discard(DomainError::new("storage_unavailable", format!(
-                "the node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id))))?;
-    }
-    let discard = |error: DomainError| {
-        let error = discard(error);
-        if replaced.is_none() {
-            return error;
-        }
-        let message = format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",
-            error.message, task.title, task.id, task.id);
-        DomainError { message, ..error }
-    };
-    if replaced.is_some() {
-        assigned_before = state(domain).map_err(discard)?.tasks.get(&task.id).and_then(|t| t.agent_id.clone());
-    }
-    let output = launcher.run(&cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
-    let session = match crate::mods_wait::wait(&domain.live.mods, &key, launcher).await {
-        Ok(session) => session,
-        Err(waited) => {
-            if let Some(short) = alondra_core::sessions::launched_short(&output) {
-                launcher.stop(&short).await;
-            }
-            let reason = crate::mods_wait::not_loaded(Path::new(&cwd), &waited, launcher).await;
-            return Err(discard(DomainError::new("launch_failed", reason)));
-        }
-    };
-    let agent_id = AgentId(session.clone());
-    let agent_name = body.title.clone().unwrap_or_else(|| name.clone());
-    match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name: agent_name, at: alondra_core::now_millis() }) {
-        Ok(()) => (),
-        Err(error) if error.code == "invalid_input" => (),
-        Err(error) => return Err(discard(error)),
-    }
-    let owned = match (&replaced, &inherited) {
-        (Some(old), Some(dir)) => Some((dir.clone(), old.0.clone())),
-        _ => workplace.chosen().map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
-    };
-    if let Some((dir, from)) = owned
-        && let Err(error) = domain.set_inherited_worktree(&session, &dir, &from)
-    {
-        log!("could not record that {session} took over {dir}: {error:#}");
-    }
-    let bound = domain.bind_agent(&session).map_err(anyhow::Error::from)
-        .and_then(|capability| crate::domain_sessions::bind(&settings, &agent_id, capability.expose_for_child_environment()));
-    if let Err(error) = bound {
-        let _ = domain.revoke_agent(&session);
-        return Err(discard(DomainError::new("storage_unavailable", format!("could not issue the session's capability: {error}"))));
-    }
-    let short = alondra_core::sessions::launched_short(&output).unwrap_or_else(|| session.chars().take(8).collect());
-    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.over() || t.agent_id != assigned_before));
-    let assigned = match taken {
-        Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() })
-            .map_err(discard),
-        Ok(true) => Err(conflict(format!("{} was closed or taken while its node started", task.id))),
-        Err(error) => Err(discard(error)),
-    };
-    if let Err(error) = assigned {
-        launcher.stop(&short).await;
-        launcher.remove(&short).await;
-        let _ = domain.revoke_agent(&session);
-        crate::domain_sessions::release(&settings);
-        return Err(error);
-    }
-    if workplace.dir().join(".git").is_file()
-        && let Err(error) = domain.set_task_worktree(&task.id, &cwd)
-    {
-        log!("could not record that {} works in {cwd}: {error:#}", task.id);
-    }
-    if origin == Origin::Auto {
-        let _ = domain.store.lock().expect("domain store poisoned")
-            .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
-    }
-    record(domain, Decision {
-        task_id: task.id.0.clone(), request_id: task.request_id.0.clone(), agent_id: Some(session.clone()), at: alondra_core::now_millis(),
-        kind: if body.relaunch_model.is_some() { DecisionKind::Relaunch } else { DecisionKind::Launch },
-        model: resolved.flags.model.as_deref().map(alondra_core::model_label::model_family),
-        effort: resolved.flags.effort.clone(),
-        approach: Some(body.approach.unwrap_or_default()),
-        chosen_by: resolved.launch_model().map_or_else(|| chooser(auto), |launched| launched.chosen_by),
-        reason, title: task.title.clone(),
-    });
-    domain.live.forget_closed_task(&task.id.0);
-    crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
-    Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
 }
 
-/// Stops the node being replaced once its turn ends, so it is not cut mid-edit: past the launcher's
-/// turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off it
-/// meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
-async fn stop_replaced(domain: &DomainRuntime, old: &AgentId, launcher: &impl crate::orchestrate::Launcher) -> Result<(), String> {
-    let busy = || domain.live.node(&old.0).is_some_and(|node| node.busy);
-    if !until_idle(busy, launcher.turn_deadline()).await {
-        let _ = domain.live.pushes.interrupt(&old.0);
-        until_idle(busy, launcher.turn_deadline()).await;
+/// The worktree the task's node works in, as the task's own: it is cleaned with the task and its
+/// subagents' worktrees go beside it. The node owns it when Alondra made it for the task, or when
+/// it took over the one of the node it replaced.
+fn record_worktree(domain: &DomainRuntime, task: &TaskId, agent: Option<&str>, workplace: &Workplace,
+    inherited: Option<(&AgentId, &String)>, cwd: &str) {
+    let owned = match inherited {
+        Some((old, dir)) => Some((dir.clone(), old.0.clone())),
+        None => workplace.chosen().map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
+    };
+    if let (Some(agent), Some((dir, from))) = (agent, owned)
+        && let Err(error) = domain.set_inherited_worktree(agent, &dir, &from)
+    {
+        log!("could not record that {agent} took over {dir}: {error:#}");
     }
-    let short = domain.live.node(&old.0).map_or_else(|| old.0.chars().take(8).collect(), |node| node.short_id);
+    if workplace.dir().join(".git").is_file()
+        && let Err(error) = domain.set_task_worktree(task, cwd)
+    {
+        log!("could not record that {task} works in {cwd}: {error:#}");
+    }
+}
+
+/// Stops the `claude --bg` node being replaced once its turn ends, so it is not cut mid-edit: past
+/// the turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off
+/// it meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
+async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), String> {
+    let busy = || domain.live.node(&old.0).is_some_and(|node| node.busy);
+    let deadline = domain.handovers.turn_deadline();
+    if !until_idle(busy, deadline).await {
+        let _ = domain.live.pushes.interrupt(&old.0);
+        until_idle(busy, deadline).await;
+    }
     let watched = domain.live.begin_watch(&old.0);
-    let stopped = match launcher.stop_checked(&short).await {
+    let stopped = match domain.handovers.sessions().stop(&old.0).await {
         Err(_) if crate::node_revival::session_ended(domain, &old.0) => Ok(()),
         stopped => stopped,
     };
@@ -628,7 +540,7 @@ fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
 
 /// A new node for a task whose node the user closed, launched with the task's mission in the
 /// folder the closed node worked in, else the project its request was asked for.
-pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor, task_id: &TaskId, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
+pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &TaskId) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
@@ -646,7 +558,7 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor,
     let mut body: LaunchBody = serde_json::from_value(json!({"name": closed.name, "cwd": cwd, "task": task_id}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
     body.relaunch_model = Some(task.model.as_ref().map_or(DEFAULT_MODEL, |m| m.model.as_str()).to_owned());
-    launch(domain, home, actor, body, |request| request_choices(domain, request).ok().flatten(), launcher).await
+    launch(domain, home, body, |request| request_choices(domain, request).ok().flatten()).await
 }
 
 const RESULT_LIMIT: usize = 4_000;

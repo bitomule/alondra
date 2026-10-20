@@ -188,7 +188,7 @@ impl Live {
         if !view.nodes.contains_key(&session_id) {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
-        let limit = (event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit")).then(|| crate::http::str_field(payload, "error_details"));
+        let limit = (event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit")).then(|| crate::hook_text::str_field(payload, "error_details"));
         view.apply(self.next(), now, &Event::Hook(event));
         drop(view);
         if let Some(details) = limit {
@@ -240,7 +240,7 @@ impl Live {
 }
 
 fn hook_event(payload: &Value) -> Option<HookEvent> {
-    use crate::http::{hook_detail, named_task, str_field, tool_summary};
+    use crate::hook_text::{hook_detail, named_task, str_field, tool_summary};
     let session_id = str_field(payload, "session_id")?;
     let event = str_field(payload, "hook_event_name").unwrap_or_default();
     if event == "MessageDisplay" && payload.get("final") != Some(&Value::Bool(true)) {

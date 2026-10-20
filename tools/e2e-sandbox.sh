@@ -8,16 +8,21 @@
 # SANDBOX_NAME names its Macs "<name> n" on Bonjour, so a test app picks its own sandbox.
 # Sandbox mode: test/ nodes allowed, wake off (SANDBOX_WAKE=1 turns it on, for a fake claude on PATH).
 # Stop everything with tools/e2e-sandbox-stop.sh.
-# FAKES=1 puts the sandbox's own claude and gh first on the daemons' PATH (tools/sandbox/src/fake):
-# no model and no GitHub, a throwaway repository with a bare remote, and wake on, so the
-# orchestrator and launches run for real against the fakes, with fast timing.
+# SDK_NODE and SDK_HOST name the pinned Node and the host bundle (//agent-host:pinned_node and
+# //agent-host:persistent.cjs): with them every Mac gets the Agent SDK backend, whose native Claude
+# is the sandbox's scripted fake `claude` (tools/sandbox/src/fake/native.rs), with a synthetic HOME
+# and no model (tools/e2e_sdk_backend.py --fake). Every task and orchestrator batch runs through
+# the SDK host.
+# FAKES=1 (which needs SDK_NODE and SDK_HOST) puts the sandbox's own claude and gh first on the
+# daemons' PATH: no model and no GitHub, a throwaway repository with a bare remote, and wake on, so
+# the orchestrator and launches run for real against the fakes, with fast timing.
 # NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
 # starts only when the wizard installs the service, through scripts that stand in for launchd
 # and the relay account.
-# SDK=1 (with FAKES=1, and SDK_NODE, SDK_HOST and SDK_ARCHIVE naming the pinned Node, the host
-# bundle and the native Claude's npm archive) gives Mac 1 the Agent SDK backend: every task it
-# launches runs through the SDK host and the pinned native Claude, under Seatbelt, against a
-# local model double, with a synthetic HOME (tools/e2e_sdk_backend.py). Never the real login.
+# SDK=1 (with FAKES=1, and SDK_ARCHIVE naming the native Claude's npm archive) gives Mac 1 the
+# pinned native Claude instead: every task it launches runs through the SDK host and the real
+# native Claude, under Seatbelt, against a local model double, with a synthetic HOME
+# (tools/e2e_sdk_backend.py). Never the real login.
 # SANDBOX_IROH_RELAY=<url> with SANDBOX_IROH_TOKEN makes the relay announce that iroh relay and
 # answer its access check with that bearer, and the Macs follow it (tools/e2e-iroh-cli.sh).
 set -eu
@@ -39,12 +44,18 @@ direct_listen=127.0.0.1
 case $macs in '' | *[!0-9]* | 0) echo "MACS must be a number from 1." >&2; exit 1 ;; esac
 case $fakes in 0 | 1) ;; *) echo "FAKES is 0 or 1." >&2; exit 1 ;; esac
 sdk=${SDK:-0}
+sdk_backend=0
+if [ -n "${SDK_NODE:-}" ] || [ -n "${SDK_HOST:-}" ]; then
+	for artifact in "${SDK_NODE:?SDK_HOST needs SDK_NODE}" "${SDK_HOST:?SDK_NODE needs SDK_HOST}"; do
+		[ -f "$artifact" ] || { echo "$artifact does not exist." >&2; exit 1; }
+	done
+	sdk_backend=1
+fi
+[ "$fakes" = 0 ] || [ "$sdk_backend" = 1 ] || { echo "FAKES=1 needs SDK_NODE and SDK_HOST: its tasks run through the Agent SDK host." >&2; exit 1; }
 case $sdk in
 0) ;;
 1) [ "$fakes" = 1 ] || { echo "SDK=1 needs FAKES=1." >&2; exit 1; }
-	for artifact in "${SDK_NODE:?SDK=1 needs SDK_NODE}" "${SDK_HOST:?SDK=1 needs SDK_HOST}" "${SDK_ARCHIVE:?SDK=1 needs SDK_ARCHIVE}"; do
-		[ -f "$artifact" ] || { echo "$artifact does not exist." >&2; exit 1; }
-	done ;;
+	[ -f "${SDK_ARCHIVE:?SDK=1 needs SDK_ARCHIVE}" ] || { echo "$SDK_ARCHIVE does not exist." >&2; exit 1; } ;;
 *) echo "SDK is 0 or 1." >&2; exit 1 ;;
 esac
 
@@ -126,15 +137,22 @@ ALONDRA_RELAY_CONFIG="$dir/relay.json" nohup "$dir/bin/alondra-relay" >"$dir/rel
 echo $! >"$dir/relay.pid"
 wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"
 
+fake() {
+	mkdir -p "$dir/fakes"
+	printf '#!/bin/sh\nexec "%s" --sandbox "%s" %s -- "$@"\n' "$tool" "$dir" "$2" >"$dir/fakes/$1"
+	chmod 755 "$dir/fakes/$1"
+}
+if [ "$sdk_backend" = 1 ]; then
+	fake claude fake-claude
+fi
+
 daemon_path=$PATH
 claude_home=
 wake=${SANDBOX_WAKE:-0}
 if [ "$fakes" = 1 ]; then
-	mkdir -p "$dir/fakes" "$dir/claude-home/plugins"
-	for pair in "claude:fake-claude" "gh:fake-gh"; do
-		printf '#!/bin/sh\nexec "%s" --sandbox "%s" %s -- "$@"\n' "$tool" "$dir" "${pair#*:}" >"$dir/fakes/${pair%%:*}"
-		chmod 755 "$dir/fakes/${pair%%:*}"
-	done
+	mkdir -p "$dir/claude-home/plugins"
+	fake claude fake-claude
+	fake gh fake-gh
 	# The marketplace sits in the sandbox so the plugin's bin/alondra wrapper finds $dir/bin/alondra.
 	cp -RL "$repo/plugin" "$repo/plugin-orchestrator" "$dir/"
 	printf '{"alondra": {"installLocation": "%s"}}\n' "$dir" >"$dir/claude-home/plugins/known_marketplaces.json"
@@ -166,6 +184,8 @@ while [ "$i" -le "$macs" ]; do
 	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
 	if [ "$sdk" = 1 ] && [ "$i" = 1 ]; then
 		python3 -I "$repo/tools/e2e_sdk_backend.py" "$dir" "$home" "$SDK_NODE" "$SDK_HOST" "$SDK_ARCHIVE"
+	elif [ "$sdk_backend" = 1 ]; then
+		python3 -I "$repo/tools/e2e_sdk_backend.py" --fake "$dir" "$home" "$SDK_NODE" "$SDK_HOST" "$dir/fakes/claude"
 	fi
 	# start runs this Mac's daemon with its environment; a journey restarts the daemon with it too.
 	{
@@ -247,7 +267,6 @@ while [ "$i" -le "$macs" ]; do
 	home="$dir/mac-$i"
 	cat <<EOF
 Mac $i on http://127.0.0.1:$(local_port "$i"), direct listener on $direct_listen:$(direct_port "$i"), iroh on UDP $direct_listen:$(iroh_port "$i") (log: make e2e-sandbox-logs MAC=$i)
-  Probe node:  claude --bg --name test/<probe> --plugin-dir $home/plugin --settings $home/settings.json -- "<prompt>"
   Its CLI:     . $home/env && $dir/bin/alondra
 
 EOF
@@ -272,9 +291,16 @@ A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alond
   ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra mac connect --host 127.0.0.1:$(direct_port 1)
 
 EOF
+if [ "$sdk_backend" = 1 ]; then
+	cat <<EOF
+SDK backend: tasks and orchestrator batches run through the Agent SDK host, whose native Claude is
+the sandbox's scripted claude (sessions in $dir/fakes/sessions).
+
+EOF
+fi
 if [ "$sdk" = 1 ]; then
 	cat <<EOF
-SDK backend on Mac 1: its tasks run through the Agent SDK and the pinned native Claude, against a
+Pinned native Claude on Mac 1: its tasks run through the Agent SDK and the pinned native Claude, against a
 local model double (requests in $dir/sdk/model-requests.jsonl). Scripted journey:
   $tool --sandbox $dir journey sdk
 
@@ -289,5 +315,5 @@ Fakes: claude and gh are the sandbox's own (calls in $dir/fakes/calls.jsonl); no
 EOF
 fi
 cat <<EOF
-Close probes with 'claude rm <id>' when done, then: make e2e-sandbox-stop
+Stop it with: make e2e-sandbox-stop
 EOF

@@ -406,30 +406,17 @@ pub fn devices_check(devices: &[Value]) -> Outcome {
 }
 
 pub fn claude_version_check(out: Option<&str>) -> Outcome {
-    let min = alondra_core::mods::CLAUDE_MIN_TEXT;
+    let min = alondra_core::claude_code::MIN_TEXT;
     match out.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) if alondra_core::mods::runs_mods(v) => outcome("claude", "claude", Group::Claude, Status::Pass, v.to_string(), None),
+        Some(v) if alondra_core::claude_code::compatible(v) => outcome("claude", "claude", Group::Claude, Status::Pass, v.to_string(), None),
         Some(v) => outcome("claude", "claude", Group::Claude, Status::Fail,
-            trf!("{v} cannot run Alondra's node mod: nodes need Claude Code {min} or later",
-                "{v} no puede ejecutar el mod de nodo de Alondra: los nodos necesitan Claude Code {min} o posterior"),
+            trf!("{v} is older than {min}, the release Alondra needs",
+                "{v} es anterior a {min}, la versión que necesita Alondra"),
             manual("claude update")),
         None => outcome("claude", "claude", Group::Claude, Status::Fail,
             tr!("Claude Code isn't installed. Install it, then run alondra doctor --fix again.",
                 "Claude Code no está instalado. Instálalo y vuelve a ejecutar alondra doctor --fix."),
             manual("https://docs.claude.com/claude-code")),
-    }
-}
-
-/// Inspect capabilities rather than assuming a version string has the required flags.
-pub fn orchestrator_capability_check(help: Option<&str>) -> Outcome {
-    let supported = help.is_some_and(|text| {
-        ["--print", "--resume", "--output-format", "stream-json", "--permission-mode", "auto", "--permission-prompts"].iter().all(|flag| text.contains(flag))
-    });
-    if supported {
-        outcome("orchestrator", "orchestrator", Group::Claude, Status::Pass, tr!("Claude supports on-demand orchestration", "Claude admite la orquestación bajo demanda"), None)
-    } else {
-        outcome("orchestrator", "orchestrator", Group::Claude, Status::Fail,
-            tr!("Claude is missing required on-demand runtime capabilities", "A Claude le faltan capacidades necesarias para la ejecución bajo demanda"), manual("claude update"))
     }
 }
 
@@ -462,45 +449,29 @@ pub fn signin_check(result: anyhow::Result<bool>) -> Outcome {
     }
 }
 
-/// The node plugin's mod as Claude Code reads it: `claude plugin validate --strict` and its own
-/// tests under `claude plugin test`, which also fail when hooks modules are turned off.
-pub fn mods_check(plugin: Option<&Path>, validate: Option<(bool, String)>, test: Option<(bool, String)>) -> Outcome {
+/// The node plugin as Claude Code reads it: `claude plugin validate --strict`.
+pub fn validate_check(plugin: Option<&Path>, validate: Option<(bool, String)>) -> Outcome {
     let Some(plugin) = plugin else {
-        return outcome("mods", "mods", Group::Claude, Status::Fail,
+        return outcome("validate", "validate", Group::Claude, Status::Fail,
             tr!("Alondra's node plugin was not found", "No se encuentra el plugin de nodo de Alondra"), manual("brew reinstall alondra"));
     };
-    let p = plugin.display();
-    let (validate_fix, test_fix) = (format!("claude plugin validate --strict {p}"), format!("claude plugin test {p}"));
-    let fail = |detail: String, fix: &str| outcome("mods", "mods", Group::Claude, Status::Fail, detail, manual(fix));
-    match (validate, test) {
-        (None, _) => fail(tr!("claude plugin validate did not finish", "claude plugin validate no terminó").into(), &validate_fix),
-        (Some((false, text)), _) => {
-            let why = alondra_core::mods::tail(&text);
-            fail(trf!("the node mod does not validate: {why}", "el mod de nodo no pasa la validación: {why}"), &validate_fix)
+    let fix = format!("claude plugin validate --strict {}", plugin.display());
+    let fail = |detail: String| outcome("validate", "validate", Group::Claude, Status::Fail, detail, manual(&fix));
+    match validate {
+        None => fail(tr!("claude plugin validate did not finish", "claude plugin validate no terminó").into()),
+        Some((false, text)) => {
+            let why = alondra_core::claude_code::tail(&text);
+            fail(trf!("the node plugin does not validate: {why}", "el plugin de nodo no pasa la validación: {why}"))
         }
-        (_, None) => fail(tr!("claude plugin test did not finish", "claude plugin test no terminó").into(), &test_fix),
-        (_, Some((false, text))) => {
-            let why = alondra_core::mods::tail(&text);
-            fail(trf!("the node mod's tests fail: {why}", "las pruebas del mod de nodo fallan: {why}"), &test_fix)
-        }
-        _ => outcome("mods", "mods", Group::Claude, Status::Pass,
-            tr!("the node mod validates and its tests pass", "el mod de nodo pasa la validación y sus pruebas"), None),
+        Some((true, _)) => outcome("validate", "validate", Group::Claude, Status::Pass,
+            tr!("the node plugin validates", "el plugin de nodo pasa la validación"), None),
     }
 }
 
-pub fn mods_skipped(at: i64) -> Outcome {
+pub fn validate_skipped(at: i64) -> Outcome {
     let date = day(at);
-    outcome("mods", "mods", Group::Claude, Status::Pass,
+    outcome("validate", "validate", Group::Claude, Status::Pass,
         trf!("validated on {date} · --deep checks again", "validado el {date} · --deep lo vuelve a comprobar"), None)
-}
-
-pub fn tmux_check(out: Option<&str>, wake: bool) -> Outcome {
-    match out.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) => outcome("tmux", "tmux", Group::Tools, Status::Pass, v.to_string(), None),
-        None => outcome("tmux", "tmux", Group::Tools, if wake { Status::Fail } else { Status::Warn },
-            tr!("tmux is missing: Alondra cannot attach a node's session", "falta tmux: Alondra no puede engancharse a la sesión de un nodo"),
-            manual("brew install tmux")),
-    }
 }
 
 /// The oldest tuicr whose `--stdout pr <n>` Alondra relies on.
@@ -529,10 +500,6 @@ fn run_config(env: &Env) -> Option<Outcome> {
 
 fn run_claude(env: &Env) -> Option<Outcome> {
     Some(claude_version_check(env.sys.claude(&["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t).as_deref()))
-}
-
-fn run_orchestrator(env: &Env) -> Option<Outcome> {
-    Some(orchestrator_capability_check(env.sys.claude(&["--help"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t).as_deref()))
 }
 
 fn run_profile(env: &Env) -> Option<Outcome> {
@@ -602,9 +569,9 @@ fn run_plugin(env: &Env) -> Option<Outcome> {
     Some(plugin_check(env.sys.plugins().as_ref(), env.sys.marketplace(), view.repo.as_deref(), view.marketplace_elsewhere.as_deref()))
 }
 
-/// `claude plugin validate` and `test` take up to three minutes, so they run only with `--deep`
-/// or when the node plugin changed since they last passed.
-fn run_mods(env: &Env) -> Option<Outcome> {
+/// `claude plugin validate` takes up to a minute, so it runs only with `--deep` or when the node
+/// plugin changed since it last passed.
+fn run_validate(env: &Env) -> Option<Outcome> {
     if !env.sys.marketplace() {
         return None;
     }
@@ -615,17 +582,11 @@ fn run_mods(env: &Env) -> Option<Outcome> {
         && let (Some(fingerprint), Some(passed)) = (&fingerprint, &memory.mods)
         && passed.fingerprint == *fingerprint
     {
-        return Some(mods_skipped(passed.at));
+        return Some(validate_skipped(passed.at));
     }
-    let (validate, test) = match &plugin {
-        Some(dir) => {
-            let dir = dir.display().to_string();
-            (env.sys.claude(&["plugin", "validate", "--strict", &dir], Duration::from_secs(60)),
-                env.sys.claude(&["plugin", "test", &dir], Duration::from_secs(120)))
-        }
-        None => (None, None),
-    };
-    let checked = mods_check(plugin.as_deref(), validate, test);
+    let validate = plugin.as_ref()
+        .and_then(|dir| env.sys.claude(&["plugin", "validate", "--strict", &dir.display().to_string()], Duration::from_secs(60)));
+    let checked = validate_check(plugin.as_deref(), validate);
     if checked.status == Status::Pass
         && let Some(fingerprint) = fingerprint
     {
@@ -647,10 +608,6 @@ fn run_notifications(env: &Env) -> Option<Outcome> {
     Some(notifications_check(env.sys.relay(), env.sys.memory().test_push.as_ref(), devices.as_deref()))
 }
 
-fn run_tmux(env: &Env) -> Option<Outcome> {
-    Some(tmux_check(env.sys.tool("tmux", &["-V"]).as_deref(), env.sys.config().wake))
-}
-
 fn run_tuicr(env: &Env) -> Option<Outcome> {
     Some(tuicr_check(env.sys.tool("tuicr", &["--version"]).as_deref()))
 }
@@ -660,7 +617,6 @@ fn run_tuicr(env: &Env) -> Option<Outcome> {
 pub const CHECKS: &[Check] = &[
     Check { id: "mac", run: run_mac },
     Check { id: "claude", run: run_claude },
-    Check { id: "orchestrator", run: run_orchestrator },
     Check { id: "claude.profile", run: run_profile },
     Check { id: "claude.signin", run: run_signin },
     Check { id: "projects", run: run_projects },
@@ -674,11 +630,10 @@ pub const CHECKS: &[Check] = &[
     Check { id: "update", run: run_update },
     Check { id: "hooks", run: run_hooks },
     Check { id: "plugin", run: run_plugin },
-    Check { id: "mods", run: run_mods },
+    Check { id: "validate", run: run_validate },
     Check { id: "relay", run: run_relay },
     Check { id: "direct", run: run_direct },
     Check { id: "devices", run: run_devices },
     Check { id: "notifications", run: run_notifications },
-    Check { id: "tmux", run: run_tmux },
     Check { id: "tuicr", run: run_tuicr },
 ];

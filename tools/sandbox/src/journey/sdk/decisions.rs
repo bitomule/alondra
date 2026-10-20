@@ -218,17 +218,6 @@ pub(super) fn turn_ended(report: &mut Report, user: &User, task: &str, card: &st
     })
 }
 
-/// The «Interrupt» of the Fleet row that names `title`.
-pub(super) fn interrupt_of(fleet: &Value, title: &str) -> Option<Value> {
-    let mut rows = vec![];
-    collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
-    rows.into_iter().rev().find_map(|row| {
-        let mut found = vec![];
-        collect(&row, &mut |item| item.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with("interrupt:")) && item.get("enabled") != Some(&Value::Bool(false)), &mut found);
-        found.into_iter().next()
-    })
-}
-
 /// Whether Claude Code reported the command of `tool_use` as work it tracks (`task_started`), as
 /// the Mac kept it with the task's raw observations.
 fn tracked(sandbox: &Sandbox, task: &str, tool_use: &str) -> Result<bool> {

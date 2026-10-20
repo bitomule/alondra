@@ -639,7 +639,6 @@ pub enum Flow {
     Go,
     Quit,
     NextMac,
-    Attach(String),
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
     Review {
         key: Key,
@@ -769,7 +768,7 @@ pub struct App {
 
 pub fn run() -> Result<()> {
     let restored = restore::take();
-    crate::attach::reset_terminal_modes();
+    crate::pty::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
     let picker = ratatui_image::picker::Picker::from_query_stdio()
@@ -804,7 +803,7 @@ pub fn run() -> Result<()> {
     let res = main_loop(&mut terminal, macs);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
-    crate::attach::reset_terminal_modes();
+    crate::pty::reset_terminal_modes();
     res
 }
 
@@ -875,24 +874,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             dirty = true;
                             break;
                         }
-                        Flow::Attach(agent) => {
-                            if app.remote_mac().is_some() {
-                                app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
-                                break;
-                            }
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            let res = crate::attach::attach(&agent, crate::attach::Over::Tui);
-                            crossterm::terminal::enable_raw_mode()?;
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            if let Err(e) = res {
-                                app.fail(trf!(
-                                    "Could not open its terminal: {e}",
-                                    "No pude abrir su terminal: {e}"
-                                ));
-                            }
-                            repaint(terminal, app)?;
-                            break;
-                        }
                         Flow::Review {
                             key,
                             pr,
@@ -905,11 +886,10 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             }
                             draw(terminal, app)?;
                             let _ = execute!(stdout(), DisableBracketedPaste);
-                            let res = crate::attach::run_tool(
+                            let res = crate::pty::run_tool(
                                 "tuicr",
                                 &["--stdout", "--no-update-check", "pr", &number.to_string()],
                                 &dir,
-                                crate::attach::Over::Tui,
                             );
                             crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
@@ -961,7 +941,7 @@ fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     };
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
-    crate::attach::reset_terminal_modes();
+    crate::pty::reset_terminal_modes();
     let error = updated::exec(&updated::stable_path(), &file);
     let _ = std::fs::remove_file(&file);
     *terminal = ratatui::init();
@@ -3313,11 +3293,7 @@ impl App {
             let result = Client::for_target(target, Duration::from_secs(30))
                 .post(&path, &body)
                 .map_err(|e| format!("{e:#}"))
-                .and_then(|reply| match reply.get("delivery_state").map(|state| serde_json::from_value::<alondra_core::delivery::State>(state.clone())) {
-                    None | Some(Ok(alondra_core::delivery::State::Handed)) => Ok(ok),
-                    Some(Ok(state)) => Err(crate::delivery::state_text(state).to_owned()),
-                    Some(Err(_)) => Err(tr!("Unknown delivery outcome", "Resultado de entrega desconocido").to_owned()),
-                });
+                .and_then(|reply| comments_delivered(&reply, ok));
             let _ = tx.send(Msg::Posted { key: Some(key), result });
         });
     }
@@ -3359,12 +3335,16 @@ impl App {
         }
     }
 
-    /// The id `claude attach` takes for an agent: its short id when the runtime knows it.
-    pub fn attach_id(&self, id: &AgentId) -> String {
-        self.runtime
-            .as_ref()
-            .and_then(|r| r.node(id))
-            .map_or_else(|| id.0.clone(), |n| n.short_id.clone())
+}
+
+/// Whether comments sent to a node reached it: handed to its session, or queued for it, as a
+/// node of the Agent SDK takes them while a turn of its runs.
+fn comments_delivered(reply: &serde_json::Value, ok: String) -> Result<String, String> {
+    use alondra_core::delivery::State;
+    match reply.get("delivery_state").map(|state| serde_json::from_value::<State>(state.clone())) {
+        None | Some(Ok(State::Handed | State::Dispatching)) => Ok(ok),
+        Some(Ok(state)) => Err(crate::delivery::state_text(state).to_owned()),
+        Some(Err(_)) => Err(tr!("Unknown delivery outcome", "Resultado de entrega desconocido").to_owned()),
     }
 }
 

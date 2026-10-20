@@ -8,7 +8,7 @@
 //! card is withdrawn when the hook goes away. An MCP elicitation has no mod answer, so its
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
 use crate::domain_runtime::DomainRuntime;
-use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
+use crate::hook_text::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,

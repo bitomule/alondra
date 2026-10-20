@@ -5,18 +5,17 @@ class Alondra < Formula
 
   depends_on macos: :sonoma
   depends_on arch: :arm64
-  depends_on "tmux"
   depends_on "tuicr"
 
   # Signed bytes must survive Homebrew cleaning unchanged.
-  skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher"
+  skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher", "libexec/alondra/sdk/alondra-host"
 
   url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
   sha256 "@ARM_SHA256@"
 
   def install
     bin.install "alondra", "alondrad", "alondrad-launcher"
-    (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator"
+    (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator", "sdk"
   end
 
   def caveats

@@ -37,7 +37,7 @@ pub fn summary(outcomes: &[Outcome]) -> String {
 }
 
 /// `alondra doctor`: a header, the checks by group with their fix under them, and a summary.
-/// tmux and tuicr share one line while both pass.
+/// The tools share one line while they all pass.
 pub fn grouped(header: &str, outcomes: &[Outcome]) -> Vec<String> {
     let tools_pass = outcomes.iter().filter(|o| o.group == Group::Tools).all(|o| o.status == Status::Pass);
     let joined = outcomes.iter().filter(|o| o.group == Group::Tools).map(|o| o.name).collect::<Vec<_>>().join(" · ");

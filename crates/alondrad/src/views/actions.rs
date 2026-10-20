@@ -597,8 +597,7 @@ async fn execute_external(
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::Relaunch => {
-            let actor = Actor::User { user_id: user_id.clone() };
-            let launched = crate::domain_orchestrator_tools::relaunch(domain, home, &actor, &TaskId(action.subject.clone()), &crate::orchestrate::ClaudeCli).await;
+            let launched = crate::domain_orchestrator_tools::relaunch(domain, home, &TaskId(action.subject.clone())).await;
             let (status, body) = relaunch_reply(launched);
             Ok(to_applied(status, body))
         }
@@ -636,9 +635,6 @@ async fn execute_external(
         }
         Verb::Pause => {
             let now = alondra_core::now_millis();
-            if domain.read().index().node(&AgentId(action.subject.clone())).is_some_and(|node| node.through_sdk) {
-                return Ok(error_value_lang(lang, "unsupported", "This node runs through the Agent SDK and cannot be paused yet: answer its card, or cancel its task"));
-            }
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
                 domain.live.gate.pause_by_user(domain, &action.subject, now)
             } else {
@@ -654,7 +650,7 @@ async fn execute_external(
             if domain.live.gate.resume_now(domain, &action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
-            match crate::fleet_gate::release_queued(domain, home, &TaskId(action.subject.clone()), &crate::orchestrate::ClaudeCli).await {
+            match crate::fleet_gate::release_queued(domain, home, &TaskId(action.subject.clone())).await {
                 Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }

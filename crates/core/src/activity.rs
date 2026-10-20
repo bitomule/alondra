@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::event::HookEvent;
 use crate::model::{Ledger, Millis, Node, Thread, ToolInFlight};
 use crate::states::{BACKGROUND_SUSPECT_MS, call_limit};
-use crate::tasks::{CardTask, Task};
+use crate::tasks::Task;
 use crate::view::View;
 
 /// Alondra's own MCP tools, the ones that can name a task.
@@ -152,27 +152,6 @@ impl View {
     pub fn focus(&self, session_id: &str, now: Millis) -> Option<&str> {
         let focus = self.nodes.get(session_id)?.ledger.focus.as_ref().filter(|f| now < f.until)?;
         self.board.tasks.get(&focus.task).filter(|t| t.is_assigned_to(session_id) && !t.state.finished()).map(|t| t.id.as_str())
-    }
-
-    /// The task a node's own card goes to (`card_task`); with several open tasks and none named,
-    /// the live focus names it before the card is refused.
-    pub fn called_task(&self, session_id: &str, named: Option<&str>, agent_id: Option<&str>, now: Millis) -> Result<String, CardTask> {
-        self.card_task(session_id, named, agent_id).or_else(|e| match e {
-            CardTask::Several(_) if agent_id.is_none() => self.focus(session_id, now).map(str::to_string).ok_or(e),
-            e => Err(e),
-        })
-    }
-
-    /// Which thread of the node is calling one of Alondra's tools right now: its `PreToolUse`
-    /// reached Alondra before the call did. `Some(None)` is the main thread; none when no thread,
-    /// or more than one, is inside such a call.
-    pub fn alondra_caller(&self, session_id: &str) -> Option<Option<&str>> {
-        let node = self.nodes.get(session_id)?;
-        let mut calling = node.ledger.threads.iter().filter(|t| t.tool.as_ref().is_some_and(|x| x.name.starts_with(ALONDRA_TOOLS)));
-        match (calling.next(), calling.next()) {
-            (Some(t), None) => Some(t.agent_id.as_deref()),
-            _ => None,
-        }
     }
 
     /// The node's only open task, or its only task: everything the node does is that task's.
@@ -485,11 +464,9 @@ mod tests {
         );
         run.hook("PostToolUse", EXPLORE, Some((REPORT, "claim")), Some("t-s"));
         assert_eq!(run.tasks()[1], working(Some("a1"), Some("t-s")), "a bound subagent keeps its own task");
-        assert_eq!(run.view.called_task("s", None, None, run.now()), Ok("t-other".into()), "a card that names no task");
 
         assert_eq!(run.activity_at(until - 1)[0].task.as_deref(), Some("t-other"));
         assert_eq!(run.activity_at(until)[0].task, None, "30 minutes later it is over");
-        assert_eq!(run.view.called_task("s", None, None, until), Err(CardTask::Several(vec!["t-other".into(), "t-s".into()])));
 
         run.focus("t-s", 30);
         assert_eq!(run.tasks()[0], working(None, Some("t-s")), "a new focus replaces it");

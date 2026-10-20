@@ -14,7 +14,6 @@ pub(super) enum Act {
     Back,
     Toggle,
     Open,
-    Terminal,
     Diff,
     Form,
     NextScreen,
@@ -448,19 +447,11 @@ impl App {
                     t.add(keys, "⏎/o", tr!("open", "abrir"), Act::Open);
                 }
                 Screen::Tasks | Screen::Fleet => {
-                    if view_render::attach_session(view).is_some() {
-                        let label = if self.screen == Screen::Fleet {
-                            tr!("its terminal (← returns)", "su terminal (← vuelve)")
-                        } else {
-                            tr!("its terminal", "su terminal")
-                        };
-                        t.add(vec![plain(KeyCode::Enter)], "⏎", label, Act::Terminal);
-                    }
-                    let mut keys = vec![char('o')];
+                    let mut keys = vec![plain(KeyCode::Enter), char('o')];
                     if !self.detail_view.shown {
                         keys.extend([char('l'), plain(KeyCode::Right)]);
                     }
-                    t.add(keys, "o", tr!("expand", "expandir"), Act::Open);
+                    t.add(keys, "⏎/o", tr!("expand", "expandir"), Act::Open);
                 }
             }
         }
@@ -524,7 +515,6 @@ impl App {
                 let _ = self.toggle_selected_section() || self.toggle_selected_fold();
             }
             Act::Open => self.open_reader(),
-            Act::Terminal => return self.open_terminal(),
             Act::Diff => self.open_reader(),
             Act::Form => {
                 if let Some(view) = self.current_view().map(|view| view.key.clone()) {

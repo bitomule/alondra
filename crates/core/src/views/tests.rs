@@ -1063,7 +1063,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
 }
 
 #[test]
-fn agent_uuid_keeps_message_and_close_actions() {
+fn agent_uuid_keeps_its_message_action_and_offers_no_close() {
     let mut state = fixture();
     let id = "a98d034b-249e-4487-a89b-57de38c26372";
     let mut agent = state.agents.remove(&"a-1".into()).unwrap();
@@ -1074,7 +1074,7 @@ fn agent_uuid_keeps_message_and_close_actions() {
     let actions = detail.sections.iter().flat_map(|section| &section.items).find_map(|item|
         if let Item::Actions(bar) = item { Some(&bar.actions) } else { None }).unwrap();
     assert!(actions.iter().any(|action| action.id.starts_with(&format!("msg:{id}@"))));
-    assert!(actions.iter().any(|action| action.id.starts_with(&format!("close:{id}@"))));
+    assert!(!actions.iter().any(|action| action.id.starts_with("close:")), "a node ends with its task, never by hand");
 }
 /// `ALONDRA_GOLDEN_OUT=<dir>` writes what the views render now there, to review and copy over the goldens.
 fn assert_golden(filename: &str, view: &View, expected: &str) {
@@ -2209,7 +2209,7 @@ fn schedule_editor_resets_old_options_when_project_changes() {
 }
 
 #[test]
-fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
+fn task_message_keeps_task_context_and_no_node_view_offers_its_terminal() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En,
@@ -2231,16 +2231,16 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
     });
     let node = render(&state, &live, Client::Tui, Lang::En,
         "node:a-1", "2026-09-30T10:00:00Z");
-    assert!(node.sections.iter().flat_map(|section| &section.items).any(|item| {
-        matches!(item, Item::Row(row) if matches!(&row.link,
-            Some(Link::Local { local: LocalLink::Attach { session } }) if session == "short-a-1"))
-    }));
+    let attaches = |view: &View| view.sections.iter().flat_map(|section| &section.items).any(|item| match item {
+        Item::Row(row) => matches!(&row.link, Some(Link::Local { local: LocalLink::Attach { .. } })),
+        Item::Card(card) => card.more.iter().chain(&card.actions).any(|action| matches!(&action.link, Some(Link::Local { local: LocalLink::Attach { .. } }))),
+        Item::Actions(bar) => bar.actions.iter().any(|action| matches!(&action.link, Some(Link::Local { local: LocalLink::Attach { .. } }))),
+        _ => false,
+    });
+    assert!(!attaches(&node), "a node's view never opens its terminal");
     let task = render(&state, &live, Client::Tui, Lang::En,
         "task:t-1", "2026-09-30T10:00:00Z");
-    assert!(task.sections.iter().flat_map(|section| &section.items).any(|item| {
-        matches!(item, Item::Row(row) if matches!(&row.link,
-            Some(Link::Local { local: LocalLink::Attach { session } }) if session == "short-a-1"))
-    }));
+    assert!(!attaches(&task), "a task's view never opens its node's terminal");
     let phone_task = render(&state, &live, Client::Ios, Lang::En,
         "task:t-1", "2026-09-30T10:00:00Z");
     assert!(!phone_task.sections.iter().flat_map(|section| &section.items).any(|item| {
@@ -2248,11 +2248,7 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
     }));
     let card = render(&state, &live, Client::Tui, Lang::En,
         "card:i-1", "2026-09-30T10:00:00Z");
-    assert!(card.sections.iter().flat_map(|section| &section.items).any(|item| {
-        matches!(item, Item::Card(card) if card.more.iter().any(|action|
-            matches!(&action.link,
-                Some(Link::Local { local: LocalLink::Attach { session } }) if session == "short-a-1")))
-    }));
+    assert!(!attaches(&card), "a card never opens its node's terminal");
 }
 
 #[test]
@@ -3376,7 +3372,7 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
         "context, cost, subagents and interruptions stay on the node's screen");
     assert!(working.children.is_empty(), "the task is the item, and nothing is inferred from the command it runs");
     let verbs = |row: &Row| row.actions.iter().map(|action| action.id.split(':').next().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(verbs(&working), ["interrupt", "pause", "close"], "a working node can be interrupted, paused or closed from its card");
+    assert_eq!(verbs(&working), ["interrupt", "pause"], "a working node can be interrupted or paused from its card, and ends with its task");
     let interrupt = &working.actions[0];
     assert_eq!((interrupt.label.as_str(), interrupt.style), ("Interrumpir", Style::Secondary));
     assert!(interrupt.confirm.is_some());
@@ -3386,7 +3382,7 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
     let resting = item(&state, &live);
     assert!(resting.subtitle.is_none() && resting.children.is_empty(), "what it said last is on the node's screen");
-    assert_eq!(verbs(&resting), ["close"], "nothing to interrupt once its turn ended");
+    assert!(verbs(&resting).is_empty(), "nothing to interrupt once its turn ended: {:?}", verbs(&resting));
     let detail = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
     let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0] else { panic!("actions") };
     assert!(bar.actions.iter().all(|action| !action.id.starts_with("interrupt:")));
@@ -4317,25 +4313,6 @@ fn request_option_values_keep_their_description_in_both_languages() {
     let [pr, effort] = descriptions(Lang::Es);
     assert_eq!(pr[1].as_deref(), Some("Alondra fusiona la PR cuando pasan sus comprobaciones"));
     assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
-}
-
-#[test]
-fn fleet_rows_offer_close_node_with_a_confirmation() {
-    let (state, live) = fleet_fixture();
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Row(row) if row.id == "d887a34b-249e-4487-a89b-57de38c26372" => Some(row),
-        _ => None,
-    }).expect("node row");
-    let close = row.actions.iter().find(|action| action.label == "Close Node").expect("close action");
-    assert_eq!(close.style, Style::Destructive);
-    assert!(close.id.starts_with("close:"));
-    assert_eq!(close.confirm.as_ref().map(|confirm| confirm.message.as_str()), Some("Close this node?"));
-    let detail = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
-        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
-    let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0]
-        else { panic!("actions") };
-    assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }
 
 fn held_fixture(hold: crate::domain::Hold, card: crate::domain::CardSpec) -> DomainState {
@@ -6874,7 +6851,7 @@ fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_
 }
 
 #[test]
-fn a_working_node_that_runs_through_the_sdk_offers_no_pause() {
+fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     state.interactions.clear();
@@ -6893,13 +6870,21 @@ fn a_working_node_that_runs_through_the_sdk_offers_no_pause() {
     for client in [Client::Tui, Client::Ios, Client::Mac] {
         for key in ["node:a-1", "fleet"] {
             let view = render(&state, &live, client, Lang::En, key, "");
-            assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} {key} offers pause to an SDK node: {:?}", action_ids(&view));
+            assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} {key} offers pause to an SDK node that runs nothing: {:?}", action_ids(&view));
         }
+    }
+    state.lifecycle_journal.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().extend([
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+    ]);
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        let view = render(&state, &live, client, Lang::En, "node:a-1", "");
+        assert!(find_action(&view, "pause:a-1").is_some(), "{client:?}: a working SDK node offers pause: {:?}", action_ids(&view));
     }
 }
 
 #[test]
-fn a_node_that_runs_through_the_sdk_offers_only_interrupt_in_fleet() {
+fn a_node_that_runs_through_the_sdk_offers_interrupt_and_pause_but_no_close_or_message() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     state.interactions.clear();
@@ -6907,8 +6892,8 @@ fn a_node_that_runs_through_the_sdk_offers_only_interrupt_in_fleet() {
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let live = pacing_live(vec![], vec![], None);
     for client in [Client::Tui, Client::Ios] {
-        assert!(action_ids(&render(&state, &live, client, Lang::En, "fleet", "")).iter().any(|id| id.starts_with("close:a-1")),
-            "{client:?}: the same node through claude --bg offers close");
+        assert!(!action_ids(&render(&state, &live, client, Lang::En, "fleet", "")).iter().any(|id| id.starts_with("close:")),
+            "{client:?}: no node is closed by hand");
     }
     state.lifecycle_journal.insert("t-1".into(), vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
@@ -6922,8 +6907,8 @@ fn a_node_that_runs_through_the_sdk_offers_only_interrupt_in_fleet() {
     for client in [Client::Tui, Client::Ios, Client::Mac] {
         for key in ["node:a-1", "fleet"] {
             let ids = action_ids(&render(&state, &live, client, Lang::En, key, ""));
-            assert!(!ids.iter().any(|id| id.starts_with("close:") || id.starts_with("msg:") || id.starts_with("pause:")),
-                "{client:?} {key} offers more than Interrupt to an SDK node: {ids:?}");
+            assert!(!ids.iter().any(|id| id.starts_with("close:") || id.starts_with("msg:")),
+                "{client:?} {key} offers close or a message to an SDK node: {ids:?}");
         }
     }
     for client in [Client::Tui, Client::Ios] {

@@ -1,8 +1,8 @@
-//! What Alondra's node mod (`plugin/hooks/register.ts`) needs from Claude Code, as `alondra
-//! doctor` and alondrad's startup check read it: mods shipped in 2.1.287.
+//! The Claude Code release Alondra runs through the Agent SDK, as `alondra doctor` and alondrad
+//! read it: the pinned SDK needs 2.1.287 or later.
 
-pub const CLAUDE_MIN: [u32; 3] = [2, 1, 287];
-pub const CLAUDE_MIN_TEXT: &str = "2.1.287";
+pub const MIN: [u32; 3] = [2, 1, 287];
+pub const MIN_TEXT: &str = "2.1.287";
 
 /// The release `claude --version` prints, as in `2.1.287 (Claude Code)`.
 pub fn version(text: &str) -> Option<[u32; 3]> {
@@ -13,8 +13,8 @@ pub fn version(text: &str) -> Option<[u32; 3]> {
     parts.next().is_none().then_some(version)
 }
 
-pub fn runs_mods(text: &str) -> bool {
-    version(text).is_some_and(|version| version >= CLAUDE_MIN)
+pub fn compatible(text: &str) -> bool {
+    version(text).is_some_and(|version| version >= MIN)
 }
 
 /// The last lines of a command's output, enough to say why it failed.
@@ -28,14 +28,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mods_need_claude_code_2_1_287_or_later() {
+    fn alondra_needs_claude_code_2_1_287_or_later() {
         assert_eq!(version("2.1.287 (Claude Code)\n"), Some([2, 1, 287]));
         assert_eq!(version("2.1.290-dev.20261001.t101500.sha1a2b3c4 (Claude Code)"), Some([2, 1, 290]));
-        assert!(runs_mods("2.1.287 (Claude Code)"));
-        assert!(runs_mods("2.2.0 (Claude Code)"));
-        assert!(!runs_mods("2.1.286 (Claude Code)"));
-        assert!(!runs_mods("2.1.112 (Claude Code)"));
-        assert!(!runs_mods("Claude Code"));
+        assert!(compatible("2.1.287 (Claude Code)"));
+        assert!(compatible("2.2.0 (Claude Code)"));
+        assert!(!compatible("2.1.286 (Claude Code)"));
+        assert!(!compatible("2.1.112 (Claude Code)"));
+        assert!(!compatible("Claude Code"));
         assert_eq!(version("2.1"), None);
     }
 

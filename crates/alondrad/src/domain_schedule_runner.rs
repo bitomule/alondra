@@ -5,7 +5,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use crate::launch_worktree::Workplace;
 use alondra_core::domain::{
-    Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
+    Actor, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
     TaskId, TaskState,
 };
@@ -126,58 +126,17 @@ pub(crate) fn producer_prompt(
     lines.join("\n")
 }
 
-/// Invoke only after the technical intent has been claimed durably. The caller
-/// records the result against that claim; this function never retries Claude.
-async fn invoke_claimed(
-    launch: &ScheduleLaunchIntent,
-    task: &TaskId,
-    disallowed_tools: &[String],
-    home: &Path,
-    key: &str,
-    launcher: &impl crate::orchestrate::Launcher,
-) -> Result<(String, PathBuf, Workplace), crate::orchestrate::Refusal> {
-    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, launcher).await?;
-    let settings =
-        crate::domain_sessions::prepare(home, key).map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not write the session's settings: {error}"),
-            )
-        })?;
-    let mut args: Vec<String> = ["--bg", "--name", &launch.name, "--permission-mode", "auto"]
-        .map(String::from)
-        .into();
-    args.extend(resolved.launch_flags(None));
-    args.extend(crate::domain_sessions::flags(
-        &[plugin.as_path()],
-        &settings,
-    ));
-    if !disallowed_tools.is_empty() {
-        args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
-    }
-    args.push("--".into());
-    args.push(producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo));
-    match launcher.run(&workplace.dir().to_string_lossy(), &args).await {
-        Ok(output) => Ok((output, settings, workplace)),
-        Err(refusal) => {
-            crate::domain_sessions::release(&settings);
-            Err(refusal)
-        }
-    }
-}
-
-/// The same claimed launch through the daemon's Agent SDK host: the same checks and worktree, and
-/// the denied tools of the scheduled Request given to the host. It never falls back to
-/// `claude --bg`. The node the host runs is the task's own from its admission.
+/// Invoke only after the technical intent has been claimed durably: the scheduled Request's task
+/// starts through the daemon's Agent SDK host, with the Request's denied tools. The node the host
+/// runs is the task's own from its admission.
 async fn launch_through_sdk(
     domain: &DomainRuntime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     disallowed_tools: &[String],
     home: &Path,
-    launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<String, String> {
-    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, launcher).await.map_err(|(_, reason)| reason)?;
+    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home).await.map_err(|(_, reason)| reason)?;
     let options = crate::sdk_owner::LaunchOptions {
         model: resolved.flags.model.clone(),
         effort: resolved.flags.effort.clone(),
@@ -190,18 +149,27 @@ async fn launch_through_sdk(
         prompt: producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo),
         plugin,
         options,
+        model: resolved.launch_model(),
     })
     .await
     .map_err(|error| error.message)?;
-    launched["agent_id"].as_str().map(str::to_owned).ok_or_else(|| "the SDK launch named no node".into())
+    let agent = launched["agent_id"].as_str().map(str::to_owned).ok_or_else(|| "the SDK launch named no node".to_owned())?;
+    if let Some(dir) = workplace.chosen().map(|dir| dir.to_string_lossy().into_owned()) {
+        if let Err(error) = domain.set_inherited_worktree(&agent, &dir, "alondra") {
+            log!("could not record that {agent} works in {dir}: {error:#}");
+        }
+        if let Err(error) = domain.set_task_worktree(task, &dir) {
+            log!("could not record that {task} works in {dir}: {error:#}");
+        }
+    }
+    Ok(agent)
 }
 
 async fn prepare_claimed(
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     home: &Path,
-    launcher: &impl crate::orchestrate::Launcher,
-) -> Result<(Workplace, PathBuf, Resolved), crate::orchestrate::Refusal> {
+) -> Result<(Workplace, PathBuf, Resolved), (StatusCode, String)> {
     if !Path::new(&launch.cwd).is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -218,7 +186,7 @@ async fn prepare_claimed(
     let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
         .await
         .map_err(|why| (StatusCode::CONFLICT, why))?;
-    let Some(plugin) = launcher.plugin() else {
+    let Some(plugin) = crate::plugins::node() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "Alondra's Claude plugin is unavailable".into(),
@@ -363,7 +331,6 @@ async fn dispatch_pending(
     domain: &DomainRuntime,
     home: &Path,
     run_id: &ScheduleRunId,
-    launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<()> {
     let state = domain.state()?;
     let Some(run) = state
@@ -419,156 +386,27 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    if domain.sdk().is_some() {
-        let agent = match launch_through_sdk(domain, &intent, &task, &policy, home, launcher).await {
-            Ok(agent) => agent,
-            Err(reason) => return fail_run(domain, run_id, reason),
-        };
-        let handed = execute_system(domain, Command::RecordScheduleLaunchHanded {
-            run_id: run_id.clone(),
-            session_id: Some(agent),
-            agent_id: None,
-            finished_at: alondra_core::now_millis(),
-        });
-        return match handed {
-            Ok(_) => Ok(()),
-            Err(error) if ordinary_conflict(&error) => Ok(()),
-            Err(error) => Err(error.into()),
-        };
-    }
-    let (output, settings, workplace) =
-        match invoke_claimed(&intent, &task, &policy, home, &run_id.0, launcher).await {
-            Ok(launched) => launched,
-            Err((_, reason)) => {
-                fail_run(domain, run_id, reason)?;
-                return Ok(());
-            }
-        };
-    let session = match crate::mods_wait::wait(&domain.live.mods, &run_id.0, launcher).await {
-        Ok(session) => session,
-        Err(waited) => {
-            if let Some(short) = alondra_core::sessions::launched_short(&output) {
-                launcher.stop(&short).await;
-            }
-            crate::domain_sessions::release(&settings);
-            let reason = crate::mods_wait::not_loaded(Path::new(&intent.cwd), &waited, launcher).await;
-            fail_run(domain, run_id, reason)?;
-            return Ok(());
-        }
+    let agent = match launch_through_sdk(domain, &intent, &task, &policy, home).await {
+        Ok(agent) => agent,
+        Err(reason) => return fail_run(domain, run_id, reason),
     };
-    if let Some(dir) = workplace.chosen().map(|dir| dir.to_string_lossy().into_owned()) {
-        if let Err(error) = domain.set_inherited_worktree(&session, &dir, "alondra") {
-            log!("could not record that {session} works in {dir}: {error:#}");
-        }
-        if let Err(error) = domain.set_task_worktree(&task, &dir) {
-            log!("could not record that {task} works in {dir}: {error:#}");
-        }
-    }
-    hand_over(domain, run_id, &intent.name, &session, &settings)
-}
-
-fn task_is_closed(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<bool> {
-    let state = domain.state()?;
-    Ok(state
-        .schedule
-        .runs
-        .get(run_id)
-        .and_then(|run| run.task_id.as_ref())
-        .and_then(|task| state.tasks.get(task))
-        .is_some_and(|task| task.state.terminal()))
-}
-
-/// The launched session is known: it becomes the run's Agent, its bearer is written into the
-/// settings file it reads, and the run is handed.
-fn hand_over(
-    domain: &DomainRuntime,
-    run_id: &ScheduleRunId,
-    name: &str,
-    session: &str,
-    settings: &Path,
-) -> Result<()> {
-    if task_is_closed(domain, run_id)? {
-        crate::domain_sessions::release(settings);
-        return fail_run(domain, run_id, "its Task was closed".into());
-    }
-    let agent_id = AgentId(session.to_owned());
-    match execute_system(
-        domain,
-        Command::RegisterAgent {
-            agent_id: agent_id.clone(),
-            name: name.to_owned(),
-            at: alondra_core::now_millis(),
-        },
-    ) {
-        Ok(_) => (),
-        Err(StoreError::Domain(error)) if error.code == "invalid_input" => (),
-        Err(error) => return Err(error.into()),
-    }
-    let bound = domain
-        .bind_agent(session)
-        .map_err(anyhow::Error::from)
-        .and_then(|capability| {
-            crate::domain_sessions::bind(
-                settings,
-                &agent_id,
-                capability.expose_for_child_environment(),
-            )
-        });
-    if let Err(error) = bound {
-        domain.revoke_agent(session)?;
-        crate::domain_sessions::release(settings);
-        fail_run(
-            domain,
-            run_id,
-            format!("Could not issue the session's domain capability: {error}"),
-        )?;
-        return Ok(());
-    }
-    let handed = execute_system(
-        domain,
-        Command::RecordScheduleLaunchHanded {
-            run_id: run_id.clone(),
-            session_id: Some(session.to_owned()),
-            agent_id: Some(agent_id),
-            finished_at: alondra_core::now_millis(),
-        },
-    );
+    let handed = execute_system(domain, Command::RecordScheduleLaunchHanded {
+        run_id: run_id.clone(),
+        session_id: Some(agent),
+        agent_id: None,
+        finished_at: alondra_core::now_millis(),
+    });
     match handed {
-        Ok(_) => (),
-        Err(error) if ordinary_conflict(&error) => {
-            domain.revoke_agent(session)?;
-            crate::domain_sessions::release(settings);
-            fail_run(
-                domain,
-                run_id,
-                match error {
-                    StoreError::Domain(error) => error.message,
-                    error => error.to_string(),
-                },
-            )?;
-        }
-        Err(error) => return Err(error.into()),
+        Ok(_) => Ok(()),
+        Err(error) if ordinary_conflict(&error) => Ok(()),
+        Err(error) => Err(error.into()),
     }
-    Ok(())
 }
 
-fn settings_path(home: &Path, key: &str) -> Result<PathBuf> {
-    let path = home.join("runtime/sessions").join(format!("{key}.json"));
-    if !path.exists() {
-        return crate::domain_sessions::prepare(home, key);
-    }
-    Ok(path)
-}
-
-/// A launch Alondra died in the middle of: Claude may be running with no bearer. Its mod
-/// reports the launch key again when Alondra is back, so the session is looked for; found, it
-/// gets its Agent and bearer, and when it never shows up the run fails and says so.
-async fn recover_uncertain(
-    domain: &DomainRuntime,
-    home: &Path,
-    run_id: &ScheduleRunId,
-    launcher: &impl crate::orchestrate::Launcher,
-) -> Result<()> {
+/// A launch Alondra died in the middle of, by this daemon's SDK host or an earlier release's
+/// `claude --bg`: whether its node started is not known, so the run fails and says so, and its
+/// task waits for the user's answer like any other failed start.
+fn recover_uncertain(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<()> {
     let state = domain.state()?;
     let Some((run, launch)) = state
         .schedule
@@ -580,21 +418,13 @@ async fn recover_uncertain(
     else {
         return Ok(());
     };
-    let name = launch.intent.name.clone();
-    let settings = settings_path(home, &run_id.0)?;
-    match crate::mods_wait::wait(&domain.live.mods, &run_id.0, launcher).await {
-        Ok(session) => hand_over(domain, run_id, &name, &session, &settings),
-        Err(_) => {
-            launcher.stop(&name).await;
-            crate::domain_sessions::release(&settings);
-            let title = run.definition_snapshot.as_ref().map_or(name.as_str(), |snapshot| snapshot.title.as_str());
-            fail_run(
-                domain,
-                run_id,
-                format!("The scheduled run \"{title}\" did not start properly: Alondra stopped while launching it and the session never reported back. Try it again."),
-            )
-        }
-    }
+    let name = launch.intent.name.as_str();
+    let title = run.definition_snapshot.as_ref().map_or(name, |snapshot| snapshot.title.as_str());
+    fail_run(
+        domain,
+        run_id,
+        format!("The scheduled run \"{title}\" did not start properly: Alondra stopped while launching it. Try it again."),
+    )
 }
 
 /// The user's answer to a scheduled run that did not start. "Try again" launches its schedule
@@ -685,7 +515,6 @@ pub(crate) async fn run_cycle(
     domain: &DomainRuntime,
     home: &Path,
     due_enabled: bool,
-    launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<()> {
     let state = domain.state()?;
     let claimed: Vec<_> = state
@@ -711,7 +540,7 @@ pub(crate) async fn run_cycle(
         .map(|run| run.id.clone())
         .collect();
     for run_id in uncertain {
-        if let Err(error) = recover_uncertain(domain, home, &run_id, launcher).await {
+        if let Err(error) = recover_uncertain(domain, &run_id) {
             log!("could not recover scheduled run {run_id}: {error:#}");
         }
     }
@@ -767,7 +596,7 @@ pub(crate) async fn run_cycle(
         return Ok(());
     }
     for run_id in pending {
-        dispatch_pending(domain, home, &run_id, launcher).await?;
+        dispatch_pending(domain, home, &run_id).await?;
     }
     Ok(())
 }
@@ -873,13 +702,12 @@ pub(crate) async fn run(
     home: PathBuf,
     due_enabled: bool,
 ) -> Result<()> {
-    let launcher = crate::orchestrate::ClaudeCli;
     let mut schedule_changes = domain.subscribe_schedules();
     let mut usage_changes = domain.live.usage_pause.subscribe();
     let mut turn = domain.live.gate.subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
-        run_cycle(&domain, &home, due_enabled, &launcher).await?;
+        run_cycle(&domain, &home, due_enabled).await?;
         let deadline = if domain.live.usage_pause.is_active() { None } else { nearest_run(&*domain.state()?, due_enabled) };
         match wait_for_next_run(
             deadline,
@@ -891,7 +719,7 @@ pub(crate) async fn run(
         .await
         {
             WakeReason::Clock(crate::schedule_clock::ClockChange::SystemClock) => {
-                run_cycle(&domain, &home, due_enabled, &launcher).await?;
+                run_cycle(&domain, &home, due_enabled).await?;
                 rebase_runs(&domain, false)?;
             }
             WakeReason::Clock(crate::schedule_clock::ClockChange::TimeZone) => {
@@ -906,36 +734,9 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sdk_owner::tests::SdkLaunches;
     use alondra_core::domain::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
-    const FOUND_SESSION: &str = "cd5678ef-0000-4000-8000-000000000000";
-
-    struct FakeLauncher(Mutex<Vec<(String, Vec<String>)>>);
-    impl crate::orchestrate::Launcher for FakeLauncher {
-        async fn run(
-            &self,
-            cwd: &str,
-            args: &[String],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            self.0.lock().unwrap().push((cwd.into(), args.to_vec()));
-            Ok("backgrounded · ab1234 · scheduled/run-1".into())
-        }
-        async fn run_with_env(
-            &self,
-            _: &str,
-            _: &[String],
-            _: &[(String, String)],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            panic!("a background session never sees the launcher's environment");
-        }
-        async fn stop(&self, _: &str) {}
-        fn plugin(&self) -> Option<std::path::PathBuf> {
-            Some("/synthetic/claude-plugin".into())
-        }
-    }
 
     #[test]
     fn an_auto_merge_request_keeps_the_merge_with_alondra() {
@@ -1068,87 +869,6 @@ mod tests {
         assert!(after_time_zone_change[0].next_run.unwrap() > 1_000_000_000_000);
     }
 
-    #[tokio::test]
-    async fn captured_launch_uses_request_policy_and_explicit_new_node_command() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let root = scratch_directory.parent().unwrap().join(format!(
-            "alondra-schedule-prep-{}",
-            crate::auth::random_hex(8)
-        ));
-        let project = root.join("App");
-        std::fs::create_dir_all(&project).unwrap();
-        for args in [&["init", "-q", "-b", "main"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]] {
-            assert!(std::process::Command::new("git").arg("-C").arg(&project).args(args).status().unwrap().success());
-        }
-        let definition = ScheduleDefinitionSnapshot {
-            title: "Review".into(),
-            text: "Review project".into(),
-            project: Some("App".into()),
-            options: BTreeMap::new(),
-            disallowed_tools: vec!["Bash".into()],
-        };
-        let intent = prepare_intent(
-            &ScheduleId::from("schedule-1"),
-            &ScheduleRunId::from("run-1"),
-            &definition,
-            &OptionsFile::default(),
-            &root,
-        )
-        .unwrap();
-        let fake = FakeLauncher(Mutex::new(vec![]));
-        let home = root.join("home");
-        let (_, settings, _) = invoke_claimed(
-            &intent,
-            &TaskId::from("task-1"),
-            &definition.disallowed_tools,
-            &home,
-            "run-1",
-            &fake,
-        )
-        .await
-        .unwrap();
-        let calls = fake.0.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            Path::new(&calls[0].0).canonicalize().unwrap(),
-            project.join(".claude/worktrees/task-1").canonicalize().unwrap(),
-            "a scheduled node works in a worktree of its own, never the main checkout"
-        );
-        let args = &calls[0].1;
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--name", "scheduled/schedule-run-1"])
-        );
-        assert!(
-            !args.iter().any(|arg| arg == "--session-id"),
-            "claude --bg ignores it"
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--disallowedTools", "Bash"])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--settings", settings.to_str().unwrap()])
-        );
-        let written: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
-        assert_eq!(written["env"]["ALONDRA_DOMAIN_PROTOCOL"], "2");
-        let prompt = args.last().unwrap();
-        assert!(
-            prompt.starts_with("Review project\n")
-                && prompt.contains("Choices for this work")
-                && !prompt.contains("request-1")
-                && prompt.contains("Alondra task task-1")
-                && !prompt.contains("data_epoch=")
-                && !prompt.contains("revision="),
-            "{prompt}"
-        );
-        assert!(!prompt.contains("auto-merge"), "{prompt}");
-        drop(calls);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     struct Fixture {
         root: crate::test_support::Directory,
         home: PathBuf,
@@ -1212,6 +932,111 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.root).unwrap();
         }
+    }
+
+    fn git_repository(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success());
+        }
+    }
+
+    impl Fixture {
+        /// Points the schedule at `name`, a git repository in the projects folder.
+        fn in_project(&self, name: &str) -> PathBuf {
+            let project = self.root.join("projects").join(name);
+            git_repository(&project);
+            let mut schedule = self.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+            schedule.project = Some(name.into());
+            schedule.revision += 1;
+            execute_system(&self.domain, Command::UpdateSchedule { schedule }).unwrap();
+            project
+        }
+
+        /// How many nodes were started: each SDK launch registers its own.
+        fn launches(&self) -> usize {
+            self.domain.state().unwrap().agents.len()
+        }
+    }
+
+    fn answer_problem(domain: &DomainRuntime, problem: &str, option: &str, id: &str) {
+        let state = domain.state().unwrap();
+        domain
+            .execute(
+                &Actor::User { user_id: "u".into() },
+                &CommandEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    data_epoch: state.data_epoch.clone(),
+                    command_id: id.to_owned().into(),
+                    expected_revision: state.revision,
+                    command: Command::AnswerQuestion {
+                        attachments: vec![],
+                        interaction_id: problem.into(),
+                        option_id: option.into(),
+                        inputs: BTreeMap::new(),
+                    },
+                },
+                None,
+                || Ok(()),
+            )
+            .unwrap();
+    }
+
+    // claude --bg got the run's name, the Request's denied tools and the mission as flags. Through
+    // the SDK the host's Claude is started with them, in a worktree of the task's own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn captured_launch_uses_request_policy_and_explicit_new_node_command() {
+        let fixture = Fixture::new();
+        let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
+        let project = fixture.in_project("App");
+        fixture.claim("run-1");
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
+        let task = run.task_id.clone().unwrap();
+        let agent = state.tasks[&task].agent_id.clone().expect("the task is its SDK node's");
+        assert_eq!(state.agents[&agent].name, "scheduled/schedule-run-1");
+        assert_eq!(sdk.options(&agent.0).disallowed_tools, ["Bash"], "the Request's policy is kept for a resumed session");
+        sdk.until_answered(&task.0).await;
+        let starts = sdk.starts();
+        assert_eq!(starts.len(), 1, "{starts:?}");
+        assert_eq!(
+            PathBuf::from(starts[0]["cwd"].as_str().unwrap()),
+            project.join(".claude/worktrees").join(crate::launch_worktree::slug(&task.0)).canonicalize().unwrap(),
+            "a scheduled node works in a worktree of its own, never the main checkout"
+        );
+        assert!(sdk.flag("--disallowedTools").is_some_and(|tools| tools.contains("Bash")), "{:?}", sdk.args());
+        let prompts = sdk.prompts();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        let prompt = &prompts[0];
+        let request = run.request_id.as_ref().unwrap();
+        assert!(
+            prompt.starts_with("Review project\n")
+                && prompt.contains("Choices for this work")
+                && !prompt.contains(&request.0)
+                && prompt.contains(&format!("Alondra task {task}"))
+                && !prompt.contains("data_epoch=")
+                && !prompt.contains("revision="),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("auto-merge"), "{prompt}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_scheduled_runs_sdk_launch_records_the_worktree_alondra_made_as_its_tasks_worktree() {
+        let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
+        let project = fixture.in_project("App");
+        fixture.claim("run-1");
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        let state = fixture.domain.state().unwrap();
+        let task = state.schedule.runs[&ScheduleRunId::from("run-1")].task_id.clone().unwrap();
+        let agent = state.tasks[&task].agent_id.clone().expect("the task is its SDK node's");
+        let made = project.join(".claude/worktrees").join(crate::launch_worktree::slug(&task.0)).canonicalize().unwrap();
+        let recorded = fixture.domain.task_worktree(&task).unwrap().expect("the task's worktree is recorded");
+        assert_eq!(Path::new(&recorded).canonicalize().unwrap(), made, "it is cleaned with the task");
+        let owned = fixture.domain.inherited_worktree(&agent.0).unwrap().expect("its node owns it");
+        assert_eq!(Path::new(&owned).canonicalize().unwrap(), made);
     }
 
     #[tokio::test]
@@ -1286,123 +1111,48 @@ mod tests {
         );
     }
 
-    struct CountingLauncher {
-        calls: Mutex<usize>,
-        fail: bool,
-    }
-    impl crate::orchestrate::Launcher for CountingLauncher {
-        async fn run(
-            &self,
-            _: &str,
-            args: &[String],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            *self.calls.lock().unwrap() += 1;
-            assert!(args.iter().any(|arg| arg == "--settings"));
-            tokio::task::yield_now().await;
-            if self.fail {
-                Err((StatusCode::BAD_GATEWAY, "synthetic Claude failure".into()))
-            } else {
-                Ok("backgrounded · ab1234 · scheduled/run".into())
-            }
-        }
-        async fn stop(&self, _: &str) {}
-        fn plugin(&self) -> Option<PathBuf> {
-            Some("/synthetic/plugin".into())
-        }
-    }
-
-    fn settings_files(home: &Path) -> Vec<serde_json::Value> {
-        std::fs::read_dir(home.join("runtime/sessions"))
-            .map(|entries| {
-                entries
-                    .map(|entry| {
-                        serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap())
-                            .unwrap()
-                    })
-                    .filter(|settings: &serde_json::Value| settings["env"].as_object().is_some_and(|env| !env.is_empty()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn competing_runners_claim_one_external_dispatch() {
         let fixture = Fixture::new();
+        let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("manual-1");
-        let launcher = CountingLauncher {
-            calls: Mutex::new(0),
-            fail: false,
-        };
-        fixture.domain.live.mods.loaded_for(SESSION, Some("manual-1"));
         let (left, right) = tokio::join!(
-            run_cycle(&fixture.domain, &fixture.home, false, &launcher),
-            run_cycle(&fixture.domain, &fixture.home, false, &launcher),
+            run_cycle(&fixture.domain, &fixture.home, false),
+            run_cycle(&fixture.domain, &fixture.home, false),
         );
         left.unwrap();
         right.unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
+        assert_eq!(fixture.launches(), 1);
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("manual-1")];
         assert_eq!(run.state, ScheduleRunState::Sent);
-        assert_eq!(
-            run.launch.as_ref().unwrap().state,
-            ScheduleLaunchState::Handed
-        );
+        let launch = run.launch.as_ref().unwrap();
+        assert_eq!(launch.state, ScheduleLaunchState::Handed);
         assert_eq!(state.tasks.len(), 1);
         assert_eq!(state.requests.len(), 1);
-        let session = SESSION.to_owned();
         let task = state.tasks.values().next().unwrap();
-        assert_eq!(
-            task.agent_id.as_ref().map(|id| id.0.as_str()),
-            Some(session.as_str())
-        );
-        assert_eq!(
-            run.launch
-                .as_ref()
-                .unwrap()
-                .agent_id
-                .as_ref()
-                .map(|id| id.0.as_str()),
-            Some(session.as_str())
-        );
-        assert_eq!(
-            state.agents[&AgentId(session.clone())].name,
-            run.launch.as_ref().unwrap().intent.name
-        );
-        let registry =
-            std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
-        assert!(
-            registry.contains(&session),
-            "the session Claude listed holds a durable bearer"
-        );
-        let settings = settings_files(&fixture.home);
-        assert_eq!(settings.len(), 1);
-        assert_eq!(settings[0]["env"]["ALONDRA_DOMAIN_AGENT"], SESSION);
-        assert_eq!(
-            settings[0]["env"]["ALONDRA_DOMAIN_CAPABILITY"]
-                .as_str()
-                .unwrap()
-                .len(),
-            64
-        );
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
+        let agent = task.agent_id.clone().expect("the task is its SDK node's");
+        assert_eq!(launch.session_id.as_deref(), Some(agent.0.as_str()), "the run is handed to the node that runs it");
+        assert_eq!(state.agents[&agent].name, launch.intent.name);
+        let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
+        assert!(registry.contains(&agent.0), "the node holds a durable bearer");
+        sdk.until_answered(&task.id.0).await;
+        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&sdk.capture).unwrap()).unwrap();
+        let environment: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+        assert!(environment.contains(&"ALONDRA_DOMAIN_CAPABILITY"), "its Claude reaches Alondra with that bearer: {environment:?}");
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        assert_eq!(fixture.launches(), 1);
+        assert_eq!(sdk.starts().len(), 1, "one Claude is started");
     }
 
     // A scheduled run of a daemon with the Agent SDK host starts its task through that host, with
-    // the same checks, and is handed to the node the host runs: `claude --bg` is never run.
+    // the same checks, and is handed to the node the host runs.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_scheduled_task_runs_through_the_sdk_host() {
         let fixture = Fixture::new();
-        let state_root = crate::test_support::Directory::for_unix_socket();
-        let (backend, _) = crate::sdk_owner::tests::fixture_backend(&fixture.home, &state_root);
-        fixture.domain.enable_sdk(backend);
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("sdk-run");
-        let launcher = CountingLauncher { calls: Mutex::new(0), fail: false };
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 0, "a scheduled task never starts as claude --bg");
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("sdk-run")];
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
@@ -1410,25 +1160,24 @@ mod tests {
         let lifecycle = alondra_core::domain::replay(&task.id, &state.lifecycle_journal[&task.id]).unwrap();
         assert_eq!(lifecycle.execution().map(|stamp| stamp.host().as_str().to_owned()).as_deref(), Some("alondra-sdk"));
         assert!(task.agent_id.as_ref().is_some_and(|agent| fixture.domain.owns_sdk_host(agent)), "the host's owner runs its node");
-        fixture.domain.stop_sdk_owners();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn pending_resumes_but_dispatching_becomes_uncertain_after_restart() {
         let fixture = Fixture::new();
         fixture.claim("pending");
         finish_claim(&fixture.domain, &fixture.home, &"pending".into()).unwrap();
-        let reopened = DomainRuntime::open(&fixture.home).unwrap();
-        let launcher = CountingLauncher {
-            calls: Mutex::new(0),
-            fail: false,
-        };
-        reopened.live.mods.loaded_for(SESSION, Some("pending"));
-        run_cycle(&reopened, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
-        assert_eq!(reopened.state().unwrap().schedule.runs[&ScheduleRunId::from("pending")].state, ScheduleRunState::Sent);
+        {
+            let reopened = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+            let sdk = SdkLaunches::enable(&reopened, &fixture.home);
+            run_cycle(&reopened, &fixture.home, false).await.unwrap();
+            let state = reopened.state().unwrap();
+            let run = &state.schedule.runs[&ScheduleRunId::from("pending")];
+            assert_eq!(run.state, ScheduleRunState::Sent);
+            assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+            assert_eq!(state.agents.len(), 1, "the pending launch goes once");
+            sdk.until_answered(&run.task_id.as_ref().unwrap().0).await;
+        }
 
         fixture.domain.reload();
         fixture.claim("uncertain");
@@ -1448,23 +1197,14 @@ mod tests {
             run.launch.as_ref().unwrap().state,
             ScheduleLaunchState::Uncertain
         );
-        crate::domain_sessions::prepare(&fixture.home, "uncertain").unwrap();
-        restarted.live.mods.loaded_for(FOUND_SESSION, Some("uncertain"));
-        run_cycle(&restarted, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1, "recovery never launches Claude again");
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
         let state = restarted.state().unwrap();
+        assert_eq!(state.agents.len(), 1, "recovery never launches Claude again");
         let run = &state.schedule.runs[&ScheduleRunId::from("uncertain")];
-        let launch = run.launch.as_ref().unwrap();
-        assert_eq!(launch.state, ScheduleLaunchState::Handed);
-        assert_eq!(launch.session_id.as_deref(), Some(FOUND_SESSION));
-        let task = &state.tasks[run.task_id.as_ref().unwrap()];
-        assert_eq!(task.agent_id.as_ref().map(|id| id.0.as_str()), Some(FOUND_SESSION));
-        let bound = std::fs::read(fixture.home.join("runtime/sessions/uncertain.json")).unwrap();
-        let bound: serde_json::Value = serde_json::from_slice(&bound).unwrap();
-        assert_eq!(bound["env"]["ALONDRA_DOMAIN_AGENT"], FOUND_SESSION);
-        assert_eq!(bound["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().len(), 64);
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
+        assert!(run.error.as_deref().unwrap().contains("did not start properly"), "{:?}", run.error);
+        assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none(), "nothing is assigned the uncertain run's task");
     }
 
     #[tokio::test]
@@ -1480,45 +1220,18 @@ mod tests {
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
         execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
         let restarted = DomainRuntime::open(&fixture.home).unwrap();
-        let launcher = WithoutMods(Mutex::new(vec![]));
-        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
         let state = restarted.state().unwrap();
         assert_eq!(state.schedule.runs[&ScheduleRunId::from("closed")].state, ScheduleRunState::Failed);
         assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed")), "no Problem on a closed Task");
-    }
-
-    #[tokio::test]
-    async fn a_found_session_whose_task_was_closed_is_not_bound_and_the_run_stops_retrying() {
-        let fixture = Fixture::new();
-        fixture.claim("closed-found");
-        finish_claim(&fixture.domain, &fixture.home, &"closed-found".into()).unwrap();
-        execute_system(
-            &fixture.domain,
-            Command::ClaimScheduleLaunch { run_id: "closed-found".into(), now: alondra_core::now_millis() },
-        )
-        .unwrap();
-        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed-found")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
-        restarted.live.mods.loaded_for(FOUND_SESSION, Some("closed-found"));
-        let launcher = WithoutMods(Mutex::new(vec![]));
-        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
-
-        let state = restarted.state().unwrap();
-        let run = &state.schedule.runs[&ScheduleRunId::from("closed-found")];
-        assert_eq!(run.state, ScheduleRunState::Failed);
-        assert_eq!(run.error.as_deref(), Some("its Task was closed"));
-        assert!(!state.agents.contains_key(&AgentId(FOUND_SESSION.into())), "a closed Task's session is never bound");
-        assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none());
-        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed-found")), "no card on a closed Task");
         let revision = state.revision;
-        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
         assert_eq!(restarted.state().unwrap().revision, revision, "the run is not retried every cycle");
     }
 
-    #[tokio::test]
-    async fn an_uncertain_launch_that_never_reports_is_stopped_failed_and_retried_once_on_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_uncertain_launch_fails_its_run_at_once_and_is_retried_once_on_request() {
         let fixture = Fixture::new();
         fixture.claim("lost");
         finish_claim(&fixture.domain, &fixture.home, &"lost".into()).unwrap();
@@ -1527,22 +1240,16 @@ mod tests {
             Command::ClaimScheduleLaunch { run_id: "lost".into(), now: alondra_core::now_millis() },
         )
         .unwrap();
-        crate::domain_sessions::prepare(&fixture.home, "lost").unwrap();
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
-        let launcher = WithoutMods(Mutex::new(vec![]));
-        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        let restarted = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+        let _sdk = SdkLaunches::enable(&restarted, &fixture.home);
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
         let state = restarted.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("lost")];
         assert_eq!(run.state, ScheduleRunState::Failed);
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
         assert!(run.error.as_deref().unwrap().contains("did not start properly"));
-        assert_eq!(launcher.0.lock().unwrap().len(), 1, "the unseen session is stopped");
-        assert!(settings_files(&fixture.home).is_empty(), "nothing stays bound to Alondra");
-        assert!(
-            fixture.home.join("runtime/sessions/lost.json").exists(),
-            "Claude Code resumes the session with the same --settings path, so the file stays"
-        );
+        assert!(state.agents.is_empty(), "nothing is started for it");
         let problem = &state.interactions[&InteractionId::from("problem-launch-lost")];
         let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem asks") };
         assert_eq!(
@@ -1550,35 +1257,11 @@ mod tests {
             ["retry", "seen"]
         );
 
-        let answer = |option: &str, id: &str| {
-            let state = restarted.state().unwrap();
-            restarted
-                .execute(
-                    &Actor::User { user_id: "u".into() },
-                    &CommandEnvelope {
-                        protocol_version: PROTOCOL_VERSION,
-                        data_epoch: state.data_epoch.clone(),
-                        command_id: id.to_owned().into(),
-                        expected_revision: state.revision,
-                        command: Command::AnswerQuestion {
-                            attachments: vec![],
-                            interaction_id: "problem-launch-lost".into(),
-                            option_id: option.into(),
-                            inputs: BTreeMap::new(),
-                        },
-                    },
-                    None,
-                    || Ok(()),
-                )
-                .unwrap();
-        };
-        answer("retry", "answer-retry");
-        let relaunch = CountingLauncher { calls: Mutex::new(0), fail: false };
-        restarted.live.mods.loaded_for(SESSION, Some("retry-lost"));
-        run_cycle(&restarted, &fixture.home, false, &relaunch).await.unwrap();
-        run_cycle(&restarted, &fixture.home, false, &relaunch).await.unwrap();
-        assert_eq!(*relaunch.calls.lock().unwrap(), 1, "the retry launches the schedule once");
+        answer_problem(&restarted, "problem-launch-lost", "retry", "answer-retry");
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
         let state = restarted.state().unwrap();
+        assert_eq!(state.agents.len(), 1, "the retry launches the schedule once");
         let retried = &state.schedule.runs[&ScheduleRunId::from("retry-lost")];
         assert_eq!(retried.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
         let original = state.schedule.runs[&ScheduleRunId::from("lost")].task_id.as_ref().unwrap();
@@ -1597,19 +1280,15 @@ mod tests {
     #[tokio::test]
     async fn a_repository_alondra_cannot_trust_is_never_launched_and_the_orchestrator_hears_why() {
         let fixture = Fixture::new();
+        let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         let config = fixture.root.join(".claude.json");
         std::fs::write(&config, r#"{"projects":{}}"#).unwrap();
         crate::claude_trust::use_config_for_test(&config);
         std::fs::create_dir(fixture.root.join(".claude.json.lock")).unwrap();
         fixture.claim("untrusted");
-        let launcher = CountingLauncher {
-            calls: Mutex::new(0),
-            fail: false,
-        };
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 0, "Claude is never asked to start there");
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        assert_eq!(fixture.launches(), 0, "Claude is never asked to start there");
+        assert!(sdk.starts().is_empty());
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("untrusted")];
         assert_eq!(run.state, ScheduleRunState::Failed);
@@ -1626,14 +1305,7 @@ mod tests {
     async fn returned_failure_commits_run_launch_and_marker_together() {
         let fixture = Fixture::new();
         fixture.claim("failed");
-        let launcher = CountingLauncher {
-            calls: Mutex::new(0),
-            fail: true,
-        };
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("failed")];
         assert_eq!(run.state, ScheduleRunState::Failed);
@@ -1654,59 +1326,15 @@ mod tests {
                 .is_none(),
             "a failed launch assigns nothing"
         );
-        assert!(
-            state.agents.is_empty(),
-            "no Agent before Claude reports a session"
-        );
-        assert!(
-            settings_files(&fixture.home).is_empty(),
-            "a failed launch leaves no settings file"
-        );
+        assert!(state.agents.is_empty(), "a launch that did not start registers no node");
         let task_id = run.task_id.as_ref().unwrap();
         let told = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
         assert!(
             told.iter().any(|message| message.recipient_kind == "orchestrator"
                 && message.task_id.as_deref() == Some(task_id.0.as_str())
-                && message.message.contains("could not start: synthetic Claude failure")),
+                && message.message.contains("could not start: this Alondra has no Agent SDK host")),
             "the orchestrator hears why the scheduled Task did not start: {told:?}"
         );
-    }
-
-    struct WithoutMods(Mutex<Vec<String>>);
-    impl crate::orchestrate::Launcher for WithoutMods {
-        async fn run(
-            &self,
-            _: &str,
-            _: &[String],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            Ok("backgrounded · ab1234 · scheduled/run".into())
-        }
-        async fn stop(&self, short: &str) {
-            self.0.lock().unwrap().push(short.into());
-        }
-        fn mods_deadline(&self) -> std::time::Duration {
-            std::time::Duration::from_millis(20)
-        }
-        fn plugin(&self) -> Option<PathBuf> {
-            Some("/synthetic/plugin".into())
-        }
-    }
-
-    #[tokio::test]
-    async fn a_session_whose_mod_never_loads_is_stopped_and_fails_the_run_without_an_agent() {
-        let fixture = Fixture::new();
-        fixture.claim("untrusted");
-        let launcher = WithoutMods(Mutex::new(vec![]));
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher)
-            .await
-            .unwrap();
-        let state = fixture.domain.state().unwrap();
-        let run = &state.schedule.runs[&ScheduleRunId::from("untrusted")];
-        assert_eq!(run.state, ScheduleRunState::Failed);
-        assert!(run.error.as_deref().is_some_and(|error| error.starts_with("The session's mod did not report within")), "{:?}", run.error);
-        assert_eq!(*launcher.0.lock().unwrap(), ["ab1234"]);
-        assert!(state.agents.is_empty());
-        assert!(settings_files(&fixture.home).is_empty());
     }
 
     #[tokio::test]
@@ -1719,16 +1347,11 @@ mod tests {
             BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;",
         )
         .unwrap();
-        let launcher = CountingLauncher {
-            calls: Mutex::new(0),
-            fail: true,
-        };
         assert!(
-            run_cycle(&fixture.domain, &fixture.home, false, &launcher)
+            run_cycle(&fixture.domain, &fixture.home, false)
                 .await
                 .is_err()
         );
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("rollback")];
         assert_eq!(run.state, ScheduleRunState::Sent);
@@ -1743,7 +1366,8 @@ mod tests {
                 .unwrap()
         );
         drop(conn);
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let restarted = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+        let sdk = SdkLaunches::enable(&restarted, &fixture.home);
         assert_eq!(
             restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("rollback")]
                 .launch
@@ -1756,96 +1380,75 @@ mod tests {
             .unwrap()
             .execute_batch("DROP TRIGGER reject_failed_marker;")
             .unwrap();
-        let recovery = WithoutMods(Mutex::new(vec![]));
-        run_cycle(&restarted, &fixture.home, false, &recovery)
+        run_cycle(&restarted, &fixture.home, false)
             .await
             .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1, "recovery never launches Claude again");
+        assert!(restarted.state().unwrap().agents.is_empty() && sdk.starts().is_empty(), "recovery never launches Claude again");
         assert_eq!(
             restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("rollback")].state,
             ScheduleRunState::Failed
         );
     }
 
-    struct LoadingLauncher<'a>(&'a DomainRuntime, Mutex<usize>);
-    impl crate::orchestrate::Launcher for LoadingLauncher<'_> {
-        async fn run(
-            &self,
-            _: &str,
-            args: &[String],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            *self.1.lock().unwrap() += 1;
-            self.0.live.mods.loaded_by(SESSION, args);
-            Ok("backgrounded · ab1234 · scheduled/run".into())
-        }
-        async fn stop(&self, _: &str) {}
-        fn plugin(&self) -> Option<PathBuf> {
-            Some("/synthetic/plugin".into())
-        }
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_due_schedule_and_a_pending_launch_wait_out_the_usage_limit_and_each_launch_once_after_it() {
         let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("manual-1");
         let now = alondra_core::now_millis();
         fixture.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
-        let launcher = LoadingLauncher(&fixture.domain, Mutex::new(0));
-        let launches = || *launcher.1.lock().unwrap();
         let runs = || fixture.domain.state().unwrap().schedule.runs.len();
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
-        let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
-        due.enabled = true;
-        due.next_run = Some(now + 200);
-        due.revision += 1;
-        execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        assert_eq!(launches(), 0, "paused: Claude is not called");
-        assert_eq!(runs(), 1, "the due schedule starts no run: it is deferred, not failed");
-        let state = fixture.domain.state().unwrap();
-        let manual = &state.schedule.runs[&ScheduleRunId::from("manual-1")];
-        assert_eq!(manual.launch.as_ref().unwrap().state, ScheduleLaunchState::Pending, "the claimed launch waits too");
-        assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
-        assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(now + 200), "still due");
-
-        fixture.domain.live.usage_pause.resume(alondra_core::now_millis());
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        assert_eq!(launches(), 2, "back: the deferred launch and the due schedule go, one each");
-        assert_eq!(runs(), 2);
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        assert_eq!(launches(), 2, "and never again");
-        assert_eq!(runs(), 2);
-        let state = fixture.domain.state().unwrap();
-        assert!(state.schedule.runs.values().all(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Handed)));
-    }
-
-    #[tokio::test]
-    async fn a_due_schedule_and_a_pending_launch_wait_while_the_disk_is_nearly_full() {
-        let fixture = Fixture::new();
-        fixture.claim("manual-1");
-        let now = alondra_core::now_millis();
-        fixture.domain.live.machine_watch.set_disk_low(true);
-        let launcher = LoadingLauncher(&fixture.domain, Mutex::new(0));
-        let launches = || *launcher.1.lock().unwrap();
-        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
         due.enabled = true;
         due.next_run = Some(now);
         due.revision += 1;
         execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
 
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        assert_eq!(launches(), 0, "no node starts on a nearly full disk");
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        assert_eq!(fixture.launches(), 0, "paused: Claude is not called");
+        assert_eq!(runs(), 1, "the due schedule starts no run: it is deferred, not failed");
+        let state = fixture.domain.state().unwrap();
+        let manual = &state.schedule.runs[&ScheduleRunId::from("manual-1")];
+        assert_eq!(manual.launch.as_ref().unwrap().state, ScheduleLaunchState::Pending, "the claimed launch waits too");
+        assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
+        assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(now), "still due");
+
+        fixture.domain.live.usage_pause.resume(alondra_core::now_millis());
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        assert_eq!(fixture.launches(), 2, "back: the deferred launch and the due schedule go, one each");
+        assert_eq!(runs(), 2);
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        assert_eq!(fixture.launches(), 2, "and never again");
+        assert_eq!(runs(), 2);
+        let state = fixture.domain.state().unwrap();
+        assert!(state.schedule.runs.values().all(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Handed)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_due_schedule_and_a_pending_launch_wait_while_the_disk_is_nearly_full() {
+        let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
+        fixture.claim("manual-1");
+        let now = alondra_core::now_millis();
+        fixture.domain.live.machine_watch.set_disk_low(true);
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+        due.enabled = true;
+        due.next_run = Some(now);
+        due.revision += 1;
+        execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
+
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        assert_eq!(fixture.launches(), 0, "no node starts on a nearly full disk");
         let state = fixture.domain.state().unwrap();
         assert_eq!(state.schedule.runs[&ScheduleRunId::from("manual-1")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
         assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
 
         fixture.domain.live.machine_watch.set_disk_low(false);
-        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
-        assert_eq!(launches(), 2, "space again: the deferred launch and the due schedule go");
+        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+        assert_eq!(fixture.launches(), 2, "space again: the deferred launch and the due schedule go");
     }
 }

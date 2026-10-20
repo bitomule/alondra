@@ -4,9 +4,11 @@
 Usage: tools/e2e-doc-review.py <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 (other outputs bazel lists for those targets, such as clippy's .ok files, are skipped)
 
-Starts its own sandbox in a fresh directory. A node without a model (the real `alondra node
-connect` and `alondra mcp-node`, as the plugin runs them) writes a document and asks for its
-review. `alondra` runs in a pseudo-terminal: it opens the card, comments two blocks and sends
+Starts its own sandbox in a fresh directory, with the fakes and the Agent SDK backend (SDK_NODE and
+SDK_HOST name the pinned Node and the host bundle). The phone asks for the work; the node Alondra
+starts for it is the sandbox's scripted native Claude in an SDK host, which, told by this test,
+writes a document and asks for its review through the real `alondra mcp-node`. `alondra` runs in
+a pseudo-terminal: it opens the card, comments two blocks and sends
 them. Each scenario checks both ends: the node was handed the comments, and the TUI says they
 were sent instead of "no longer in the inbox". Scenarios:
   1. a plain review;
@@ -17,10 +19,10 @@ E2E_CAPTURES=<dir> keeps what the TUI showed at each step there; the sandbox and
 file it made are removed at the end, whatever happens.
 """
 
+import glob
 import hashlib
 import json
 import os
-import queue
 import re
 import shlex
 import shutil
@@ -28,9 +30,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-import uuid
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 60
@@ -86,55 +86,56 @@ class Terminal:
 
 
 class Node:
-    """A node without a model: its connection to the daemon and its MCP tools."""
+    """The task's node: the sandbox's scripted native Claude in the Mac's Agent SDK host. This test
+    tells it what to call (`alondra-sandbox fake node`), and it calls through the real `alondra
+    mcp-node` inside its own turn; what Alondra hands it is in its session's received inputs."""
 
-    def __init__(self, alondra, env):
-        self.alondra, self.env = alondra, env
-        self.session = str(uuid.uuid4())
-        key = f"e2e-review-{self.session[:8]}"
-        sessions = os.path.join(env["ALONDRA_HOME"], "runtime", "sessions")
-        os.makedirs(sessions, exist_ok=True)
-        self.settings = os.path.join(sessions, f"{key}.json")
-        descriptor = os.open(self.settings, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w") as file:
-            json.dump({"env": {"ALONDRA_DOMAIN_AGENT": self.session}}, file)
-        self.connection = subprocess.Popen([alondra, "node", "connect"], env=env, stdin=subprocess.PIPE,
-                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        self.connection.stdin.write(json.dumps({"session_id": self.session, "version": "2.1.287", "cwd": REPO, "launch_key": key}))
-        self.connection.stdin.close()
-        assert self.connection.stdout.readline() == "connected\n", "the node could not connect"
-        self.lines = queue.Queue()
-        threading.Thread(target=self._read, daemon=True).start()
+    REQUEST = "req-review"
+
+    def __init__(self, sandbox, env):
+        self.sandbox, self.env = sandbox, env
+        self.task = "t-review"
+        scripts = os.path.join(sandbox, "fakes", "scripts")
+        os.makedirs(scripts, exist_ok=True)
+        with open(os.path.join(scripts, f"{self.REQUEST}.json"), "w") as file:
+            json.dump({"request_id": self.REQUEST, "tasks": [{"task_id": self.task, "title": TITLE}]}, file)
+        self.tool("phone", "--mac", "1", "pair", "--direct")
+        self.tool("phone", "--mac", "1", "request", "--direct", "POST", "/requests",
+                  json.dumps({"request_id": self.REQUEST, "text": "Write the migration design and ask for its review"}))
         deadline = time.time() + TIMEOUT
-        while "ALONDRA_DOMAIN_CAPABILITY" not in json.load(open(self.settings))["env"]:
-            assert time.time() < deadline, "the daemon issued the node no capability"
+        while not (session := self.session()) or not self.received(session["short"]):
+            assert time.time() < deadline, "Alondra started no node for the task through the SDK host"
             time.sleep(0.2)
-        self.task = f"sandbox-probe-{self.session}"
+        self.short = session["short"]
+        self.seen = len(self.received(self.short))
 
-    def _read(self):
-        """Takes each message as the plugin does: hands it to the session, then acknowledges it."""
-        for line in self.connection.stdout:
-            message = json.loads(line)
-            if "id" in message:
-                subprocess.run([self.alondra, "node", "ack", message["id"]], env=self.env,
-                               input=json.dumps({"session_id": self.session}), text=True, check=True, capture_output=True)
-            self.lines.put(message)
+    def tool(self, *args):
+        run = subprocess.run([os.path.join(self.sandbox, "bin/alondra-sandbox"), "--sandbox", self.sandbox, *args], env=self.env,
+                             capture_output=True, text=True, timeout=TIMEOUT * 3)
+        assert run.returncode == 0, f"alondra-sandbox {' '.join(args[:3])} failed: {run.stdout}{run.stderr}"
+        return run.stdout
+
+    def session(self):
+        """The task's running session, as the fake native Claude writes it down."""
+        for path in sorted(glob.glob(os.path.join(self.sandbox, "fakes", "sessions", "*", "session.json"))):
+            session = json.load(open(path))
+            if session.get("task_id") == self.task and session.get("state") == "running":
+                return session
+        return None
+
+    def received(self, short):
+        try:
+            return [json.loads(line) for line in open(os.path.join(self.sandbox, "fakes", "sessions", short, "received.jsonl")) if line.strip()]
+        except FileNotFoundError:
+            return []
 
     def call(self, *calls):
-        env = dict(self.env, ALONDRA_DOMAIN_SETTINGS=self.settings, ALONDRA_DOMAIN_PROTOCOL="2")
-        requests = [{"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}]
-        requests += [{"jsonrpc": "2.0", "id": index + 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
-                     for index, (tool, arguments) in enumerate(calls)]
-        run = subprocess.run([self.alondra, "mcp-node"], env=env, input="\n".join(json.dumps(r) for r in requests) + "\n",
-                             capture_output=True, text=True, timeout=TIMEOUT)
-        replies = [json.loads(line) for line in run.stdout.splitlines() if line.strip()][1:]
-        for (tool, _), reply in zip(calls, replies):
-            result = reply.get("result", {})
-            assert not result.get("isError"), f"{tool} was refused: {result}"
-        assert len(replies) == len(calls), run.stdout + run.stderr
+        steps = [{"do": "call", "tool": tool, "arguments": arguments} for tool, arguments in calls]
+        lines = [line for line in self.tool("fake", "node", self.task, "call", "--step", json.dumps(steps)).splitlines() if line.strip()]
+        assert len(lines) == len(calls) and all(line.startswith("ok ") for line in lines), "\n".join(lines)
 
     def document(self, revision, text, first=False):
-        name = f"e2e-review-{self.session[:8]}-{revision}.md"
+        name = f"e2e-review-{self.short}-{revision}.md"
         os.makedirs(os.path.join(self.env["ALONDRA_HOME"], "files"), exist_ok=True)
         with open(os.path.join(self.env["ALONDRA_HOME"], "files", name), "w") as file:
             file.write(text)
@@ -157,20 +158,17 @@ class Node:
                                               "subject": {"kind": "document_review", "document_id": "design", "revision_id": revision}})]
 
     def told(self, *expected):
-        """The next message the daemon handed this node."""
-        try:
-            line = self.lines.get(timeout=TIMEOUT)
-        except queue.Empty:
-            raise AssertionError(f"the node was never handed {expected}")
-        for text in expected:
-            assert text in line["text"], f"the node was handed, without {text!r}:\n{line['text']}"
-        print(f"node was handed:\n{line['text']}\n", file=sys.stderr, flush=True)
-        return line["text"]
-
-    def stop(self):
-        if self.connection.poll() is None:
-            self.connection.kill()
-            self.connection.wait()
+        """The next input Alondra handed this node."""
+        deadline = time.time() + TIMEOUT
+        while len(received := self.received(self.short)) <= self.seen:
+            assert time.time() < deadline, f"the node was never handed {expected}"
+            time.sleep(0.2)
+        text = received[self.seen]["text"]
+        self.seen += 1
+        for wanted in expected:
+            assert wanted in text, f"the node was handed, without {wanted!r}:\n{text}"
+        print(f"node was handed:\n{text}\n", file=sys.stderr, flush=True)
+        return text
 
 
 def comment_two_blocks(tui, first="Migrate the store in one go"):
@@ -202,11 +200,12 @@ def main():
     signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     binaries = [os.path.abspath(p) for p in sys.argv[1:] if not p.endswith(".ok")]
     daemon, cli, relay, tool = binaries
-    scratch = os.path.realpath(tempfile.mkdtemp(prefix="alondra-review-"))
+    # The node's order socket needs a short path.
+    scratch = os.path.realpath(tempfile.mkdtemp(prefix="alondra-review-", dir="/private/tmp"))
     sandbox = os.path.join(scratch, "sandbox")
-    tui = node = None
+    tui = None
     try:
-        env = dict(os.environ, SANDBOX_DIR=sandbox, SANDBOX_PORT=os.environ.get("SANDBOX_PORT", "47930"), MACS="1")
+        env = dict(os.environ, SANDBOX_DIR=sandbox, SANDBOX_PORT=os.environ.get("SANDBOX_PORT", "47930"), MACS="1", FAKES="1")
         subprocess.run([os.path.join(REPO, "tools/e2e-sandbox.sh"), daemon, cli, relay, tool], env=env, check=True, stdout=subprocess.DEVNULL)
         home = json.load(open(os.path.join(sandbox, "sandbox.json")))["macs"][0]["home"]
         child = {k: v for k, v in os.environ.items() if not k.startswith("ALONDRA_")}
@@ -215,7 +214,7 @@ def main():
             child[key] = value.strip('"')
         child.update(TERM="xterm-256color", ALONDRA_LANG="es", ALONDRA_SANDBOX="1")
         alondra = os.path.join(sandbox, "bin/alondra")
-        node = Node(alondra, child)
+        node = Node(sandbox, child)
         comments = ("Migrate the store in one go", "Split this step in two",
                     "Remove the old endpoint after the release", "Keep the old endpoint a release longer")
 
@@ -274,8 +273,6 @@ def main():
     finally:
         if tui:
             tui.stop()
-        if node:
-            node.stop()
         print("stopping the sandbox", file=sys.stderr, flush=True)
         subprocess.run([os.path.join(REPO, "tools/e2e-sandbox-stop.sh"), sandbox], stdout=subprocess.DEVNULL, timeout=120)
         shutil.rmtree(scratch, ignore_errors=True)

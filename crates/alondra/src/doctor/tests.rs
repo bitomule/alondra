@@ -75,9 +75,7 @@ impl Fake {
     fn healthy() -> Self {
         let claude = [
             ("--version", (true, "2.1.291 (Claude Code)".to_string())),
-            ("--help", (true, "--print --resume --output-format stream-json --permission-mode auto --permission-prompts".to_string())),
             ("plugin validate --strict /m/plugin", (true, String::new())),
-            ("plugin test /m/plugin", (true, String::new())),
         ];
         Fake {
             config_text: RefCell::new(Some("name = \"Ana\"\nwake = true\n".into())),
@@ -99,7 +97,7 @@ impl Fake {
             marketplace: RefCell::new(true),
             node_plugin: Some("/m/plugin".into()),
             fingerprint: Some("fp-1".into()),
-            tools: [("tmux", "tmux 3.5a"), ("tuicr", "tuicr 0.26.0")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            tools: [("tuicr", "tuicr 0.26.0")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             port_owner: None,
             log: (1..=12).map(|n| format!("line {n}")).collect(),
             memory: RefCell::new(Memory {
@@ -443,8 +441,6 @@ fn devices_identity_config_and_tools() {
     assert!(matches!(config_check(p, Some("nmae = 1"), install).fix, Some(Fix::Manual(_))));
     assert!(hooks_port_check(alondra_core::DEFAULT_PORT).is_none());
     assert_eq!(hooks_port_check(47897).map(|c| c.status), Some(Status::Warn));
-    assert_eq!(tmux_check(None, true).status, Status::Fail);
-    assert_eq!(tmux_check(None, false).status, Status::Warn);
     assert_eq!(tuicr_check(Some("tuicr 0.26.0")).status, Status::Pass);
     assert_eq!(tuicr_check(Some("tuicr 1.2.0\n")).status, Status::Pass);
     assert_eq!(tuicr_check(Some("tuicr 0.18.3")).status, Status::Warn);
@@ -452,57 +448,51 @@ fn devices_identity_config_and_tools() {
 }
 
 #[test]
-fn claude_must_be_new_enough_and_able_to_orchestrate() {
+fn claude_must_be_new_enough_for_the_agent_sdk() {
     english();
     assert_eq!(claude_version_check(Some("2.1.287 (Claude Code)\n")).detail, "2.1.287 (Claude Code)");
     let old = claude_version_check(Some("2.1.280 (Claude Code)\n"));
-    assert_eq!((old.status, old.fix), (Status::Fail, Some(Fix::Manual("claude update".into()))), "nodes need mods");
+    assert_eq!((old.status, old.fix), (Status::Fail, Some(Fix::Manual("claude update".into()))), "the SDK host needs a newer Claude Code");
     assert!(old.detail.contains("2.1.287"), "{}", old.detail);
     assert_eq!(claude_version_check(None).status, Status::Fail);
-    let help = "--print --resume --output-format stream-json --permission-mode auto --permission-prompts";
-    assert_eq!(orchestrator_capability_check(Some(help)).status, Status::Pass);
-    assert_eq!(orchestrator_capability_check(Some(&help.replace("auto", "default"))).status, Status::Fail);
-    assert_eq!(orchestrator_capability_check(None).status, Status::Fail);
 }
 
 #[test]
-fn the_node_mod_must_validate_and_pass_its_tests() {
+fn the_node_plugin_must_validate() {
     english();
     let plugin = Path::new("/r/plugin");
     let ok = || Some((true, String::new()));
-    assert_eq!(mods_check(Some(plugin), ok(), ok()).status, Status::Pass);
-    let invalid = mods_check(Some(plugin), Some((false, "❯ author: No author\n✘ Validation failed".into())), ok());
+    assert_eq!(validate_check(Some(plugin), ok()).status, Status::Pass);
+    let invalid = validate_check(Some(plugin), Some((false, "❯ author: No author\n✘ Validation failed".into())));
     assert_eq!((invalid.status, invalid.fix), (Status::Fail, Some(Fix::Manual("claude plugin validate --strict /r/plugin".into()))));
     assert!(invalid.detail.contains("Validation failed"), "{}", invalid.detail);
-    let off = mods_check(Some(plugin), ok(), Some((false, "claude plugin test: hooks modules are turned off: disableAllHooks".into())));
-    assert_eq!((off.status, off.fix), (Status::Fail, Some(Fix::Manual("claude plugin test /r/plugin".into()))));
-    assert!(off.detail.contains("hooks modules are turned off"), "{}", off.detail);
-    assert_eq!(mods_check(Some(plugin), ok(), None).status, Status::Fail);
-    assert_eq!(mods_check(None, ok(), ok()).fix, Some(Fix::Manual("brew reinstall alondra".into())));
+    assert_eq!(validate_check(Some(plugin), None).status, Status::Fail);
+    assert_eq!(validate_check(None, ok()).fix, Some(Fix::Manual("brew reinstall alondra".into())));
 }
 
 #[test]
-fn the_slow_mod_check_runs_only_with_deep_or_a_changed_plugin() {
+fn the_slow_plugin_check_runs_only_with_deep_or_a_changed_plugin() {
     english();
     let sys = Fake::healthy();
-    let skipped = find(&diagnose(&env(&sys)), "mods").clone();
+    let skipped = find(&diagnose(&env(&sys)), "validate").clone();
     assert_eq!(skipped.status, Status::Pass);
     assert!(skipped.detail.contains("--deep checks again"), "{}", skipped.detail);
     assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin")), "{:?}", sys.claude_calls.borrow());
 
     let deep = Env { sys: &sys, deep: true, first_run: false, yes: false, select: Selection::All };
-    assert_eq!(find(&diagnose(&deep), "mods").detail, "the node mod validates and its tests pass");
-    assert!(sys.claude_calls.borrow().contains(&"plugin test /m/plugin".to_string()));
+    assert_eq!(find(&diagnose(&deep), "validate").detail, "the node plugin validates");
+    assert!(sys.claude_calls.borrow().contains(&"plugin validate --strict /m/plugin".to_string()));
+    assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin test")), "the node mod's own tests no longer run");
 
     let mut changed = Fake::healthy();
     changed.fingerprint = Some("fp-2".into());
-    assert_eq!(find(&diagnose(&env(&changed)), "mods").detail, "the node mod validates and its tests pass");
+    assert_eq!(find(&diagnose(&env(&changed)), "validate").detail, "the node plugin validates");
     assert_eq!(changed.memory().mods.map(|m| m.fingerprint), Some("fp-2".into()), "a pass is remembered");
 
     let mut failing = Fake::healthy();
     failing.fingerprint = Some("fp-3".into());
-    failing.claude.insert("plugin test /m/plugin".into(), (false, "boom".into()));
-    assert_eq!(find(&diagnose(&env(&failing)), "mods").status, Status::Fail);
+    failing.claude.insert("plugin validate --strict /m/plugin".into(), (false, "boom".into()));
+    assert_eq!(find(&diagnose(&env(&failing)), "validate").status, Status::Fail);
     assert!(failing.remembered.borrow().is_empty(), "a failure is never remembered as a pass");
 }
 
@@ -648,9 +638,9 @@ fn only_and_skip_run_just_the_checks_they_name() {
     let repaired = repair(&only, &mut Recorded::default()).unwrap();
     assert_eq!(repaired.applied, vec![Action::RepairPlugin], "identity is not repaired outside --only");
 
-    let skip = Env { select: Selection::Skip(vec!["identity".into(), "mods".into()]), ..env(&sys) };
+    let skip = Env { select: Selection::Skip(vec!["identity".into(), "validate".into()]), ..env(&sys) };
     let ids: Vec<&str> = diagnose(&skip).iter().map(|o| o.id).collect();
-    assert!(!ids.contains(&"identity") && !ids.contains(&"mods") && ids.contains(&"service"), "{ids:?}");
+    assert!(!ids.contains(&"identity") && !ids.contains(&"validate") && ids.contains(&"service"), "{ids:?}");
     assert!(check_ids().contains(&"service") && check_ids().contains(&"relay"));
 }
 
@@ -696,7 +686,7 @@ fn exit_codes_put_a_silent_daemon_first_then_breakage_then_a_person() {
     let o = |id: &'static str, status, fix| Outcome { id, name: id, group: Group::Service, status, detail: String::new(), fix };
     let ask = || Some(Fix::Ask { question: String::new(), default: true, action: Action::SignIn, instead: String::new() });
     let down = o("alondrad", Status::Fail, Some(Fix::Auto(Action::RestartService)));
-    let broken = o("tmux", Status::Fail, Some(Fix::Manual("brew install tmux".into())));
+    let broken = o("tuicr", Status::Fail, Some(Fix::Manual("brew install tuicr".into())));
     let person = o("claude.signin", Status::Fail, ask());
     let warning = o("update", Status::Warn, None);
     assert_eq!(exit_code(&[down.clone(), broken.clone(), person.clone()]), 4);
@@ -718,8 +708,8 @@ fn json_keeps_todays_fields_and_adds_schema_id_fixable_and_next_step() {
     assert_eq!(daemon["detail"], "connection refused");
     assert_eq!(daemon["fix"], "alondra doctor --fix");
     assert_eq!(daemon["fixable"], true);
-    let tmux = doc["checks"].as_array().unwrap().iter().find(|c| c["id"] == "tmux").unwrap();
-    assert_eq!((tmux["fix"].as_str(), tmux["fixable"].as_bool()), (Some(""), Some(false)));
+    let tuicr = doc["checks"].as_array().unwrap().iter().find(|c| c["id"] == "tuicr").unwrap();
+    assert_eq!((tuicr["fix"].as_str(), tuicr["fixable"].as_bool()), (Some(""), Some(false)));
     assert_eq!(doc["next_step"], "alondra doctor --fix");
     assert_eq!(report(&diagnose(&env(&Fake::healthy())), None)["next_step"], Value::Null);
     let target = json!({"program": "/opt/homebrew/opt/alondra/bin/alondrad", "profile_mode": "implicit"});
@@ -775,7 +765,7 @@ fn grouped_output_aligns_details_and_fixes_in_one_column() {
     for group in ["Service", "Claude", "Devices", "Tools"] {
         assert!(lines.contains(&group.to_string()), "{lines:#?}");
     }
-    assert!(lines.contains(&"  ✓ tmux · tuicr".to_string()), "{lines:#?}");
+    assert!(lines.contains(&"  ✓ tuicr".to_string()), "{lines:#?}");
     assert_eq!(lines.last().unwrap(), "1 warning. Nothing is broken.");
     let column = |needle: &str| lines.iter().find_map(|l| l.find(needle).map(|at| l[..at].chars().count())).unwrap_or_else(|| panic!("{needle}: {lines:#?}"));
     assert_eq!(column("never tested on a device"), column("→ alondra doctor --test-push"));

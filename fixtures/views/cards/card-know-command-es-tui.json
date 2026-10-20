@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v510e090efab9c0f4",
+  "version": "v29d273674277cfca",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
@@ -137,27 +137,6 @@
               "enabled": true,
               "stamp": "Aclaración solicitada",
               "key": "c",
-              "resolves_card": false
-            },
-            {
-              "id": "",
-              "label": "Conectar al nodo",
-              "style": "plain",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "a",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "attach",
-                  "session": "alondra-ios"
-                }
-              },
               "resolves_card": false
             }
           ],

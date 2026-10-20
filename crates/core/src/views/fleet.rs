@@ -1,26 +1,9 @@
 use super::{
-    BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, StepState, Style, Tone,
+    BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain::{AgentId, NodePhase, Pause, PauseReason, TaskState};
 use std::collections::BTreeMap;
-
-fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
-    let mut action = common::action(
-        Verb::Close,
-        id,
-        context.domain.revision,
-        t!(context.lang, "Close Node", "Cerrar nodo"),
-        Style::Destructive,
-    )?;
-    action.key = (context.client == super::Client::Tui).then(|| "x".into());
-    action.confirm = Some(Confirm {
-        title: action.label.clone(),
-        message: t!(context.lang, "Close this node?", "¿Cerrar este nodo?").into(),
-        button: action.label.clone(),
-    });
-    Some(action)
-}
 
 fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
     let mut action = common::action(Verb::Msg, id, context.domain.revision,
@@ -355,16 +338,11 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
     let title = common::current_task(context, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
     let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, title, None);
     row.badges.push(node_state(&agent.id, context));
-    let through_sdk = context.index.node(&agent.id).is_some_and(|node| node.through_sdk);
     if context.client == super::Client::Ios {
         row.actions.extend(interrupt_action(&agent.id.0, context));
         row.actions.extend(super::pacing::node_actions(&agent.id, context));
-    } else if through_sdk && context.client == super::Client::Tui {
+    } else if context.client == super::Client::Tui {
         row.actions.extend(interrupt_action(&agent.id.0, context));
-    }
-    // A node of the Agent SDK is Alondra's own process: it ends with its task, never by hand.
-    if context.client != super::Client::Mac && !through_sdk {
-        row.actions.extend(close_action(&agent.id.0, context));
     }
     row
 }
@@ -539,13 +517,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         row.trailing = Some(Trailing::Time { at: since.clone(), format: super::TimeFormat::Relative });
         view.sections.push(common::section("since", None, vec![Item::Row(row)]));
     }
-    let through_sdk = context.index.node(&agent.id).is_some_and(|node| node.through_sdk);
-    if let Some(short_id) = live.and_then(|node| node.short_id.as_ref()).filter(|_| context.client == super::Client::Tui && !through_sdk) {
-        let mut attach = common::row("attach", "node", Icon::Node,
-            t!(context.lang, "Attach", "Conectar").into(), None);
-        attach.link = Some(Link::Local { local: LocalLink::Attach { session: short_id.clone() } });
-        view.sections.push(common::section("attach", None, vec![Item::Row(attach)]));
-    }
     let waiting = node_waiting(&agent.id, context)
         .map(|item| super::card::from_item(item, context, false).map(Item::Card))
         .collect::<Result<Vec<_>, BuildError>>()?;
@@ -656,14 +627,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     let mut actions = vec![];
-    if !through_sdk {
+    // A node still on `claude --bg` takes a message through its mod's connection, and moves to the
+    // Agent SDK with it when it rests.
+    if !context.index.node(&agent.id).is_some_and(|node| node.through_sdk) {
         actions.extend(message_action(id, context));
     }
     actions.extend(interrupt_action(id, context));
     actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
-    if !through_sdk {
-        actions.extend(close_action(id, context));
-    }
     if !actions.is_empty() {
         view.sections.push(common::section(
             "actions",

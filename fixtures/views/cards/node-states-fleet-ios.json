@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "ve94c2f39d6c69e80",
+  "version": "v01c74e1a83eff4aa",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -82,27 +82,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         },
         {
           "type": "row",
@@ -120,27 +100,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:queued@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     },
@@ -166,27 +126,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:release-runner@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         },
         {
           "type": "row",
@@ -242,24 +182,6 @@
               "enabled": true,
               "stamp": "Paused",
               "resolves_card": false
-            },
-            {
-              "id": "close:zeta-worker@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
             }
           ]
         },
@@ -295,24 +217,6 @@
               "enabled": true,
               "stamp": "Resuming…",
               "resolves_card": false
-            },
-            {
-              "id": "close:paused-builder@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
             }
           ]
         }
@@ -340,27 +244,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:alpha-waiting@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     }

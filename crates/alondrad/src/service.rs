@@ -299,7 +299,6 @@ pub struct Service {
     home: PathBuf,
     transfers: Arc<crate::service_files::Transfers>,
     inflight: InFlight,
-    hub: Option<Arc<crate::hub::Hub>>,
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
     routes: Option<Arc<crate::client_routes::Client>>,
     direct: DirectConfig,
@@ -495,10 +494,6 @@ impl Service {
         now_ms()
     }
 
-    pub fn with_hub(mut self, hub: Arc<crate::hub::Hub>) -> Self {
-        self.hub = Some(hub);
-        self
-    }
     pub fn with_domain(mut self, domain: Arc<crate::domain_runtime::DomainRuntime>) -> Self {
         self.domain = Some(domain);
         self
@@ -525,11 +520,7 @@ impl Service {
         transport: Transport,
     ) -> Result<String> {
         let binding = self.approval_binding(sender, device, transport)?;
-        let domain = self
-            .domain
-            .as_deref()
-            .or_else(|| self.hub.as_deref().map(|hub| &*hub.domain));
-        match domain {
+        match self.domain.as_deref() {
             Some(domain) => Ok(format!(
                 "{binding}:domain-v2:{}",
                 domain.state()?.data_epoch
@@ -556,13 +547,7 @@ impl Service {
                     request.body.is_some(),
                 );
         }
-        request.method == "POST"
-            && (request.path == "/v1/service/push-binding"
-                || self.hub.is_some()
-                    && crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
-            || self.hub.is_some()
-                && (crate::http::atomic_local_path(&request.method, &request.path)
-                    || crate::schedules::atomic_local_path(&request.method, &request.path))
+        request.method == "POST" && request.path == "/v1/service/push-binding"
     }
 
     async fn execute_atomic_local(
@@ -661,38 +646,7 @@ impl Service {
                 .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
             return Ok(bytes);
         }
-        let hub = self
-            .hub
-            .as_ref()
-            .context("atomic local executor unavailable")?;
-        let result = if crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some() {
-            json!({"status":409,"body":crate::domain_api::legacy_write_blocked()})
-        } else if crate::schedules::atomic_local_path(&request.method, &request.path) {
-            crate::schedules::atomic_local_request(
-                hub,
-                &envelope.sender,
-                &envelope.request_id,
-                digest,
-                &request.method,
-                &request.path,
-                request.body.as_ref(),
-            )?
-        } else {
-            crate::http::atomic_local_request(
-                hub,
-                &envelope.sender,
-                &envelope.request_id,
-                digest,
-                &request.path,
-                request.body.as_ref(),
-                || self.require_device_approval(&envelope.sender, device, transport),
-            )
-            .await?
-        };
-        let bytes = self.encode_response(envelope, device, &result, request)?;
-        let bytes = self.journal
-            .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
-        Ok(bytes)
+        bail!("atomic local executor unavailable")
     }
 
     async fn execute_domain_request(
@@ -866,7 +820,6 @@ impl Service {
             home: home.to_path_buf(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             direct: config.direct,
@@ -1429,22 +1382,6 @@ impl Service {
         Ok(fallback)
     }
 
-    async fn dispatch(
-        &self,
-        sender: &str,
-        request: &LocalRequest,
-        transport: Transport,
-    ) -> Result<Value> {
-        self.dispatch_with(
-            sender,
-            request,
-            transport,
-            &crate::prs::GhCli,
-            &crate::http::LiveReviewHead,
-        )
-        .await
-    }
-
     /// This Mac's settings for an approved device, the same answer the local listener gives.
     async fn settings(&self, sender: &str, request: &LocalRequest) -> Result<Option<crate::client_routes::Reply>> {
         let home = self.home.clone();
@@ -1593,13 +1530,11 @@ impl Service {
         Ok(json!({"status":status,"body":body}))
     }
 
-    async fn dispatch_with(
+    async fn dispatch(
         &self,
         sender: &str,
         request: &LocalRequest,
         transport: Transport,
-        gh: &impl crate::prs::Gh,
-        reader: &impl crate::http::ReviewHead,
     ) -> Result<Value> {
         if request.path == crate::direct::routes::PATH {
             anyhow::ensure!(request.method == "GET" && request.body.is_none(), "routes is a read");
@@ -1637,22 +1572,6 @@ impl Service {
         ) && approved_method(request).is_err()
         {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
-        }
-        if request.method == "GET"
-            && (crate::domain_api::approved_resource_read_path(&request.path)
-                || crate::client_routes::approved_read_path(&request.path))
-            && request.body.is_none()
-        {
-            approved_method(request)?;
-            let hub = self.hub.clone().context("domain read requires local hub")?;
-            let device = self.devices.get(sender).context("unapproved device")?;
-            let approved = self.approved_device(sender, &device, transport)?;
-            let response = crate::domain_api::encrypted_read(hub, &approved, &request.path).await?;
-            let status = response.status().as_u16();
-            let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
-            approved.recheck()?;
-            let body: Value = serde_json::from_slice(&bytes)?;
-            return Ok(json!({"status":status,"body":body}));
         }
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
             let (binding, quiet, revision) = parse_push_preferences(request)?;
@@ -1697,9 +1616,6 @@ impl Service {
             });
         }
         let method = approved_method(request)?;
-        if method == Method::POST && crate::http::prepared_service_path(&request.path) {
-            return self.dispatch_prepared(sender, request, transport, gh, reader).await;
-        }
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
         if let Some(body) = &request.body {
@@ -1729,44 +1645,6 @@ impl Service {
                 .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}))
         };
         Ok(json!({"status":status,"body":body}))
-    }
-
-    async fn dispatch_prepared(
-        &self,
-        sender: &str,
-        request: &LocalRequest,
-        transport: Transport,
-        gh: &impl crate::prs::Gh,
-        reader: &impl crate::http::ReviewHead,
-    ) -> Result<Value> {
-        let hub = self
-            .hub
-            .as_ref()
-            .context("prepared operation requires local hub")?;
-        let device = self.devices.get(sender).context("unapproved device")?;
-        let response = crate::http::prepared_service_request_with(
-            hub.clone(),
-            &request.path,
-            request
-                .body
-                .clone()
-                .context("prepared operation body required")?,
-            gh,
-            reader,
-            || self.require_device_approval(sender, &device, transport),
-        )
-        .await;
-        let status = response.status().as_u16();
-        let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
-        let body: Value = serde_json::from_slice(&bytes)?;
-        Ok(json!({"status":status,"body":body}))
-    }
-
-    /// Send one opaque notification per enrolled phone. The relay can see only
-    /// routing metadata, a random binding, and the generic APNs alert.
-    pub async fn broadcast_push(&self, payload: &Value, with_sound: bool) -> Result<()> {
-        let _ = self.broadcast_push_report(payload, with_sound).await?;
-        Ok(())
     }
 
     /// Count relay acknowledgements for durable domain outbox handoff.
@@ -3765,14 +3643,8 @@ agreement_key = "{}"
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("Synthetic".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        service = service.with_hub(hub);
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        service = service.with_domain(domain);
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let work = changes_work(
             &service,
@@ -3794,553 +3666,6 @@ agreement_key = "{}"
         assert!(direct(&service, replay, &responses).await.is_err());
         assert_eq!(responses.lock().unwrap().len(), sent_before);
         drop(service);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[tokio::test]
-    async fn atomic_local_service_recovers_a_commit_whose_response_was_not_stored() {
-        let (_directory, mut service, phone) = push_fixture();
-        activate_push(&service);
-        let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("David".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
-        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
-            session_id: "atomic-session".into(),
-            event: "UserPromptSubmit".into(),
-            ..Default::default()
-        }))
-        .unwrap();
-        hub.append(alondra_core::Event::ReportPosted(alondra_core::Report {
-            id: 7,
-            session_id: "atomic-session".into(),
-            node_name: None,
-            title: "An unread report".into(),
-            body: None,
-            links: vec![],
-            attachments: vec![],
-            kind: alondra_core::ReportKind::Notice,
-            created_at: 1,
-            read: false,
-            to_orchestrator: false,
-            mission: None,
-            looks_like_question: false,
-            task: None,
-        }))
-        .unwrap();
-        service = service.with_hub(hub.clone());
-        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let work = changes_work(
-            &service,
-            "atomic-report-read",
-            json!({"method":"POST","path":"/v1/reports/7/read","body":{}}),
-        );
-        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
-        assert!(
-            direct(&service, repeat_work(&work), &responses)
-                .await
-                .is_err()
-        );
-        assert!(
-            hub.read(|v| v.reports[&7].read),
-            "the local mutation committed before transport failed"
-        );
-        let committed_seq = hub.read(|v| v.seq);
-        assert!(responses.lock().unwrap().is_empty());
-        service
-            .journal
-            .db()
-            .unwrap()
-            .execute_batch("DROP TRIGGER fail_transport_receipt;")
-            .unwrap();
-        drop(service);
-        drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
-            .unwrap()
-            .unwrap()
-            .with_hub(hub.clone());
-        direct(&service, repeat_work(&work), &responses)
-            .await
-            .unwrap();
-        direct(&service, work, &responses).await.unwrap();
-        assert_eq!(
-            hub.read(|v| v.seq),
-            committed_seq,
-            "recovery must not append another ReportRead"
-        );
-        let results = opened_results(&service, &phone, &responses);
-        assert_eq!(results, vec![json!({"status":200,"body":{"id":7}}); 2]);
-        let bytes = responses.lock().unwrap();
-        assert_eq!(
-            bytes[0], bytes[1],
-            "completed retransmission uses identical encrypted bytes"
-        );
-        drop(bytes);
-        drop(service);
-        drop(hub);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    struct PausedPreparation {
-        resume: tokio::sync::Notify,
-        entered: std::sync::atomic::AtomicBool,
-    }
-    impl PausedPreparation {
-        async fn wait(&self) {
-            self.entered
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            self.resume.notified().await;
-        }
-    }
-    impl crate::prs::Gh for PausedPreparation {
-        async fn edit_base(&self, _: &str, _: &str) -> std::result::Result<(), String> {
-            unreachable!()
-        }
-        async fn view(&self, _: &str) -> Option<Value> {
-            unreachable!()
-        }
-        async fn exists(&self, _: &str) -> bool {
-            unreachable!()
-        }
-        async fn issue_view(&self, _: &str, _: u64) -> std::result::Result<Value, String> {
-            self.wait().await;
-            Ok(json!({"title":"Issue", "body":"Public fixture", "state":"OPEN"}))
-        }
-    }
-    impl crate::http::ReviewHead for PausedPreparation {
-        async fn read(
-            &self,
-            _: &str,
-        ) -> std::result::Result<(String, bool), axum::response::Response> {
-            self.wait().await;
-            Ok(("a".repeat(40), true))
-        }
-    }
-
-    #[tokio::test]
-    async fn prepared_actions_recheck_local_and_enrollment_revocation_before_commit() {
-        use alondra_core::{Event, HookEvent};
-        for route in ["/v1/requests", "/v1/prs/1/changes", "/v1/prs/1/ask"] {
-            for revoke in ["none", "approval", "enrollment"] {
-                let (_directory, mut service, _) = push_fixture();
-                activate_push(&service);
-                let home = service.home.clone();
-                let config = alondra_core::config::Config::resolve(
-                    home.clone(),
-                    &Default::default(),
-                    |_| None,
-                    || Some("David".into()),
-                );
-                let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-                hub.append(Event::Hook(HookEvent {
-                    session_id: "s".into(),
-                    event: "UserPromptSubmit".into(),
-                    ..Default::default()
-                }))
-                .unwrap();
-                hub.append(Event::MarkedOrchestrator {
-                    session_id: "s".into(),
-                })
-                .unwrap();
-                hub.append(Event::PrOpened {
-                    url: "https://github.com/example/fixture/pull/1".into(),
-                    session_id: "s".into(),
-                    task: None,
-                })
-                .unwrap();
-                let mut pr = hub.read(|v| v.prs[&1].clone());
-                pr.head_sha = Some("a".repeat(40));
-                hub.append(Event::PrUpdated(pr)).unwrap();
-                service = service.with_hub(hub.clone());
-                let body = if route == "/v1/requests" {
-                    json!({"text":"Read issue", "issue":"example/fixture#1"})
-                } else {
-                    json!({"text":"Review this", "expected_head_sha":"a".repeat(40)})
-                };
-                let request = LocalRequest {
-                    method: "POST".into(),
-                    path: route.into(),
-                    body: Some(body),
-                };
-                assert!(crate::http::prepared_service_path(route));
-                assert!(
-                    !service.atomic_local(&request),
-                    "preserve conservative external receipt recovery"
-                );
-                service
-                    .require_device_approval("phone-1", &service.devices.get("phone-1").unwrap(), Transport::Relay)
-                    .unwrap();
-                service
-                    .journal
-                    .accept("phone-1", "prepared", &[4; 32])
-                    .unwrap();
-                service
-                    .journal
-                    .executing("phone-1", "prepared", &[4; 32])
-                    .unwrap();
-                let seq = hub.read(|v| v.seq);
-                let preparation = PausedPreparation {
-                    resume: tokio::sync::Notify::new(),
-                    entered: std::sync::atomic::AtomicBool::new(false),
-                };
-                let mut pending = Box::pin(service.dispatch_with(
-                    "phone-1",
-                    &request,
-                    Transport::Relay,
-                    &preparation,
-                    &preparation,
-                ));
-                let waker = std::task::Waker::noop();
-                assert!(
-                    std::future::Future::poll(
-                        pending.as_mut(),
-                        &mut std::task::Context::from_waker(waker)
-                    )
-                    .is_pending()
-                );
-                assert!(
-                    preparation
-                        .entered
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                    "must actually reach external preparation: {route}"
-                );
-                assert_eq!(hub.read(|v| v.seq), seq);
-                match revoke {
-                    "approval" => {
-                        Auth::open(&home).unwrap().revoke("phone-1").unwrap();
-                    }
-                    "enrollment" => service.journal.revoke_enrollment("phone-1").unwrap(),
-                    _ => (),
-                }
-                preparation.resume.notify_one();
-                let result = tokio::time::timeout(Duration::from_secs(2), pending)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if revoke == "none" {
-                    assert_eq!(result["status"], 200, "{route}: {result}");
-                    assert_eq!(hub.read(|v| v.messages.len()), 1);
-                    assert!(hub.read(|v| v.seq) > seq);
-                } else {
-                    assert_eq!(result["status"], 403, "{route} {revoke}: {result}");
-                    assert_eq!(
-                        hub.read(|v| v.seq),
-                        seq,
-                        "revoked preparation must append nothing"
-                    );
-                    assert_eq!(hub.read(|v| v.messages.len()), 0);
-                }
-                // No automatic retry after interruption, with or without final commit.
-                assert!(matches!(
-                    service
-                        .journal
-                        .accept("phone-1", "prepared", &[4; 32])
-                        .unwrap(),
-                    Disposition::Executing
-                ));
-                drop(service);
-                drop(hub);
-                std::fs::remove_dir_all(home).unwrap();
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn atomic_composed_message_rechecks_revocation_after_waiting_for_start_lock() {
-        for revoke in ["none", "approval", "enrollment"] {
-            let (_directory, mut service, _) = push_fixture();
-            activate_push(&service);
-            let home = service.home.clone();
-            let config = alondra_core::config::Config::resolve(
-                home.clone(),
-                &Default::default(),
-                |_| None,
-                || Some("David".into()),
-            );
-            let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-            hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
-                session_id: "s".into(),
-                event: "UserPromptSubmit".into(),
-                ..Default::default()
-            }))
-            .unwrap();
-            hub.append(alondra_core::Event::TaskCreated(
-                alondra_core::tasks::NewTask {
-                    id: "t-1".into(),
-                    request: "r-1".into(),
-                    title: "Task".into(),
-                    brief: None,
-                    depends_on: vec![],
-                    options: Default::default(),
-                    session_id: None,
-                    launched: false,
-                    launched_as: None,
-                    start: None,
-                },
-            ))
-            .unwrap();
-            service = service.with_hub(hub.clone());
-            let request = LocalRequest {
-                method: "POST".into(),
-                path: "/v1/nodes/s/messages".into(),
-                body: Some(json!({"text":"Do this","task":"t-1"})),
-            };
-            let work = changes_work(
-                &service,
-                "waiting-message",
-                json!({"method":request.method,"path":request.path,"body":request.body}),
-            );
-            service
-                .journal
-                .accept("phone-1", "waiting-message", &[1; 32])
-                .unwrap();
-            service
-                .journal
-                .executing_local("phone-1", "waiting-message", &[1; 32])
-                .unwrap();
-            let seq = hub.read(|v| v.seq);
-            let held = hub.starts.lock().await;
-            let phone = service.devices.get("phone-1").unwrap();
-            let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
-            let receipt = service.journal.reserve_receipt(prepared.guard).unwrap();
-            let mut pending = Box::pin(service.execute_atomic_local(
-                &work.envelope, &phone, &request, &[1; 32], Transport::Relay, receipt,
-            ));
-            // Poll exactly to the mutex wait: authorization already passed, mutation has not run.
-            let waker = std::task::Waker::noop();
-            assert!(
-                std::future::Future::poll(
-                    pending.as_mut(),
-                    &mut std::task::Context::from_waker(waker)
-                )
-                .is_pending()
-            );
-            assert_eq!(hub.read(|v| v.seq), seq);
-            match revoke {
-                "approval" => {
-                    Auth::open(&home).unwrap().revoke("phone-1").unwrap();
-                }
-                "enrollment" => service.journal.revoke_enrollment("phone-1").unwrap(),
-                _ => (),
-            }
-            drop(held);
-            let result = tokio::time::timeout(Duration::from_secs(2), pending)
-                .await
-                .unwrap();
-            if revoke == "none" {
-                assert!(result.is_ok(), "positive control: {result:?}");
-                assert_eq!(hub.read(|v| v.messages.len()), 1);
-                assert!(hub.read(|v| v.board.tasks["t-1"].is_assigned_to("s")));
-            } else {
-                assert!(
-                    result.is_err(),
-                    "revoked {revoke} must not execute after the wait"
-                );
-                assert_eq!(hub.read(|v| v.seq), seq);
-                assert!(hub.read(|v| v.messages.is_empty()));
-                assert!(hub.read(|v| v.board.tasks["t-1"].assignee.is_none()));
-            }
-            drop(service);
-            drop(hub);
-            std::fs::remove_dir_all(home).unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn atomic_composed_review_recovers_a_commit_whose_response_was_not_stored() {
-        let (_directory, mut service, phone) = push_fixture();
-        activate_push(&service);
-        let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("David".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
-        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
-            session_id: "atomic-session".into(),
-            event: "UserPromptSubmit".into(),
-            ..Default::default()
-        }))
-        .unwrap();
-        hub.append(alondra_core::Event::ReportPosted(alondra_core::Report {
-            id: 7,
-            session_id: "atomic-session".into(),
-            node_name: None,
-            title: "An unread report".into(),
-            body: None,
-            links: vec![alondra_core::Link {
-                url: "https://claude.ai/artifact/plan".into(),
-                title: None,
-            }],
-            attachments: vec![],
-            kind: alondra_core::ReportKind::Document,
-            created_at: 1,
-            read: false,
-            to_orchestrator: false,
-            mission: None,
-            looks_like_question: false,
-            task: None,
-        }))
-        .unwrap();
-        service = service.with_hub(hub.clone());
-        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let work = changes_work(
-            &service,
-            "atomic-artifact-review",
-            json!({"method":"POST","path":"/v1/reports/7/review","body":{"verdict":"comments"}}),
-        );
-        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
-        assert!(
-            direct(&service, repeat_work(&work), &responses)
-                .await
-                .is_err()
-        );
-        assert!(
-            hub.read(|v| v.reports[&7].read),
-            "the local mutation committed before transport failed"
-        );
-        let committed_seq = hub.read(|v| v.seq);
-        assert_eq!(
-            hub.read(|v| v.messages.len()),
-            1,
-            "intent committed together with review"
-        );
-        assert!(responses.lock().unwrap().is_empty());
-        service
-            .journal
-            .db()
-            .unwrap()
-            .execute_batch("DROP TRIGGER fail_transport_receipt;")
-            .unwrap();
-        drop(service);
-        drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
-            .unwrap()
-            .unwrap()
-            .with_hub(hub.clone());
-        direct(&service, repeat_work(&work), &responses)
-            .await
-            .unwrap();
-        direct(&service, work, &responses).await.unwrap();
-        assert_eq!(
-            hub.read(|v| v.seq),
-            committed_seq,
-            "recovery must not append another review or message"
-        );
-        assert_eq!(hub.read(|v| v.messages.len()), 1);
-        let results = opened_results(&service, &phone, &responses);
-        assert_eq!(
-            results,
-            vec![json!({"status":200,"body":{"id":7,"verdict":"comments"}}); 2]
-        );
-        let bytes = responses.lock().unwrap();
-        assert_eq!(
-            bytes[0], bytes[1],
-            "completed retransmission uses identical encrypted bytes"
-        );
-        drop(bytes);
-        drop(service);
-        drop(hub);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[tokio::test]
-    async fn atomic_schedule_recovers_a_commit_whose_response_was_not_stored() {
-        let (_directory, mut service, phone) = push_fixture();
-        activate_push(&service);
-        let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("David".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
-        let projects = home.join("projects");
-        std::fs::create_dir(&projects).unwrap();
-        let options = alondra_core::options::OptionsFile {
-            projects_root: Some(projects.to_str().unwrap().into()),
-            ..Default::default()
-        };
-        std::fs::write(
-            alondra_core::options::path_in(&home),
-            toml::to_string(&options).unwrap(),
-        )
-        .unwrap();
-        service = service.with_hub(hub.clone());
-        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let work = changes_work(
-            &service,
-            "atomic-schedule-create",
-            json!({"method":"POST","path":"/v1/schedules","body":{"title":"Durable schedule","text":"Review","frequency":"daily","hour":10,"minute":0,"enabled":false}}),
-        );
-        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
-        assert!(
-            direct(&service, repeat_work(&work), &responses)
-                .await
-                .is_err()
-        );
-        let schedule_db = Connection::open(home.join("schedules.db")).unwrap();
-        let committed: String = schedule_db
-            .query_row("SELECT body FROM schedules", [], |r| r.get(0))
-            .unwrap();
-        drop(schedule_db);
-        assert!(responses.lock().unwrap().is_empty());
-        service
-            .journal
-            .db()
-            .unwrap()
-            .execute_batch("DROP TRIGGER fail_transport_receipt;")
-            .unwrap();
-        drop(service);
-        drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
-            .unwrap()
-            .unwrap()
-            .with_hub(hub.clone());
-        direct(&service, repeat_work(&work), &responses)
-            .await
-            .unwrap();
-        direct(&service, work, &responses).await.unwrap();
-        let schedule_db = Connection::open(home.join("schedules.db")).unwrap();
-        assert_eq!(
-            schedule_db
-                .query_row("SELECT count(*) FROM schedules", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            schedule_db
-                .query_row("SELECT body FROM schedules", [], |r| r.get::<_, String>(0))
-                .unwrap(),
-            committed
-        );
-        drop(schedule_db);
-        let results = opened_results(&service, &phone, &responses);
-        assert_eq!(
-            results,
-            vec![
-                json!({"status":201,"body":serde_json::from_str::<Value>(&committed).unwrap()});
-                2
-            ]
-        );
-        let bytes = responses.lock().unwrap();
-        assert_eq!(
-            bytes[0], bytes[1],
-            "completed retransmission uses identical encrypted bytes"
-        );
-        drop(bytes);
-        drop(service);
-        drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -5015,14 +4340,8 @@ agreement_key = "{}"
         let (_directory, service, _) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("Fixture".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let service = service.with_hub(hub);
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let service = service.with_domain(domain);
         let work = changes_work(
             &service,
             "domain-read-before-revoke",
@@ -5629,14 +4948,8 @@ agreement_key = "{}"
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let config = alondra_core::config::Config::resolve(
-            home,
-            &Default::default(),
-            |_| None,
-            || Some("Synthetic".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        service = service.with_hub(hub);
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        service = service.with_domain(domain);
         let attacker = SigningKey::from_slice(&[71; 32]).unwrap();
         let trusted = SigningKey::from_slice(&[33; 32]).unwrap();
         let seal = |key: &SigningKey, id: &str| {
@@ -5821,7 +5134,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -5922,7 +5234,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -5983,250 +5294,6 @@ agreement_key = "{}"
         assert!(oversized.to_string().contains("encrypted relay limit"));
         task.abort();
     }
-    #[derive(Default)]
-    struct CutExternal {
-        merges: AtomicUsize,
-        retargets: AtomicUsize,
-        removes: AtomicUsize,
-    }
-    impl crate::prs::Gh for CutExternal {
-        async fn merge(
-            &self,
-            _: &str,
-            _: alondra_core::pr::MergeMethod,
-            _: Option<&str>,
-        ) -> std::result::Result<(), String> {
-            self.merges.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-        async fn edit_base(&self, _: &str, _: &str) -> std::result::Result<(), String> {
-            self.retargets.fetch_add(1, Ordering::SeqCst);
-            // Deliberate provider refusal prevents unrelated background GitHub polling.
-            Err("synthetic retarget refusal".into())
-        }
-        async fn view(&self, _: &str) -> Option<Value> {
-            panic!("no provider read expected")
-        }
-        async fn exists(&self, _: &str) -> bool {
-            panic!("no provider read expected")
-        }
-    }
-    impl crate::http::Agents for CutExternal {
-        async fn run(&self, args: &[&str]) -> std::result::Result<String, String> {
-            match args {
-                ["rm", "nd"] => {
-                    self.removes.fetch_add(1, Ordering::SeqCst);
-                    Ok("removed nd".into())
-                }
-                ["agents", "--json", "--all"] => Ok("[]".into()),
-                _ => panic!("unexpected external command"),
-            }
-        }
-    }
-
-    /// Real service envelope -> loopback HTTP -> production merge/close executors.
-    /// SQLite aborts at the local marker after the provider has succeeded. A second
-    /// injected failure prevents storing the response, modelling loss of the result
-    /// at this cut. Reopening must return uncertainty, never dispatch.
-    async fn external_cut_recovery(merge: bool, cut: bool) {
-        use alondra_core::{
-            Event,
-            pr::{MergeMethod, PrState},
-        };
-        let (_directory, mut service, phone) = push_fixture();
-        activate_push(&service);
-        let config = alondra_core::config::Config::resolve(
-            service.home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("Fixture".into()),
-        );
-        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
-            session_id: "nd".into(),
-            short_id: "nd".into(),
-            pid: Some(1),
-            ..Default::default()
-        }))
-        .unwrap();
-        if merge {
-            for (id, base, head) in [(1, "main", "branch-a"), (2, "branch-a", "branch-b")] {
-                hub.append(Event::PrOpened {
-                    url: format!("https://github.com/fixture/repo/pull/{id}"),
-                    session_id: "nd".into(),
-                    task: None,
-                })
-                .unwrap();
-                let mut pr = hub.read(|v| v.prs[&id].clone());
-                pr.base = Some(base.into());
-                pr.head = Some(head.into());
-                hub.append(Event::PrUpdated(pr)).unwrap();
-            }
-            assert_eq!(
-                hub.read(|v| v.retarget_plan(1).len()),
-                1,
-                "retarget boundary must be non-vacuous"
-            );
-        }
-        let db = Connection::open(service.home.join("alondra.db")).unwrap();
-        if cut {
-            let marker = if merge { "pr_merged" } else { "node_removed" };
-            db.execute_batch(&format!("CREATE TRIGGER cut_local BEFORE INSERT ON event_log WHEN NEW.body LIKE '%{marker}%' BEGIN SELECT RAISE(ABORT,'synthetic post-effect cut'); END;")).unwrap();
-            service.journal.db().unwrap().execute_batch("CREATE TRIGGER cut_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'synthetic lost receipt'); END;").unwrap();
-        }
-        let external = Arc::new(CutExternal::default());
-        let entered = Arc::new(AtomicUsize::new(0));
-        let route = if merge {
-            "/v1/prs/1/merge"
-        } else {
-            "/v1/nodes/nd/close"
-        };
-        let local = Router::new().route(
-            route,
-            post({
-                let hub = hub.clone();
-                let external = external.clone();
-                let entered = entered.clone();
-                move || {
-                    let hub = hub.clone();
-                    let external = external.clone();
-                    let entered = entered.clone();
-                    async move {
-                        entered.fetch_add(1, Ordering::SeqCst);
-                        if merge {
-                            match crate::http::merge(
-                                &hub,
-                                1,
-                                MergeMethod::Merge,
-                                crate::http::Merger::User("fixture".into()),
-                                external.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(()) => (StatusCode::OK, axum::Json(json!({"merged":true}))),
-                                Err(_) => (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    axum::Json(json!({"error":"local_marker_failed"})),
-                                ),
-                            }
-                            .into_response()
-                        } else {
-                            crate::http::close_with(&hub, "nd", false, None, external.as_ref())
-                                .await
-                        }
-                    }
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.local_port = listener.local_addr().unwrap().port();
-        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
-        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let work = changes_work(
-            &service,
-            "external-cut",
-            json!({"method":"POST","path":route,"body":{"method":"merge"}}),
-        );
-        let digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).into();
-        let result = direct(&service, repeat_work(&work), &responses).await;
-        assert_eq!(result.is_err(), cut);
-        assert_eq!(entered.load(Ordering::SeqCst), 1);
-        assert_eq!(external.merges.load(Ordering::SeqCst), usize::from(merge));
-        assert_eq!(external.removes.load(Ordering::SeqCst), usize::from(!merge));
-        assert_eq!(
-            external.retargets.load(Ordering::SeqCst),
-            usize::from(merge && !cut)
-        );
-        if merge {
-            assert_eq!(
-                hub.read(|v| v.prs[&1].state),
-                if cut { PrState::Open } else { PrState::Merged }
-            );
-        } else {
-            assert_eq!(hub.read(|v| v.nodes.contains_key("nd")), cut);
-        }
-        if cut {
-            assert!(responses.lock().unwrap().is_empty());
-            assert!(matches!(
-                service
-                    .journal
-                    .accept("phone-1", "external-cut", &digest)
-                    .unwrap(),
-                Disposition::Executing
-            ));
-            db.execute_batch("DROP TRIGGER cut_local").unwrap();
-            service
-                .journal
-                .db()
-                .unwrap()
-                .execute_batch("DROP TRIGGER cut_receipt")
-                .unwrap();
-        }
-        let reopened_hub = crate::hub::Hub::open(hub.config.clone()).unwrap();
-        if merge {
-            assert_eq!(
-                reopened_hub.read(|v| v.prs[&1].state),
-                if cut { PrState::Open } else { PrState::Merged }
-            );
-        } else {
-            assert_eq!(reopened_hub.read(|v| v.nodes.contains_key("nd")), cut);
-        }
-        let restarted = Service::open(
-            &service.home,
-            service.local_port,
-            Arc::new(Auth::open(&service.home).unwrap()),
-        )
-        .unwrap()
-        .unwrap();
-        direct(&restarted, repeat_work(&work), &responses)
-            .await
-            .unwrap();
-        let recovered = opened_results(&restarted, &phone, &responses);
-        if cut {
-            assert_eq!(recovered.last().unwrap()["error"], "uncertain");
-            assert_eq!(recovered.last().unwrap()["status"], 409);
-        } else {
-            assert_eq!(recovered.last().unwrap()["status"], 200);
-        }
-        direct(&restarted, work, &responses).await.unwrap();
-        let bytes = responses.lock().unwrap();
-        assert_eq!(
-            bytes[bytes.len() - 1],
-            bytes[bytes.len() - 2],
-            "recovery receipt must replay identical ciphertext"
-        );
-        drop(bytes);
-        assert_eq!(
-            entered.load(Ordering::SeqCst),
-            1,
-            "restart must not redispatch either executor"
-        );
-        assert_eq!(external.merges.load(Ordering::SeqCst), usize::from(merge));
-        assert_eq!(external.removes.load(Ordering::SeqCst), usize::from(!merge));
-        assert_eq!(
-            external.retargets.load(Ordering::SeqCst),
-            usize::from(merge && !cut)
-        );
-        local_server.abort();
-        let _ = local_server.await;
-        let home = service.home.clone();
-        drop(reopened_hub);
-        drop(db);
-        drop(hub);
-        drop(restarted);
-        drop(service);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-    #[tokio::test]
-    async fn merge_external_success_before_local_marker_recovers_without_replay() {
-        external_cut_recovery(true, true).await;
-        external_cut_recovery(true, false).await;
-    }
-    #[tokio::test]
-    async fn close_external_success_before_node_removed_recovers_without_replay() {
-        external_cut_recovery(false, true).await;
-        external_cut_recovery(false, false).await;
-    }
 
     #[test]
     fn revocation_waits_for_in_flight_delivery_without_stalling_the_runtime() {
@@ -6278,7 +5345,6 @@ agreement_key = "{}"
                     home: scenario_home.clone(),
                     transfers: Arc::default(),
                     inflight: Arc::default(),
-                    hub: None,
                     domain: None,
                     routes: None,
                     revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -6435,7 +5501,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -6560,7 +5625,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -6603,7 +5667,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
@@ -6794,7 +5857,6 @@ agreement_key = "{}"
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
-            hub: None,
             domain: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),

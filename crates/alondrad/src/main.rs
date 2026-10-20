@@ -15,13 +15,11 @@ mod classify;
 mod claude_access;
 mod cleanup;
 mod claude_trust;
-mod delivery;
 mod direct;
 mod disk;
 mod domain_agent_lifecycle;
 mod domain_api;
 mod domain_authority;
-mod domain_backup;
 mod domain_bootstrap;
 mod domain_content;
 mod domain_cutover;
@@ -45,13 +43,11 @@ mod domain_store;
 mod domain_transport;
 mod hook_socket;
 mod home_renames;
-mod http;
-mod hub;
+mod hook_text;
 mod iroh_endpoint;
 mod iroh_terminals;
 mod issues;
 mod job_state;
-mod keeper;
 mod local_network;
 mod local_network_card;
 mod reachability;
@@ -60,10 +56,7 @@ mod machine_state;
 mod machine_watch;
 mod fleet_gate;
 mod fleet_pause;
-mod managed_orchestrator;
-mod markdown;
-mod mods_check;
-mod mods_wait;
+mod claude_check;
 mod auto_launch;
 mod launch_plans;
 mod plan_reviews;
@@ -82,9 +75,7 @@ mod task_worktrees;
 mod workflow_state;
 mod node_revival;
 mod notices;
-mod notifier;
 mod options;
-mod orchestrate;
 mod orchestrator_process;
 mod orchestrator_sdk;
 mod plugins;
@@ -103,18 +94,15 @@ mod sdk_owner;
 #[cfg(target_os = "macos")]
 mod schedule_clock;
 mod schedules;
-mod sentinel;
 mod service;
 mod settings;
 mod service_files;
 mod start_guard;
-mod store;
 mod updates;
 mod usage_pause;
 mod uploads;
 mod client_routes;
 mod views;
-mod wake;
 mod watcher;
 mod worktree;
 
@@ -497,13 +485,18 @@ async fn run_domain(config: &Config) -> Result<()> {
         },
         None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
     }
-    if let Some(backend) = sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())? {
-        log!("the SDK backend is on (configuration {}): every task this daemon launches runs through the Agent SDK", backend.configuration_digest());
-        domain.enable_sdk(backend.clone());
-        // Adopt the live host of every task a previous daemon left running, so a restart keeps the
-        // same Claude and its session instead of starting over.
-        let adopting = domain.clone();
-        tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
+    let environment: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let daemon = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("alondrad"));
+    match sdk_owner::backend::resolve(&config.home, config.sandbox, &options::user_home(), &daemon, &environment) {
+        Ok(backend) => {
+            log!("the Agent SDK host is {} (configuration {})", backend.host.display(), backend.configuration_digest());
+            domain.enable_sdk(backend.clone());
+            // Adopt the live host of every task a previous daemon left running, so a restart keeps
+            // the same Claude and its session instead of starting over.
+            let adopting = domain.clone();
+            tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
+        }
+        Err(error) => log!("no task or orchestrator batch starts: {error:#}"),
     }
     let state_domain = domain.clone();
     let gauges = state.gauges();
@@ -548,9 +541,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         domain.clone(),
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
-    if domain.sdk().is_some() {
-        tokio::spawn(claude_access::run(domain.clone()));
-    }
+    tokio::spawn(claude_access::run(domain.clone()));
     tokio::spawn(machine_watch::run(
         domain.clone(),
         gauges.clone(),
@@ -572,17 +563,20 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.wake,
     ));
     if config.wake {
-        tokio::spawn(auto_launch::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
+        tokio::spawn(auto_launch::run(domain.clone(), config.home.clone()));
     }
     node_reconcile::once(&domain, &node_close::Machine).await;
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
-    tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
+    tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    tokio::spawn(mods_check::run(plugins::node()));
+    tokio::spawn(claude_check::run(plugins::node()));
     if config.fast_timing {
         domain.live.gate.tune(fleet_gate::Tuning { spacing: 1_000, limit: Some(fleet_gate::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });
+        domain.live.gate.ignore_mac();
+    }
+    if config.ignore_mac_load {
         domain.live.gate.ignore_mac();
     }
     let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
@@ -863,34 +857,5 @@ mod argument_tests {
                 .contains("prepared")
         );
         std::fs::remove_dir_all(home).unwrap();
-    }
-}
-
-async fn retention(hub: Arc<hub::Hub>, retention_hours: f64) {
-    let every_hours = std::env::var("ALONDRA_COMPACT_EVERY_HOURS")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(6.0);
-    let keep = std::time::Duration::from_secs_f64(retention_hours * 3600.0);
-    let every = std::time::Duration::from_secs_f64(every_hours * 3600.0);
-    loop {
-        tokio::time::sleep(every).await;
-        let compacting = hub.clone();
-        match tokio::task::spawn_blocking(move || compacting.compact(keep)).await {
-            Ok(Ok(deleted)) => log!("compacted, {deleted} old events deleted"),
-            Ok(Err(e)) => log!("could not compact: {e}"),
-            Err(e) => log!("compaction crashed: {e}"),
-        }
-        let referenced = hub.read(|v| v.stored_files());
-        let home = hub.home.clone();
-        match tokio::task::spawn_blocking(move || {
-            uploads::sweep(&home, &referenced, uploads::UNSENT_GRACE)
-        })
-        .await
-        {
-            Ok(0) => {}
-            Ok(n) => log!("{n} attachment folders nothing refers to any more deleted"),
-            Err(e) => log!("attachment sweep crashed: {e}"),
-        }
     }
 }

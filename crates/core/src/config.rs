@@ -131,6 +131,9 @@ pub struct Config {
     /// spacing between node starts take seconds instead of minutes, and the Mac never holds a start,
     /// so an end-to-end run sees them happen on a busy Mac.
     pub fast_timing: bool,
+    /// `ALONDRA_IGNORE_MAC_LOAD=1`: the fleet gate starts nodes whatever the Mac's memory and load,
+    /// as the upgrade rehearsal needs on a Mac other builds keep busy.
+    pub ignore_mac_load: bool,
     /// Restart a node whose process ended while it still had work. Only with `wake`.
     pub resume_dead_nodes: bool,
     /// How long Alondra waits for the node of a finished task to clean up before it closes the node
@@ -210,6 +213,7 @@ impl Config {
             service_label: var("ALONDRA_SERVICE_LABEL").or_else(|| file.service_label.clone()).unwrap_or_else(|| DEFAULT_LABEL.into()),
             sandbox: var("ALONDRA_SANDBOX").is_some_and(flag),
             fast_timing: var("ALONDRA_SANDBOX").is_some_and(flag) && var("ALONDRA_SANDBOX_TIMING").as_deref() == Some("fast"),
+            ignore_mac_load: var("ALONDRA_IGNORE_MAC_LOAD").is_some_and(flag),
             resume_dead_nodes: var("ALONDRA_RESUME_DEAD_NODES").map(flag).or(file.resume_dead_nodes).unwrap_or(true),
             close_free_nodes_after: var("ALONDRA_CLOSE_FREE_NODES_AFTER")
                 .and_then(|v| parse_switchable_duration(&v).ok())
@@ -407,6 +411,13 @@ mod tests {
         assert!(!resolve(&FileConfig::default(), &[("ALONDRA_PORT", "47891")]).sandbox);
         assert!(resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "1")]).sandbox);
         assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "0")]).sandbox);
+    }
+
+    #[test]
+    fn only_an_explicit_env_frees_node_starts_from_the_macs_load() {
+        assert!(!resolve(&FileConfig::default(), &[]).ignore_mac_load);
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_IGNORE_MAC_LOAD", "0")]).ignore_mac_load);
+        assert!(resolve(&FileConfig::default(), &[("ALONDRA_IGNORE_MAC_LOAD", "1")]).ignore_mac_load);
     }
 
     #[test]

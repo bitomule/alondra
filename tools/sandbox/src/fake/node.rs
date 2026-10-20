@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    Fakes, append, flag_value, gh, git, mcp, read_lines,
+    Fakes, append, flag_value, git, mcp, read_lines,
     script::{Step, TaskScript},
-    write_json,
+    work, write_json,
 };
 use crate::sandbox::{hex, now_ms, random};
 
@@ -105,14 +105,6 @@ impl Fakes {
     /// The latest node of task `task_id`.
     pub fn node_of(&self, task_id: &str) -> Result<Option<Node>> {
         Ok(self.all_nodes()?.into_iter().filter(|node| node.task_id.as_deref() == Some(task_id)).max_by_key(|node| node.starts_key()))
-    }
-
-    pub fn pushed(&self, short: &str) -> Result<Vec<Pushed>> {
-        read_lines(&self.node_dir(short).join("pushed.jsonl"))
-    }
-
-    pub fn outcomes(&self, short: &str) -> Result<Vec<Outcome>> {
-        read_lines(&self.node_dir(short).join("steps.jsonl"))
     }
 }
 
@@ -473,31 +465,9 @@ fn cli(fakes: &Fakes, node: &Node, args: &[&str], stdin: &Value) -> Result<()> {
     Ok(())
 }
 
-/// The bearer Alondra wrote into the session's settings, if it holds one now.
-pub fn capability(node: &Node) -> Option<String> {
-    node.env().ok()?.into_iter().find(|(key, _)| key == "ALONDRA_DOMAIN_CAPABILITY").map(|(_, value)| value)
-}
-
-/// Calls a node tool with only `capability`, as a session still holding an old bearer would:
-/// whether it was refused, and its text.
-pub fn call_with(fakes: &Fakes, node: &Node, capability: &str, name: &str, arguments: Value) -> Result<(bool, String)> {
-    let env = vec![
-        ("ALONDRA_HOME".to_owned(), node.alondra_home.display().to_string()),
-        ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
-        ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), capability.to_owned()),
-    ];
-    let reply = mcp::call(&fakes.alondra(), &["mcp-node".into()], &env, &[(name, arguments)])?.pop().context("no reply")?;
-    Ok((reply.refused, reply.text))
-}
-
-fn tool(fakes: &Fakes, node: &Node, name: &str, arguments: Value) -> Result<mcp::Reply> {
-    let mut replies = mcp::call(&fakes.alondra(), &["mcp-node".into()], &node.env()?, &[(name, arguments)])?;
-    replies.pop().context("no reply")
-}
-
 /// Does one step as the session would and writes down what happened.
 pub fn act(fakes: &Fakes, node: &Node, step: &Step) -> Result<Outcome> {
-    let tool = tool_of(step);
+    let tool = work::tool_of(step);
     let use_id = format!("toolu_{}", hex(&random::<6>()?));
     if tool.is_some() {
         write_job(node, "working")?;
@@ -520,87 +490,13 @@ pub fn act(fakes: &Fakes, node: &Node, step: &Step) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// The Claude Code tool a step stands for, as its hooks name it.
-fn tool_of(step: &Step) -> Option<(String, Value)> {
-    let mcp = |name: &str| Some((format!("mcp__plugin_alondra_alondra__{name}"), json!({})));
-    let bash = |command: &str| Some(("Bash".to_owned(), json!({"command": command})));
-    match step {
-        Step::Commit { file, .. } => bash(&format!("git add -A && git commit -m 'Add {file}'")),
-        Step::Dirty { file } => Some(("Write".into(), json!({"file_path": file}))),
-        Step::Push => bash("git push -u origin HEAD"),
-        Step::OpenPr { .. } => bash("gh pr create --fill"),
-        Step::RegisterPr { .. } => mcp("register_pr"),
-        Step::Deliver { .. } => mcp("present_result"),
-        Step::Ask { .. } => mcp("ask"),
-        Step::Cleanup => mcp("cleanup_done"),
-        Step::PostMergeWork { .. } => mcp("post_merge_work"),
-        Step::Speak { .. } | Step::End | Step::Die => None,
-    }
-}
-
-fn done(text: impl Into<String>) -> mcp::Reply {
-    mcp::Reply { refused: false, text: text.into() }
-}
-
 fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
-    let task = || node.task_id.clone().context("this node has no scripted task");
-    let dir = node.workdir();
+    let env = || node.env();
+    let worker = work::Worker { task: node.task_id.as_deref(), dir: node.workdir(), short: &node.short, env: &env };
+    if let Some(result) = work::perform(fakes, &worker, step) {
+        return result;
+    }
     match step {
-        Step::Commit { file, text } => {
-            fs::write(dir.join(file), text)?;
-            git(dir, &["add", "-A"])?;
-            git(dir, &["commit", "-m", &format!("Add {file}")])?;
-            Ok(done(git(dir, &["rev-parse", "HEAD"])?))
-        }
-        Step::Dirty { file } => {
-            fs::write(dir.join(file), "left behind\n")?;
-            Ok(done(file.clone()))
-        }
-        Step::Push => Ok(done(git(dir, &["push", "-u", "origin", "HEAD"])?)),
-        Step::OpenPr { number, draft, checks } => {
-            let pr = gh::open(fakes, dir, *number, *draft, *checks)?;
-            Ok(done(format!("PR {} on {}", pr.number, pr.branch)))
-        }
-        Step::RegisterPr { number } => {
-            let head = git(dir, &["rev-parse", "HEAD"])?;
-            tool(fakes, node, "register_pr", json!({
-                "task_id": task()?, "pr_id": format!("pr-{number}"), "host": "github.com", "repository": gh::REPOSITORY,
-                "number": number, "head": head, "base": "main", "allowed_methods": ["squash"],
-            }))
-        }
-        Step::Deliver { need, pr, is_final } => {
-            let targets = match pr {
-                Some(number) => json!([{"kind": "pull_request", "pr_id": format!("pr-{number}"), "head": git(dir, &["rev-parse", "HEAD"])?}]),
-                None => json!([{"kind": "text", "text": need}]),
-            };
-            let arguments = json!({
-                "task_id": task()?, "interaction_id": format!("result-{}-{}", node.short, hex(&random::<3>()?)),
-                "need": need, "body": format!("{need}: done in the sandbox."), "targets": targets, "is_final": is_final,
-                "content": {"kind": "report", "body": format!("{need}: the sandbox node did the scripted work.")},
-            });
-            // Alondra learns a pushed head from GitHub a moment later; a node told so sends the
-            // same card again, as the refusal says.
-            let start = std::time::Instant::now();
-            loop {
-                let reply = tool(fakes, node, "present_result", arguments.clone())?;
-                if !reply.text.contains("[pr_mismatch]") || start.elapsed() > Duration::from_secs(15) {
-                    return Ok(reply);
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            }
-        }
-        Step::Ask { id, need, options } => {
-            let options: Vec<Value> = options
-                .iter()
-                .map(|label| json!({"id": label.to_lowercase().replace(' ', "-"), "label": label, "description": format!("Choose {label}"), "inputs": []}))
-                .collect();
-            tool(fakes, node, "ask", json!({
-                "interaction_id": id, "scope": {"kind": "task", "task_id": task()?}, "recipient": {"kind": "user"},
-                "need": need, "why": "The sandbox node needs this decision to go on.", "blocking": true, "options": options,
-            }))
-        }
-        Step::Cleanup => tool(fakes, node, "cleanup_done", json!({"task_id": task()?})),
-        Step::PostMergeWork { reason } => tool(fakes, node, "post_merge_work", json!({"task_id": task()?, "reason": reason})),
         Step::Speak { said, behind, listed } => {
             let turn = format!("speak-{}", hex(&random::<3>()?));
             write_job(node, "working")?;
@@ -616,16 +512,17 @@ fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
             }
             write_job(node, listed.as_deref().unwrap_or("blocked"))?;
             event(fakes, node, json!({"event": "turn.complete", "turn_id": turn, "answer": said}))?;
-            Ok(done("said"))
+            Ok(work::done("said"))
         }
         Step::End => {
             end(fakes, &node.short, State::Stopped)?;
-            Ok(done("ended"))
+            Ok(work::done("ended"))
         }
         Step::Die => {
             kill(fakes, &node.short, State::Dead)?;
-            Ok(done("killed"))
+            Ok(work::done("killed"))
         }
+        _ => unreachable!("work::perform takes every other step"),
     }
 }
 
@@ -723,7 +620,7 @@ pub fn agents(fakes: &Fakes) -> Result<i32> {
     Ok(0)
 }
 
-/// What `alondra-sandbox fake …` asks of the fake nodes.
+/// What `alondra-sandbox fake …` asks of the fake nodes and native sessions.
 pub enum Order {
     List,
     Act { node: String, verb: String, step: Option<String> },
@@ -736,15 +633,26 @@ pub fn command(fakes: &Fakes, order: Order) -> Result<()> {
                 let state = format!("{:?}", node.state).to_lowercase();
                 println!("{}  {:<14} {:<8} {}", node.short, node.task_id.as_deref().unwrap_or("-"), state, node.name);
             }
+            for session in fakes.all_sessions()? {
+                let state = format!("{:?}", session.state).to_lowercase();
+                println!("{}  {:<14} {:<8} sdk {}", session.short, session.task_id.as_deref().unwrap_or("-"), state, session.session_id);
+            }
             Ok(())
         }
         Order::Act { node, verb, step } => {
+            let session = match fakes.session(&node) {
+                Ok(found) => Some(found),
+                Err(_) => fakes.session_of(&node)?,
+            };
+            if let Some(session) = session.filter(|session| session.running()) {
+                return super::native::command(fakes, &session, &verb, step);
+            }
             let node = match fakes.node(&node) {
                 Ok(found) => found,
                 Err(_) => fakes.node_of(&node)?.ok_or_else(|| anyhow!("no fake node for {node}"))?,
             };
             let steps = match step {
-                Some(json) => vec![serde_json::from_str(&json).context("--step is one step as JSON")?],
+                Some(json) => Step::parse_all(&json).context("--step is one step, or a list of steps, as JSON")?,
                 None => steps_for(fakes, &node, &verb)?,
             };
             let ends = steps.iter().any(|step| matches!(step, Step::Speak { .. } | Step::End | Step::Die));

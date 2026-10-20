@@ -1,7 +1,7 @@
 //! Durable, fenced lifecycle of the one logical orchestrator. Process ownership lives in the
 //! daemon; this reducer never infers successful work from a process disappearing.
 use serde::{Deserialize, Serialize};
-use crate::{Event, View, model::{Millis, Node, OrchestratorState}};
+use crate::{View, model::{Millis, Node, OrchestratorState}};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Migration { pub session_id: String, pub pid: Option<i32> }
@@ -100,10 +100,6 @@ pub enum Transition {
     SessionMissing { run_id: String },
 }
 
-pub fn pending_message_ids(view: &View) -> Vec<u64> {
-    let claimed = view.orchestrator.as_ref().and_then(|r| r.active_run.as_ref());
-    view.pending_messages(NODE_ID).filter(|m| claimed.is_none_or(|r| !r.message_ids.contains(&m.id)) && view.message_attempt(m.id).is_none_or(|a| !a.blocks())).map(|m| m.id).collect()
-}
 pub fn can_start(view: &View, now: Millis) -> bool {
     view.orchestrator.as_ref().is_some_and(|r| r.active_run.is_none() && r.retry_at.is_none_or(|at| at <= now) && (r.phase == Phase::Idle || r.phase == Phase::Failed))
 }
@@ -117,14 +113,6 @@ pub fn integrity_issues(view: &View) -> Vec<String> {
         if run.message_ids.iter().any(|id| view.messages.get(id).is_none_or(|m| m.session_id != NODE_ID || m.handed_at.is_some())) { issues.push("orchestrator claim lost its payload".into()); }
     }
     issues
-}
-
-pub fn logical_node(view: &View) -> Option<&Node> { view.orchestrator_node() }
-
-/// Call inside the hub's append_with transaction; checking an earlier snapshot is not a claim.
-pub fn checked_transition(view: &View, transition: Transition, at: Millis) -> Result<Event, String> {
-    validate(view, &transition, at)?;
-    Ok(Event::Orchestrator(transition))
 }
 
 pub fn migration_blocker(view: &View, node: &Node) -> Option<&'static str> {
@@ -338,7 +326,16 @@ pub(crate) fn project_node(view: &mut View, at: Millis) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Event;
     use crate::model::{Message, MessageFrom};
+    fn checked_transition(view: &View, transition: Transition, at: Millis) -> Result<Event, String> {
+        validate(view, &transition, at)?;
+        Ok(Event::Orchestrator(transition))
+    }
+    fn pending_message_ids(view: &View) -> Vec<u64> {
+        let claimed = view.orchestrator.as_ref().and_then(|r| r.active_run.as_ref());
+        view.pending_messages(NODE_ID).filter(|m| claimed.is_none_or(|r| !r.message_ids.contains(&m.id)) && view.message_attempt(m.id).is_none_or(|a| !a.blocks())).map(|m| m.id).collect()
+    }
     fn apply(v: &mut View, t: Transition) {
         let at = v.seq as Millis + 1;
         let e = checked_transition(v, t, at).expect("valid transition");
@@ -396,7 +393,6 @@ mod tests {
         let v = enabled();
         assert!(!v.nodes[NODE_ID].alive);
         assert_eq!(v.nodes[NODE_ID].orchestrator_state, Some(OrchestratorState::OnDuty));
-        assert!(crate::keeper::has_orchestrator(&v));
         let restored: View = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(restored, v);
     }

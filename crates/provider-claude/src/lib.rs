@@ -12,7 +12,7 @@ mod records;
 mod wire;
 
 pub use adapter::{
-    ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control,
+    ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited,
 };
 pub use elicitation::{elicitation_content, elicitation_fields};
 pub use ended::{EndedJournal, Retained};

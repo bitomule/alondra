@@ -401,9 +401,10 @@ fn fleet_footer_names_the_selected_nodes_real_keys() {
         result: Ok(build(&domain, &live, "node:a-3")),
     });
     let footer = draw::footer_keys(&app);
-    for (key, label) in [("r", "Mensaje"), ("x", "Cerrar nodo"), ("i", "Interrumpir")] {
+    for (key, label) in [("r", "Mensaje"), ("i", "Interrumpir")] {
         assert!(footer.iter().any(|(k, l)| k == key && l == label), "{key}: {footer:?}");
     }
+    assert!(!footer.iter().any(|(_, l)| l == "Cerrar nodo"), "a node ends with its task: {footer:?}");
     dump("fleet with node detail", &rendered(&mut app, 120, 30));
 }
 

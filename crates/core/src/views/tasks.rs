@@ -1,6 +1,6 @@
 use super::{
     task_state::{self, Block},
-    BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, Notice, RenderContext,
+    BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
@@ -1180,29 +1180,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             Some(t!(context.lang, "Documents", "Documentos").into()),
             documents,
         ));
-    }
-    if context.client == super::Client::Tui
-        && let Some(short_id) = task
-            .agent_id
-            .as_ref()
-            .filter(|agent| !context.index.node(agent).is_some_and(|node| node.through_sdk))
-            .and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.0))
-            .and_then(|node| node.short_id.as_ref())
-    {
-        let mut attach = common::row(
-            "attach",
-            "node",
-            Icon::Node,
-            t!(context.lang, "Attach", "Conectar").into(),
-            None,
-        );
-        attach.link = Some(Link::Local {
-            local: LocalLink::Attach {
-                session: short_id.clone(),
-            },
-        });
-        view.sections
-            .push(common::section("attach", None, vec![Item::Row(attach)]));
     }
     let mut actions = vec![];
     if let Some(agent_id) = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id)) {

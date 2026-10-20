@@ -186,6 +186,14 @@ class Fixture(unittest.TestCase):
         subprocess.run(['/bin/rm', '-rf', str(self.root)], check=True)
 
 
+class HandoverWorldTests(Fixture):
+    def test_the_daemon_of_a_case_starts_nodes_whatever_the_macs_load(self):
+        world = u.HandoverWorld(self.rehearsal, self.work / 'case', None)
+        self.addCleanup(world.supervisor.close)
+        self.assertEqual(world.env().get('ALONDRA_IGNORE_MAC_LOAD'), '1',
+                         'other builds keep the Mac busy: the gate must not hold the case\'s nodes')
+
+
 class SandboxTests(Fixture):
     def sandboxed(self, code):
         return subprocess.run(u.sandboxed([sys.executable, '-I', '-c', code], self.protected, self.work),
@@ -470,11 +478,12 @@ class LauncherMigrationTests(Fixture):
         for plugin in ('plugin', 'plugin-orchestrator'):
             self.assertTrue((keg / 'libexec/alondra' / plugin / 'bin/alondra').is_file(), plugin)
         self.assertFalse((keg / 'libexec/alondra/alondrad').exists())
+        self.assertTrue((keg / 'libexec/alondra' / u.release.HOST).is_file(), "the host is where the daemon looks for it")
 
-    def test_the_release_about_to_ship_must_carry_the_launcher(self):
-        archive = self.archive(u.release.PRE_LAUNCHER_FILES)
-        with self.assertRaisesRegex(ValueError, r"Missing public files: \['alondrad-launcher'\]"):
-            u.unpack(archive, self.work / 'new', signed=False)
+    def test_the_release_about_to_ship_must_carry_the_launcher_and_the_sdk_host(self):
+        for files, missing in ((u.release.PRE_LAUNCHER_FILES, "'alondrad-launcher'"), (u.release.PRE_SDK_FILES, "'sdk/alondra-host'")):
+            with self.assertRaisesRegex(ValueError, f"Missing public files: .*{missing}"):
+                u.unpack(self.archive(files), self.work / 'new', signed=False)
         binary = u.unpack(self.archive(u.release.PUBLIC_FILES), self.work / 'new', signed=False)
         self.assertEqual(binary.with_name(u.LAUNCHER).read_text(), u.LAUNCHER)
 

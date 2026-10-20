@@ -1,8 +1,10 @@
-//! `claude` as Alondra calls it: the version and plugin checks, orchestrator runs, background
-//! sessions and the commands that stop, restart, list and remove them.
+//! `claude` as Alondra calls it: the version and plugin checks, the native Claude the Agent SDK
+//! host spawns for a task or an orchestrator batch, and, for a daemon without the SDK backend (the
+//! previous release in the upgrade rehearsal), orchestrator runs, background sessions and the
+//! commands that stop, restart, list and remove them.
 use anyhow::Result;
 
-use super::{Fakes, node, orchestrator};
+use super::{Fakes, native, node, orchestrator};
 
 /// While this file is in the fakes' folder, `claude stop` fails and the session goes on: a move to
 /// the Agent SDK then stays at its planned step.
@@ -32,6 +34,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
                 Ok(1)
             }
         },
+        _ if native::spawned_by_sdk(args) => native::run(fakes, args),
         ["respawn", short] => node::respawn(fakes, short),
         ["agents", ..] => node::agents(fakes),
         _ if words.contains(&"-p") => orchestrator::run(fakes, args),

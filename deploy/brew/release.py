@@ -15,9 +15,12 @@ from urllib.parse import urlencode
 REPO = 'bitomule/homebrew-tap'
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGETS = ('aarch64-apple-darwin',)
-BINARIES = {'alondra', 'alondrad', 'alondrad-launcher'}
+# The Agent SDK host: Node, the SDK and the host in one signed executable, and what it was built from.
+HOST = 'sdk/alondra-host'
+HOST_MANIFEST = 'sdk/alondra-host.json'
+BINARIES = {'alondra', 'alondrad', 'alondrad-launcher', HOST}
 PUBLIC_FILES = {
-    'alondra', 'alondrad', 'alondrad-launcher', '.claude-plugin/marketplace.json',
+    'alondra', 'alondrad', 'alondrad-launcher', HOST, HOST_MANIFEST, '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
     'plugin/hooks/register.ts', 'plugin/tests/register.test.ts', 'plugin/tests/holds.test.ts',
     'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
@@ -25,7 +28,9 @@ PUBLIC_FILES = {
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
     'plugin-orchestrator/bin/alondra',
 }
-PRE_LAUNCHER_FILES = PUBLIC_FILES - {'alondrad-launcher'}
+PRE_SDK_FILES = PUBLIC_FILES - {HOST, HOST_MANIFEST}
+PRE_LAUNCHER_FILES = PRE_SDK_FILES - {'alondrad-launcher'}
+PUBLISHED_FILES = (PUBLIC_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
 
 
 def version(value):
@@ -44,7 +49,7 @@ def stage_assets(root, destination):
     alias = root / 'plugin-orchestrator/bin'
     if not alias.is_symlink() or alias.readlink() != pathlib.Path('../plugin/bin'):
         raise ValueError('Unexpected orchestrator bin alias; review the packaging mapping')
-    for name in sorted(PUBLIC_FILES - BINARIES):
+    for name in sorted(PUBLIC_FILES - BINARIES - {HOST_MANIFEST}):
         source_name = 'plugin/bin/alondra' if name == 'plugin-orchestrator/bin/alondra' else name
         source = root / source_name
         if not source.is_file() or source.resolve() != source:
@@ -52,6 +57,19 @@ def stage_assets(root, destination):
         output = destination / name
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, output)
+
+
+def stage_host(host, built, destination):
+    """The signed host and its manifest: the SDK and Node it carries, from the Bazel build's
+    manifest, and the SHA256 of the bytes that ship."""
+    source = json.loads(built.read_text())
+    if source.get('laboratory') is not False:
+        raise ValueError('The host is not the release host target')
+    output = destination / HOST
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(host, output)
+    manifest = {'sdk': source['sdk'], 'node': source['node'], 'bundle_sha256': source['bundle_sha256'], 'sha256': sha(output)}
+    (destination / HOST_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
 
 
 def validate_archive(path, allowed=(PUBLIC_FILES,)):
@@ -250,13 +268,17 @@ def publish(ver, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('validate', 'render', 'publish', 'stage-assets'))
+    parser.add_argument('mode', choices=('validate', 'render', 'publish', 'stage-assets', 'stage-host'))
     parser.add_argument('version')
     parser.add_argument('path', type=pathlib.Path)
+    parser.add_argument('--host', type=pathlib.Path)
+    parser.add_argument('--host-manifest', type=pathlib.Path)
     args = parser.parse_args()
     version(args.version)
     if args.mode == 'stage-assets':
         stage_assets(ROOT, args.path)
+    elif args.mode == 'stage-host':
+        stage_host(args.host, args.host_manifest, args.path)
     elif args.mode == 'validate':
         validate_archive(args.path)
     elif args.mode == 'render':

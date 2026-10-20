@@ -25,15 +25,15 @@ pub enum Command {
     #[command(about = tr!("Inspect recorded attempts, their versions and recovery instructions.", "Revisa los intentos guardados, sus versiones y cómo recuperarlos."))]
     List,
     #[command(about = tr!(
-        "Allow another attempt after inspecting the destination terminal, agent and worktree.",
-        "Permite otro intento después de revisar el terminal, el agente y el worktree de destino."
+        "Allow another attempt after checking the attempt's task or card and what its destination already shows.",
+        "Permite otro intento después de revisar la tarea o la tarjeta del intento y lo que su destino ya muestra."
     ))]
     Retry {
         id: i64,
         #[arg(long)]
         expected_version: u64,
         #[arg(long, required = true)]
-        terminal_checked: bool,
+        checked: bool,
         #[arg(long, required = true)]
         confirm_duplicate_risk: bool,
     },
@@ -43,7 +43,7 @@ pub enum Command {
         #[arg(long)]
         expected_version: u64,
         #[arg(long, required = true)]
-        terminal_checked: bool,
+        checked: bool,
     },
 }
 /// One attempt to hand a domain message to its recipient; unknown states fail deserialization closed.
@@ -83,8 +83,8 @@ pub fn state_text(state: State) -> &'static str {
             "En curso: resultado pendiente; no repitas"
         ),
         State::Uncertain => tr!(
-            "Uncertain: inspect the terminal before deciding",
-            "Incierto: revisa el terminal antes de decidir"
+            "Uncertain: check what it was about before deciding",
+            "Incierto: revisa de qué trataba antes de decidir"
         ),
         State::Handed => tr!(
             "Handed to Claude; execution not confirmed",
@@ -143,7 +143,7 @@ pub fn list(mut get: impl FnMut(&str) -> Result<Value>) -> Result<Listing> {
 }
 pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
     let mut lines = vec![format!("{}: {}", tr!("Destination", "Destino"), mac.unwrap_or("Local")),
-        tr!("Inspect this destination's terminal. Retry may duplicate effects; discard cannot undo them.", "Revisa el terminal de este destino. Reintentar puede duplicar efectos; descartar no los deshace.").into()];
+        tr!("Check each attempt's task or card and what its destination already shows. Retry may duplicate effects; discard cannot undo them.", "Revisa la tarea o la tarjeta de cada intento y lo que su destino ya muestra. Reintentar puede duplicar efectos; descartar no los deshace.").into()];
     if attempts.is_empty() {
         lines.push(tr!("No recorded attempts", "Sin intentos registrados").into());
     }
@@ -164,9 +164,9 @@ pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
                 )
                 .into(),
             );
-            lines.push(format!("{prefix} retry {} --expected-version {} --terminal-checked --confirm-duplicate-risk", a.attempt_id, a.version));
+            lines.push(format!("{prefix} retry {} --expected-version {} --checked --confirm-duplicate-risk", a.attempt_id, a.version));
             lines.push(format!(
-                "{prefix} discard {} --expected-version {} --terminal-checked",
+                "{prefix} discard {} --expected-version {} --checked",
                 a.attempt_id, a.version
             ));
         }
@@ -191,7 +191,7 @@ fn resolve(
 ) -> Result<(i64, State)> {
     ensure!(
         checked && (!retry || risk),
-        "Inspect the terminal and explicitly confirm duplicate risk before retrying"
+        "Check the attempt and explicitly confirm duplicate risk before retrying"
     );
     let listing = list(&mut get)?;
     let attempt = listing
@@ -248,8 +248,8 @@ pub fn run(options: Options) -> Result<()> {
             }
             return Ok(());
         }
-        Command::Retry { id, expected_version, terminal_checked, confirm_duplicate_risk } => resolve(id, expected_version, true, terminal_checked, confirm_duplicate_risk, get, post)?,
-        Command::Discard { id, expected_version, terminal_checked } => resolve(id, expected_version, false, terminal_checked, false, get, post)?,
+        Command::Retry { id, expected_version, checked, confirm_duplicate_risk } => resolve(id, expected_version, true, checked, confirm_duplicate_risk, get, post)?,
+        Command::Discard { id, expected_version, checked } => resolve(id, expected_version, false, checked, false, get, post)?,
     };
     println!("#{id}: {}", state_text(state));
     Ok(())
@@ -358,7 +358,7 @@ mod tests {
         let mut pending = a;
         pending.state = State::Dispatching;
         assert!(pending.blocks());
-        assert!(!details(&[pending], None).join("\n").contains("--terminal-checked"));
+        assert!(!details(&[pending], None).join("\n").contains("--checked"));
         for state in ["dispatching", "uncertain", "retryable", "discarded", "future"] {
             assert!(response_notice(&json!({"delivery_state":state}), None).is_some());
         }

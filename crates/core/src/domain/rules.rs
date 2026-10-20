@@ -313,6 +313,14 @@ pub fn delivery_withdrawn_behind_pr(number: u64) -> String {
     format!("Pull request #{number} has commits your final delivery does not include, so that delivery was withdrawn \
 and the task is in progress again. When the work is ready, present your result again with the pull request at its new head.")
 }
+pub fn delivery_withdrawn() -> String {
+    "Your final delivery was withdrawn, so the task is in progress again. When the work is ready, present your \
+result again.".into()
+}
+pub fn delivery_replaced() -> String {
+    "Your new final delivery replaces the one you presented before, which was withdrawn. Nothing else is needed \
+for it.".into()
+}
 pub fn cancelled_notice(title: &str) -> String {
     format!("Your task “{title}” was cancelled. Stop working on it now and do not start anything new \
 for it: do not commit, push, register a pull request or deliver anything. Before you end your \
@@ -1612,9 +1620,9 @@ impl DomainState {
         for (task_id, delivery) in asked {
             self.invalidate(&task_id);
             self.retire(&delivery);
-            self.hand_back(&task_id, &delivery, lifecycles)?;
+            let told = self.hand_back(&task_id, &delivery, delivery_withdrawn_for_questions(), lifecycles)?;
             let t = self.tasks.get_mut(&task_id).unwrap();
-            if let Some(agent_id) = t.agent_id.clone() {
+            if let Some(agent_id) = t.agent_id.clone().filter(|_| !told) {
                 effects.push(DomainEffect::NotifyAgent {
                     agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_for_questions(),
                 });
@@ -1645,9 +1653,9 @@ impl DomainState {
         for (task_id, delivery, number) in behind {
             self.invalidate(&task_id);
             self.retire(&delivery);
-            self.hand_back(&task_id, &delivery, lifecycles)?;
+            let told = self.hand_back(&task_id, &delivery, delivery_withdrawn_behind_pr(number), lifecycles)?;
             let t = self.tasks.get_mut(&task_id).unwrap();
-            if let Some(agent_id) = t.agent_id.clone() {
+            if let Some(agent_id) = t.agent_id.clone().filter(|_| !told) {
                 effects.push(DomainEffect::NotifyAgent {
                     agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_behind_pr(number),
                 });
@@ -1656,16 +1664,20 @@ impl DomainState {
         Ok(())
     }
     /// A final delivery leaves: the task is in progress again. The lifecycle takes the delivery
-    /// back with the input the node goes on with.
-    fn hand_back(&mut self, task_id: &TaskId, delivery: &InteractionId, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// back with the input the node goes on with. A running SDK execution is told `text` as that
+    /// input, which leaves for its host with the decision; whether it was is the result.
+    fn hand_back(&mut self, task_id: &TaskId, delivery: &InteractionId, text: String, lifecycles: &mut Lifecycles) -> Result<bool> {
         if self.tasks[task_id].wrap_up.node.is_some() {
             self.tasks.get_mut(task_id).unwrap().wrap_up = WrapUp::default();
         }
         self.node_has_run(task_id, lifecycles)?;
-        let record = LifecycleRecord::HandedBack { delivery: delivery.clone(), input: self.next_input(task_id) };
+        let through_sdk = self.lifecycle(lifecycles, task_id)?.execution()
+            .is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST);
+        let text = through_sdk.then_some(text);
+        let record = LifecycleRecord::HandedBack { delivery: delivery.clone(), input: self.next_input(task_id), text };
         self.decide(lifecycles, task_id, record)?;
         self.tasks.get_mut(task_id).unwrap().final_presentation = None;
-        Ok(())
+        Ok(through_sdk)
     }
     /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
     /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
@@ -3022,7 +3034,7 @@ impl DomainState {
                     }
                     if let Some(task) = presented {
                         self.invalidate(&task);
-                        self.hand_back(&task, interaction_id, lifecycles)?;
+                        self.hand_back(&task, interaction_id, delivery_withdrawn(), lifecycles)?;
                     }
                 }
                 if let Some((agent_id, task_id, message)) = unanswered {
@@ -3602,7 +3614,7 @@ impl DomainState {
                     self.invalidate(task_id);
                     let standing = self.lifecycle(lifecycles, task_id)?.delivery().cloned();
                     if let Some(previous) = standing.filter(|previous| previous != interaction_id) {
-                        self.hand_back(task_id, &previous, lifecycles)?;
+                        self.hand_back(task_id, &previous, delivery_replaced(), lifecycles)?;
                     }
                     self.node_has_run(task_id, lifecycles)?;
                     self.decide(lifecycles, task_id, LifecycleRecord::Presented { delivery: interaction_id.clone() })?;
@@ -4024,7 +4036,7 @@ impl DomainState {
                 }
                 self.release(task_id, lifecycles)?;
             }
-            Command::AdmitExecution { task_id, agent_id, conversation, instance, host } => {
+            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model } => {
                 system(actor)?;
                 self.not_held_for_plan_review(task_id)?;
                 self.not_ending(task_id)?;
@@ -4039,6 +4051,9 @@ impl DomainState {
                 self.invalidate(task_id);
                 let identity = ExecutionIdentity { conversation: conversation.clone(), instance: instance.clone(), host: host.clone() };
                 self.admit_execution(task_id, agent_id, identity, lifecycles)?;
+                if model.is_some() {
+                    self.tasks.get_mut(task_id).expect("admitted above").model = model.clone();
+                }
             }
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;

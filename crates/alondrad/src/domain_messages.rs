@@ -59,14 +59,40 @@ fn wording(body: &MessageBody, task_title: Option<(&TaskId, &str)>, user: &str, 
     let task = task_title.map(|(id, title)| format!("[Task {id} “{title}”] ")).unwrap_or_default();
     let mut files = vec![];
     for attachment in &body.attachments {
-        crate::domain_backup::verify_content(home, &attachment.content_reference, &attachment.content_digest)
-            .map_err(|_| refused("invalid_input", format!("attachment {} does not match its stored copy", attachment.id)))?;
+        if !matches_stored_copy(home, &attachment.content_reference, &attachment.content_digest) {
+            return Err(refused("invalid_input", format!("attachment {} does not match its stored copy", attachment.id)));
+        }
         files.push(alondra_core::Attachment {
             name: attachment.name.clone(), source_path: attachment.name.clone(),
             stored_path: Some(home.join(&attachment.content_reference).display().to_string()), bytes: Some(attachment.bytes),
         });
     }
     Ok(format!("{task}{lead}{}{}", body.text.trim(), crate::uploads::delivery_note(user, &files)))
+}
+
+/// Whether the file `reference` names inside `home`, never through a link or out of it, has the
+/// SHA-256 `digest`.
+fn matches_stored_copy(home: &Path, reference: &str, digest: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = Path::new(reference);
+    if !path.components().all(|component| matches!(component, std::path::Component::Normal(_))) {
+        return false;
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(home.join(path)) else {
+        return false;
+    };
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => hash.update(&buffer[..count]),
+            Err(_) => return false,
+        }
+    }
+    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest
 }
 
 /// Writes the message down the Agent's connection and answers how far it got: `handed` once the
@@ -84,7 +110,11 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         return Err(refused("not_found", "agent does not exist"));
     }
     if crate::sdk_owner::runs_through_sdk(&state, agent) {
-        return tell_through_sdk(domain, &state, home, user, name, agent, body);
+        let told = tell_through_sdk(domain, &state, home, user, name, agent, body);
+        if as_user && told.is_ok() {
+            domain.live.gate.release_by_user_message(domain, &agent.0);
+        }
+        return told;
     }
     if let Some((_, successor)) = crate::sdk_handover::successor(domain, agent) {
         return tell_through_sdk(domain, &state, home, user, name, &successor, body);

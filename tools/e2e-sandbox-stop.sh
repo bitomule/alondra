@@ -55,17 +55,21 @@ done
 stop "$dir/relay.pid"
 stop "$dir/issuer.pid"
 stop "$dir/sdk/model.pid"
+# The SDK hosts' state roots live outside the sandbox, where a Unix socket path is short enough.
 state=
-if [ -f "$dir/sdk/state-root" ]; then
-	state=$(cat "$dir/sdk/state-root")
-	case $state in /private/tmp/as-sdk-*) ;; *) state= ;; esac
-fi
+for file in "$dir/sdk/state-root" "$dir"/mac-*/sdk-state-root; do
+	[ -f "$file" ] || continue
+	root=$(cat "$file")
+	case $root in /private/tmp/as-sdk-*) state="${state:+$state }$root" ;; esac
+done
 
 if [ "${KEEP:-0}" = 1 ]; then
 	rm -f "$dir/sandbox.json"
 	echo "Sandbox stopped; files kept in $dir${state:+, and the state of its SDK hosts in $state}."
 else
-	[ -n "$state" ] && rm -rf "$state"
+	for root in $state; do
+		rm -rf "$root"
+	done
 	rm -rf "$dir"
 	echo "Sandbox stopped and $dir removed."
 fi

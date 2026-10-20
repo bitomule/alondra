@@ -310,7 +310,7 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
     let mut s = world();
     task(&mut s, "t", None);
     let admit = |host: &str| Command::AdmitExecution {
-        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(),
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None,
     };
     assert_eq!(exec(&mut s, Actor::System, admit(alondra_domain::CLAUDE_BG_HOST)).unwrap_err().code, "invalid_input", "the claude --bg node is assigned instead");
     assert_eq!(exec(&mut s, user(), admit("sdk-host")).unwrap_err().code, "forbidden");
@@ -339,7 +339,7 @@ pub(super) fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
 fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> String {
     task(s, id, None);
     must(s, Actor::System, Command::AdmitExecution {
-        task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(),
+        task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(), model: None,
     });
     let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(id)][0].clone() else { panic!("planned first") };
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
@@ -368,6 +368,57 @@ fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None }).unwrap_err().code,
         "conflict", "the same turn end does not ask twice");
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).count(), 1);
+    assert_aggregate_rules(&s);
+}
+
+/// The node asked the user during its turn: the card that asks how it goes on waits out of sight
+/// behind that question, and nobody hears of it. The answer told to the node ends its wait; a
+/// question the node withdraws uncovers it, as nothing then explains the next step.
+#[test]
+fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question() {
+    let mut s = world();
+    let unheard = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    let ask = |s: &mut DomainState, id: &str| {
+        let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+        must(s, node("a"), Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
+            recipient: Recipient::User, body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name") });
+    };
+    let inbox = |s: &DomainState| super::read_index::inbox_items(s).into_iter().filter(|item| item.pending)
+        .filter_map(|item| item.id.strip_prefix("interaction:").map(str::to_owned)).collect::<Vec<_>>();
+    ask(&mut s, "q");
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert!(s.interactions.contains_key(&unheard), "the lifecycle still requires its card");
+    assert!(!ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == unheard)), "nobody hears of it");
+    assert!(inbox(&s).contains(&"q".to_owned()) && !inbox(&s).contains(&unheard.0), "{:?}", inbox(&s));
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "short".into(), inputs: BTreeMap::new() });
+    assert!(!inbox(&s).contains(&unheard.0), "the answer is on its way: it still covers the card");
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into() });
+    assert!(s.interactions[&unheard].withdrawn, "the answer told to the node ends its wait");
+    assert!(!s.interactions[&InteractionId::from("q")].withdrawn, "the question keeps its answer");
+    assert_aggregate_rules(&s);
+
+    let mut withdrawn = world();
+    let unheard = InteractionId::from(sdk_turn(&mut withdrawn, "t", "a").as_str());
+    ask(&mut withdrawn, "q");
+    must(&mut withdrawn, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut withdrawn, node("a"), Command::Withdraw { interaction_id: "q".into() });
+    assert!(inbox(&withdrawn).contains(&unheard.0), "with its question withdrawn nothing explains its next step: {:?}", inbox(&withdrawn));
+    assert_aggregate_rules(&withdrawn);
+}
+
+/// No session phase moves for a node of the Agent SDK: it takes a slot while its turn runs and
+/// none once the turn that delivered ends.
+#[test]
+fn a_node_of_the_sdk_takes_a_slot_only_while_its_task_runs() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let takes_slot = |s: &DomainState| s.slots().iter().any(|agent| agent.id.0 == "a");
+    assert!(takes_slot(&s), "its turn runs");
+    deliver(&mut s, "t", "a", "result");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert!(!takes_slot(&s), "its turn ended with its delivery: {:?}", s.agents[&AgentId::from("a")].phase);
     assert_aggregate_rules(&s);
 }
 

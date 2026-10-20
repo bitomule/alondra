@@ -32,7 +32,7 @@ static NODE_PLUGIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// The node plugin launched sessions load with `--plugin-dir`, once `install_node` placed it.
 pub fn node() -> Option<PathBuf> {
-    NODE_PLUGIN.get().cloned()
+    NODE_PLUGIN.get().cloned().or_else(|| cfg!(test).then(|| PathBuf::from("/synthetic/plugin")))
 }
 
 /// The node plugin this daemon installed, else the copy in `home` an earlier start left.
@@ -58,7 +58,7 @@ pub fn own_cli() -> Option<PathBuf> {
     Some(cli_beside(&std::env::current_exe().ok()?))
 }
 
-fn cli_beside(daemon: &Path) -> PathBuf {
+pub(crate) fn cli_beside(daemon: &Path) -> PathBuf {
     let cli = daemon.with_file_name("alondra");
     let rack = cli.ancestors().nth(3);
     let cellar = cli.ancestors().nth(4);
@@ -131,11 +131,6 @@ fn sync(source: &Path, target: &Path, wrapper: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The flags that load Alondra's plugins into a session and mark it as Alondra's.
-pub fn launch_flags(plugins: &[&Path]) -> Vec<String> {
-    launch_flags_with(plugins, None)
-}
-
 /// Alondra's launch settings, with extra permissions when given.
 pub fn launch_settings_with(permissions: Option<serde_json::Value>) -> serde_json::Value {
     let mut settings: serde_json::Value = serde_json::from_str(&alondra_core::launch_settings()).expect("launch settings are JSON");
@@ -143,16 +138,6 @@ pub fn launch_settings_with(permissions: Option<serde_json::Value>) -> serde_jso
         settings["permissions"] = permissions;
     }
     settings
-}
-
-/// Extra permissions join Alondra's launch settings in its single `--settings`.
-pub fn launch_flags_with(plugins: &[&Path], permissions: Option<serde_json::Value>) -> Vec<String> {
-    let mut out = vec![];
-    for p in plugins {
-        out.extend(["--plugin-dir".to_string(), p.display().to_string()]);
-    }
-    out.extend(["--settings".to_string(), launch_settings_with(permissions).to_string()]);
-    out
 }
 
 #[cfg(test)]
@@ -225,16 +210,5 @@ mod tests {
         assert!(copy.join(".claude-plugin/types/index.d.ts").exists(), "what Claude Code writes beside the mod stays");
         assert_eq!(std::fs::read_to_string(copy.join("bin/alondra")).unwrap(), wrapper);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_launch_loads_the_plugins_turns_the_global_ones_off_and_carries_the_mark() {
-        let flags = launch_flags(&[Path::new("/r/plugin"), Path::new("/r/plugin-orchestrator")]);
-        assert_eq!(flags[..5], ["--plugin-dir", "/r/plugin", "--plugin-dir", "/r/plugin-orchestrator", "--settings"]);
-        let settings: Value = serde_json::from_str(&flags[5]).unwrap();
-        assert_eq!(settings["env"][alondra_core::LAUNCHED_ENV], "1");
-        assert_eq!(settings["enabledPlugins"]["alondra@alondra"], false);
-        assert_eq!(settings["enabledPlugins"]["alondra-orchestrator@alondra"], false);
-        assert!(settings.get("statusLine").is_none(), "the session keeps the user's own status line");
     }
 }

@@ -112,11 +112,11 @@ impl DomainState {
         holds: &dyn Holds,
     ) -> Result<String> {
         let u = user(actor)?;
-        let (presentation, _, current) = self.presentation(presentation_id)?;
+        let (_, _, current) = self.presentation(presentation_id)?;
         if current != targets {
             return fail("acceptance_stale", "Delivery targets changed");
         };
-        if presentation.card.plan.is_some() {
+        if self.interactions[presentation_id].card.plan.is_some() {
             return refuse("plan_choice_required", "choice",
                 "this result proposes a plan: decide it with DecideProposedPlan, implement or archive, so accepting it never leaves the plan unbuilt by accident");
         }
@@ -138,7 +138,7 @@ impl DomainState {
         let mut merges = vec![];
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
-            let pr = self.presented_pr(targets, pr_id)?;
+            let pr = &self.pull_requests[pr_id];
             let already_merged = pr.state == PrState::Merged && pr.merged_head.as_ref() == Some(head);
             let locally_authorized = self.merge_authorizations.values().any(|a| {
                 a.valid && a.presentation_id == *presentation_id && a.pr_id == *pr_id && a.head == *head
@@ -152,15 +152,6 @@ impl DomainState {
             merges.push((pr_id, head.as_str(), method));
         }
         Ok(merges)
-    }
-
-    /// A registered PR the delivery presents; `pr_id` comes from outside, so it is never indexed.
-    fn presented_pr(&self, targets: &[DeliveryTarget], pr_id: &PrId) -> Result<&PullRequest> {
-        let presented = targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id));
-        match self.pull_requests.get(pr_id) {
-            Some(pr) if presented => Ok(pr),
-            _ => refuse("pr_mismatch", "pr_id", &format!("PR {pr_id} is not one of this result's pull requests")),
-        }
     }
 
     pub(super) fn acceptance_authorization(&self, pr_id: &PrId) -> AuthorizationId {
@@ -191,14 +182,14 @@ impl DomainState {
         holds: &dyn Holds,
     ) -> Result<(String, String)> {
         let u = user(actor)?;
-        let (presentation, _, current) = self.presentation(presentation_id)?;
+        let (_, _, current) = self.presentation(presentation_id)?;
         if current != targets {
             return fail("acceptance_stale", "Delivery targets changed");
         };
-        let Some(plan) = presentation.card.plan.clone() else {
+        let Some(plan) = self.interactions[presentation_id].card.plan.clone() else {
             return refuse("invalid_input", "choice", "this result proposes no plan: accept it with AcceptDelivery");
         };
-        if matches!(&presentation.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
+        if matches!(&self.interactions[presentation_id].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
             return refuse("invalid_input", "presentation_id", "this result is already accepted");
         }
         self.unblocked(presentation_id, holds)?;
@@ -251,14 +242,14 @@ impl DomainState {
     ) -> Result<TaskId> {
         let (_, t, targets) = self.presentation(presentation_id)?;
         self.unblocked(presentation_id, holds)?;
-        let pr = self.presented_pr(targets, pr_id)?;
-        let number = pr.number;
+        let number = self.pull_requests[pr_id].number;
         if !targets.contains(&DeliveryTarget::PullRequest {
             pr_id: pr_id.clone(),
             head: expected_head.to_owned(),
         }) {
             return fail("stale_head", "PR/head not in current delivery").map_err(|e| e.because(Refusal::StaleHead { number }));
         };
+        let pr = &self.pull_requests[pr_id];
         if pr.state != PrState::Open {
             return fail("invalid_action_for_kind", "Only an open PR can be authorized").map_err(|e| e.because(Refusal::PrClosed { number }));
         };

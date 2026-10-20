@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v777d1e01dca4bd27",
+  "version": "v8082db3075dc9d58",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -82,27 +82,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         },
         {
           "type": "row",
@@ -120,27 +100,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:queued@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     },
@@ -204,24 +164,6 @@
               "enabled": true,
               "stamp": "En pausa",
               "resolves_card": false
-            },
-            {
-              "id": "close:zeta-worker@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
             }
           ]
         }
@@ -249,27 +191,7 @@
             }
           ],
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:alpha-waiting@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     }

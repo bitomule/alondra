@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alondra_core::options::{self, Approach, OptionsFile, Resolved};
-
-use crate::hub::Hub;
+use alondra_core::options::{self, OptionsFile};
 
 pub struct Loaded {
     pub file: OptionsFile,
@@ -11,11 +9,6 @@ pub struct Loaded {
 
 /// Reads `options.toml` on every call, so an edit applies at once. A broken file keeps the last
 /// good one in use and says why; no file means only the built-ins.
-pub fn load(hub: &Hub) -> Loaded {
-    load_in(&hub.home, &hub.options)
-}
-
-/// `load`, for a daemon that keeps its last good options somewhere other than a hub.
 pub fn load_in(home: &Path, last: &std::sync::Mutex<Option<OptionsFile>>) -> Loaded {
     let path = options::path_in(home);
     let mut last = last.lock().expect("options lock poisoned");
@@ -39,15 +32,4 @@ pub fn user_home() -> PathBuf {
 
 pub fn project_of(file: &OptionsFile, cwd: &Path) -> Option<String> {
     options::project_of(&file.projects_root(&user_home()), cwd)
-}
-
-/// The `claude` arguments for a launch: its name, permission mode, the flags the options set,
-/// Alondra's plugin and mark, and the prompt with the options section appended.
-pub fn launch_args(name: &str, permission_mode: Option<&str>, explicit_model: Option<&str>, prompt: &str, resolved: &Resolved, request_id: Option<&str>, plugin: &Path) -> Vec<String> {
-    let mut args: Vec<String> = ["--bg", "--name", name, "--permission-mode", permission_mode.unwrap_or("auto")].map(String::from).into();
-    args.extend(resolved.launch_flags(explicit_model));
-    args.extend(crate::plugins::launch_flags(&[plugin]));
-    args.push("--".into());
-    args.push(format!("{}\n\n{}", prompt.trim_end(), resolved.mission_section(request_id, Approach::Solo)));
-    args
 }

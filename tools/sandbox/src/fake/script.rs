@@ -77,6 +77,11 @@ pub enum Step {
         listed: Option<String>,
     },
     Cleanup,
+    /// Calls one of Alondra's node tools with these arguments, as the model would.
+    Call { tool: String, arguments: serde_json::Value },
+    /// Runs a command with Bash in the worktree. A native Claude of the Agent SDK first asks for
+    /// its permission unless the project's local settings allow it.
+    Bash { command: String },
     /// The session ends as when the user exits it: `session.end`, then the process goes.
     End,
     /// The process dies without a word, as a crashed session does.
@@ -84,6 +89,23 @@ pub enum Step {
 }
 
 impl Step {
+    /// One step as JSON, or a JSON list of them.
+    pub fn parse_all(json: &str) -> Result<Vec<Step>> {
+        if json.trim_start().starts_with('[') {
+            return Ok(serde_json::from_str(json)?);
+        }
+        Ok(vec![serde_json::from_str(json)?])
+    }
+
+    /// Whether taking it leaves a card that explains what the session waits for.
+    pub fn leaves_card(&self) -> bool {
+        match self {
+            Step::Deliver { .. } | Step::Ask { .. } | Step::Cleanup => true,
+            Step::Call { tool, .. } => matches!(tool.as_str(), "ask" | "present_result" | "cleanup_done"),
+            _ => false,
+        }
+    }
+
     /// Commit, push, open and register PR `number`, and deliver it as final.
     pub fn work(number: u64, file: &str) -> Vec<Step> {
         vec![

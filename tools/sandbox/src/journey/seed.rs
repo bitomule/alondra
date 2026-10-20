@@ -1,12 +1,11 @@
-//! A varied world for the tester agent to look at: tasks in every state a user meets, a stopped
-//! node, a Mac 2 with work of its own, and a pairing request waiting on Mac 1.
+//! A varied world for the tester agent to look at: tasks in every state a user meets, a node whose
+//! session closed, a Mac 2 with work of its own, and a pairing request waiting on Mac 1.
 use anyhow::{Result, bail};
 
 use super::{Report, User, steps::*};
 use crate::{
     fake::{
         Fakes,
-        node::{self, State},
         script::{RequestScript, Step},
     },
     phone::Phone,
@@ -63,7 +62,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         request(report, &fakes, &user, &task_script("req-stopped", "t-stopped", "Migrate the settings file"), "Migrate the settings file")?;
         let stopped = launched(report, &fakes, "t-stopped")?;
         state(report, &user, "t-stopped", WORKING)?;
-        report.step("the user stops that node in Claude agents", || node::end(&fakes, &stopped.short, State::Stopped))?;
+        act(report, &fakes, &stopped, "that node's native Claude crashes, so the task asks how to go on", &[Step::Die])?;
 
         if sandbox.mac_count() >= 2 {
             let other = User::paired(sandbox, "seed", 2, false)?;
@@ -82,6 +81,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, review, finished, after-merge and stopped tasks on Mac 1, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, review, finished, after-merge and interrupted tasks on Mac 1, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

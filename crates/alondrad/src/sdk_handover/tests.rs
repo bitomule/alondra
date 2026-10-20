@@ -7,7 +7,7 @@ use super::*;
 use crate::domain_store::StoreError;
 use crate::test_support::Directory;
 use std::collections::BTreeSet;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,13 +112,37 @@ fn event(domain: &DomainRuntime, happened: NodeEvent) {
 impl World {
     /// A task whose `claude --bg` node works in its worktree, its session's transcript on disk.
     fn new() -> Self {
+        Self::with(|_, _| {})
+    }
+
+    /// The same on a release's own backend, with no configuration file: the host is read when it
+    /// starts and the user's Claude Code is found on the PATH, here the fixture behind a `claude`
+    /// that tells its release.
+    fn installed() -> Self {
+        Self::with(|home, backend| {
+            let bin = home.join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let claude = bin.join("claude");
+            std::fs::write(&claude, format!("#!/bin/sh\n[ \"$1\" = --version ] && {{ echo '2.1.300 (Claude Code)'; exit 0; }}\nexec {} \"$@\"\n", backend.native.display())).unwrap();
+            std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
+            backend.native_environment.insert("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()));
+            backend.native = PathBuf::new();
+            backend.native_sha256 = String::new();
+            backend.node_sha256 = String::new();
+            backend.host_sha256 = String::new();
+            backend.installed_native = true;
+        })
+    }
+
+    fn with(release: impl FnOnce(&Path, &mut crate::sdk_owner::SdkBackend)) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let state = Directory::for_unix_socket();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
-        let (backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
+        let (mut backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
+        release(&home, &mut backend);
         std::fs::write(format!("{}.transcript-{SESSION}", capture.display()), "the claude --bg session's first prompt\n").unwrap();
         let database = home.join("domain.sqlite");
         let bg = Bg::spawn();
@@ -265,6 +289,23 @@ async fn a_resting_node_moves_with_the_answer_to_its_card_and_resumes_the_same_c
     assert_eq!(world.verdict(), Verdict::Stays(Reason::ThroughSdk));
 }
 
+// On a release with no configuration file, a move the daemon's death cut after its admission is
+// finished by the daemon that comes back, on the host the release installed and the user's Claude
+// Code found on the PATH, as every Mac that upgrades has them.
+#[tokio::test]
+async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_release_installed() {
+    let mut world = World::installed();
+    world.rest();
+    world.answer();
+    *world.domain.handovers.crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
+    tick(&world.domain).await;
+    assert_eq!(world.step(), Some(HandoverStep::SdkAdmitted));
+    world.restart().await;
+    tick(&world.domain).await;
+    assert_eq!(world.launch_status().as_deref(), Some("handed"), "the launch goes out after the crash");
+    assert_moved(&world).await;
+}
+
 // A daemon that dies right after any step of a move comes back and goes on from the step it
 // recorded: the claude --bg process is stopped once, Claude starts once with the same session and
 // the answer reaches it once.
@@ -341,6 +382,27 @@ async fn a_paused_node_moves_to_the_sdk_as_it_comes_back() {
     let starts = world.starts();
     assert_eq!(starts[0]["resume"].as_str(), Some(SESSION), "{starts:?}");
     assert!(world.prompts()[0].ends_with("Your usage is back: carry on with your task"), "{:?}", world.prompts());
+}
+
+// A node whose connection is lost while its task is open is brought back by the revival: its
+// claude --bg process is stopped and the SDK resumes its same session, told to carry on.
+#[tokio::test]
+async fn a_node_whose_connection_is_lost_comes_back_through_the_sdk_with_its_same_session_told_to_carry_on() {
+    let world = World::new();
+    let connection = world.domain.live.mods.session(SESSION).and_then(|reported| reported.connection).expect("the node is connected");
+    world.domain.live.mods.disconnect(SESSION, connection);
+    crate::node_revival::revive(&world.domain, SESSION, &crate::node_revival::Timing { grace: std::time::Duration::from_millis(30) }).await;
+    world.until_answered().await;
+    assert_eq!(world.step(), Some(HandoverStep::Done));
+    assert!(!world.bg.running(), "the claude --bg process is gone");
+    let starts = world.starts();
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    assert_eq!(starts[0]["resume"].as_str(), Some(SESSION), "the same session: {starts:?}");
+    assert_eq!(starts[0]["cwd"].as_str().map(PathBuf::from), Some(world.worktree.canonicalize().unwrap()), "in the node's folder");
+    let prompts = world.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("Alondra restarted it. Check where you were and continue your task."), "{}", prompts[0]);
+    assert!(world.sdk_node().is_some_and(|agent| world.domain.owns_sdk_host(&agent)), "the SDK node holds the task");
 }
 
 proptest::proptest! {

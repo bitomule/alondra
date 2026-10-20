@@ -33,10 +33,15 @@ Mac apps browse it only when built with `--define=alondra_sandbox=1` and launche
   account (enrolled at the relay, reached over iroh); `mac-N-direct.json` the one it paired directly.
 - `sandbox.json`: Macs, ports and URLs, for the phone and later tools.
 - `mac-N/start`: runs that Mac's daemon with its environment; a journey restarts the daemon with it.
+- `mac-N/sdk-backend.json` and `sdk/`: the Agent SDK backend every Mac gets when `SDK_NODE` and
+  `SDK_HOST` name the pinned Node and the host bundle (`make e2e-sandbox` always passes them):
+  `sdk/runtime/` holds their copies, `sdk/home/` and `sdk/tmp/` are Claude's HOME and TMPDIR, and
+  the native Claude is the sandbox's `fakes/claude`. Each host's state root is a short folder in
+  `/private/tmp/as-sdk-*` (named in `mac-N/sdk-state-root`), for its Unix socket.
 - With `FAKES=1`: `fakes/` (the `claude` and `gh` wrappers, every call in `calls.jsonl`, the
-  scripts, the fake nodes, the fake GitHub's PRs in `github/prs.json`), `claude-home/` (the
-  daemons' `CLAUDE_HOME` and `CLAUDE_CONFIG_DIR`), `plugin/` and `plugin-orchestrator/` (the
-  marketplace), and `repo/` with its bare `remote.git`.
+  scripts, the native sessions in `sessions/`, the fake GitHub's PRs in `github/prs.json`),
+  `claude-home/` (the daemons' `CLAUDE_HOME` and `CLAUDE_CONFIG_DIR`), `plugin/` and
+  `plugin-orchestrator/` (the marketplace), and `repo/` with its bare `remote.git`.
 
 ## Fakes (`FAKES=1`)
 
@@ -45,56 +50,71 @@ The daemons run with `$SANDBOX_DIR/fakes` first on their PATH, wake on and
 a busy Mac never holds the fake nodes' starts; only a
 sandbox daemon honours it). No model and no GitHub are involved, and nothing reads `~/.claude`.
 
-- **Orchestrator** (`claude -p`): creates and launches the tasks the run scripted for each request
-  its batch names, through the `alondra mcp-orchestrator` Alondra configured.
-- **Node** (`claude --bg`): a process with a worktree of `repo/`, its job file in `claude-home/jobs`,
-  the plugin's reports and connection (`alondra node event|connect|ack`), the classic hooks
-  (`alondra hook`) and the real `alondra mcp-node` with the settings file Alondra wrote. It cleans
-  up when asked and follows its task's script; `claude stop|respawn|rm|agents` act on it, and
-  `claude agents` names the process of a running one, as Claude Code does. While
+- **Native Claude** (what the SDK host spawns, `claude --output-format stream-json --verbose
+  --input-format stream-json …`, `src/fake/native.rs`): speaks the host's stream-json protocol as
+  `agent-host/persistent-fake-claude.py` does. An orchestrator batch (`--restricted`) creates and
+  launches the tasks the run scripted for each request it names, or closes the request with its
+  scripted answer, through the `alondra mcp-orchestrator` its `--mcp-config` names. A task's session
+  works in the worktree Alondra made and acts through the real `alondra mcp-node` with the
+  environment the host gave it: each input opens or joins a turn, which ends once it delivers, asks
+  or cleans up; it follows its task's script, cleans up when asked, asks the host for a Bash
+  command's permission unless the main checkout's `.claude/settings.local.json` allows it, and keeps
+  each start, input, step and its transcript in `fakes/sessions/<first 8 of its id>/`, so
+  `--resume` finds the conversation. A journey moves it through `order.sock` there, inside its turn.
+- **Background session** (`claude --bg`, `src/fake/node.rs`) and **`claude -p`**: what a daemon
+  without the SDK backend calls, as the previous release does in `deploy/brew/upgrade-rehearsal.py`.
+  The node keeps its job file in `claude-home/jobs`, the plugin's reports and connection (`alondra
+  node event|connect|ack`), the classic hooks (`alondra hook`) and the real `alondra mcp-node` with
+  the settings file Alondra wrote; `claude stop|respawn|rm|agents` act on it. While
   `fakes/hold-stop` exists, `claude stop` fails and the session goes on.
 - **GitHub** (`gh`): PRs whose head is their branch's tip in `remote.git`; checks, drafts and merge
   failures are set per PR.
 
 Move a node by hand: `alondra-sandbox fake nodes`, then
-`alondra-sandbox fake node <task> work|ask|deliver|cleanup|end|die` (or `--step '<json>'`).
+`alondra-sandbox fake node <task> work|ask|deliver|cleanup|end|die` (or `--step '<json>'`, one step
+or a list). `die` kills a native session's Claude, as a crash does; its host goes on.
 
 ## Journeys
 
 `make e2e-journeys` (`//tests/sandbox:journeys`) starts a two-Mac sandbox with the fakes, runs
-`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|local` runs one, and
+`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|local|reopen` runs one, and
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
 
 - `task-cycle` (over iroh):
-  - TC1: request → task → node → PR delivered → review card → merge → clean-up → `claude rm` → finished.
+  - TC1: request → task → node → PR delivered → review card → merge → clean-up → the node's host
+    ends and its worktree goes → finished.
   - TC2: a question answered on its card reaches the node.
   - TC3: requested changes, a second delivery, the new head merged.
-  - TC4: cancelling removes the node and closes the PR.
+  - TC4: cancelling ends the node and takes it out of Fleet.
   - F1–F4: refusals Alondra owes. A final delivery with an uncommitted file (named), a draft PR,
     failing checks handed back to the node, a second PR for one task.
 - `session`:
-  - S1: a crashed session is respawned and finishes.
-  - S2: a session the user stopped is not respawned and its task is freed.
-  - S3: a daemon restart keeps the card, the task and the node.
-  - S4: an ended session's bearer is refused.
+  - S1: a node whose native Claude crashed carries on, resumed, once the user says so, and finishes.
+  - S2: «Interrupt» in Fleet ends the turn with one card, and the node's Claude is not restarted.
+  - S3: a daemon restart keeps the card, the task and the node, whose host it adopts.
+  - S4: a crashed session's bearer is refused once it resumes with a new one.
 - `local` (last, since it stops the relay):
   - L1: a whole task over the direct listener with the relay down.
   - L2: each Mac shows only its own tasks, and a terminal pairs directly with both.
   - L3: a revoked phone gets its sealed `device_revoked` and creates nothing.
+- `reopen` (over the direct listener):
+  - R1: a task reopened with every slot taken waits in the queue saying why, then starts with a new node.
+- B1, after them: the sandbox's `claude` ran only as the SDK host's native Claude, never `--bg` or `-p`.
 
 Evidence lands in `bazel-testlogs/tests/sandbox/journeys/test.outputs/` (`$SANDBOX_DIR/journeys`
 when run by hand):
 - `journeys.md` and `journeys.json`: each step with what it expected and saw;
 - `views/<case>/`: the views at each milestone;
-- `fakes/`: every `claude` and `gh` call, and each node's messages and steps;
+- `fakes/`: every `claude` and `gh` call, the orchestrator's batches and actions, and each native
+  session's starts, inputs and steps;
 - `logs/`: the daemons' and relay's logs, kept when a case failed.
 
 ## Agent SDK backend (`SDK=1`)
 
-`SDK=1 FAKES=1 make e2e-sandbox` gives Mac 1 the Agent SDK backend: every task it launches runs
-through the SDK host (`agent-host`, pinned Node) and the pinned native Claude Code 2.1.300, never
-through `claude --bg`. `tools/e2e_sdk_backend.py` sets it up:
+`SDK=1 FAKES=1 make e2e-sandbox` gives Mac 1 the pinned native Claude Code 2.1.300 in place of the
+scripted one: every task it launches runs through the SDK host (`agent-host`, pinned Node) and the
+real native Claude, against a local model double. `tools/e2e_sdk_backend.py` sets it up:
 - copies the pinned Node and `persistent.cjs`, and extracts the native Claude from its npm archive
   (size and SHA256 checked);
 - starts the local model double (`tests/native/claude/model_double.py`), which answers each

@@ -2818,7 +2818,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows", "domain_store::tests::an_unsupported_schema_is_refused_without_replacing_the_database"],
+      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_reopened_store_keeps_its_rows", "domain_store::tests::an_unsupported_schema_is_refused_without_replacing_the_database"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2868,19 +2868,6 @@
         }
       ],
       "cs_evidence": ["domain::tests::free_text_response_with_or_without_options_and_attachment_bounds", "domain_api::tests::serialized_diff_fits_encrypted_relay_budget_and_reports_truncation"],
-      "cs_evidence_status": "passed",
-      "execution_status": "test_evidence"
-    },
-    {
-      "id": "V44",
-      "rules": [],
-      "title": "Cutover starts v2 on an empty base and archives the legacy data",
-      "layers": ["S"],
-      "base": "synthetic_offline_backup",
-      "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"], "imported_rows": 0, "legacy_archived": true},
-      "cs_evidence_status": "passed",
-      "remaining": ["rehearsal of the live HOME at cutover"],
-      "cs_evidence": ["domain_cutover::tests::the_cutover_starts_the_domain_store_empty_and_archives_the_legacy_data_without_importing_it", "domain_cutover::tests::rollback_restores_the_legacy_home_and_sets_the_empty_domain_store_aside"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """On-demand local release; never exports signing keys or starts hosted jobs."""
 import argparse
-from contextlib import contextmanager
 import fcntl
 import json
 import os
 import pathlib
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -22,9 +22,21 @@ TEAM = '658YBSK6MG'
 LOW_FREE = 8 * 1024**3
 REHEARSAL = 'upgrade-rehearsal.json'
 SDK_HANDOVER = 'sdk-handover'
+FRESH_SDK = 'fresh-sdk'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
-SDK_REHEARSAL = {'--sdk-node': '//agent-host:pinned_node', '--sdk-host': '//agent-host:persistent.cjs',
-                 '--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
+SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
+# What a release builds, by the name it ships under.
+RELEASE_TARGETS = {
+    'alondra': '//crates/alondra:alondra',
+    'alondrad': '//crates/alondrad:alondrad',
+    'alondrad-launcher': '//crates/alondrad:alondrad-launcher',
+    'alondra-host': '//agent-host:release_host',
+}
+# Cargo.toml's release profile, as the Rust action of each shipped binary runs it (.bazelrc).
+RELEASE_CODEGEN = ('-Clto=thin', '-Ccodegen-units=1', '-Cpanic=abort', '-Cstrip=symbols')
+HOST_IDENTIFIER = 'com.bitomule.alondra-host'
+# V8 compiles JavaScript at run time; the hardened runtime allows it only with this entitlement.
+HOST_ENTITLEMENTS = ROOT / 'agent-host/host-entitlements.plist'
 
 
 def run(*args, capture=False, env=None):
@@ -93,12 +105,31 @@ def manifest(ver, source, output):
                          for target in release.TARGETS}}
 
 
-def bazel_file(label):
+def bazel_file(label, *flags):
     execroot = pathlib.Path(run('bazelisk', 'info', 'execution_root', capture=True).strip())
-    files = [line for line in run('bazelisk', 'cquery', '--output=files', label, capture=True).split() if not line.endswith('.ok')]
+    files = [line for line in run('bazelisk', 'cquery', *flags, '--output=files', label, capture=True).split()
+             if not line.endswith('.ok') and not line.endswith('.manifest.json')]
     if len(files) != 1:
         raise RuntimeError(f'{label} does not build exactly one file: {files}')
     return execroot / files[0]
+
+
+def release_build():
+    """Builds what ships with Bazel's release configuration, and checks that each shipped Rust
+    binary was compiled as Cargo's release profile compiles it."""
+    run('bazelisk', 'build', '--config=release', *RELEASE_TARGETS.values())
+    for name, label in RELEASE_TARGETS.items():
+        if not label.startswith('//crates/'):
+            continue
+        action = run('bazelisk', 'aquery', '--config=release', f'mnemonic("Rustc", {label})', '--output=text', capture=True)
+        missing = [flag for flag in RELEASE_CODEGEN if flag not in action]
+        if missing:
+            raise RuntimeError(f'{name} was not built with {", ".join(missing)}: check build:release in .bazelrc')
+        if action.rfind('-Cstrip=symbols') < action.rfind('--codegen=strip='):
+            raise RuntimeError(f'{name} keeps its symbols: another strip level comes after -Cstrip=symbols')
+    built = {name: bazel_file(label, '--config=release') for name, label in RELEASE_TARGETS.items()}
+    built['alondra-host.json'] = built['alondra-host'].with_name('alondra-host.manifest.json')
+    return built
 
 
 def rehearse_upgrade(ver, output):
@@ -123,6 +154,8 @@ def verify_rehearsal(ver, output):
     handover = saved.get('cases', {}).get(SDK_HANDOVER) or {}
     if handover.get('crashed_after') != list(HANDOVER_CRASHES):
         raise RuntimeError('The upgrade rehearsal did not move claude --bg nodes to the Agent SDK with a crash after each step; prepare them again')
+    if not (saved.get('cases', {}).get(FRESH_SDK) or {}).get('session'):
+        raise RuntimeError('The upgrade rehearsal did not run a task of a fresh install through its own Agent SDK host; prepare them again')
 
 
 def verify_prepared(ver, source, output):
@@ -148,7 +181,7 @@ def smoke(ver, target, archive):
         assets.mkdir(parents=True)
         for name in SIGNED:
             shutil.move(unpack / name, binaries / name)
-        for name in ('.claude-plugin', 'plugin', 'plugin-orchestrator'):
+        for name in ('.claude-plugin', 'plugin', 'plugin-orchestrator', 'sdk'):
             shutil.move(unpack / name, assets / name)
         opt = prefix / 'opt/alondra'
         opt.parent.mkdir()
@@ -162,7 +195,18 @@ def smoke(ver, target, archive):
                 raise RuntimeError(f'Wrong architecture for {name}: expected {arch}')
             run('codesign', '--verify', '--strict', binary)
             run('/usr/bin/arch', f'-{arch}', binary, '--version' if name == 'alondrad-launcher' else '--help')
+        host_smoke(assets / release.HOST)
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
+
+
+def host_smoke(host):
+    """The signed host runs under the hardened runtime with no Node on PATH: it starts, compiles its
+    JavaScript and refuses a start that brings no bootstrap."""
+    run('codesign', '--verify', '--strict', host)
+    result = subprocess.run([str(host)], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            env={'PATH': '/usr/bin:/bin'}, timeout=60)
+    if result.returncode != 1 or 'Alondra host startup refused' not in result.stdout + result.stderr:
+        raise RuntimeError(f'The SDK host did not start under its signature: exit {result.returncode}, {(result.stdout + result.stderr).strip()[-300:]}')
 
 
 # alondrad is a launchd agent: macOS shows its Local Network reason only from the Info.plist its
@@ -183,73 +227,26 @@ def check_signature(details, identifier):
         raise RuntimeError(f'{identifier} lost its embedded Info.plist: macOS would not show why it needs Local Network')
 
 
-def sign(binary, identifier):
+def sign(binary, identifier, entitlements=None):
     run('codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', IDENTITY,
-        '--identifier', identifier, binary)
+        '--identifier', identifier, *(('--entitlements', entitlements) if entitlements else ()), binary)
     run('codesign', '--verify', '--strict', binary)
     details = subprocess.run(['codesign', '--display', '--verbose=4', str(binary)],
                              check=True, text=True, capture_output=True).stderr
     check_signature(details, identifier)
+    granted = subprocess.run(['codesign', '--display', '--entitlements', ':-', str(binary)],
+                             check=True, capture_output=True).stdout
+    expected = plistlib.loads(entitlements.read_bytes()) if entitlements else {}
+    if (plistlib.loads(granted) if granted.strip() else {}) != expected:
+        raise RuntimeError(f'{identifier} carries other entitlements than {entitlements or "none"}')
 
 
 
-def rust_toolchain():
-    """Resolve Rust once, before HOME isolation; never mix Homebrew and rustup."""
-    active = run('rustup', 'show', 'active-toolchain', capture=True).split()
-    if not active:
-        raise RuntimeError('No active rustup toolchain; configure one before release')
-    name = active[0]
-    tools = {}
-    for tool in ('cargo', 'rustc', 'rustdoc'):
-        selected = pathlib.Path(run('rustup', 'which', '--toolchain', name, tool, capture=True).strip())
-        if not selected.is_absolute() or not selected.is_file() or not os.access(selected, os.X_OK):
-            raise RuntimeError(f'The selected rustup toolchain has no executable {tool}')
-        tools[tool] = str(selected.resolve())
-    if len({pathlib.Path(path).parent for path in tools.values()}) != 1:
-        raise RuntimeError('The selected cargo, rustc and rustdoc must belong to the same toolchain')
-    for target in release.TARGETS:
-        library = pathlib.Path(run(tools['rustc'], '--print', 'target-libdir', '--target', target, capture=True).strip())
-        if not library.is_absolute() or not all(any(library.glob(f'lib{crate}-*.rlib')) for crate in ('core', 'std')):
-            raise RuntimeError(f'Missing target libraries for {target} in {name}; run rustup target add --toolchain {name} {target}')
-    print(f'Using Rust toolchain: {name}')
-    print(run(tools['rustc'], '--version', capture=True).strip())
-    return name, tools
-
-
-def cargo_environment(target_dir, name, tools):
-    environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('ALONDRA_', 'CLAUDE_'))}
-    environment.update(CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0',
-                       CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0', CARGO_PROFILE_RELEASE_DEBUG='0',
-                       MACOSX_DEPLOYMENT_TARGET='14.0', RUSTC=tools['rustc'], RUSTDOC=tools['rustdoc'],
-                       CARGO=tools['cargo'], RUSTUP_TOOLCHAIN=name, RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
-                       CARGO_HOME=str(pathlib.Path(os.environ.get('CARGO_HOME', pathlib.Path.home() / '.cargo')).expanduser().resolve()),
-                       RUSTUP_HOME=str(pathlib.Path(os.environ.get('RUSTUP_HOME', pathlib.Path.home() / '.rustup')).expanduser().resolve()))
-    environment['PATH'] = str(pathlib.Path(tools['cargo']).parent) + os.pathsep + environment.get('PATH', '')
-    return environment
-
-
-@contextmanager
-def build_cache(target_dir, ephemeral, phase):
-    if not ephemeral:
-        yield target_dir
-        return
-    # Never clean the caller's target. Only TemporaryDirectory's own freshly
-    # created sibling is removed, including on failed checks/builds/smokes.
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    if target_dir.exists() and target_dir.stat().st_dev != target_dir.parent.stat().st_dev:
-        raise RuntimeError('Ephemeral cache target must be a subdirectory on its parent volume, not a mount point; choose a target subdirectory')
-    with tempfile.TemporaryDirectory(prefix=f'alondra-release-{phase}-', dir=target_dir.parent) as temp:
-        yield pathlib.Path(temp)
-
-
-def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
+def prepare(ver, source, output):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('Preparation requires this Apple Silicon Mac')
-    # Check each destination volume before creating artifacts or starting tests/builds.
-    require_disk_space(target_dir)
+    # Check the destination volume before creating artifacts or starting tests/builds.
     require_disk_space(output)
-    toolchain_name, tools = rust_toolchain()
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
         raise RuntimeError('The approved Developer ID identity is not available in the local keychain')
@@ -258,20 +255,20 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     output.chmod(0o700)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
     run('bazelisk', 'test', '//crates/...')
+    built = release_build()
     for target in release.TARGETS:
-        with build_cache(target_dir, ephemeral_build_cache, 'build') as build_target:
-            require_disk_space(build_target)
-            env = cargo_environment(build_target, toolchain_name, tools)
-            run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
-                '-p', 'alondra', '-p', 'alondrad', env=env)
-            with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
-                payload = pathlib.Path(temp)
-                for name, identifier in SIGNED.items():
-                    shutil.copy2(build_target / target / 'release' / name, payload / name)
-                    sign(payload / name, identifier)
-                run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad',
-                    payload / 'alondrad-launcher', output)
-            smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
+        with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
+            payload = pathlib.Path(temp)
+            for name, identifier in SIGNED.items():
+                shutil.copyfile(built[name], payload / name)
+                (payload / name).chmod(0o755)
+                sign(payload / name, identifier)
+            shutil.copyfile(built['alondra-host'], payload / 'alondra-host')
+            (payload / 'alondra-host').chmod(0o755)
+            sign(payload / 'alondra-host', HOST_IDENTIFIER, HOST_ENTITLEMENTS)
+            run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad',
+                payload / 'alondrad-launcher', payload / 'alondra-host', built['alondra-host.json'], output)
+        smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
     rehearse_upgrade(ver, output)
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
     verify_prepared(ver, source, output)
@@ -298,20 +295,15 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare', action='store_true', help='Build, verify and preserve artifacts without tagging or publishing')
     modes.add_argument('--retry-publish', action='store_true', help='Publish only the original prepared bytes; never rebuild or sign')
-    parser.add_argument('--ephemeral-build-cache', action='store_true',
-                        help='Use disposable per-stage caches on the target volume; never remove the supplied target directory')
     args = parser.parse_args()
-    if args.retry_publish and args.ephemeral_build_cache:
-        parser.error('--ephemeral-build-cache cannot be combined with --retry-publish')
     ver = release.version(args.version)
     output = pathlib.Path(os.environ.get('ALONDRA_RELEASE_DIR', str(pathlib.Path.home() / 'Library/Caches/Alondra/releases' / ver))).expanduser().resolve()
-    target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', '/private/tmp/alondra-service-crypto/target')).expanduser().resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target.parent / (target.name + '.release.lock'), 'a') as lock:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with open(output.parent / (output.name + '.release.lock'), 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError('Another local release is using this target directory') from None
+            raise RuntimeError('Another local release of this version is running') from None
         retry_source = None
         if args.retry_publish:
             retry_source = json.loads((output / 'manifest.json').read_text())['source']
@@ -319,10 +311,7 @@ def main():
         source = preflight(ver, retry_source=retry_source)
         tag_state(ver, source, args.retry_publish)
         if not args.retry_publish:
-            try:
-                prepare(ver, source, output, target, ephemeral_build_cache=args.ephemeral_build_cache)
-            finally:
-                shutil.rmtree(target, ignore_errors=True)
+            prepare(ver, source, output)
         if not args.prepare:
             publish(ver, source, output, retry=args.retry_publish)
 

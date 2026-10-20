@@ -54,6 +54,21 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
             _ => unreachable!(),
         }
     }
+    if NAMES.iter().any(|name| all || names.iter().any(|wanted| wanted == name)) {
+        report.case("B1", "Every node and orchestrator batch ran through the Agent SDK host, never claude --bg or claude -p", |report| {
+            report.step("the sandbox's claude ran only as the SDK host's native Claude", || {
+                let calls = fakes.calls()?;
+                let claude: Vec<_> = calls.iter().filter(|call| call.tool == "claude").collect();
+                if let Some(call) = claude.iter().find(|call| call.args.iter().any(|arg| arg == "--bg" || arg == "-p")) {
+                    bail!("Alondra ran claude {}", call.args.join(" "));
+                }
+                if !claude.iter().any(|call| crate::fake::native::spawned_by_sdk(&call.args)) {
+                    bail!("no SDK host started the sandbox's claude");
+                }
+                Ok(())
+            })
+        });
+    }
     report.finish(&fakes, sandbox)
 }
 

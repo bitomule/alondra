@@ -2,7 +2,7 @@ use super::*;
 use crate::machine_watch::step_on;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
-use alondra_core::domain::{AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
 
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;

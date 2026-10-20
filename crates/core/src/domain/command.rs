@@ -466,13 +466,16 @@ pub enum Command {
         task_id: TaskId,
     },
     /// The SDK host took the Task with an execution of its own, running as `conversation`,
-    /// `instance` and `host`. Never the `claude --bg` backend, whose node is assigned.
+    /// `instance` and `host`, with `model` when the launch chose one. Never the `claude --bg`
+    /// backend, whose node is assigned.
     AdmitExecution {
         task_id: TaskId,
         agent_id: AgentId,
         conversation: String,
         instance: String,
         host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<TaskModel>,
     },
     /// What the SDK observed of the Task's execution of `generation`, in order, normalized from
     /// one accepted observation.

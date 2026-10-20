@@ -15,7 +15,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         return;
     };
     report.case("R1", "A task reopened with every slot taken waits in the queue saying why, then starts with a new node", |report| {
-        limit(report, &user, "2")?;
+        // The cases before leave some nodes in a turn of their own: the limits count from them.
+        let busy = report.step("the nodes already working are counted", || working(&user))?;
+        let (one, two) = ((busy + 1).to_string(), (busy + 2).to_string());
+        limit(report, &user, &two)?;
         let mut busy = task_script("req-r1", "t-r1", "Keep the build green");
         busy.tasks[0].on_start = vec![Step::Speak { said: "The tests are running".into(), behind: Some("make test".into()), listed: Some("working".into()) }];
         request(report, fakes, &user, &busy, "Keep the build green")?;
@@ -27,34 +30,38 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let task = user.view("task:t-r2")?;
         press(report, &user, &task, "cancel:", None, None, "the user cancels the task")?;
         state(report, &user, "t-r2", CANCELLED)?;
-        wait(report, &format!("Alondra removes node {} and it leaves Fleet", first.short), || {
-            let rm = fakes.calls()?.iter().any(|call| call.tool == "claude" && call.args == ["rm", first.short.as_str()]);
-            let fleet = user.view("fleet")?;
-            let listed = super::user::mentions(&fleet, &first.short) || super::user::mentions(&fleet, &first.session_id);
-            Ok(((rm && !listed).then_some(()), format!("rm called: {rm}, still in Fleet: {listed}")))
-        })?;
-        limit(report, &user, "1")?;
+        ended(report, fakes, &user, &first)?;
+        limit(report, &user, &one)?;
         let task = user.view("task:t-r2")?;
         press(report, &user, &task, "reopen:", None, None, "the user reopens it")?;
-        let queued = wait(report, "the reopened task waits in the queue behind the one working node", || {
+        let full = format!("{one} of {one} working");
+        let queued = wait(report, "the reopened task waits in the queue behind the working nodes", || {
             let view = user.view("task:t-r2")?;
             let seen = user.task_state("t-r2")?;
-            let waits = seen == "Queued" && super::user::mentions(&view, "1 of 1 working");
+            let waits = seen == "Queued" && super::user::mentions(&view, &full);
             Ok((waits.then_some(view), seen))
         })?;
         report.snapshot("task-t-r2-queued", &queued)?;
         if super::user::mentions(&queued, "closed before it delivered") || super::user::mentions(&queued, "Stopped") {
             bail!("the queued task still says it stopped: {queued}");
         }
-        limit(report, &user, "2")?;
+        limit(report, &user, &two)?;
         let second = wait(report, "with a free slot the fleet starts it with a new node", || {
-            let node = fakes.node_of("t-r2")?;
-            let seen = format!("{:?}", node.as_ref().map(|node| (&node.short, &node.state)));
-            Ok((node.filter(|node| node.short != first.short && node.state == crate::fake::node::State::Running), seen))
+            let session = fakes.session_of("t-r2")?;
+            let seen = format!("{:?}", session.as_ref().map(|session| (&session.short, &session.state)));
+            Ok((session.filter(|session| session.short != first.short && session.running()), seen))
         })?;
         state(report, &user, "t-r2", WORKING)?;
         report.step(&format!("node {} works on it", second.short), || Ok(()))
     });
+}
+
+/// The nodes that take a slot now, as every view's status counts them.
+fn working(user: &User) -> anyhow::Result<u64> {
+    let home = user.view("home")?;
+    home["status"]["counts"].as_array().into_iter().flatten()
+        .find(|count| count["id"] == "working").and_then(|count| count["value"].as_u64())
+        .with_context(|| format!("the status counts no working nodes: {}", home["status"]))
 }
 
 fn limit(report: &mut Report, user: &User, count: &str) -> anyhow::Result<()> {

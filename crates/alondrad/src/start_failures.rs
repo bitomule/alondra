@@ -107,7 +107,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
 }
 
 /// Carries out what must happen now so no open task is left in nobody's hands.
-pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher) -> Result<()> {
+pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
     crate::api_failures::settle_cards(domain)?;
     let state = domain.state()?;
     let facts = facts(domain, &state)?;
@@ -116,7 +116,7 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl c
             Reaction::Ask(task, problem) => {
                 raise(domain, &task, problem)?;
             }
-            Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed), launcher).await?,
+            Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed)).await?,
         }
     }
     Ok(())
@@ -126,7 +126,7 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl c
 /// folder; any other goes back to the gate, which starts it with its plan. A relaunch refused
 /// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
 /// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
-async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool, launcher: &impl crate::orchestrate::Launcher) -> Result<()> {
+async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
     let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
     if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
         && let Err(error) = crate::claude_trust::grant(Path::new(&folder))
@@ -143,8 +143,7 @@ async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool,
     if !closed {
         return Ok(());
     }
-    let actor = alondra_core::domain::Actor::System;
-    match crate::domain_orchestrator_tools::relaunch(domain, home, &actor, task, launcher).await {
+    match crate::domain_orchestrator_tools::relaunch(domain, home, task).await {
         Err(error) if !matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted") => {
             if let Some(problem) = problem_of(&error.code, &error.message, None) {
                 failed(domain, task, problem, alondra_core::now_millis())?;

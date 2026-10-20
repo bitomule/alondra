@@ -1,12 +1,9 @@
 //! Claude's print protocol and owned process. No terminal or background-agent transport.
 use std::path::Path;
-use std::process::Stdio;
 use std::os::fd::AsRawFd;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
-const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_DIAGNOSTIC: usize = 8192;
 
 /// This lock remains inherited by Claude across an abrupt daemon exit. A replacement
@@ -396,258 +393,14 @@ pub fn uuid() -> Result<String> {
     Ok(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
 }
 
-pub struct Invocation<'a> {
-    pub executable: &'a Path,
-    pub cwd: &'a Path,
-    pub home: &'a Path,
-    pub plugins: Vec<&'a Path>,
-    pub domain: bool,
-    pub projects_root: Option<&'a Path>,
-    /// The bearer bound to this execution; only a v2 invocation carries one.
-    pub capability: Option<&'a str>,
-    pub session: &'a str,
-    pub resume: bool,
-    pub execution: &'a str,
-    pub prompt: &'a str,
-    pub ownership: &'a Ownership,
-}
-impl Invocation<'_> {
-    fn command(&self) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(self.executable);
-        // `--strict-mcp-config` discards user/managed MCP servers. Supply only
-        // Alondra's server, with no credential in the command line or config.
-        cmd.current_dir(self.cwd).args(["-p", "--output-format", "stream-json", "--verbose", "--model", "opus", "--permission-mode", "auto", "--permission-prompts", "none"]);
-        if self.domain {
-            let mcp_config = serde_json::json!({"mcpServers":{"alondra-orchestrator":{
-                "command":self.plugins[0].join("bin/alondra"), "args":["mcp-orchestrator"]
-            }}}).to_string();
-            cmd.args(["--restricted", "--tools", RESTRICTED_TOOLS, "--strict-mcp-config"])
-                .args(["--mcp-config", &mcp_config]);
-        } else {
-            cmd.args(["--setting-sources", "user"]);
-        }
-        cmd.args(["--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
-            .args(crate::plugins::launch_flags_with(&self.plugins, self.projects_root.filter(|_| self.domain).map(read_only)))
-            .args([if self.resume { "--resume" } else { "--session-id" }, self.session])
-            .env("ALONDRA_HOME", self.home)
-            .env("ALONDRA_ORCHESTRATOR", "1")
-            .env("ALONDRA_ORCHESTRATOR_EXECUTION", self.execution)
-            .env("ALONDRA_SESSION_ID", alondra_core::orchestrator::NODE_ID)
-            .env_remove("CLAUDECODE")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
-        match self.capability.filter(|_| self.domain) {
-            Some(capability) => { cmd.env("ALONDRA_DOMAIN_CAPABILITY", capability); }
-            None => { cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY"); }
-        }
-        if self.domain { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
-        else { cmd.env_remove("ALONDRA_DOMAIN_PROTOCOL"); }
-        self.ownership.lent.store(true, std::sync::atomic::Ordering::SeqCst);
-        let fd = self.ownership.file.as_raw_fd();
-        // Only async-signal-safe libc operations may run between fork and exec.
-        unsafe { cmd.pre_exec(move || {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 { return Err(std::io::Error::last_os_error()); }
-            Ok(())
-        }); }
-        cmd
-    }
-}
-
-struct ProcessGroup(i32, std::sync::atomic::AtomicBool);
-impl ProcessGroup {
-    fn kill(&self) { if self.1.swap(false, std::sync::atomic::Ordering::SeqCst) { unsafe { libc::kill(-self.0, libc::SIGKILL); } } }
-    /// macOS does not deliver a group SIGKILL to a child the shell is forking at that instant,
-    /// so one signal can leave a descendant holding the execution lock. Signal again until the
-    /// group is empty; a group left with only an unreaped zombie answers EPERM, not ESRCH.
-    fn terminate(&self) -> impl std::future::Future<Output = ()> + Send + use<> {
-        self.1.store(false, std::sync::atomic::Ordering::SeqCst);
-        let group = self.0;
-        async move {
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-            while unsafe { libc::kill(-group, libc::SIGKILL) } == 0
-                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                if tokio::time::Instant::now() >= deadline { break; }
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        }
-    }
-}
-impl Drop for ProcessGroup {
-    fn drop(&mut self) { self.kill(); }
-}
-
-pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: bool, pub spawned: bool }
-
-pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) -> Result<()>, mut initialized: impl FnMut() -> Result<()>, cancel: impl std::future::Future<Output = ()>) -> Output {
-    let mut stream = Stream::default();
-    stream.restricted = invocation.domain;
-    let stdin = match prompt_input(invocation.cwd, invocation.execution, invocation.prompt) {
-        Ok(stdin) => stdin,
-        Err(e) => return Output { stream, diagnostic: bounded(format!("cannot prepare the Claude prompt: {e}")), exit_ok: false, spawned: false },
-    };
-    let mut child = match invocation.command().stdin(stdin).spawn() {
-        Ok(child) => child,
-        Err(e) => return Output { stream, diagnostic: bounded(format!("cannot launch Claude: {e}")), exit_ok: false, spawned: false },
-    };
-    let group = ProcessGroup(child.id().expect("spawned child") as i32, std::sync::atomic::AtomicBool::new(true));
-    if let Err(error) = record_owner(&mut child, invocation.cwd, invocation.execution) {
-        group.kill();
-        let _ = child.kill().await;
-        return Output { stream, diagnostic: bounded(format!("cannot persist process ownership: {error:#}")), exit_ok: false, spawned: true };
-    }
-    if child.try_wait().ok().flatten().is_none() {
-        if let Err(error) = spawned(group.0 as u32) {
-            // A one-shot fake or a failed launch can exit before macOS exposes
-            // its process identity. It cannot subsequently host an MCP child.
-            if child.try_wait().ok().flatten().is_none() {
-                group.kill();
-                let _ = child.kill().await;
-                return Output { stream, diagnostic: bounded(format!("cannot register MCP process: {error:#}")), exit_ok: false, spawned: true };
-            }
-        }
-    }
-    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
-    // Drain indefinitely, retain only a bounded prefix. Pipe backpressure must never block Claude.
-    let diagnostics = tokio::spawn(async move {
-        let mut retained = Vec::new();
-        let mut buf = [0u8; 4096];
-        let mut finished = finished;
-        loop {
-            tokio::select! {
-                biased;
-                read = stderr.read(&mut buf) => match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => retain(&mut retained, &buf[..n]),
-                },
-                _ = &mut finished => {
-                    let _ = buffered(&stderr, |chunk| { retain(&mut retained, chunk); Ok(()) });
-                    break;
-                }
-            }
-        }
-        String::from_utf8_lossy(&retained).into_owned()
-    });
-    let mut lines = Lines::default();
-    let process = async {
-        let exited = {
-            let read = async {
-                loop {
-                    let chunk = stdout.fill_buf().await?;
-                    if chunk.is_empty() { break; }
-                    let n = chunk.len();
-                    lines.feed(chunk, &mut stream, invocation.session, &mut initialized)?;
-                    stdout.consume(n);
-                }
-                Ok::<_, anyhow::Error>(())
-            };
-            tokio::select! {
-                biased;
-                read = read => { read?; None }
-                status = child.wait() => Some(status?),
-            }
-        };
-        let status = match exited {
-            None => child.wait().await?,
-            Some(status) => {
-                group.terminate().await;
-                lines.feed(stdout.buffer(), &mut stream, invocation.session, &mut initialized)?;
-                buffered(stdout.get_ref(), |chunk| lines.feed(chunk, &mut stream, invocation.session, &mut initialized))?;
-                status
-            }
-        };
-        if !lines.0.is_empty() { bail!("truncated Claude JSONL record"); }
-        Ok::<_, anyhow::Error>(status.success())
-    };
-    let outcome = tokio::select! {
-        biased;
-        _ = cancel => Err(anyhow::anyhow!("Orchestrator execution was cancelled; check its effects before retrying")),
-        result = tokio::time::timeout(std::time::Duration::from_secs(60 * 60), process) => result.unwrap_or_else(|_| Err(anyhow::anyhow!("Claude execution exceeded one hour"))),
-    };
-    let exit_ok = match outcome {
-        Ok(ok) => ok,
-        Err(e) => {
-            group.kill();
-            let _ = child.kill().await;
-            stream.error = Some(bounded(e.to_string()));
-            false
-        }
-    };
-    // MCP helpers and any ordinary descendants must not survive their execution.
-    group.terminate().await;
-    let _ = finish.send(());
-    let diagnostic = diagnostics.await.unwrap_or_default();
-    let _ = std::fs::remove_file(invocation.cwd.join("owner.json"));
-    Output { stream, diagnostic: bounded(diagnostic), exit_ok, spawned: true }
-}
-
-/// A Claude that already exited is a zombie, and macOS gives no identity for one: there is nothing
-/// left to record, and what it wrote is still read.
-fn record_owner(child: &mut tokio::process::Child, directory: &Path, run_id: &str) -> Result<()> {
-    let pid = child.id().context("Claude was already reaped")?;
-    match ProcessOwner::record(directory, pid, run_id) {
-        Err(_) if child.try_wait().ok().flatten().is_some() => Ok(()),
-        recorded => recorded,
-    }
-}
-
-fn retain(retained: &mut Vec<u8>, chunk: &[u8]) {
-    retained.extend_from_slice(&chunk[..chunk.len().min(MAX_DIAGNOSTIC - retained.len())]);
-}
-
-/// Hands `take` what `pipe` already holds, without waiting for more. Once Claude's group is gone
-/// its output is all in the pipe, but its end of file may never come: macOS marks a new pipe
-/// close-on-exec only after creating it, so a process spawned elsewhere at that instant inherits
-/// the write end and keeps it for its own life.
-fn buffered(pipe: &impl AsRawFd, mut take: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
-    let fd = pipe.as_raw_fd();
-    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK); }
-    let mut buf = [0u8; 4096];
-    loop {
-        match unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } {
-            0 => return Ok(()),
-            n if n > 0 => take(&buf[..n as usize])?,
-            _ => match std::io::Error::last_os_error() {
-                e if e.kind() == std::io::ErrorKind::Interrupted => {}
-                e if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-                e => return Err(e.into()),
-            },
-        }
-    }
-}
-
-/// Claude's JSONL records, split from the chunks its stdout arrives in.
-#[derive(Default)]
-struct Lines(Vec<u8>);
-impl Lines {
-    fn feed(&mut self, mut chunk: &[u8], stream: &mut Stream, session: &str, initialized: &mut impl FnMut() -> Result<()>) -> Result<()> {
-        while !chunk.is_empty() {
-            let n = chunk.iter().position(|b| *b == b'\n').map_or(chunk.len(), |i| i + 1);
-            if self.0.len() + n > MAX_LINE { bail!("Claude JSONL record exceeds safety limit"); }
-            self.0.extend_from_slice(&chunk[..n]);
-            chunk = &chunk[n..];
-            if self.0.last() == Some(&b'\n') {
-                if self.0.iter().any(|b| !b.is_ascii_whitespace()) && stream.accept(&self.0, session)? { initialized()?; }
-                self.0.clear();
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Claude reads a piped prompt only if it arrives within 3 seconds; after that it runs
-/// without one, and a resumed conversation then fails. A file is readable at once.
-fn prompt_input(cwd: &Path, execution: &str, prompt: &str) -> std::io::Result<std::fs::File> {
-    use std::io::{Seek, Write};
-    let path = cwd.join(format!("prompt-{execution}"));
-    let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
-    let written = file.write_all(prompt.as_bytes()).and_then(|()| file.rewind());
-    std::fs::remove_file(&path)?;
-    written.map(|()| file)
-}
+pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: bool }
 
 impl Output {
+    /// A batch that never started, and why.
+    pub fn not_started(why: &str) -> Self {
+        Self { stream: Stream::default(), diagnostic: why.to_owned(), exit_ok: false }
+    }
+
     pub fn end(&self, session: &str, resumed: bool) -> BatchEnd {
         self.stream.end(self.exit_ok, &self.diagnostic, session, resumed)
     }
@@ -656,6 +409,7 @@ impl Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","model":"opus","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}"#;
     const WORKED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"text","text":"On it"}],"usage":{"input_tokens":2}}}"#;
@@ -788,34 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn the_projects_root_is_readable_and_never_writable() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let root = Path::new("/Users/someone/Projects");
-        let mut i = invocation(&dir, Path::new("claude"), &lock);
-        i.projects_root = Some(root);
-        let args: Vec<_> = i.command().as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
-        assert!(args.windows(2).any(|a| a == ["--tools", "Skill,Read,Glob,Grep"]), "{args:?}");
-        assert!(args.iter().any(|a| a == "--restricted"));
-        let parsed = |args: &[String]| -> Vec<Value> {
-            args.windows(2).filter(|a| a[0] == "--settings").map(|a| serde_json::from_str(&a[1]).unwrap()).collect()
-        };
-        let [settings] = parsed(&args).try_into().expect("one --settings");
-        assert_eq!(settings["permissions"], serde_json::json!({
-            "additionalDirectories": ["/Users/someone/Projects"],
-            "allow": ["Read(//Users/someone/Projects/**)"],
-            "deny": ["Edit(//Users/someone/Projects/**)"],
-        }));
-        assert_eq!(settings["env"], serde_json::from_str::<Value>(&alondra_core::launch_settings()).unwrap()["env"]);
-        i.projects_root = None;
-        let args: Vec<_> = i.command().as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
-        let [settings] = parsed(&args).try_into().expect("one --settings");
-        assert!(settings.get("permissions").is_none());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn init_accepts_the_read_only_search_tools_and_nothing_that_writes() {
         let init = |tool: &str| format!(r#"{{"type":"system","subtype":"init","session_id":"a","permissionMode":"auto","mcp_servers":[{{"name":"alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","{tool}","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}}"#);
         for tool in ["Glob", "Grep"] {
@@ -939,164 +665,13 @@ mod tests {
         assert!(reacquired.is_some(), "a forked sibling must not keep a released ownership alive");
         std::fs::remove_dir_all(dir).unwrap();
     }
-    fn fake(dir: &Path, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(dir).unwrap();
-        let path = dir.join("claude");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        path
-    }
-    fn invocation<'a>(dir: &'a Path, exe: &'a Path, lock: &'a Ownership) -> Invocation<'a> {
-        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain: true, projects_root: None, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
-    }
-    #[tokio::test]
-    async fn real_process_drains_stderr_and_checks_terminal_result() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let exe = fake(&dir, r#"cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
-i=0
-while [ "$i" -lt 10000 ]; do printf 'bounded diagnostics\n' >&2; i=$((i+1)); done
-printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":31}}}'
-printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
-        let mut starts = 0;
-        let output = execute(invocation(&dir, &exe, &lock), |_| Ok(()), || { starts += 1; Ok(()) }, std::future::pending()).await;
-        assert!(output.exit_ok);
-        assert!(output.stream.success);
-        assert_eq!(output.stream.input_tokens, Some(31));
-        assert_eq!(starts, 1);
-        assert_eq!(output.diagnostic.len(), MAX_DIAGNOSTIC);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[tokio::test]
-    async fn a_claude_that_exited_before_its_owner_was_recorded_is_still_read() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut child = tokio::process::Command::new("/usr/bin/true").spawn().unwrap();
-        let pid = child.id().unwrap();
-        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        assert_eq!(unsafe { libc::waitid(libc::P_PID, pid, info.as_mut_ptr(), libc::WEXITED | libc::WNOWAIT) }, 0);
-        assert!(identity(pid, None).is_none(), "an exited, unreaped process has no identity");
-        record_owner(&mut child, &dir, "test-run").unwrap();
-        assert!(!dir.join("owner.json").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    /// A process spawned elsewhere as the pipes were created holds them after Claude's group is
-    /// gone: the batch still ends when Claude does, with everything it wrote.
-    #[tokio::test]
-    async fn a_process_outside_claudes_group_holding_its_output_does_not_hold_the_batch() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let held = dir.join("held");
-        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&held).status().unwrap().success());
-        let holding = std::fs::OpenOptions::new().read(true).write(true).open(&held).unwrap();
-        let exe = fake(&dir, r#"cat >/dev/null
-/usr/bin/mkfifo outside
-/usr/bin/perl -e 'setpgrp(0, 0) or die; open(my $o, ">", "outside") or die; close $o; open(my $h, "<", "held") or die; <$h>' </dev/null &
-cat outside >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
-printf 'what Claude said\n' >&2
-printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
-        let output = tokio::time::timeout(std::time::Duration::from_secs(25),
-            execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await;
-        drop(holding);
-        let output = output.expect("the batch ends when Claude does");
-        assert!(output.exit_ok && output.stream.success && output.stream.error.is_none(), "{:?}", output.stream.error);
-        assert_eq!(output.diagnostic, "what Claude said\n");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[tokio::test]
-    async fn the_prompt_is_readable_the_moment_claude_starts() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let exe = fake(&dir, r#"test -f /dev/stdin || exit 70
-cat > received
-printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
-        let output = execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending()).await;
-        assert!(output.exit_ok, "{}", output.diagnostic);
-        assert_eq!(std::fs::read_to_string(dir.join("received")).unwrap(), "work");
-        assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("prompt-")),
-            "the prompt leaves no file behind");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[tokio::test]
-    async fn cancelling_while_claude_forks_leaves_no_descendant_holding_the_lock() {
-        for _ in 0..20 {
-            let scratch_directory = crate::test_support::Directory::new();
-            let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-            let lock = Ownership::acquire(&dir).unwrap().unwrap();
-            let exe = fake(&dir, r#"cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
-sleep 30 &
-wait"#);
-            let started = tokio::sync::Notify::new();
-            let output = tokio::time::timeout(std::time::Duration::from_secs(25),
-                execute(invocation(&dir, &exe, &lock), |_| Ok(()), || { started.notify_one(); Ok(()) }, started.notified())).await.unwrap();
-            assert!(output.stream.error.unwrap().contains("cancelled"));
-            drop(lock);
-            // A sibling test forking at this moment holds a copy of the descriptor only until it execs.
-            let released = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                while Ownership::acquire(&dir).unwrap().is_none() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
-            }).await;
-            assert!(released.is_ok(), "a child forked as the execution was cancelled kept the execution lock");
-            std::fs::remove_dir_all(dir).unwrap();
-        }
-    }
-    #[tokio::test]
-    async fn malformed_output_kills_process_without_waiting_for_timeout() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let exe = fake(&dir, "cat >/dev/null\nprintf 'invalid-json\\n'\nexec sleep 30");
-        let output = tokio::time::timeout(std::time::Duration::from_secs(25), execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await.unwrap();
-        assert!(!output.exit_ok);
-        assert!(output.stream.error.unwrap().contains("JSONL"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[tokio::test]
-    async fn inherited_lock_survives_parent_ownership_drop() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let exe = fake(&dir, "sleep 1");
-        let mut child = invocation(&dir, &exe, &lock).command().spawn().unwrap();
-        drop(lock);
-        assert!(Ownership::acquire(&dir).unwrap().is_none(), "child must fence restarted daemon");
-        child.wait().await.unwrap();
-        assert!(Ownership::acquire(&dir).unwrap().is_some());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[test]
-    fn every_launch_including_resume_and_compaction_is_auto_and_unattended() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        for resume in [false, true] {
-            let mut i = invocation(&dir, Path::new("claude"), &lock);
-            i.resume = resume;
-            i.prompt = "/compact";
-            let c = i.command();
-            let args: Vec<_> = c.as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
-            assert!(args.windows(2).any(|a| a == ["--permission-mode", "auto"]));
-            assert!(args.windows(2).any(|a| a == ["--permission-prompts", "none"]));
-            assert!(args.windows(2).any(|a| a == [if resume { "--resume" } else { "--session-id" }, "test-session"]));
-            assert!(!args.iter().any(|a| a == "--bg" || a == "--dangerously-skip-permissions"));
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
     #[tokio::test]
     async fn orphan_cleanup_requires_dead_daemon_and_exact_child_identity() {
         let scratch_directory = crate::test_support::Directory::new();
         let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
-        let lock = Ownership::acquire(&dir).unwrap().unwrap();
-        let exe = fake(&dir, "exec sleep 30");
-        let mut child = invocation(&dir, &exe, &lock).command().spawn().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut child = tokio::process::Command::new("/bin/sleep").arg("30").env("ALONDRA_ORCHESTRATOR_EXECUTION", "test-run")
+            .stdin(Stdio::null()).kill_on_drop(true).process_group(0).spawn().unwrap();
         ProcessOwner::record(&dir, child.id().unwrap(), "test-run").unwrap();
         assert!(terminate_orphan(&dir, Some("test-run")).unwrap_err().to_string().contains("live daemon"));
         assert!(child.try_wait().unwrap().is_none());
@@ -1116,18 +691,6 @@ wait"#);
         assert!(terminate_orphan(&dir, Some("stale-run")).is_err());
         terminate_orphan(&dir, Some("test-run")).unwrap();
         assert!(!child.wait().await.unwrap().success());
-        drop(lock);
-        // Reaping the group leader can race with the kernel releasing the inherited
-        // lock from the rest of its process group under a parallel test load.
-        let reacquired = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if let Some(ownership) = Ownership::acquire(&dir).unwrap() {
-                    break ownership;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        }).await.expect("orphan process group did not release its execution lock");
-        drop(reacquired);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

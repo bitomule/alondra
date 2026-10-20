@@ -47,16 +47,8 @@ impl Github for Gh {
 struct Issues<'a>(&'a dyn Github);
 
 impl crate::prs::Gh for Issues<'_> {
-    async fn edit_base(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not available here".into())
-    }
-
     async fn view(&self, _: &str) -> Option<Value> {
         None
-    }
-
-    async fn exists(&self, _: &str) -> bool {
-        false
     }
 
     async fn search_issues(&self, owners: &[String]) -> Result<Value, String> {

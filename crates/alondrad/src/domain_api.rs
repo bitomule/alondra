@@ -1,10 +1,8 @@
 //! Resource-oriented domain API. Both local HTTP and encrypted transport call the
-//! same runtime, and the local Hub and authoritative daemon share one set of
-//! handlers through `DomainHost`.
+//! same runtime through `DomainHost`.
 use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
-use crate::hub::Hub;
 use crate::domain_runtime::DomainRuntime;
 use std::path::Path as FsPath;
 use alondra_core::domain::*;
@@ -21,25 +19,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
-/// What a domain router needs from its daemon. The legacy Hub keeps v2
-/// read-only until cutover; the committed daemon serves schedule reads and
-/// producer writes.
+/// What a domain router needs from its daemon.
 pub(crate) trait DomainHost: Send + Sync + 'static {
     fn domain(&self) -> &DomainRuntime;
     fn home(&self) -> &FsPath;
-    fn cutover_committed(&self) -> bool;
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> { None }
-}
-impl DomainHost for Hub {
-    fn domain(&self) -> &DomainRuntime {
-        &self.domain
-    }
-    fn home(&self) -> &FsPath {
-        &self.home
-    }
-    fn cutover_committed(&self) -> bool {
-        false
-    }
 }
 
 /// A local command carries what the producer or the terminal sends, not what
@@ -101,9 +85,6 @@ async fn blocking_read<H: DomainHost>(host: Arc<H>, read: impl FnOnce(&H) -> Res
 }
 
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
-    if !host.cutover_committed() {
-        return domain_error(DomainError::new("incompatible_protocol", "Schedules require the domain store's authority"));
-    }
     crate::domain_schedule_api::response(crate::domain_schedule_api::read(host.domain(), path))
 }
 async fn schedule_list<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
@@ -134,9 +115,6 @@ async fn schedule_mutation<H: DomainHost>(
     let Some(device) = signed_device(&*host, &signed) else {
         return unsigned_read();
     };
-    if !host.cutover_committed() {
-        return domain_error(legacy_write_blocked());
-    }
     let bodyless = method == axum::http::Method::DELETE
         || (method == axum::http::Method::POST && uri.path().ends_with("/runs"));
     let body = match body {
@@ -434,13 +412,11 @@ async fn changes<H: DomainHost>(
     if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = if host.cutover_committed() {
-        match (host.new_work_client(), signed_device(&*host, &signed)) {
-            (Some(client), Some(device)) => crate::views::feed::handle(client, &device.device_id,
-                query.as_deref().unwrap_or(""), alondra_core::views::Transport::Loopback).await,
-            _ => domain_error(DomainError::new("forbidden", "signed user device required")),
-        }
-    } else { domain_error(DomainError::new("incompatible_protocol", "Views protocol requires a committed daemon")) };
+    let response = match (host.new_work_client(), signed_device(&*host, &signed)) {
+        (Some(client), Some(device)) => crate::views::feed::handle(client, &device.device_id,
+            query.as_deref().unwrap_or(""), alondra_core::views::Transport::Loopback).await,
+        _ => domain_error(DomainError::new("forbidden", "signed user device required")),
+    };
     if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
@@ -462,7 +438,7 @@ async fn capabilities<H: DomainHost>(
         if !signed_read(host, &signed) && !producer_current() {
             return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
         }
-        let response = capabilities_supported(host.domain(), host.cutover_committed());
+        let response = capabilities_supported(host.domain(), true);
         if !signed_read(host, &signed) && !producer_current() {
             return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
         }
@@ -485,16 +461,6 @@ fn capabilities_supported(domain: &DomainRuntime, operation_results: bool) -> Re
 }
 /// Encrypted reads enter through a verified, still-approved device proof. They
 /// never round-trip over the unsigned loopback HTTP listener.
-pub(crate) async fn encrypted_read(
-    hub: Arc<Hub>, approved: &crate::service::ApprovedDevice<'_>, path: &str,
-) -> anyhow::Result<Response> {
-    if crate::domain_schedule_api::approved_read_path(path) {
-        approved.recheck()?;
-        return Ok(domain_error(DomainError::new("incompatible_protocol", "Schedules require the domain store's authority")));
-    }
-    encrypted_read_runtime(&hub.domain, &hub.home, approved, path).await
-}
-
 pub(crate) async fn encrypted_read_runtime(
     domain: &DomainRuntime, home: &FsPath,
     approved: &crate::service::ApprovedDevice<'_>, path: &str,
@@ -618,11 +584,6 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
         Err(StoreError::Storage(error)) => return Err(error),
     })
 }
-/// The legacy daemon keeps v2 reads but never writes its sidecar: a v2 write
-/// here would make the store non-empty and block both cutover and legacy startup.
-pub(crate) fn legacy_write_blocked() -> DomainError {
-    DomainError::new("incompatible_protocol", "domain writes require the committed cutover")
-}
 /// What the Agent of an auto-merge Task is told when it registers its PR.
 pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
     let Command::RegisterPr { task_id, .. } = command else { return None };
@@ -701,9 +662,6 @@ async fn request_resource<H: DomainHost>(
     if body.get("text").is_some() {
         if headers.contains_key("authorization") || !is_local(&peer, &headers) {
             return domain_error(DomainError::new("forbidden", "the launch form is available to a paired User only"));
-        }
-        if !host.cutover_committed() {
-            return domain_error(legacy_write_blocked());
         }
         let Some(device) = signed_device(&*host, &signed) else { return unsigned_read(); };
         let work = host.domain().external_work.clone();
@@ -922,9 +880,6 @@ async fn execute_command<H: DomainHost>(
                 "producer capabilities are local only",
             ));
         }
-        if !host.cutover_committed() {
-            return domain_error(legacy_write_blocked());
-        }
         let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {
             return domain_error(DomainError::new("forbidden", "invalid domain capability"));
         };
@@ -1014,9 +969,6 @@ async fn execute_command<H: DomainHost>(
     let Some(device) = signed_device(&*host, &signed) else {
         return unsigned_read();
     };
-    if !host.cutover_committed() {
-        return domain_error(legacy_write_blocked());
-    }
     let work = host.domain().command_work.clone();
     work.run(move || {
         let home = host.home().to_owned();
@@ -1277,35 +1229,35 @@ mod tests {
     }
     #[test]
     fn encrypted_delivery_resolution_requires_authorized_exact_decision_and_replays() {
-        let (home, hub) = fixture();
-        let _directory = hub.test_directory.clone();
-        let mut store = hub.domain.store.lock().unwrap();
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let mut store = host.domain.store.lock().unwrap();
         let message = store.pending_messages().unwrap().into_iter()
             .find(|item| item.recipient_kind == "user").unwrap();
         let claim = store.claim_message(message.id).unwrap().unwrap();
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = hub.domain.state().unwrap().data_epoch.clone();
+        let epoch = host.domain.state().unwrap().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let digest = [31u8; 32];
-        let denied = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
+        let denied = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || anyhow::bail!("revoked")).unwrap();
         assert_eq!(denied["status"], 403);
-        let first = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
+        let first = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap();
         assert_eq!(first["status"], 200);
         assert_eq!(first["body"]["state"], "retryable");
-        assert_eq!(first, encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
+        assert_eq!(first, encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap());
-        let changed = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
+        let changed = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
                 "decision":"discard"})), ("phone-a", "work-a", &[32u8; 32]), || Ok(())).unwrap();
         assert_eq!(changed["body"]["code"], "idempotency_conflict");
-        let response = delivery_evidence_inner(&hub.domain, "after=0");
+        let response = delivery_evidence_inner(&host.domain, "after=0");
         assert_eq!(response.status(), StatusCode::OK);
-        drop(hub);
+        drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
     #[test]
@@ -1313,31 +1265,31 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let (home, hub) = fixture();
+        let (home, host) = fixture();
 
-        let _directory = hub.test_directory.clone();
+        let _directory = host.test_directory.clone();
         let auth = crate::auth::Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[77u8; 32]).unwrap();
         let code = auth.new_pairing_code();
         let device = auth.pair(&code, "Recovery phone",
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let mut store = hub.domain.store.lock().unwrap();
+        let mut store = host.domain.store.lock().unwrap();
         let message = store.pending_messages().unwrap().into_iter()
             .find(|item| item.recipient_kind == "user").unwrap();
         let claim = store.claim_message(message.id).unwrap().unwrap();
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = hub.domain.state().unwrap().data_epoch.clone();
+        let epoch = host.domain.state().unwrap().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let (checked_tx, checked_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
         let writer_home = home.clone();
-        let writer_hub = hub.clone();
+        let writer_host = host.clone();
         let writer_id = device.id.clone();
         let writer = std::thread::spawn(move || {
-            encrypted_resolve_delivery_runtime(&writer_hub.domain, &writer_hub.home, &writer_id, claim.attempt_id,
+            encrypted_resolve_delivery_runtime(&writer_host.domain, &writer_host.home, &writer_id, claim.attempt_id,
                 Some(&body), (&writer_id, "recovery-work", &[31u8; 32]), || {
                     anyhow::ensure!(crate::auth::Auth::open(&writer_home)?.list().iter()
                         .any(|entry| entry.id == writer_id));
@@ -1362,7 +1314,7 @@ mod tests {
         revoker.join().unwrap();
         assert!(!crate::auth::Auth::open(&home).unwrap().list().iter()
             .any(|entry| entry.id == device.id));
-        drop(hub);
+        drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
     #[test]
@@ -1375,8 +1327,8 @@ mod tests {
         assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
         assert!(body["diff"].as_str().unwrap().chars().count() > 0);
     }
-    fn envelope(hub: &Hub, id: &str, command: Command) -> CommandEnvelope {
-        let state = hub.domain.state().unwrap();
+    fn envelope(host: &Host, id: &str, command: Command) -> CommandEnvelope {
+        let state = host.domain.state().unwrap();
         CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
@@ -1388,7 +1340,7 @@ mod tests {
 
     #[test]
     fn resource_router_constructs_without_method_collisions() {
-        let _ = routes::<Hub>();
+        let _ = routes::<crate::domain_bootstrap::DomainDaemon>();
     }
 
     #[test]
@@ -1476,7 +1428,7 @@ mod tests {
             "protocol_version":2,"request_id":"request-1","body":"Work","auto_merge":false});
         assert!(resource_envelope_from_path("POST", "/requests", legacy_shape.take()).is_none());
     }
-    fn seeded(hub: &Hub) {
+    fn seeded(host: &Host) {
         for (actor, id, command) in [
             (
                 Actor::System,
@@ -1524,25 +1476,34 @@ mod tests {
                 },
             ),
         ] {
-            hub.domain
-                .execute(&actor, &envelope(hub, id, command), None, || Ok(()))
+            host.domain
+                .execute(&actor, &envelope(host, id, command), None, || Ok(()))
                 .unwrap();
         }
     }
-    fn fixture() -> (std::path::PathBuf, Arc<Hub>) {
-        let home = crate::test_support::Directory::new();
-        let config = alondra_core::config::Config::resolve(
-            home.to_path_buf(),
-            &Default::default(),
-            |_| None,
-            || Some("Fixture".into()),
-        );
-        let hub = Arc::new(Hub::open(config).unwrap().with_test_directory(home));
-        seeded(&hub);
-        (hub.home.clone(), hub)
+    struct Host {
+        daemon: Arc<crate::domain_bootstrap::DomainDaemon>,
+        domain: Arc<DomainRuntime>,
+        home: std::path::PathBuf,
+        test_directory: Arc<crate::test_support::Directory>,
     }
-    async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>, SigningKey, String) {
-        let auth = Arc::new(crate::auth::Auth::open(&hub.home).unwrap());
+
+    fn fixture() -> (std::path::PathBuf, Arc<Host>) {
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        drop(DomainRuntime::open(&directory).unwrap());
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let host = Arc::new(Host {
+            domain: daemon.domain(),
+            daemon,
+            home: directory.to_path_buf(),
+            test_directory: Arc::new(directory),
+        });
+        seeded(&host);
+        (host.home.clone(), host)
+    }
+    async fn server(host: Arc<Host>) -> (String, tokio::task::JoinHandle<()>, SigningKey, String) {
+        let auth = Arc::new(crate::auth::Auth::open(&host.home).unwrap());
         let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let code = auth.new_pairing_code();
         let device = auth
@@ -1552,8 +1513,8 @@ mod tests {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let app = crate::domain_api::routes::<Hub>()
-        .with_state(hub.clone())
+        let app = crate::domain_api::routes::<crate::domain_bootstrap::DomainDaemon>()
+        .with_state(host.daemon.clone())
         .layer(axum::middleware::from_fn_with_state(
             auth,
             crate::auth::guard,
@@ -1603,12 +1564,12 @@ mod tests {
     }
     #[tokio::test]
     async fn local_user_write_waits_for_cutover_while_encrypted_receipts_and_capabilities_work() {
-        let (home, hub) = fixture();
-        let _directory = hub.test_directory.clone();
-        let (base, server, key, device_id) = server(hub.clone()).await;
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let (base, server, key, device_id) = server(host.clone()).await;
         let client = reqwest::Client::new();
         let request = envelope(
-            &hub,
+            &host,
             "read-once",
             Command::MarkRead {
                 interaction_id: "info-a".into(),
@@ -1618,7 +1579,7 @@ mod tests {
         assert_eq!(first.status(), reqwest::StatusCode::NOT_FOUND, "there is no generic command endpoint");
         let body = serde_json::to_value(&request).unwrap();
         let result = encrypted_command_runtime(
-            &hub.domain,
+            &host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-one", &[1; 32]),
@@ -1629,7 +1590,7 @@ mod tests {
         assert_eq!(
             result,
             encrypted_command_runtime(
-                &hub.domain,
+                &host.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-one", &[1; 32]),
@@ -1638,7 +1599,7 @@ mod tests {
             .unwrap()
         );
         let conflict = encrypted_command_runtime(
-            &hub.domain,
+            &host.domain,
             "phone-b",
             Some(&body),
             ("phone-b", "request-one", &[1; 32]),
@@ -1650,7 +1611,7 @@ mod tests {
             "another sender is not a retry of the original user"
         );
         let remote = envelope(
-            &hub,
+            &host,
             "remote-read",
             Command::MarkRead {
                 interaction_id: "info-a".into(),
@@ -1658,7 +1619,7 @@ mod tests {
         );
         let body = serde_json::to_value(remote).unwrap();
         let result = encrypted_command_runtime(
-            &hub.domain,
+            &host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[2; 32]),
@@ -1669,7 +1630,7 @@ mod tests {
         assert_eq!(
             result,
             encrypted_command_runtime(
-                &hub.domain,
+                &host.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-two", &[2; 32]),
@@ -1677,9 +1638,9 @@ mod tests {
             )
             .unwrap()
         );
-        let pending_before_mismatch = hub.domain.store.lock().unwrap().pending_messages().unwrap();
+        let pending_before_mismatch = host.domain.store.lock().unwrap().pending_messages().unwrap();
         let mismatch = encrypted_command_runtime(
-            &hub.domain,
+            &host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[3; 32]),
@@ -1688,11 +1649,11 @@ mod tests {
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
         assert_eq!(
-            hub.domain.store.lock().unwrap().pending_messages().unwrap(),
+            host.domain.store.lock().unwrap().pending_messages().unwrap(),
             pending_before_mismatch,
         );
         assert!(
-            hub.domain
+            host.domain
                 .store
                 .lock()
                 .unwrap()
@@ -1711,7 +1672,7 @@ mod tests {
         );
         let capabilities: Value = signed_get(&client, &base, &key, &device_id, "/capabilities")
             .send().await.unwrap().json().await.unwrap();
-        assert_eq!(capabilities["data_epoch"], hub.domain.state().unwrap().data_epoch.0);
+        assert_eq!(capabilities["data_epoch"], host.domain.state().unwrap().data_epoch.0);
         assert_eq!(
             signed_get(&client, &base, &key, &device_id, "/inbox?filter=all").send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND
@@ -1730,16 +1691,16 @@ mod tests {
         );
         server.abort();
         let _ = server.await;
-        drop(hub);
+        drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
     #[tokio::test]
     async fn a_producer_cannot_choose_user_authority_or_spoof_an_actor() {
-        let (home, hub) = fixture();
-        let _directory = hub.test_directory.clone();
-        let (base, server, _, _) = server(hub.clone()).await;
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let (base, server, _, _) = server(host.clone()).await;
         let client = reqwest::Client::new();
-        let token = hub
+        let token = host
             .domain
             .issue(Principal::Agent {
                 session_id: "agent-a".into(),
@@ -1759,7 +1720,7 @@ mod tests {
         assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
             .bearer_auth(token.expose_for_child_environment()).send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND);
-        let before = hub.domain.state().unwrap();
+        let before = host.domain.state().unwrap();
         let request = json!({"data_epoch":before.data_epoch,"command_id":"bad-read",
             "expected_revision":before.revision});
         let anonymous = client
@@ -1777,9 +1738,7 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
-            assert_eq!(response.json::<Value>().await.unwrap()["code"], "incompatible_protocol",
-                "the legacy daemon never writes its v2 sidecar");
+            assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN, "a producer cannot mark the user's information read");
         }
         let response = client
             .put(format!("{base}/interactions/info-a/read-state"))
@@ -1798,9 +1757,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(before, hub.domain.state().unwrap());
+        assert_eq!(before, host.domain.state().unwrap());
         let revoked = encrypted_command_runtime(
-            &hub.domain,
+            &host.domain,
             "phone-a",
             Some(&serde_json::to_value(&request).unwrap()),
             ("phone-a", "revoked", &[4; 32]),
@@ -1809,33 +1768,34 @@ mod tests {
         .unwrap();
         assert_eq!(revoked["status"], 422);
         assert_eq!(revoked["body"]["code"], "invalid_input");
-        assert_eq!(before, hub.domain.state().unwrap());
+        assert_eq!(before, host.domain.state().unwrap());
         server.abort();
         let _ = server.await;
-        drop(hub);
+        drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
     #[tokio::test]
     async fn document_chunks_use_registered_domain_identity() {
-        let (home, hub) = fixture();
-        let _directory = hub.test_directory.clone();
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
         let data = b"# Synthetic design\n";
+        std::fs::create_dir_all(home.join("files")).unwrap();
         std::fs::write(home.join("files/design.md"), data).unwrap();
-        let before_bad_document = hub.domain.state().unwrap();
-        let invalid = hub.domain.execute(
+        let before_bad_document = host.domain.state().unwrap();
+        let invalid = host.domain.execute(
             &Actor::Agent { agent_id: "agent-a".into() },
-            &envelope(&hub, "document-wrong-hash", Command::CreateDocument {
+            &envelope(&host, "document-wrong-hash", Command::CreateDocument {
                 task_id: "task-a".into(), document_id: "bad-doc".into(),
                 title: "Bad".into(), revision_id: "bad-rev".into(),
                 content_digest: "0".repeat(64), content_reference: "files/design.md".into(),
                 role: "result".into(),
             }), None, || Ok(()));
         assert!(invalid.is_err());
-        assert_eq!(hub.domain.state().unwrap(), before_bad_document);
+        assert_eq!(host.domain.state().unwrap(), before_bad_document);
         let valid_digest: String = Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect();
-        let rejected = hub.domain.execute(
+        let rejected = host.domain.execute(
             &Actor::Agent { agent_id: "agent-a".into() },
-            &envelope(&hub, "document-wrong-task", Command::CreateDocument {
+            &envelope(&host, "document-wrong-task", Command::CreateDocument {
                 task_id: "other-task".into(), document_id: "orphan-doc".into(),
                 title: "Orphan".into(), revision_id: "orphan-rev".into(),
                 content_digest: valid_digest.clone(), content_reference: "files/design.md".into(),
@@ -1843,13 +1803,13 @@ mod tests {
             }), None, || Ok(()));
         assert!(rejected.is_err());
         assert!(!home.join("files/domain-v2").join(&valid_digest).exists());
-        hub.domain
+        host.domain
             .execute(
                 &Actor::Agent {
                     agent_id: "agent-a".into(),
                 },
                 &envelope(
-                    &hub,
+                    &host,
                     "document",
                     Command::CreateDocument {
                         task_id: "task-a".into(),
@@ -1868,17 +1828,17 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
-        let managed = hub.domain.state().unwrap().document_revisions[&DocumentRevisionId("rev-a".into())]
+        let managed = host.domain.state().unwrap().document_revisions[&DocumentRevisionId("rev-a".into())]
             .content_reference.clone();
         assert!(managed.starts_with("files/domain-v2/"));
-        let (base, server, key, device_id) = server(hub.clone()).await;
+        let (base, server, key, device_id) = server(host.clone()).await;
         let client = reqwest::Client::new();
         let actions_path = "/tasks/task-a/actions";
         assert_eq!(signed_get(&client, &base, &key, &device_id, actions_path)
             .send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
-        hub.domain.execute(
+        host.domain.execute(
             &Actor::User { user_id: format!("device:{device_id}") },
-            &envelope(&hub, "approve-document", Command::DecideDocumentReview {
+            &envelope(&host, "approve-document", Command::DecideDocumentReview {
                 task_id: "task-a".into(), document_id: "doc-a".into(),
                 revision_id: "rev-a".into(), accepted: true,
             }), None, || Ok(())).unwrap();
@@ -1928,7 +1888,7 @@ mod tests {
         assert!(document_content_query("offset=0&version=../").is_none());
         server.abort();
         let _ = server.await;
-        drop(hub);
+        drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

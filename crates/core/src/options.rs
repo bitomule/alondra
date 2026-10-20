@@ -613,46 +613,6 @@ impl Resolved {
         parts.join(" · ")
     }
 
-    /// The section alondrad appends to a launched node's prompt, so no rule depends on the
-    /// orchestrator copying it.
-    pub fn mission_section(&self, request_id: Option<&str>, approach: Approach) -> String {
-        let who = match request_id {
-            Some(id) => format!("The user chose these for this work (request {id}):"),
-            None => "No user request is behind this launch, so these are the defaults:".into(),
-        };
-        let mut lines = vec!["## Launch options".to_string(), String::new(), who];
-        lines.push(if self.auto_merge {
-            "- PR handling: auto-merge. Register the PR and deliver it with present_result as your final result: once its checks pass, Alondra merges it and tells you, or sends you what only you can fix (failed checks, conflicts). Do not merge it yourself or wait on its checks.".into()
-        } else {
-            "- PR handling: review each PR. Register the PR and deliver it with present_result as your final result: the user reviews it, and when they accept it Alondra merges it and tells you. Do not merge it yourself.".into()
-        });
-        for p in self.picked.iter().filter(|p| p.id != PR && p.id != EFFORT) {
-            match &p.mission {
-                Some(m) => lines.push(format!("- {}: {}. {m}", p.label, p.value_label)),
-                None => lines.push(format!("- {}: {}.", p.label, p.value_label)),
-            }
-        }
-        if let Some(issue) = &self.issue {
-            lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
-        }
-        lines.push(String::new());
-        lines.extend(approach.how_to_work());
-        lines.push(String::new());
-        lines.push("When you reach this point, deliver with `present_result` and is_final true: Alondra closes this session when the task is done. If work remains after your PR merges (publish, install, deploy, verify), declare it with `post_merge_work` before that delivery: the task stays in progress after the merge until you say it ended.".into());
-        lines.join("\n")
-    }
-
-    /// With effort auto the orchestrator picks it per launch; an effort the user chose is binding.
-    pub fn with_orchestrator_effort(mut self, file: &OptionsFile, effort: Option<&str>) -> Resolved {
-        if self.effort == AUTO
-            && let Some(e) = effort.filter(|e| MAPPED.contains(e))
-        {
-            self.flags = file.effort_flags(e);
-            self.effort = e.to_string();
-        }
-        self
-    }
-
     /// With effort auto the orchestrator picks the model (and optionally the effort) per launch; an
     /// effort the user chose already sets the model and refuses the orchestrator's.
     pub fn with_orchestrator_model(mut self, file: &OptionsFile, model: Option<&str>, effort: Option<&str>) -> Result<Resolved, String> {
@@ -811,22 +771,6 @@ on = "Run /review-loop before the merge."
     }
 
     #[test]
-    fn the_mission_says_how_to_work_for_each_approach() {
-        let r = file().resolve(None, &chosen(&[])).unwrap();
-        let section = |a| r.mission_section(None, a);
-        let always = "write them as tasks in Claude Code's task list (TaskCreate)";
-        for approach in [Approach::Solo, Approach::Subagents, Approach::Workflow] {
-            let text = section(approach);
-            assert!(text.contains("## How to work") && text.contains(always), "{approach:?}");
-            assert!(text.find("## How to work") < text.find("`present_result`"), "{approach:?}");
-        }
-        assert!(!section(Approach::Solo).contains("subagents") && !section(Approach::Solo).contains("the Workflow tool"));
-        assert!(section(Approach::Subagents).contains("Split independent parts across subagents (the Agent tool)"));
-        assert!(section(Approach::Workflow).contains("Use a workflow (the Workflow tool)"));
-        assert!(!section(Approach::Workflow).contains("subagents (the Agent tool)"));
-    }
-
-    #[test]
     fn a_request_naming_an_unknown_option_or_value_is_refused() {
         let f = file();
         for (what, c, needle) in [
@@ -838,33 +782,6 @@ on = "Run /review-loop before the merge."
             let e = f.resolve(None, &c).expect_err(what);
             assert!(e.contains(needle), "{what}: {e}");
         }
-    }
-
-    #[test]
-    fn options_become_mission_lines_in_file_order() {
-        let r = file().resolve(Some("App"), &chosen(&[("device", Choice::Toggle(true))])).unwrap();
-        let s = r.mission_section(Some("r-7"), Approach::Solo);
-        let expected = [
-            "## Launch options",
-            "",
-            "The user chose these for this work (request r-7):",
-            "- PR handling: auto-merge. Register the PR and deliver it with present_result as your final result: once its checks pass, Alondra merges it and tells you, or sends you what only you can fix (failed checks, conflicts). Do not merge it yourself or wait on its checks.",
-            "- How far: merge and install. After the merge, run the install target.",
-            "- Try on device: yes. Ask the user to try it on a device.",
-            "- Adversarial review: yes. Run /review-loop before the merge.",
-            "",
-            "## How to work",
-            "",
-            "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.",
-            "",
-            "When you reach this point, deliver with `present_result` and is_final true: Alondra closes this session when the task is done. If work remains after your PR merges (publish, install, deploy, verify), declare it with `post_merge_work` before that delivery: the task stays in progress after the merge until you say it ended.",
-        ];
-        assert_eq!(s, expected.join("\n"));
-        let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None, Approach::Solo);
-        assert!(off.contains("- PR handling: review each PR."), "{off}");
-        assert!(off.contains("- How far: merge.\n"), "an empty mission text adds no sentence: {off}");
-        assert!(off.contains("- Try on device: no.\n"), "a toggle off without text adds none: {off}");
-        assert!(!off.contains("Effort"), "effort goes into flags, not the mission: {off}");
     }
 
     #[test]
@@ -898,26 +815,6 @@ on = "Run /review-loop before the merge."
         ] {
             assert_eq!(filter_projects(&order, query, suggested), shown, "{query:?} {suggested:?}");
         }
-    }
-
-    #[test]
-    fn with_effort_auto_the_orchestrator_chooses_and_an_explicit_effort_binds_it() {
-        let f = OptionsFile::parse("[effort]\nhard = { model = \"big\", effort = \"max\" }\n").unwrap();
-        for (what, user, orchestrator, effort, flags) in [
-            ("auto, orchestrator picks hard", None, Some("hard"), "hard", vec!["--model", "big", "--effort", "max"]),
-            ("auto, orchestrator picks light", None, Some("light"), "light", vec!["--model", "sonnet", "--effort", "medium"]),
-            ("auto, orchestrator says nothing", None, None, AUTO, vec![]),
-            ("auto, orchestrator names no level", None, Some("auto"), AUTO, vec![]),
-            ("user chose light", Some("light"), Some("hard"), "light", vec!["--model", "sonnet", "--effort", "medium"]),
-            ("user chose normal", Some("normal"), Some("hard"), "normal", vec![]),
-        ] {
-            let chosen = user.map(|u| chosen(&[(EFFORT, val(u))])).unwrap_or_default();
-            let r = f.resolve(None, &chosen).unwrap().with_orchestrator_effort(&f, orchestrator);
-            assert_eq!((r.effort.as_str(), r.launch_flags(None)), (effort, flags.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{what}");
-        }
-        assert!(f.resolve(None, &BTreeMap::new()).unwrap().effort_note("Ana").starts_with("Effort is auto"));
-        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass model or effort.");
-        assert!(OptionsFile::parse("[effort]\nauto = { model = \"m\" }\n").unwrap_err().contains("auto leaves the choice"));
     }
 
     #[test]

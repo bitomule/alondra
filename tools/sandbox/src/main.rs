@@ -115,7 +115,7 @@ enum FakeAction {
         node: String,
         /// work (commit, push, PR, final delivery), ask, deliver, cleanup, end (exits) or die (crashes).
         verb: String,
-        /// One step as JSON instead of a verb, e.g. '{"do":"dirty","file":"x.txt"}'.
+        /// One step, or a list of steps, as JSON instead of a verb, e.g. '{"do":"dirty","file":"x.txt"}'.
         #[arg(long)]
         step: Option<String>,
     },

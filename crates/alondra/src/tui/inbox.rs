@@ -139,26 +139,6 @@ impl App {
 
 
 
-    /// Enter on a task or a node opens its session's terminal.
-    pub(super) fn open_terminal(&mut self) -> Flow {
-        let selected = self.selected_view_key();
-        let session = self
-            .card_view
-            .as_ref()
-            .filter(|view| selected.as_deref() == Some(view.key.as_str()))
-            .and_then(super::view_render::attach_session);
-        match session {
-            Some(session) => Flow::Attach(session),
-            None => {
-                self.flash(tr!(
-                    "It has no terminal to open",
-                    "No tiene terminal que abrir"
-                ));
-                Flow::Go
-            }
-        }
-    }
-
     pub(super) fn view_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
         self.document_action_key(key)
             .or_else(|| self.screen_action_key(key))
@@ -338,8 +318,11 @@ impl App {
                 }
                 alondra_core::views::Link::View { key } => self.navigate_view(key),
                 alondra_core::views::Link::Local { local } => match local {
-                    alondra_core::views::LocalLink::Attach { session } => {
-                        return Flow::Attach(session.clone());
+                    alondra_core::views::LocalLink::Attach { .. } => {
+                        self.fail(tr!(
+                            "Alondra no longer opens a node's terminal: its detail has its state and its cards",
+                            "Alondra ya no abre el terminal de un nodo: su detalle tiene su estado y sus tarjetas"
+                        ));
                     }
                     alondra_core::views::LocalLink::OpenPath { path } => {
                         self.flash(trf!(

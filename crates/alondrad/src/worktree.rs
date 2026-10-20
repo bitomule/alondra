@@ -79,22 +79,6 @@ pub async fn leftovers_in(dir: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| format!("{} in {}", parts.join(" and "), dir.display()))
 }
 
-/// The node's worktree holds commits the remote's default branch does not, after fetching it.
-/// A fetch or a check that fails counts as not merged, so Alondra asks rather than closes.
-pub async fn unmerged(session_id: &str) -> Option<String> {
-    let dir = worktree_of(session_id)?;
-    unmerged_in(&dir).await
-}
-
-pub async fn unmerged_in(dir: &Path) -> Option<String> {
-    let default = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await.unwrap_or_else(|| "origin/main".into());
-    let branch = default.strip_prefix("origin/").unwrap_or(&default).to_string();
-    let fetch = Command::new("git").arg("-C").arg(dir).args(["fetch", "--quiet", "origin", &branch]).kill_on_drop(true).output();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), fetch).await;
-    let merged = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).output().await.is_ok_and(|o| o.status.success());
-    (!merged).then(|| format!("its work in {} is not on {default}", dir.display()))
-}
-
 /// The remote's default branch as `origin/<name>`: origin/HEAD, else what GitHub names it.
 pub(crate) async fn default_branch(dir: &Path) -> Option<String> {
     if let Some(head) = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
@@ -222,46 +206,6 @@ pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark])
     None
 }
 
-/// Deletes the node's worktree so `claude rm` closes the node; its commits stay on its branch.
-/// Only a worktree Claude Code made for the node or the one it `inherited` from the node it
-/// replaced, and only with nothing uncommitted: a folder it was only launched in is the user's.
-pub async fn discard(session_id: &str, inherited: Option<&Path>, permitted: impl Fn() -> bool) -> Result<(), String> {
-    let Some(origin) = origin_in(&crate::watcher::claude_home(), session_id) else { return Ok(()) };
-    discard_in(origin, inherited, permitted).await
-}
-async fn discard_in(origin: WorktreeOrigin, inherited: Option<&Path>, permitted: impl Fn() -> bool) -> Result<(), String> {
-    let dir = match origin {
-        WorktreeOrigin::Made(dir) => dir,
-        WorktreeOrigin::LaunchedIn(dir) if inherited.is_some_and(|inherited| same_dir(inherited, &dir)) => dir,
-        WorktreeOrigin::LaunchedIn(dir) => return Err(format!(
-            "{} is the folder the node was launched in, not a worktree Alondra made for it, so Alondra does not delete it", dir.display())),
-    };
-    let dir = dir.as_path();
-    let common = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
-    let status = git(dir, &["status", "--porcelain", "--untracked-files=all"]).await.ok_or("git could not tell what its worktree holds")?;
-    let uncommitted = status.lines().filter(|line| !line.trim().is_empty()).count();
-    if uncommitted > 0 {
-        return Err(format!("{} has {uncommitted} uncommitted file(s), so Alondra did not delete it", dir.display()));
-    }
-    let ignored = git(dir, &["status", "--porcelain", "--ignored"]).await.ok_or("git could not tell which files its worktree ignores")?;
-    let kept: Vec<String> = ignored.lines().filter_map(|line| line.strip_prefix("!! ")).filter(|path| !build_output(path)).map(str::to_owned).collect();
-    if !kept.is_empty() {
-        return Err(format!("{} holds files git ignores that are not build output ({}), so Alondra did not delete it", dir.display(), listed(&kept)));
-    }
-    if !permitted() { return Err("node changed while preparing discard".into()); }
-    let out = Command::new("git")
-        .arg(format!("--git-dir={common}"))
-        .args(["worktree", "remove", "--force"])
-        .arg(&dir)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(())
-}
-
 /// What became of the worktree Alondra made for a task once the task closed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TaskWorktree {
@@ -339,40 +283,6 @@ pub(crate) async fn unsaved(top: &Path) -> Result<Option<String>, String> {
     Ok((!parts.is_empty()).then(|| format!("{} in {}", parts.join(" and "), top.display())))
 }
 
-/// What a build regenerates, which a deleted worktree can lose: anything else git ignores, such as
-/// `.env` or a local configuration, may exist nowhere else.
-fn build_output(path: &str) -> bool {
-    const REGENERATED: [&str; 7] = ["target", ".build", "node_modules", "DerivedData", ".gradle", "__pycache__", ".DS_Store"];
-    path.trim_matches('"').trim_end_matches('/').split('/')
-        .any(|part| REGENERATED.contains(&part) || part.starts_with("bazel-"))
-}
-
-fn same_dir(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    }
-}
-
-/// What in a node's worktree stops Alondra from closing it by itself, so a test can stand in for
-/// git. `merged_by_pr`: every PR the node opened is merged, which covers a squash merge that
-/// leaves its commits off the default branch.
-pub trait Worktrees: Sync {
-    fn unfinished(&self, session_id: &str, merged_by_pr: bool) -> impl Future<Output = Vec<String>> + Send;
-}
-
-pub struct Git;
-
-impl Worktrees for Git {
-    async fn unfinished(&self, session_id: &str, merged_by_pr: bool) -> Vec<String> {
-        let mut found: Vec<String> = leftovers(session_id).await.into_iter().collect();
-        if !merged_by_pr {
-            found.extend(unmerged(session_id).await);
-        }
-        found
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod testing {
     use std::path::{Path, PathBuf};
@@ -409,102 +319,6 @@ mod tests {
     fn run(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
-    /// A repo with one commit and a linked worktree at `name` beside it, plus a Claude home.
-    fn repo_with_worktree(_tag: &str, name: &str) -> (crate::test_support::Directory, PathBuf, PathBuf) {
-        let root = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&root).unwrap();
-        run(&root, &["init", "-q", "repo"]);
-        let repo = root.join("repo");
-        run(&repo, &["config", "user.email", "test@example.invalid"]);
-        run(&repo, &["config", "user.name", "Test"]);
-        run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
-        let wt = root.join(name);
-        run(&repo, &["worktree", "add", "-q", "-b", name, wt.to_str().unwrap()]);
-        let claude_home = root.join("claude");
-        (root, wt, claude_home)
-    }
-
-    fn job(home: &Path, short: &str, state: Value) {
-        std::fs::create_dir_all(home.join("jobs").join(short)).unwrap();
-        std::fs::write(home.join("jobs").join(short).join("state.json"), state.to_string()).unwrap();
-    }
-
-    const SESSION: &str = "node0000-0000-4000-8000-000000000000";
-
-    #[tokio::test]
-    async fn discard_removes_the_clean_worktree_claude_code_made_for_the_node_after_revalidating() {
-        let (root, wt, home) = repo_with_worktree("discard-made", "made");
-        job(&home, "node0000", serde_json::json!({"cwd": root.join("repo").to_str().unwrap(), "worktreePath": wt.to_str().unwrap()}));
-        let origin = || origin_in(&home, SESSION).unwrap();
-        assert_eq!(origin(), WorktreeOrigin::Made(wt.clone()));
-        let observed = std::sync::atomic::AtomicBool::new(false);
-        let result = discard_in(origin(), None, || {
-            observed.store(true, std::sync::atomic::Ordering::SeqCst);
-            false
-        }).await;
-        assert!(result.is_err() && observed.load(std::sync::atomic::Ordering::SeqCst), "the node is checked again right before removing");
-        assert!(wt.exists());
-        discard_in(origin(), None, || true).await.unwrap();
-        assert!(!wt.exists());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn discard_removes_the_clean_worktree_a_replacement_inherited() {
-        let (root, wt, home) = repo_with_worktree("discard-inherited", "inherited");
-        job(&home, "node0000", serde_json::json!({"cwd": wt.to_str().unwrap()}));
-        assert_eq!(origin_in(&home, SESSION), Some(WorktreeOrigin::LaunchedIn(wt.clone())));
-        discard_in(origin_in(&home, SESSION).unwrap(), Some(&wt), || true).await.unwrap();
-        assert!(!wt.exists());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn discard_never_removes_a_worktree_the_user_gave_as_the_project_folder() {
-        let (root, wt, home) = repo_with_worktree("discard-users", "users-checkout");
-        job(&home, "node0000", serde_json::json!({"cwd": wt.to_str().unwrap()}));
-        let other = root.join("repo");
-        let refused = discard_in(origin_in(&home, SESSION).unwrap(), None, || true).await.unwrap_err();
-        assert!(refused.contains("launched in") && refused.contains("does not delete it"), "{refused}");
-        let refused = discard_in(origin_in(&home, SESSION).unwrap(), Some(&other), || true).await.unwrap_err();
-        assert!(refused.contains("launched in"), "another folder inherited does not make this one Alondra's: {refused}");
-        assert!(wt.join(".git").is_file(), "the user's worktree is still there");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// `git worktree remove --force` deletes what git ignores too: build output may go, a `.env`
-    /// or a local configuration may exist nowhere else.
-    #[tokio::test]
-    async fn discard_never_removes_a_worktree_holding_ignored_files_that_are_not_build_output() {
-        let (root, wt, home) = repo_with_worktree("discard-ignored", "ignored");
-        job(&home, "node0000", serde_json::json!({"cwd": root.join("repo").to_str().unwrap(), "worktreePath": wt.to_str().unwrap()}));
-        std::fs::write(wt.join(".gitignore"), "target/\nbazel-*\n.env\n").unwrap();
-        run(&wt, &["add", ".gitignore"]);
-        run(&wt, &["commit", "-q", "-m", "ignore"]);
-        std::fs::create_dir_all(wt.join("target/debug")).unwrap();
-        std::fs::write(wt.join("target/debug/app"), b"bin").unwrap();
-        std::fs::write(wt.join(".env"), b"TOKEN=secret").unwrap();
-        let refused = discard_in(origin_in(&home, SESSION).unwrap(), None, || true).await.unwrap_err();
-        assert!(refused.contains("not build output (`.env`)"), "{refused}");
-        assert_eq!(std::fs::read(wt.join(".env")).unwrap(), b"TOKEN=secret");
-
-        std::fs::remove_file(wt.join(".env")).unwrap();
-        discard_in(origin_in(&home, SESSION).unwrap(), None, || true).await.unwrap();
-        assert!(!wt.exists(), "build output alone does not keep the worktree");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn discard_never_removes_a_worktree_with_uncommitted_changes() {
-        let (root, wt, home) = repo_with_worktree("discard-dirty", "dirty");
-        job(&home, "node0000", serde_json::json!({"cwd": root.join("repo").to_str().unwrap(), "worktreePath": wt.to_str().unwrap()}));
-        std::fs::write(wt.join("unsaved"), b"keep").unwrap();
-        let refused = discard_in(origin_in(&home, SESSION).unwrap(), None, || true).await.unwrap_err();
-        assert!(refused.contains("1 uncommitted file(s)"), "{refused}");
-        assert_eq!(std::fs::read(wt.join("unsaved")).unwrap(), b"keep");
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// The node that replaced another one was launched in that one's worktree, which Claude Code
@@ -567,32 +381,6 @@ mod tests {
         let refused = final_refusal(&state, session, &TaskId::from("t"), &[]).await.expect("a dirty worktree is refused");
         assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
         assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
-    }
-
-    /// Pushed is not enough to close a node: its commits must be on the remote's default branch.
-    #[tokio::test]
-    async fn work_counts_as_merged_only_once_the_default_branch_on_the_remote_has_it() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let root = scratch_directory.parent().unwrap().join(format!("alondra-unmerged-{}-{}", std::process::id(), alondra_core::now_millis()));
-        let (remote, clone) = (root.join("remote.git"), root.join("clone"));
-        std::fs::create_dir_all(&root).unwrap();
-        run(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
-        run(&root, &["clone", "-q", remote.to_str().unwrap(), clone.to_str().unwrap()]);
-        for args in [&["config", "user.email", "t@t"][..], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "base"], &["push", "-q", "origin", "HEAD:main"]] {
-            run(&clone, args);
-        }
-        run(&clone, &["remote", "set-head", "origin", "main"]);
-        assert_eq!(unmerged_in(&clone).await, None, "HEAD is main");
-
-        for args in [&["checkout", "-q", "-b", "feature"][..], &["commit", "-q", "--allow-empty", "-m", "work"], &["push", "-q", "origin", "feature"]] {
-            run(&clone, args);
-        }
-        let said = unmerged_in(&clone).await.expect("pushed to its branch, not merged");
-        assert!(said.contains("not on origin/main"), "{said}");
-
-        run(&clone, &["push", "-q", "origin", "feature:main"]);
-        assert_eq!(unmerged_in(&clone).await, None, "merged on the remote, fetched before the check");
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

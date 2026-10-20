@@ -15,7 +15,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::fleet_pause::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{Actor, AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
 use alondra_core::options::NodeLimit;
@@ -299,13 +299,15 @@ impl FleetGate {
 
     /// The user paused a working node: it stops at once and only the user brings it back.
     pub(crate) fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
-        if crate::fleet_pause::through_sdk(domain, session) {
-            return Err("This node runs through the Agent SDK and cannot be paused yet: answer its card, or cancel its task");
-        }
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
         let mut inner = self.lock_with(domain);
         crate::fleet_pause::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
         self.save_with(domain, &inner);
+        let paused = inner.saved.pauses.paused.get(session).cloned();
+        drop(inner);
+        if let Some(paused) = paused.filter(|_| crate::fleet_pause::through_sdk(domain, session)) {
+            crate::fleet_pause::hold_sdk_turn(domain, session, &paused);
+        }
         Ok(())
     }
 
@@ -571,11 +573,15 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
     for session in held.keys().filter(|session| !wanted.contains_key(*session)) {
         events.push((session, NodeEvent::Resumed));
     }
+    let ended = events.iter().any(|(_, event)| matches!(event, NodeEvent::Resumed | NodeEvent::PauseReleased));
     for (session, event) in events {
         let key = event.key();
         if let Err(error) = crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
             log!("could not record that {session} {key}: {error}");
         }
+    }
+    if ended {
+        domain.seals.wake();
     }
 }
 
@@ -587,15 +593,38 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
     let text = crate::fleet_pause::resume_text(&paused, now);
-    if crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, &text, true).is_err() {
+    if !tell_to_go_on(domain, session, &text) {
         inner.saved.pauses.owed.insert(session.to_owned(), text);
         domain.live.losses.report(session);
     }
 }
 
+/// Tells a node it goes on: as an input of its Agent SDK task, which its host takes once the pause
+/// ends, or down the connection of a `claude --bg` node.
+fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
+    if crate::fleet_pause::through_sdk(domain, session) {
+        let Some(task) = domain.state().ok().and_then(|state| open_task_of(&state, session)) else { return true };
+        if waiting_input(domain, &task) {
+            return true;
+        }
+        let command = format!("resume-{session}-{}", crate::auth::random_hex(8));
+        return crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, text, &command).is_ok();
+    }
+    crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, true).is_ok()
+}
+
+/// Whether the task of a node of the Agent SDK already has what it goes on with, as a pause by the
+/// user leaves it.
+fn waiting_input(domain: &DomainRuntime, task: &alondra_core::domain::TaskId) -> bool {
+    let read = domain.read();
+    read.state().lifecycle_journal.get(task)
+        .and_then(|journal| alondra_core::domain::replay(task, journal).ok())
+        .is_some_and(|lifecycle| !lifecycle.pending_inputs().is_empty())
+}
+
 /// Tells the nodes admitted back while unreachable to carry on, once they are connected again.
 fn deliver_owed(domain: &DomainRuntime, inner: &mut Inner) {
-    inner.saved.pauses.owed.retain(|session, text| crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, true).is_err());
+    inner.saved.pauses.owed.retain(|session, text| !tell_to_go_on(domain, session, text));
 }
 
 fn admit(inner: &mut Inner, key: Key, now: Millis) {
@@ -855,7 +884,7 @@ pub(crate) fn held_by_user(domain: &DomainRuntime, task: &TaskId) -> bool {
 }
 
 /// The user resumed a queued task they paused (D3): it starts now, even over the limit.
-pub(crate) async fn release_queued(domain: &DomainRuntime, home: &Path, task: &TaskId, launcher: &impl crate::orchestrate::Launcher) -> Result<(), &'static str> {
+pub(crate) async fn release_queued(domain: &DomainRuntime, home: &Path, task: &TaskId) -> Result<(), &'static str> {
     let held = {
         let gate = &domain.live.gate;
         let mut inner = gate.lock();
@@ -867,7 +896,7 @@ pub(crate) async fn release_queued(domain: &DomainRuntime, home: &Path, task: &T
     };
     let body = LaunchBody::from_queue(&held.body).map_err(|_| "Alondra could not start the task")?;
     let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
-    launch_from(domain, home, &Actor::System, body, choices, launcher, Origin::Admitted).await.map_err(|error| {
+    launch_from(domain, home, body, choices, Origin::Admitted).await.map_err(|error| {
         log!("could not start {task}, which the user resumed: {}", error.message);
         "Alondra could not start the task"
     })?;
@@ -900,10 +929,10 @@ pub(crate) fn queued_text(domain: &DomainRuntime, task: &TaskId, now: Millis) ->
 }
 
 /// Starts the queued launches whose turn came, and wakes the callers that asked the gate.
-pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: impl crate::orchestrate::Launcher) {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     let mut changes = domain.subscribe();
     loop {
-        if let Err(error) = pass(&domain, &home, &launcher).await {
+        if let Err(error) = pass(&domain, &home).await {
             log!("the fleet gate could not start a queued launch: {error:#}");
         }
         tokio::select! {
@@ -915,13 +944,13 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
 }
 
 /// One look at the queue: drops what no longer waits, and lets the head start.
-pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher) -> anyhow::Result<()> {
-    pass_at(domain, home, launcher, alondra_core::now_millis()).await
+pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> anyhow::Result<()> {
+    pass_at(domain, home, alondra_core::now_millis()).await
 }
 
 /// `pass` at `now`: looks at the pauses, then lets the head of the queue go, a paused node by
 /// telling it to carry on. It never pauses a working node.
-pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher, now: Millis) -> anyhow::Result<()> {
+pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow::Result<()> {
     let state = domain.state()?;
     let rows = domain.store.lock().expect("domain store poisoned").launch_queue()?;
     for row in rows.iter().filter(|row| !still_waits(&state, &Key::Task(row.task_id.clone()))) {
@@ -973,7 +1002,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
     let body = LaunchBody::from_queue(&row.body)?;
     let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
     log!("the fleet gate starts {task}, queued since {}", row.enqueued_at);
-    match launch_from(domain, home, &Actor::System, body, choices, launcher, Origin::Admitted).await {
+    match launch_from(domain, home, body, choices, Origin::Admitted).await {
         Ok(_) => {
             let mut store = domain.store.lock().expect("domain store poisoned");
             store.dequeue_launch(&task)?;

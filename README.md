@@ -27,16 +27,11 @@ alondra update      # Homebrew installs: upgrade, then wait until the daemon run
 alondra status      # the same as text
 ```
 
-Only the sessions Alondra launches are Alondra's. Its `launch` and `define` load the plugin into
-each node for that session alone and mark it through `--settings` (`ALONDRA_LAUNCHED`, which
-the hooks and the tools send back); background sessions keep both flags across restarts. Any
-other Claude session (a cron, your own terminal) has no plugin and stays out: no node, no task,
-no card. By hand, a node is launched the same way:
-
-```bash
-claude --bg --name "app/fix" --plugin-dir ~/Projects/alondra/plugin \
-  --settings '{"env": {"ALONDRA_LAUNCHED": "1"}}' --permission-mode auto -- "<mission>"
-```
+Only the sessions Alondra launches are Alondra's. Every node and every orchestrator batch runs
+through the Claude Agent SDK host that ships with Alondra (`libexec/alondra/sdk/alondra-host`),
+which runs your own Claude Code with your default profile and loads Alondra's plugin into that
+session alone. Any other Claude session (a cron, your own terminal) has no plugin and stays out:
+no node, no task, no card.
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
@@ -45,12 +40,10 @@ variable overrides the file; `alondra config list` shows the values in effect. W
 idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
 [docs/idle-nodes.md](docs/idle-nodes.md).
 
-**The orchestrator** is a durable conversation with an inbox owned by Alondra. When work
-arrives, alondrad starts `claude -p --permission-mode auto` with the node and orchestrator
-plugins, resumes the saved conversation, and lets the process exit after the batch. The
-conversation runs in Alondra's internal runtime directory. An idle orchestrator is available;
-it does not need a background process or an attachable terminal. Worker nodes still use
-Claude background sessions.
+**The orchestrator** is an inbox owned by Alondra. When work arrives, alondrad runs one batch
+through the Agent SDK host with the node and orchestrator plugins, as a new conversation that
+gets what it needs from Alondra in its prompt, and the host ends with the batch. An idle
+orchestrator runs nothing.
 
 The plugins provide `fleet`, `node`, `machine`, `send`, `interrupt`, `launch`, `set_launch_plan`, `define`,
 `cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
@@ -75,13 +68,13 @@ alondra orchestrator acknowledge RUN_ID --confirm
 HTTP acceptance is not proof that Claude executed an action. While a handoff to a
 live node is uncertain, the TUI shows "N messages not confirmed"; `:deliveries`
 shows the recorded evidence and recovery commands. A handoff whose node is gone
-closes by itself (`node_gone`), since there is no terminal left to check. Inspect
-the destination terminal before choosing a resolution:
+closes by itself (`node_gone`). Check what the attempt was about (its task or card) and what
+its destination already shows before choosing a resolution:
 
 ```sh
 alondra delivery list
-alondra delivery retry ID --expected-version VERSION --terminal-checked --confirm-duplicate-risk
-alondra delivery discard ID --expected-version VERSION --terminal-checked
+alondra delivery retry ID --expected-version VERSION --checked --confirm-duplicate-risk
+alondra delivery discard ID --expected-version VERSION --checked
 # Use an explicitly approved remote Mac instead of Local:
 alondra delivery --mac MAC_ID list
 ```

@@ -128,8 +128,8 @@ pub(crate) fn turn_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> 
 /// A Claude API error ended `agent`'s turn: Alondra sends it back later, waits for the usage
 /// limit or the API, or asks the user.
 pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Value, now: Millis) -> Result<()> {
-    let error = crate::http::str_field(payload, "error_type").unwrap_or_else(|| "unknown".into());
-    let detail = crate::http::str_field(payload, "error_details");
+    let error = crate::hook_text::str_field(payload, "error_type").unwrap_or_else(|| "unknown".into());
+    let detail = crate::hook_text::str_field(payload, "error_details");
     let state = domain.state()?;
     let Some(phase) = state.node_phase(agent).cloned() else { return Ok(()) };
     let in_turn = matches!(phase, NodePhase::Working | NodePhase::Starting { .. });

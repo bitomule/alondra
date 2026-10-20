@@ -7,8 +7,7 @@
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use crate::orchestrate::Launcher;
-use alondra_core::domain::{Actor, DomainState, Task, TaskState};
+use alondra_core::domain::{DomainState, Task, TaskState};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +17,7 @@ const TICK: Duration = Duration::from_secs(60);
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const LAST_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
-pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: impl Launcher) {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     if let Err(error) = recover(&domain) {
         log!("could not look at the automatic launches a restart interrupted: {error:#}");
     }
@@ -26,7 +25,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
     let mut turn = domain.live.gate.subscribe();
     let mut backoff = FIRST_BACKOFF;
     loop {
-        let pause = match pass(&domain, &home, &launcher).await {
+        let pause = match pass(&domain, &home).await {
             Ok(()) => {
                 backoff = FIRST_BACKOFF;
                 TICK
@@ -100,8 +99,8 @@ pub(crate) fn candidate(state: &DomainState, task: &Task) -> bool {
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }
 
-pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl Launcher) -> Result<()> {
-    crate::start_failures::react(domain, home, launcher).await?;
+pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
+    crate::start_failures::react(domain, home).await?;
     let state = domain.state()?;
     let now = alondra_core::now_millis();
     let (planned, retries) = {
@@ -157,7 +156,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             continue;
         }
         let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
-        let launched = launch_from(domain, home, &Actor::System, LaunchBody::from_plan(task.id.clone(), &plan), choices, launcher, Origin::Auto).await;
+        let launched = launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), &plan), choices, Origin::Auto).await;
         domain.live.end_launch(&task.id.0);
         match launched {
             Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(&task.id, None)?,

@@ -1154,26 +1154,3 @@ pub fn document_kind(view: &View) -> Option<String> {
             _ => None,
         })
 }
-
-/// The terminal a document offers: an action or a row that attaches to its node's session.
-pub fn attach_session(view: &View) -> Option<String> {
-    use alondra_core::views::{Link, LocalLink};
-    let session = |link: &Option<Link>| match link {
-        Some(Link::Local {
-            local: LocalLink::Attach { session },
-        }) => Some(session.clone()),
-        _ => None,
-    };
-    actions(view)
-        .iter()
-        .find_map(|action| session(&action.link))
-        .or_else(|| {
-            view.sections
-                .iter()
-                .flat_map(|section| &section.items)
-                .find_map(|item| match item {
-                    Item::Row(row) => session(&row.link),
-                    _ => None,
-                })
-        })
-}

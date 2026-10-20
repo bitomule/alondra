@@ -1,6 +1,7 @@
 load(":build_inputs_test.bzl", "rust_inputs_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("//:version.bzl", "VERSION")
 
 exports_files(
     ["src/domain_store/schema.sql", "src/domain_store/schedule_launch_transition.sql"],
@@ -23,7 +24,7 @@ rust_binary(
     # macOS asks for Local Network access before alondrad may advertise on Bonjour; a
     # standalone executable carries the reason in an embedded Info.plist (TN3179).
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
-    version = "0.1.0",
+    version = VERSION,
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-application:agent_application",
@@ -48,7 +49,7 @@ rust_binary(
     crate_root = "launcher/main.rs",
     edition = "2024",
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
-    version = "0.1.0",
+    version = VERSION,
     visibility = ["//visibility:public"],
 )
 
@@ -59,7 +60,7 @@ rust_test(
     data = [":alondrad-launcher"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad-launcher": "$(rootpath :alondrad-launcher)"},
-    version = "0.1.0",
+    version = VERSION,
     deps = all_crate_deps(normal_dev = True),
 )
 
@@ -87,8 +88,10 @@ rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
         "HOME": ".",
-        "FIXTURE_NODE": "$(rootpath //agent-host:pinned_node)",
-        "FIXTURE_HOST": "$(rootpath //agent-host:persistent.cjs)",
+        # The host a release ships: Node, the SDK and the host in one executable, so every SDK test
+        # of the daemon runs the bytes Brew installs.
+        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
     },
@@ -107,8 +110,7 @@ rust_test(
     data = [
         "//agent-host:orchestrator-fake-claude.py",
         "//agent-host:persistent-fake-claude.py",
-        "//agent-host:persistent.cjs",
-        "//agent-host:pinned_node",
+        "//agent-host:alondra-host",
         "//crates/alondra:alondra",
         "//fixtures/client-v2",
         "//fixtures/views:all",
@@ -116,7 +118,7 @@ rust_test(
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
-    version = "0.1.0",
+    version = VERSION,
 )
 
 rust_inputs_test(
@@ -137,7 +139,7 @@ rust_test(
     data = [":alondrad"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
-    version = "0.1.0",
+    version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core"],
 )
 
@@ -148,7 +150,7 @@ rust_test(
     data = [":alondrad"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
-    version = "0.1.0",
+    version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 

@@ -28,17 +28,20 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok((inbox.iter().any(|id| id == "q-t2").then_some(()), format!("{inbox:?}")))
         })?;
         state(report, &user, "t-t2", "Needs you")?;
+        wait(report, "the node's turn ends after it asked", || Ok((turn_ended(sandbox, "t-t2")?.then_some(()), "no turn end recorded".into())))?;
+        report.step("no card says the node stopped without asking", || {
+            if let Some(unheard) = user.inbox()?.into_iter().find(|id| id.starts_with("turn-ended-t-t2-")) {
+                bail!("{unheard} says the node stopped without asking, though it asked");
+            }
+            Ok(())
+        })?;
         let card = user.view("card:q-t2")?;
         report.snapshot("card-q-t2", &card)?;
         let option = user.action_labeled(&card, "Short name").context("the card offers no “Short name”")?;
         report.step("the user picks “Short name”", || {
             user.press(option["id"].as_str().unwrap_or_default(), option["option_id"].as_str(), None)
         })?;
-        wait(report, "the answer reaches the node", || {
-            let pushed = fakes.pushed(&node.short)?;
-            let answer = pushed.iter().find(|push| push.text.as_deref().is_some_and(|text| text.contains("Short name")));
-            Ok((answer.map(drop), format!("{:?}", pushed.iter().map(|p| p.text.clone()).collect::<Vec<_>>())))
-        })?;
+        wait(report, "the answer reaches the node", || told(fakes, &node, "Short name"))?;
         state(report, &user, "t-t2", WORKING)?;
         report.step("the question leaves Inbox", || {
             let inbox = user.inbox()?;
@@ -55,11 +58,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         act(report, fakes, &node, "the node delivers PR #3", &Step::work(3, "farewell.txt"))?;
         let (first, view) = review_card(report, &user, &node)?;
         press(report, &user, &view, "changes:", None, Some("Say goodbye in Spanish too"), "the user asks for changes with a comment")?;
-        wait(report, "the comment reaches the node", || {
-            let pushed = fakes.pushed(&node.short)?;
-            let found = pushed.iter().any(|push| push.text.as_deref().is_some_and(|text| text.contains("Say goodbye in Spanish too")));
-            Ok((found.then_some(()), format!("{} messages", pushed.len())))
-        })?;
+        wait(report, "the comment reaches the node", || told(fakes, &node, "Say goodbye in Spanish too"))?;
         state(report, &user, "t-t3", "Making changes")?;
         report.step("the first card leaves Inbox", || {
             if user.inbox()?.iter().any(|id| *id == first) {
@@ -82,7 +81,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         merged(report, fakes, 3, &head)?;
         closed(report, fakes, &user, &node, "t-t3", &card)
     });
-    report.case("TC4", "The user cancels a working task; its node is removed", |report| {
+    report.case("TC4", "The user cancels a working task; its node ends and leaves Fleet", |report| {
         request(report, fakes, &user, &task_script("req-t4", "t-t4", "Add a draft note"), "Add a draft note")?;
         let node = launched(report, fakes, "t-t4")?;
         state(report, &user, "t-t4", WORKING)?;
@@ -97,11 +96,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         report.snapshot("task-t-t4", &task)?;
         press(report, &user, &task, "cancel:", None, None, "the user cancels the task")?;
         state(report, &user, "t-t4", CANCELLED)?;
-        wait(report, &format!("Alondra removes node {}", node.short), || {
-            let rm = fakes.calls()?.iter().any(|call| call.tool == "claude" && call.args == ["rm", node.short.as_str()]);
-            Ok((rm.then_some(()), format!("rm called: {rm}")))
-        })
-        .map(drop)
+        ended(report, fakes, &user, &node)
     });
     report.case("TC5", "Closing a delivered PR without merging closes it on GitHub", |report| {
         request(report, fakes, &user, &task_script("req-t5", "t-t5", "Add an unwanted file"), "Add an unwanted file")?;
@@ -162,11 +157,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         act(report, fakes, &node, "the node delivers PR #13, whose checks fail", &work)?;
         let (first, view) = review_card(report, &user, &node)?;
         press(report, &user, &view, "merge:", None, None, "the user merges PR #13")?;
-        wait(report, "Alondra hands the task back to the node, naming the failed check", || {
-            let pushed = fakes.pushed(&node.short)?;
-            let told = pushed.iter().any(|push| push.text.as_deref().is_some_and(|text| text.contains("build")));
-            Ok((told.then_some(()), format!("{:?}", pushed.iter().filter_map(|p| p.text.clone()).collect::<Vec<_>>())))
-        })?;
+        wait(report, "Alondra hands the task back to the node, naming the failed check", || told(fakes, &node, "build"))?;
         report.step("nothing was merged", || {
             let pr = fakes.pr(13)?.context("no PR 13")?;
             if pr.state != "OPEN" {
@@ -204,4 +195,16 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         act(report, fakes, &node, "the node opens PR #15 on the fake GitHub", &[Step::OpenPr { number: 15, draft: false, checks: Checks::Success }])?;
         refused(report, fakes, &node, "Alondra refuses to register PR #15 for the same task", &Step::RegisterPr { number: 15 }, "owns one PR").map(drop)
     });
+}
+
+/// Whether the lifecycle of `task` on Mac 1 recorded the end of a turn.
+fn turn_ended(sandbox: &Sandbox, task: &str) -> anyhow::Result<bool> {
+    let output = std::process::Command::new("sqlite3")
+        .arg("-readonly")
+        .arg(sandbox.dir.join("mac-1/domain.db"))
+        .arg(format!("SELECT count(*) FROM lifecycle_events WHERE task_id='{task}' AND event LIKE '%\"turn_ended\"%'"))
+        .output()
+        .context("sqlite3")?;
+    anyhow::ensure!(output.status.success(), "sqlite3: {}", String::from_utf8_lossy(&output.stderr));
+    Ok(String::from_utf8_lossy(&output.stdout).trim() != "0")
 }

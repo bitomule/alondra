@@ -222,7 +222,14 @@ pub enum LifecycleRecord {
     /// Someone told the task's node `text` outside a card, as `input`.
     Told { input: String, text: String },
     Presented { delivery: InteractionId },
-    HandedBack { delivery: InteractionId, input: String },
+    /// The standing delivery left: the task goes on with `input`. An SDK execution is told `text`,
+    /// what happened and that it delivers again; a `claude --bg` node is told through its mod.
+    HandedBack {
+        delivery: InteractionId,
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     Accepted { delivery: InteractionId },
     Finished { intent: TaskEnding, cleanup: String, post_merge: Option<String> },
     Drained { obligation: Drained },
@@ -425,7 +432,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
         LifecycleRecord::Told { input, .. } => Event::Tell { input: input_id(task, input)? },
         LifecycleRecord::Presented { delivery } => Event::Present { delivery: delivery.clone() },
-        LifecycleRecord::HandedBack { delivery, input } => Event::HandBack { delivery: delivery.clone(), input: input_id(task, input)? },
+        LifecycleRecord::HandedBack { delivery, input, .. } => Event::HandBack { delivery: delivery.clone(), input: input_id(task, input)? },
         LifecycleRecord::Accepted { delivery } => Event::Accept { delivery: delivery.clone(), merge: None },
         LifecycleRecord::Finished { intent, cleanup, post_merge } => Event::Finish {
             intent: match intent {
@@ -547,11 +554,12 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
     match record {
         LifecycleRecord::Planned { input }
         | LifecycleRecord::ExecutionReleased { input }
-        | LifecycleRecord::HandedBack { input, .. }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
         LifecycleRecord::Compacted { input } => Some((input, Some(COMPACT))),
         LifecycleRecord::Told { input, text } => Some((input, Some(text.as_str()))),
-        LifecycleRecord::Answered { input, text, .. } | LifecycleRecord::Resumed { input, text, .. } => Some((input, text.as_deref())),
+        LifecycleRecord::Answered { input, text, .. }
+        | LifecycleRecord::Resumed { input, text, .. }
+        | LifecycleRecord::HandedBack { input, text, .. } => Some((input, text.as_deref())),
         LifecycleRecord::HandoffSettled { resent: Some(input), text, .. } | LifecycleRecord::HandoffResent { resent: input, text, .. } => {
             Some((input, text.as_deref()))
         }
@@ -656,7 +664,11 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
         Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
-        Event::HandBack { delivery, input } => LifecycleRecord::HandedBack { delivery: delivery.clone(), input: input.as_str().into() },
+        Event::HandBack { delivery, input } => LifecycleRecord::HandedBack {
+            delivery: delivery.clone(),
+            input: input.as_str().into(),
+            text: texts.get(input).cloned(),
+        },
         Event::Accept { delivery, merge: None } => LifecycleRecord::Accepted { delivery: delivery.clone() },
         Event::Finish { intent, cleanup, post_merge } => LifecycleRecord::Finished {
             intent: match intent {
@@ -1024,9 +1036,35 @@ impl DomainState {
                 None => TurnEnd::Unexplained,
             };
             self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            if !self.covered_by_node_question(&self.interactions[&card]) {
+                effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            }
         }
         Ok(())
+    }
+
+    /// A card that says a turn ended with nothing that explains the task's next step, while the
+    /// node asked the user something that does: a question still open, or one the user answered
+    /// after the turn ended, whose answer is on its way to the node and ends this card's wait.
+    /// The card waits out of sight until then, and shows only once nothing covers it.
+    pub(super) fn covered_by_node_question(&self, card: &Interaction) -> bool {
+        let Scope::Task { task_id } = &card.scope else { return false };
+        if card.author != Author::System || !card.id.0.starts_with(TURN_ENDED_PREFIX) || card.card.why != TURN_ENDED_WHY {
+            return false;
+        }
+        let Some(node) = self.tasks.get(task_id).and_then(|t| t.agent_id.clone()) else { return false };
+        self.interactions.values().any(|i| {
+            matches!(&i.scope, Scope::Task { task_id: of } if of == task_id)
+                && i.author == Author::Agent { agent_id: node.clone() }
+                && i.recipient == Recipient::User
+                && !i.withdrawn
+                && !self.holds.contains_key(&i.id)
+                && match &i.payload {
+                    InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } =>
+                        answer.as_ref().is_none_or(|answer| answer.at_revision > card.revision),
+                    _ => false,
+                }
+        })
     }
 
     /// The user answered `card`, one the lifecycle of the task requires: cancelling ends the

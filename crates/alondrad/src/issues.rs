@@ -3,7 +3,6 @@ use alondra_core::now_millis;
 use alondra_core::options::OptionsFile;
 use serde::Serialize;
 
-use crate::hub::Hub;
 use crate::prs::Gh;
 
 /// A list younger than this is served again without asking GitHub.
@@ -41,12 +40,6 @@ pub fn excluded(file: &OptionsFile, repo: &str) -> bool {
 
 /// The open issues, from memory unless the list is stale or the user asked to refresh. Only
 /// one search runs at a time: a second caller waits for it and gets the same list.
-pub async fn list(hub: &Hub, refresh: bool, gh: &impl Gh) -> IssueList {
-    let file = crate::options::load(hub).file;
-    list_in(&hub.issues, &file, refresh, gh).await
-}
-
-/// `list`, for a daemon that keeps the issues somewhere other than a hub.
 pub async fn list_in(cache: &tokio::sync::Mutex<Option<IssueList>>, file: &OptionsFile, refresh: bool, gh: &impl Gh) -> IssueList {
     let mut cache = cache.lock().await;
     let owners = owners(file);
@@ -73,10 +66,6 @@ pub async fn list_in(cache: &tokio::sync::Mutex<Option<IssueList>>, file: &Optio
 }
 
 /// The text the orchestrator gets for an issue. A failed read still passes the link on.
-pub async fn for_orchestrator(hub: &Hub, repo: &str, number: u64, gh: &impl Gh) -> String {
-    for_orchestrator_in(&hub.issues, repo, number, gh).await
-}
-
 pub async fn for_orchestrator_in(cache: &tokio::sync::Mutex<Option<IssueList>>, repo: &str, number: u64, gh: &impl Gh) -> String {
     let association = cache.lock().await.as_ref().and_then(|c| c.issues.iter().find(|i| i.repo == repo && i.number == number).and_then(|i| i.association.clone()));
     match gh.issue_view(repo, number).await {

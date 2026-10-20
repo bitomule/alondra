@@ -1214,26 +1214,27 @@ fn attachable(key: &str) -> alondra_core::views::View {
 }
 
 #[test]
-fn footers_name_the_next_screen_and_the_terminal_only_when_there_is_one() {
+fn footers_name_the_next_screen_and_never_offer_a_terminal() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let has = |app: &App, key: &str, label: &str| {
         crate::tui::draw::footer_keys(app).iter().any(|(k, l)| k == key && l == label)
     };
+    let terminal = |app: &App| crate::tui::draw::footer_keys(app).iter().any(|(_, l)| l.contains("terminal"));
     app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
     assert!(has(&app, "Tab", "tasks"));
     app.screen = Screen::Tasks;
     app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
-    assert!(!has(&app, "⏎", "its terminal"), "nothing selected has a terminal");
     app.view_navigation.push("task:t-1".into());
     app.card_view = Some(attachable("task:t-1"));
-    assert!(has(&app, "⏎", "its terminal") && has(&app, "Tab", "fleet"));
+    assert!(has(&app, "⏎/o", "expand") && has(&app, "Tab", "fleet"));
+    assert!(!terminal(&app), "an old daemon's attach link never offers a terminal");
     app.screen = Screen::Fleet;
     app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
-    assert!(has(&app, "⏎", "its terminal (← returns)") && has(&app, "Tab", "inbox"));
+    assert!(has(&app, "⏎/o", "expand") && has(&app, "Tab", "inbox") && !terminal(&app));
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
-    assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎", "su terminal (← vuelve)"));
+    assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎/o", "expandir"));
 }
 
 #[test]
@@ -1253,27 +1254,22 @@ fn a_narrow_footer_keeps_tab_new_and_quit() {
 }
 
 #[test]
-fn enter_on_a_task_or_node_opens_its_terminal() {
+fn enter_on_a_task_or_node_expands_it_and_an_old_attach_link_runs_nothing() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     app.view_navigation.push("task:t-1".into());
-    let mut task = view_fixture("card-question.json");
-    task["view"] = serde_json::json!("task");
-    task["key"] = serde_json::json!("task:t-1");
-    task["sections"] = serde_json::json!([{"id": "attach", "collapsed": false, "items": [{
-        "type": "row", "id": "attach", "icon": "node", "title": "Attach", "depth": 0, "struck": false,
-        "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
-    }]}]);
-    app.card_view = Some(serde_json::from_value(task).unwrap());
-    assert!(matches!(
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        Flow::Attach(session) if session == "short-a-1"
-    ));
-    app.card_view = None;
+    app.card_view = Some(attachable("task:t-1"));
     assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
-    assert!(app.flash.is_none(), "a task with no terminal does not offer ⏎");
+    let attach: alondra_core::views::Action = serde_json::from_value(serde_json::json!({
+        "id": "", "label": "Attach to node", "style": "plain", "presentation": "button",
+        "input": {"kind": "none"}, "attachments": false, "enabled": true, "key": "a",
+        "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
+    })).unwrap();
+    assert!(matches!(app.run_view_action_confirmed(&attach, None, &Key("t-1".into()), "test".into()), Flow::Go));
+    let flash = app.flash.as_ref().expect("the refusal is told");
+    assert!(flash.text.contains("no longer opens a node's terminal"), "{}", flash.text);
 }
 
 fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
@@ -1505,7 +1501,7 @@ fn task_footer_offers_only_the_keys_the_selected_task_answers() {
     app.card_view = Some(task_view("t-1", true));
     let keys = crate::tui::draw::footer_keys(&app);
     assert!(keys.iter().any(|(key, label)| key == "Shift+M" && label == "Message"), "{keys:?}");
-    assert!(keys.iter().any(|(key, label)| key == "⏎" && label == "its terminal"), "{keys:?}");
+    assert!(keys.iter().any(|(key, label)| key == "⏎/o" && label == "expand"), "{keys:?}");
     assert!(keys.iter().any(|(key, label)| key == "x" && label == "Cancel Task"), "{keys:?}");
     assert!(!keys.iter().any(|(key, _)| key == "r"), "{keys:?}");
 
@@ -2355,4 +2351,15 @@ fn the_tui_folds_the_chain_like_ios_and_mac() {
     let keys: Vec<String> = app.inbox_keys().into_iter().map(|key| key.0).collect();
     assert!(keys.contains(&tui.0), "{keys:?}");
     assert!(tui.2.iter().all(|member| !keys.contains(member)), "the TUI hides them like iOS and Mac: {keys:?}");
+}
+
+#[test]
+fn comments_a_node_takes_after_its_turn_count_as_sent_and_an_uncertain_handoff_does_not() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let sent = || "Comments sent".to_owned();
+    assert_eq!(comments_delivered(&serde_json::json!({"delivery_state": "handed"}), sent()), Ok(sent()));
+    assert_eq!(comments_delivered(&serde_json::json!({"delivery_state": "dispatching"}), sent()), Ok(sent()),
+        "a node of the Agent SDK takes them once its turn lets it: they are on their way, not lost");
+    assert_eq!(comments_delivered(&serde_json::json!({}), sent()), Ok(sent()));
+    assert!(comments_delivered(&serde_json::json!({"delivery_state": "uncertain"}), sent()).is_err());
 }

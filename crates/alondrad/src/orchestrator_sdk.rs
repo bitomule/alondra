@@ -47,7 +47,7 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
 }
 
 fn failed(why: String) -> Output {
-    Output { stream: Stream::default(), diagnostic: bounded(why), exit_ok: false, spawned: false }
+    Output { stream: Stream::default(), diagnostic: bounded(why), exit_ok: false }
 }
 
 fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &AtomicBool) -> Output {
@@ -61,7 +61,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         Ok(host) => host,
         Err(error) => return failed(format!("the SDK host did not take the batch: {error:?}")),
     };
-    let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false, spawned: true };
+    let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run).and_then(|()| spawned()) {
         output.stream.error = Some(bounded(format!("cannot record the SDK host: {error:#}")));
         stop(host, &batch.directory);
@@ -113,7 +113,7 @@ fn stop(host: BatchHost<BatchOwner>, directory: &Path) {
 }
 
 fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
-    let backend = &batch.backend;
+    let backend = &batch.backend.for_start().map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
     let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));
     {
