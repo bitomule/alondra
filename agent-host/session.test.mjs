@@ -57,7 +57,7 @@ try {
     assert.equal(init.home, home);
     assert.equal(init.startup_failure_results, '1');
     assert(init.args.includes('--setting-sources=user,project,local'));
-    assert(init.args.includes('--permission-mode=default'));
+    assert(init.args.includes('--permission-mode=auto'));
     assert(!init.args.includes('--dangerously-skip-permissions'));
     return { observations, decision, init, session, interruptReceipt: interruption ? await interruption : undefined };
     } finally { session.close(); await session.finished; }

@@ -88,6 +88,13 @@ try {
     assert.deepEqual((await owner.respond(plan.identity, { behavior: 'allow', updated_input: plan.payload.input })).outcome, applied);
     await owner.finished(plan.input);
     assert.equal(answered(host).at(-1).response.behavior, 'allow');
+    assert.deepEqual(answered(host).at(-1).response.updatedPermissions, [{ type: 'setMode', mode: 'auto', destination: 'session' }],
+      'an approved plan returns the node to auto mode, never to default');
+
+    const changes = await owner.ask('decide:plan');
+    assert.deepEqual((await owner.respond(changes.identity, { behavior: 'deny', message: 'The user requests changes to the plan' })).outcome, applied);
+    await owner.finished(changes.input);
+    assert.equal(answered(host).at(-1).response.updatedPermissions, undefined, 'a plan sent back stays in plan mode');
 
     for (const [prompt, source] of [['decide:alondra', 'plugin'], ['decide:imitation', 'user']]) {
       const tool = await owner.ask(prompt);

@@ -39,7 +39,7 @@ try {
   assert.equal(value(args, '--mcp-config'), undefined, args.join(' '));
   assert.deepEqual(args.flatMap((arg, at) => arg.startsWith('--plugin-dir=') ? [arg.slice(13)] : args[at - 1] === '--plugin-dir' ? [arg] : []), ['/fixture/plugin'], args.join(' '));
   assert.deepEqual(JSON.parse(value(args, '--settings')).permissions.deny, ['Bash(alondra answer:*)']);
-  assert.equal(value(args, '--permission-mode'), 'default', args.join(' '));
+  assert.equal(value(args, '--permission-mode'), 'auto', args.join(' '));
   assert.equal(env.HOME, home);
   assert.equal(env.CLAUDE_CONFIG_DIR, undefined, 'the default profile');
   assert.equal(env.CLAUDE_HOME, undefined, 'the default profile');

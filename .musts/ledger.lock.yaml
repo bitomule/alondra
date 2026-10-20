@@ -8,6 +8,7 @@ satisfied:
 - {check: "agent-host/sdk-host", scope_hash: "34699d8dfb6bb4651de2493ec55f64d3e3c0149b11c5771b8a00ad377255f149"}
 - {check: "agent-host/sdk-host", scope_hash: "3516baf5579e4148d90cc12b1b466fe67a4f1741f4458b241c966e2714179991"}
 - {check: "agent-host/sdk-host", scope_hash: "3d58c9ffa3a13c16bd29d4cfb65b8132489e96a90b992a2debabc21f86c6f045"}
+- {check: "agent-host/sdk-host", scope_hash: "48840dc901e234ce68c3cf2ffd4def1fa1c574a771a35b84a49fd7b9756bb5de"}
 - {check: "agent-host/sdk-host", scope_hash: "596469efff0cd0df05027055bbd42368dfe74a32b4a148b4de36e66bf8c7ba6e"}
 - {check: "agent-host/sdk-host", scope_hash: "5a26ec5547f45b75685909215c55aebfef6e4bdfff16212bf922d647e306b7ee"}
 - {check: "agent-host/sdk-host", scope_hash: "5ee3ec00c3b7e9ecf0bc156d66514bcdffbb57b5182c8aa4da9a03c388f3acfe"}

@@ -111,6 +111,11 @@ const permissionResult = (outcome: Outcome): PermissionResult => {
   if (outcome.behavior === 'allow') return { behavior: 'allow', updatedInput: outcome.updated_input };
   return { behavior: 'deny', message: outcome.behavior === 'deny' ? outcome.message : 'Permission request cancelled' };
 };
+/** An approved plan leaves plan mode for auto mode, whatever mode Claude Code remembers from before it. */
+const planResult = (outcome: Outcome): PermissionResult => {
+  const result = permissionResult(outcome);
+  return result.behavior === 'allow' ? { ...result, updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] } : result;
+};
 const elicitationResult = (outcome: Outcome): ElicitationResult => {
   if (typeof outcome === 'string') return { action: 'cancel' };
   if (outcome.behavior === 'accept') return outcome.content ? { action: 'accept', content: outcome.content as ElicitationResult['content'] } : { action: 'accept' };
@@ -124,7 +129,8 @@ export class PermissionCallbacks {
   constructor(private observe: Configuration['observe']) {}
   request: CanUseTool = (tool, input, options) => {
     const { signal, ...request } = options;
-    return this.ask(options.requestId, decisionKind(tool), options.toolUseID, signal, { tool, input, request: defined(request) }, permissionResult);
+    const kind = decisionKind(tool);
+    return this.ask(options.requestId, kind, options.toolUseID, signal, { tool, input, request: defined(request) }, kind === 'plan' ? planResult : permissionResult);
   };
   elicitation: OnElicitation = (request, { signal, requestId }) => this.ask(requestId, 'elicitation', null, signal, defined({
     serverName: request.serverName, message: request.message, mode: request.mode, url: request.url, elicitationId: request.elicitationId,
@@ -210,7 +216,7 @@ export class Session {
       : {
           ...(config.resume ? { resume: sessionId } : { sessionId }),
           tools: { type: 'preset', preset: 'claude_code' },
-          permissionMode: 'default',
+          permissionMode: 'auto',
           permissionPrompts: 'host',
           canUseTool: this.permissions.request,
           onElicitation: this.permissions.elicitation,

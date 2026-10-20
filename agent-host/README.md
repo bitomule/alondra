@@ -2,7 +2,7 @@
 
 This laboratory host is not selected by the installed daemon or UI. `Session` calls the pinned Anthropic SDK `/core` entrypoint; tests use an external protocol-speaking child without calling Anthropic or reading a user's Claude profile. The Rust controller → persistent Unix host → SDK → fake native → store vertical passed all 15 uncached tests in invocation b6f11067-a455-42df-8570-c5d40393cc35 on the earlier 0.2.84 composition. Separate component RED/GREEN pairs cover native read-end cleanup, the outbox flush wakeup and retry telemetry classification. The separate d54b7e9c/0.2.85 delivery passed its required build (53 targets), general tests (69 passed: 29 executed / 40 cached) and host tests (11 passed, all executed); the implementation record identifies those runs. Production activation, authenticated adoption, performance and persistent SEA distribution remain unproved.
 
-The query explicitly requests user/project/local settings, the Claude Code system-prompt and tools presets, `permissionMode: default` and host permission callbacks. Per-query environment snapshots never mutate `process.env`. Native login remains outside the host. This probe neither reads credentials nor implements an API-key fallback.
+The query explicitly requests user/project/local settings, the Claude Code system-prompt and tools presets, `permissionMode: auto` (an approved plan returns to auto) and host permission callbacks: only what the auto-mode classifier cannot decide reaches the user. Per-query environment snapshots never mutate `process.env`. Native login remains outside the host. This probe neither reads credentials nor implements an API-key fallback.
 
 Run only through Bazel:
 
