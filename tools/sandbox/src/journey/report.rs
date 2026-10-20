@@ -45,6 +45,10 @@ impl Report {
         if std::env::var("JOURNEY_CASES").is_ok_and(|only| !only.split(',').any(|case| case.trim() == id)) {
             return;
         }
+        self.run_case(id, title, body);
+    }
+
+    fn run_case(&mut self, id: &str, title: &str, body: impl FnOnce(&mut Self) -> Result<()>) {
         println!("== {id} · {title}");
         self.current = Some(CaseReport { id: id.into(), title: title.into(), ok: true, steps: vec![] });
         self.snapshots = 0;
@@ -59,6 +63,11 @@ impl Report {
         let case = self.current.take().expect("a case is open");
         self.cases.push(case);
         let _ = self.write();
+    }
+
+    /// Prepares the sandbox for what follows, as a case that `JOURNEY_CASES` never skips.
+    pub fn setup(&mut self, title: &str, body: impl FnOnce(&mut Self) -> Result<()>) {
+        self.run_case("setup", title, body);
     }
 
     /// One step: what it expects; its failure says what it saw instead.
