@@ -11,3 +11,29 @@ rust_test(
     edition = "2024",
 )
 
+
+sh_test(
+    name = "cargo_bazel_deps_test",
+    srcs = ["cargo_bazel_deps_test.py"],
+    data = ["//:Cargo.toml"] + [
+        "//crates/{}:{}".format(member, file)
+        for member in [
+            "agent-application",
+            "agent-protocol",
+            "agent-runtime",
+            "alondra",
+            "alondrad",
+            "core",
+            "domain",
+            "e2e",
+            "foundation",
+            "process-group",
+            "provider-claude",
+            "provider-contract",
+            "relay",
+            "store",
+        ]
+        for file in ["BUILD.bazel", "Cargo.toml"]
+    ],
+    size = "small",
+)

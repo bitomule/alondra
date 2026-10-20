@@ -72,3 +72,5 @@ rust_test(
         "@crates//:serde_json",
     ],
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

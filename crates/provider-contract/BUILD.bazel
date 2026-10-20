@@ -9,3 +9,5 @@ rust_library(
     visibility = ["//crates:__subpackages__"],
     deps = ["//crates/foundation:foundation"],
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

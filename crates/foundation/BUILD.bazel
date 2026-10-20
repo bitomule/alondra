@@ -35,3 +35,5 @@ rust_test(
     edition = "2024",
     deps = [":foundation"] + all_crate_deps(normal_dev = True),
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

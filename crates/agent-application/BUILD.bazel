@@ -27,3 +27,5 @@ rust_doc_test(
     name = "staging_api_test",
     crate = ":agent_application",
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

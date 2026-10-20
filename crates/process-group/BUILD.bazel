@@ -16,3 +16,5 @@ rust_test(
     crate = ":process_group",
     edition = "2024",
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

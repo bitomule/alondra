@@ -44,3 +44,5 @@ rust_test(
     env = {"HOME": "."},
     deps = [":store", "//crates/foundation:foundation"] + all_crate_deps(normal = True, normal_dev = True),
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

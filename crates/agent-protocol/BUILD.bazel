@@ -28,3 +28,5 @@ filegroup(
     srcs = glob(["fixtures/*.json"]),
     visibility = ["//agent-host:__pkg__"],
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

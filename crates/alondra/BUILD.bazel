@@ -59,3 +59,5 @@ rust_test(
     rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
     tags = ["external", "local"],
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

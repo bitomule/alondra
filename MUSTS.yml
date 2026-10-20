@@ -65,6 +65,19 @@ checks:
         - //deploy/apple:version_guard_test
         - //deploy/pi/iroh-relay:relay_access_test
 
+  # The brew release builds with Cargo: a crate a production Bazel target links must also be
+  # a normal dependency in its Cargo.toml, or Bazel passes and the release fails.
+  cargo-bazel-deps:
+    uses: bazel/test
+    paths:
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "crates/**/BUILD.bazel"
+      - "crates/cargo_bazel_deps_test.py"
+    with:
+      targets:
+        - //crates:cargo_bazel_deps_test
+
   apple-tests:
     uses: bazel/test
     paths:

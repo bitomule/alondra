@@ -151,3 +151,5 @@ rust_test(
     version = "0.1.0",
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
