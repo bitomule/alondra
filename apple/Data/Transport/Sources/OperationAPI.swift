@@ -130,29 +130,34 @@ public struct APIRequest: Sendable, Equatable {
     }
 
     public static func validViewID(_ id: String) -> Bool {
-        guard !id.isEmpty, id.utf8.count <= 256 else { return false }
-        if id.utf8.allSatisfy({ byte in
-            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
-                || byte == 45 || byte == 95
-        }) { return true }
-        guard let hash = id.firstIndex(of: "#"), id[id.index(after: hash)...].firstIndex(of: "#") == nil,
-              let slash = id[..<hash].firstIndex(of: "/") else { return false }
-        let host = id[..<slash]
-        guard !host.isEmpty, host == host.lowercased(), host.utf8.allSatisfy({ byte in
-            (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45 || byte == 46
-        }) else { return false }
-        let repo = id[id.index(after: slash)..<hash]
-        guard repo == repo.lowercased() else { return false }
-        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        let bytes = Array(id.utf8)
+        guard !bytes.isEmpty, bytes.count <= 256 else { return false }
+        func plain(_ byte: UInt8) -> Bool {
+            (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
+                || byte == 45 || byte == 95 || byte == 46
+        }
+        if bytes.allSatisfy(plain), id != ".", id != ".." { return true }
+        return hostedPullRequestID(bytes)
+    }
+
+    private static func hostedPullRequestID(_ bytes: [UInt8]) -> Bool {
+        guard let hash = bytes.firstIndex(of: 35) else { return false }
+        let repo = bytes[..<hash], number = bytes[(hash + 1)...]
+        guard let slash = repo.firstIndex(of: 47) else { return false }
+        let host = repo[..<slash], path = repo[(slash + 1)...]
+        guard !host.isEmpty,
+              host.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 46 || $0 == 45 }),
+              !path.contains(where: { (65...90).contains($0) }) else { return false }
+        let parts = path.split(separator: 47, omittingEmptySubsequences: false)
         guard parts.count == 2, parts.allSatisfy({ part in
-            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
-                (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+            !part.isEmpty && !part.elementsEqual([46]) && !part.elementsEqual([46, 46]) && part.allSatisfy { byte in
+                (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
                     || byte == 45 || byte == 95 || byte == 46
             }
         }) else { return false }
-        let number = id[id.index(after: hash)...]
-        return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
-            && (UInt64(number).map { $0 > 0 && $0 <= 9_007_199_254_740_991 } ?? false)
+        guard !number.isEmpty, number.allSatisfy({ (48...57).contains($0) }),
+              let value = UInt64(String(decoding: number, as: UTF8.self)) else { return false }
+        return value > 0 && value <= 9_007_199_254_740_991
     }
 
     public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {

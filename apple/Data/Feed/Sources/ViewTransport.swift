@@ -202,7 +202,7 @@ extension AlondraAPIClient: ViewTransport {
         let parts = fetch.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 4, parts[0].isEmpty, parts[1] == "pull-requests", parts[3] == "diff",
               let decoded = String(parts[2]).removingPercentEncoding,
-              ViewRoute.validID(decoded) else { return nil }
+              APIRequest.validViewID(decoded) else { return nil }
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         guard let canonical = decoded.addingPercentEncoding(withAllowedCharacters: unreserved),
               canonical == parts[2] else { return nil }
@@ -237,7 +237,7 @@ struct ViewRoute {
             let named = ["card", "document", "pull_request", "task", "request", "node", "schedule"]
             guard let colon = path.firstIndex(of: ":"), named.contains(String(path[..<colon])) else { return nil }
             let id = String(path[path.index(after: colon)...])
-            guard validID(id) else { return nil }
+            guard APIRequest.validViewID(id) else { return nil }
         }
         guard parts.count == 2 else { return ViewRoute(path: path, query: []) }
         let raw = String(parts[1])
@@ -250,7 +250,7 @@ struct ViewRoute {
         }
         switch path {
         case "home":
-            guard values.count == 1, let focus = values["focus"], validID(focus) else { return nil }
+            guard values.count == 1, let focus = values["focus"], APIRequest.validViewID(focus) else { return nil }
             return ViewRoute(path: path, query: [("focus", focus)])
         case "tasks":
             guard values.count == 2, let section = values["section"], ["active", "finished", "archived"].contains(section),
@@ -268,26 +268,6 @@ struct ViewRoute {
             return ViewRoute(path: path, query: [("q", q)])
         default: return nil
         }
-    }
-
-    static func validID(_ id: String) -> Bool {
-        guard !id.isEmpty, id.utf8.count <= 256 else { return false }
-        if id.utf8.allSatisfy({ byte in
-            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
-                || byte == 45 || byte == 95
-        }) { return true }
-        guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
-        let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
-        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts.allSatisfy({ part in
-            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
-                (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
-                    || byte == 45 || byte == 95 || byte == 46
-            }
-        }) else { return false }
-        let number = id[id.index(after: hash)...]
-        return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
-            && (UInt64(number).map { $0 > 0 } ?? false)
     }
 }
 

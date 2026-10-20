@@ -21,6 +21,49 @@ final class FeedTests: XCTestCase {
         XCTAssertNil(ViewRoute.parse("home?focus="))
     }
 
+    func testViewIDsAreTheOnesTheDaemonAccepts() {
+        for id in [
+            "hf-weekly-2026-09-30",
+            "a98d034b-249e-4487-a89b-57de38c26372",
+            "beta-0.3.0-42-result",
+            "github.com/bitomule/alondra#154",
+            "gitlab.example.com/bitomule/alondra#154",
+            "github.example-corp.com/team/repo.name#9007199254740991",
+            "gitlab/bitomule/alondra#154",
+            "gitlab./bitomule/alondra#154",
+        ] {
+            XCTAssertTrue(APIRequest.validViewID(id), id)
+            XCTAssertEqual(ViewRoute.parse("pull_request:\(id)")?.path, "pull_request:\(id)", id)
+            XCTAssertEqual(ViewRoute.parse("home?focus=\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)")?.query.first?.1, id, id)
+        }
+        for id in [
+            "",
+            ".",
+            "..",
+            "../secret",
+            "github.com/../repo#154",
+            "github.com/a/b#1/other",
+            "github.com/a/b#0",
+            "github.com/a/b#1?x=2",
+            "github.com/a/B#1",
+            "github.com/a/b#9007199254740992",
+            "GitLab.example.com/a/b#1",
+            "gitlab.example.com/a/b#1/extra",
+            "gitlab.example.com/a/b#1#2",
+            "github.com/a#1",
+            "/a/b#1",
+            "bitomule/alondra#688",
+            "%2F",
+            "a:b",
+            "a@b",
+            "caf\u{E9}",
+            String(repeating: "a", count: 257),
+        ] {
+            XCTAssertFalse(APIRequest.validViewID(id), id)
+            XCTAssertNil(ViewRoute.parse("pull_request:\(id)"), id)
+        }
+    }
+
     func testActiveTasksPageUsesTheServerRoute() {
         let key = "tasks?section=active&after=42"
         let route = ViewRoute.parse(key)
