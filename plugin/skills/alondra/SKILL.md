@@ -332,6 +332,16 @@ worktree can stop you with a permission card the user has to answer. Create it w
 it goes with the worktree when the task closes. A subagent working in its own worktree uses that
 worktree's `.scratch/`: put this rule in the prompt of every subagent you start.
 
+## Searching the disk
+
+Never search or measure the whole disk or home folder (`find /`, `du -sh ~/*`, `rg … ~`), nor
+read `~/Library/Containers` or `~/Library/Group Containers`: walking them makes macOS ask the user,
+again and again, to let Alondra read other apps' data, and Alondra refuses those commands. Look in
+the exact folder (your worktree, `node_modules`, Bazel's output base), find a file by name with
+`mdfind -name`, and check free space with `df -h`. A command that moved to the background keeps
+running after you stop reading it: stop it by the PID `pgrep -f` gives you, because Claude Code
+runs `find` as `bfs` and `ps | grep find` does not see it. Put this rule in every subagent's prompt.
+
 ## Probes and end-to-end tests
 
 Probes and end-to-end tests run against a sandbox, never the user's live Alondra: anything they
