@@ -309,6 +309,15 @@ launches another node for it.
 When Alondra tells you your task was cancelled, stop: do not commit, push or deliver anything;
 delete what you generated that git does not track, and end your turn.
 
+## Scratch files
+
+Scratch binaries, copies of files under test, logs and other temporary files go in `.scratch/` at
+the root of your worktree, never in `/tmp` or anywhere else outside it: writing outside the
+worktree can stop you with a permission card the user has to answer. Create it with
+`mkdir -p .scratch` and `printf '*\n' > .scratch/.gitignore`, so git ignores it in any repository;
+it goes with the worktree when the task closes. A subagent working in its own worktree uses that
+worktree's `.scratch/`: put this rule in the prompt of every subagent you start.
+
 ## Probes and end-to-end tests
 
 Probes and end-to-end tests run against a sandbox, never the user's live Alondra: anything they
