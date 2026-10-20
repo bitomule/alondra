@@ -2014,7 +2014,7 @@ fn two_questions_reach_claude_together_once_the_last_is_answered() {
 }
 
 // D6: Claude Code asks to leave plan mode with the plan file Claude wrote; its Review card shows
-// that plan, and once it is approved Claude goes on with exactly what it asked with.
+// that plan, and once it is approved Claude goes on with exactly what it asked with, in auto mode.
 #[test]
 fn an_approved_plan_lets_claude_go_on_with_it() {
     let slice = Slice::new();
@@ -2026,7 +2026,8 @@ fn an_approved_plan_lets_claude_go_on_with_it() {
     slice.rest(&mut driver);
     let plan_file = format!("{}.plan.md", slice.capture.display());
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1",
-        "updatedInput": {"plan": "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture", "planFilePath": plan_file}}));
+        "updatedInput": {"plan": "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture", "planFilePath": plan_file},
+        "updatedPermissions": [{"type": "setMode", "mode": "auto", "destination": "session"}]}));
     driver.stop().unwrap();
 }
 
