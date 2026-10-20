@@ -453,14 +453,14 @@ impl Invocation<'_> {
     }
 }
 
-struct ProcessGroup(i32, std::cell::Cell<bool>);
+struct ProcessGroup(i32, std::sync::atomic::AtomicBool);
 impl ProcessGroup {
-    fn kill(&self) { if self.1.replace(false) { unsafe { libc::kill(-self.0, libc::SIGKILL); } } }
+    fn kill(&self) { if self.1.swap(false, std::sync::atomic::Ordering::SeqCst) { unsafe { libc::kill(-self.0, libc::SIGKILL); } } }
     /// macOS does not deliver a group SIGKILL to a child the shell is forking at that instant,
     /// so one signal can leave a descendant holding the execution lock. Signal again until the
     /// group is empty; a group left with only an unreaped zombie answers EPERM, not ESRCH.
     fn terminate(&self) -> impl std::future::Future<Output = ()> + Send + use<> {
-        self.1.set(false);
+        self.1.store(false, std::sync::atomic::Ordering::SeqCst);
         let group = self.0;
         async move {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -489,8 +489,8 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
         Ok(child) => child,
         Err(e) => return Output { stream, diagnostic: bounded(format!("cannot launch Claude: {e}")), exit_ok: false, spawned: false },
     };
-    let group = ProcessGroup(child.id().expect("spawned child") as i32, std::cell::Cell::new(true));
-    if let Err(error) = ProcessOwner::record(invocation.cwd, group.0 as u32, invocation.execution) {
+    let group = ProcessGroup(child.id().expect("spawned child") as i32, std::sync::atomic::AtomicBool::new(true));
+    if let Err(error) = record_owner(&mut child, invocation.cwd, invocation.execution) {
         group.kill();
         let _ = child.kill().await;
         return Output { stream, diagnostic: bounded(format!("cannot persist process ownership: {error:#}")), exit_ok: false, spawned: true };
@@ -508,38 +508,56 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
     }
     let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
     let mut stderr = child.stderr.take().expect("piped stderr");
+    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
     // Drain indefinitely, retain only a bounded prefix. Pipe backpressure must never block Claude.
     let diagnostics = tokio::spawn(async move {
         let mut retained = Vec::new();
         let mut buf = [0u8; 4096];
-        loop { match stderr.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => retained.extend_from_slice(&buf[..n.min(MAX_DIAGNOSTIC - retained.len())]),
-        }}
-        String::from_utf8_lossy(&retained).into_owned()
-    });
-    let read = async {
-        let mut line = Vec::new();
+        let mut finished = finished;
         loop {
-            let chunk = stdout.fill_buf().await?;
-            if chunk.is_empty() {
-                if !line.is_empty() { bail!("truncated Claude JSONL record"); }
-                break;
-            }
-            let n = chunk.iter().position(|b| *b == b'\n').map_or(chunk.len(), |i| i + 1);
-            if line.len() + n > MAX_LINE { bail!("Claude JSONL record exceeds safety limit"); }
-            line.extend_from_slice(&chunk[..n]);
-            stdout.consume(n);
-            if line.last() == Some(&b'\n') {
-                if line.iter().any(|b| !b.is_ascii_whitespace()) && stream.accept(&line, invocation.session)? { initialized()?; }
-                line.clear();
+            tokio::select! {
+                biased;
+                read = stderr.read(&mut buf) => match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => retain(&mut retained, &buf[..n]),
+                },
+                _ = &mut finished => {
+                    let _ = buffered(&stderr, |chunk| { retain(&mut retained, chunk); Ok(()) });
+                    break;
+                }
             }
         }
-        Ok::<_, anyhow::Error>(())
-    };
+        String::from_utf8_lossy(&retained).into_owned()
+    });
+    let mut lines = Lines::default();
     let process = async {
-        read.await?;
-        let status = child.wait().await?;
+        let exited = {
+            let read = async {
+                loop {
+                    let chunk = stdout.fill_buf().await?;
+                    if chunk.is_empty() { break; }
+                    let n = chunk.len();
+                    lines.feed(chunk, &mut stream, invocation.session, &mut initialized)?;
+                    stdout.consume(n);
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            tokio::select! {
+                biased;
+                read = read => { read?; None }
+                status = child.wait() => Some(status?),
+            }
+        };
+        let status = match exited {
+            None => child.wait().await?,
+            Some(status) => {
+                group.terminate().await;
+                lines.feed(stdout.buffer(), &mut stream, invocation.session, &mut initialized)?;
+                buffered(stdout.get_ref(), |chunk| lines.feed(chunk, &mut stream, invocation.session, &mut initialized))?;
+                status
+            }
+        };
+        if !lines.0.is_empty() { bail!("truncated Claude JSONL record"); }
         Ok::<_, anyhow::Error>(status.success())
     };
     let outcome = tokio::select! {
@@ -558,14 +576,64 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
     };
     // MCP helpers and any ordinary descendants must not survive their execution.
     group.terminate().await;
-    // Do not hang on a grandchild which retained stderr after the main process ended.
-    let mut diagnostics = diagnostics;
-    let diagnostic = match tokio::time::timeout(std::time::Duration::from_secs(2), &mut diagnostics).await {
-        Ok(Ok(text)) => text,
-        _ => { diagnostics.abort(); "Claude stderr did not close".into() }
-    };
+    let _ = finish.send(());
+    let diagnostic = diagnostics.await.unwrap_or_default();
     let _ = std::fs::remove_file(invocation.cwd.join("owner.json"));
     Output { stream, diagnostic: bounded(diagnostic), exit_ok, spawned: true }
+}
+
+/// A Claude that already exited is a zombie, and macOS gives no identity for one: there is nothing
+/// left to record, and what it wrote is still read.
+fn record_owner(child: &mut tokio::process::Child, directory: &Path, run_id: &str) -> Result<()> {
+    let pid = child.id().context("Claude was already reaped")?;
+    match ProcessOwner::record(directory, pid, run_id) {
+        Err(_) if child.try_wait().ok().flatten().is_some() => Ok(()),
+        recorded => recorded,
+    }
+}
+
+fn retain(retained: &mut Vec<u8>, chunk: &[u8]) {
+    retained.extend_from_slice(&chunk[..chunk.len().min(MAX_DIAGNOSTIC - retained.len())]);
+}
+
+/// Hands `take` what `pipe` already holds, without waiting for more. Once Claude's group is gone
+/// its output is all in the pipe, but its end of file may never come: macOS marks a new pipe
+/// close-on-exec only after creating it, so a process spawned elsewhere at that instant inherits
+/// the write end and keeps it for its own life.
+fn buffered(pipe: &impl AsRawFd, mut take: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    let fd = pipe.as_raw_fd();
+    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK); }
+    let mut buf = [0u8; 4096];
+    loop {
+        match unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } {
+            0 => return Ok(()),
+            n if n > 0 => take(&buf[..n as usize])?,
+            _ => match std::io::Error::last_os_error() {
+                e if e.kind() == std::io::ErrorKind::Interrupted => {}
+                e if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                e => return Err(e.into()),
+            },
+        }
+    }
+}
+
+/// Claude's JSONL records, split from the chunks its stdout arrives in.
+#[derive(Default)]
+struct Lines(Vec<u8>);
+impl Lines {
+    fn feed(&mut self, mut chunk: &[u8], stream: &mut Stream, session: &str, initialized: &mut impl FnMut() -> Result<()>) -> Result<()> {
+        while !chunk.is_empty() {
+            let n = chunk.iter().position(|b| *b == b'\n').map_or(chunk.len(), |i| i + 1);
+            if self.0.len() + n > MAX_LINE { bail!("Claude JSONL record exceeds safety limit"); }
+            self.0.extend_from_slice(&chunk[..n]);
+            chunk = &chunk[n..];
+            if self.0.last() == Some(&b'\n') {
+                if self.0.iter().any(|b| !b.is_ascii_whitespace()) && stream.accept(&self.0, session)? { initialized()?; }
+                self.0.clear();
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Claude reads a piped prompt only if it arrives within 3 seconds; after that it runs
@@ -900,6 +968,45 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         assert_eq!(output.stream.input_tokens, Some(31));
         assert_eq!(starts, 1);
         assert_eq!(output.diagnostic.len(), MAX_DIAGNOSTIC);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn a_claude_that_exited_before_its_owner_was_recorded_is_still_read() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut child = tokio::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id().unwrap();
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        assert_eq!(unsafe { libc::waitid(libc::P_PID, pid, info.as_mut_ptr(), libc::WEXITED | libc::WNOWAIT) }, 0);
+        assert!(identity(pid, None).is_none(), "an exited, unreaped process has no identity");
+        record_owner(&mut child, &dir, "test-run").unwrap();
+        assert!(!dir.join("owner.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    /// A process spawned elsewhere as the pipes were created holds them after Claude's group is
+    /// gone: the batch still ends when Claude does, with everything it wrote.
+    #[tokio::test]
+    async fn a_process_outside_claudes_group_holding_its_output_does_not_hold_the_batch() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
+        let lock = Ownership::acquire(&dir).unwrap().unwrap();
+        let held = dir.join("held");
+        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&held).status().unwrap().success());
+        let holding = std::fs::OpenOptions::new().read(true).write(true).open(&held).unwrap();
+        let exe = fake(&dir, r#"cat >/dev/null
+/usr/bin/mkfifo outside
+/usr/bin/perl -e 'setpgrp(0, 0) or die; open(my $o, ">", "outside") or die; close $o; open(my $h, "<", "held") or die; <$h>' </dev/null &
+cat outside >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
+printf 'what Claude said\n' >&2
+printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(25),
+            execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await;
+        drop(holding);
+        let output = output.expect("the batch ends when Claude does");
+        assert!(output.exit_ok && output.stream.success && output.stream.error.is_none(), "{:?}", output.stream.error);
+        assert_eq!(output.diagnostic, "what Claude said\n");
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]

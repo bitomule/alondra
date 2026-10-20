@@ -331,11 +331,45 @@ exit 1
         execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
         hub.read(|v| {
             let runtime = v.orchestrator.as_ref().unwrap();
-            assert!(runtime.session_id.is_none());
+            assert!(runtime.session_id.is_none(), "{runtime:?}");
             assert_eq!(runtime.generation, 2);
             assert!(runtime.active_run.is_none());
             assert!(runtime.retry_at.is_some());
             assert!(v.messages[&1].handed_at.is_some());
+            assert!(v.messages[&2].handed_at.is_none());
+        });
+        std::fs::remove_dir_all(&hub.home).unwrap();
+    }
+    /// macOS marks a new pipe close-on-exec only after creating it, so a process the daemon spawns
+    /// at that instant inherits Claude's stderr and holds it open after Claude's group is gone.
+    #[tokio::test]
+    async fn a_missing_session_is_recognised_while_another_process_holds_claudes_stderr() {
+        let (hub, ch, dir, exe, lock) = fixture(SUCCESS);
+        enqueue(&hub, 1);
+        execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
+        enqueue(&hub, 2);
+        let held = hub.home.join("held");
+        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&held).status().unwrap().success());
+        let holding = std::fs::OpenOptions::new().read(true).write(true).open(&held).unwrap();
+        std::fs::write(&exe, format!(r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+case "$1" in --resume) shift; session="$1";; esac
+shift
+done
+cat >/dev/null
+/usr/bin/mkfifo outside
+/usr/bin/perl -e 'setpgrp(0, 0) or die; open(my $o, ">", "outside") or die; close $o; open(my $h, "<", $ARGV[0]) or die; <$h>' '{}' </dev/null >/dev/null &
+cat outside >/dev/null
+printf '%s\n' "No conversation found with session ID: $session" >&2
+printf '%s\n' '{{"type":"result","session_id":"'"$session"'","subtype":"error_during_execution","is_error":true,"num_turns":0,"duration_api_ms":0,"errors":["No conversation found with session ID: '"$session"'"]}}'
+exit 1
+"#, held.display())).unwrap();
+        execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
+        drop(holding);
+        hub.read(|v| {
+            let runtime = v.orchestrator.as_ref().unwrap();
+            assert!(runtime.session_id.is_none(), "{:?}", runtime.last_error);
+            assert!(runtime.active_run.is_none() && runtime.retry_at.is_some());
             assert!(v.messages[&2].handed_at.is_none());
         });
         std::fs::remove_dir_all(&hub.home).unwrap();
@@ -440,7 +474,7 @@ exit 1
         execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
         hub.read(|v| {
             let r = v.orchestrator.as_ref().unwrap();
-            assert_eq!(r.phase, Phase::Idle);
+            assert_eq!(r.phase, Phase::Idle, "{r:?}");
             assert!(r.session_id.is_none());
             assert!(r.active_run.is_none());
             assert!(!r.compact_pending);
