@@ -873,6 +873,30 @@ fn authorize(s: &mut DomainState) {
     )
     .unwrap();
 }
+#[test]
+fn a_merge_authorization_for_a_pr_the_result_does_not_present_is_refused() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    with_second_task(&mut s);
+    let b = Actor::Agent { agent_id: "b".into() };
+    exec(&mut s, b.clone(), second_task_registers("github.com/owner/repo#2", "github.com", "owner/repo", 2)).unwrap();
+    exec(&mut s, b, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t2".into(),
+        interaction_id: "d2".into(), body: "Result ready".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "github.com/owner/repo#2".into(), head: "head1".into() }],
+        is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
+    let merge = |pr_id: &str| Command::AuthorizeMerge { authorization_id: "auth".into(), presentation_id: "d".into(),
+        pr_id: pr_id.into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+    for pr_id in ["missing", "github.com/owner/repo#2"] {
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(),
+            command_id: "guard-check".into(), expected_revision: s.revision, command: merge(pr_id) };
+        let error = s.guard(&user(), &envelope).unwrap_err();
+        assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_mismatch", Some("pr_id")), "{pr_id}");
+        reject_unchanged(&mut s, user(), merge(pr_id), "pr_mismatch");
+    }
+    exec(&mut s, user(), merge("pr")).unwrap();
+    assert_eq!(s.merge_authorizations[&"auth".into()].pr_id, "pr".into());
+}
 fn merged_by_someone_else(s: &mut DomainState) {
     exec(s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
         state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
@@ -4271,6 +4295,8 @@ fn guards_refuse_what_the_commands_refuse() {
         merge("auth-2", "head1", MergeMethod::Merge),
         merge("auth-2", "other", MergeMethod::Squash),
         merge("auth", "head1", MergeMethod::Squash),
+        Command::AuthorizeMerge { authorization_id: "auth-2".into(), presentation_id: "d".into(), pr_id: "missing".into(),
+            expected_head: "head1".into(), method: MergeMethod::Squash },
         Command::CancelTask { task_id: "t".into() },
         Command::CancelTask { task_id: "missing".into() },
         Command::ReopenTask { task_id: "t".into() },
@@ -4337,7 +4363,7 @@ fn guards_refuse_what_the_commands_refuse() {
     }
     assert!(allowed > 0, "some buttons are allowed");
     for code in ["incompatible_protocol", "stale_epoch", "stale_revision", "stale_generation", "forbidden", "not_found",
-        "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active"] {
+        "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active", "pr_mismatch"] {
         assert!(refusals.contains(code), "no button was refused with {code}: {refusals:?}");
     }
 }

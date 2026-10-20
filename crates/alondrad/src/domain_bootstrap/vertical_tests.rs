@@ -563,3 +563,57 @@ async fn http_a_pr_number_another_repository_already_used_is_registered_and_pres
         "the node's pr-163 is its own Lumo PR, not agent-skills' #163");
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn http_authorizing_a_merge_of_a_pr_the_result_does_not_present_is_refused_and_the_daemon_stays_up() {
+    let mut fixture = Fixture::start().await;
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    fixture.task("merge-task", true).await;
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"merge-task", "pr_id":"pr-7",
+        "host":"github.com", "repository":"example/project", "number":7, "head":head, "base":"main",
+        "allowed_methods":["squash"]})).await;
+    fixture.producer(false, json!({"kind":"present_result", "task_id":"merge-task",
+        "interaction_id":"delivery-7", "body":"Code ready", "is_final":true,
+        "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]})).await;
+    let other: CommandEnvelope = serde_json::from_value(fixture.envelope(json!({"kind":"register_agent",
+        "agent_id":"agent-b", "name":"Other agent", "at":0}))).unwrap();
+    fixture.domain.execute(&Actor::System, &other, None, || Ok(())).unwrap();
+    fixture.producer(true, json!({"kind":"create_request", "request_id":"request-other", "body":"Work on other"})).await;
+    let cwd = fixture.home.to_str().unwrap().to_owned();
+    fixture.producer(true, json!({"kind":"create_task", "task_id":"other-task", "request_id":"request-other",
+        "title":"Task other", "agent_id":null, "review_prs":true, "dependencies":[], "stack":null,
+        "launch":{"name":"app/other", "cwd":cwd, "model":"sonnet", "reason":"clear change"}})).await;
+    fixture.user(json!({"kind":"assign_task", "task_id":"other-task", "agent_id":"agent-b"}));
+    let b = Actor::Agent { agent_id: "agent-b".into() };
+    for command in [
+        json!({"kind":"register_pr", "task_id":"other-task", "pr_id":"github.com/example/project#8", "host":"github.com",
+            "repository":"example/project", "number":8, "head":head, "base":"main", "allowed_methods":["squash"]}),
+        json!({"kind":"present_result", "task_id":"other-task", "interaction_id":"delivery-8", "body":"Code ready",
+            "is_final":true, "targets":[{"kind":"pull_request", "pr_id":"github.com/example/project#8", "head":head}]}),
+    ] {
+        let envelope: CommandEnvelope = serde_json::from_value(fixture.envelope(command)).unwrap();
+        fixture.domain.execute(&b, &envelope, None, || Ok(())).unwrap();
+    }
+
+    let path = "/interactions/delivery-7/merge-authorizations";
+    for pr_id in ["github.com/example/project#99", "github.com/example/project#8", "github.com/example/project#7"] {
+        let mut body = fixture.envelope(json!({}));
+        body.as_object_mut().unwrap().remove("command");
+        body.as_object_mut().unwrap().remove("protocol_version");
+        for (key, value) in [("authorization_id", json!("auth-7")), ("pr_id", json!(pr_id)),
+            ("expected_head", json!(head)), ("method", json!("squash"))] {
+            body[key] = value;
+        }
+        let reply = crate::domain_api::resource_command_runtime(&fixture.domain, None, "phone-a", "POST", path,
+            Some(&body), None, || Ok(())).await.unwrap();
+        if pr_id.ends_with("#7") {
+            assert_eq!(reply["status"], 200, "{reply}");
+        } else {
+            assert_eq!((reply["status"].as_u64(), reply["body"]["code"].as_str()), (Some(409), Some("pr_mismatch")), "{pr_id}: {reply}");
+        }
+    }
+    let state = fixture.domain.state().unwrap();
+    let authorizations: Vec<_> = state.merge_authorizations.values().map(|a| a.pr_id.0.as_str()).collect();
+    assert_eq!(authorizations, vec!["github.com/example/project#7"]);
+    fixture.finish().await;
+}
