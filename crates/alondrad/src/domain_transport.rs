@@ -811,12 +811,13 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
 /// and deliver. GitHub gets three seconds: the Stop hook waits on this answer.
 async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
     let dir = crate::worktree::worktree_of(session)?;
-    let (repository, number) = crate::domain_github::GhCli::new().branch_pr(&dir, Duration::from_secs(3)).await?;
-    unregistered_pr_text(&*domain.state().ok()?, &repository, number)
+    let (host, repository, number) = crate::domain_github::GhCli::new().branch_pr(&dir, Duration::from_secs(3)).await?;
+    unregistered_pr_text(&*domain.state().ok()?, &host, &repository, number)
 }
 
-pub(crate) fn unregistered_pr_text(state: &DomainState, repository: &str, number: u64) -> Option<String> {
-    let known = state.pull_requests.values().any(|pr| pr.repository.eq_ignore_ascii_case(repository) && pr.number == number);
+pub(crate) fn unregistered_pr_text(state: &DomainState, host: &str, repository: &str, number: u64) -> Option<String> {
+    let known = state.pull_requests.values()
+        .any(|pr| pr.host == host && pr.repository.eq_ignore_ascii_case(repository) && pr.number == number);
     (!known).then(|| format!(
         " Your branch has an open pull request, {repository}#{number}, that Alondra does not know: register it with `register_pr` \
          and deliver it as a target of `present_result`."
@@ -2388,9 +2389,10 @@ mod tests {
             allowed_methods: vec![MergeMethod::Squash],
         });
         let state = domain.state().unwrap();
-        assert_eq!(unregistered_pr_text(&state, "Owner/Repo", 7), None);
-        let text = unregistered_pr_text(&state, "owner/repo", 8).unwrap();
+        assert_eq!(unregistered_pr_text(&state, "github.com", "Owner/Repo", 7), None);
+        let text = unregistered_pr_text(&state, "github.com", "owner/repo", 8).unwrap();
         assert!(text.contains("owner/repo#8") && text.contains("register_pr"), "{text}");
+        assert!(unregistered_pr_text(&state, "ghe.example.com", "owner/repo", 7).is_some(), "another host's #7 is another PR");
     }
 
     #[tokio::test]

@@ -101,7 +101,7 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
         return Some(Write::OrchestratorMessage);
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
-        return Some(id).filter(|id| plain_id(id)).map(|id| Write::ResolveConflicts(id.to_owned()));
+        return crate::domain_api::decoded_pull_request_id(id).map(Write::ResolveConflicts);
     }
     path.strip_prefix("/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))

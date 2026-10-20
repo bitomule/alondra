@@ -462,7 +462,7 @@ async fn gather_inner(
                 }),
                 conflicts: details.as_ref().is_some_and(|details| details.conflicts),
                 stacked_on: stacked_below(pr, state).map(|below| below.id.0.clone()),
-                url: Some(alondra_core::pr::canonical(&pr.repository, pr.number)),
+                url: Some(crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number)),
             }
         })
         .collect();

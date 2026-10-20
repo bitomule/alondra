@@ -100,15 +100,16 @@ impl GhCli {
         }
     }
 
-    /// The open PR GitHub has for the branch checked out in `dir`, as `owner/repo` and number.
-    pub(crate) async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, u64)> {
+    /// The open PR GitHub has for the branch checked out in `dir`, as host, `owner/repo` and number.
+    pub(crate) async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, String, u64)> {
         let out = self.run(&["pr", "view", "--json", "url,state"], Some(dir), limit).await.ok()?;
         let value: Value = serde_json::from_slice(&out).ok()?;
         if value["state"].as_str() != Some("OPEN") {
             return None;
         }
-        let (repository, number) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?.1.split_once("/pull/")?;
-        Some((repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
+        let (host, path) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?;
+        let (repository, number) = path.split_once("/pull/")?;
+        Some((alondra_core::domain::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
     }
 }
 
@@ -199,7 +200,7 @@ impl ObservationFailures {
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
         let reported = self.0.remove(&pr.id).is_some_and(|count| count >= OBSERVATION_FAILURES_BEFORE_PROBLEM);
         if reported {
-            let _ = domain.withdraw_problem(&format!("problem-pr-unreadable-{}", pr.id).into());
+            let _ = domain.withdraw_problem(&format!("problem-pr-unreadable-{}", pr.slug()).into());
         }
     }
 
@@ -221,8 +222,8 @@ impl ObservationFailures {
             "Alondra asked GitHub about {url} {count} times in a row and every read failed, so it cannot see new pushes, merges or closes of this PR. Last error: {reason}. If the host looks wrong, the node can register the same PR again with the right host."
         );
         let _ = domain.raise_problem(
-            &format!("problem-pr-unreadable-{}", pr.id),
-            Some(&format!("pr-unreadable:{}", pr.id)),
+            &format!("problem-pr-unreadable-{}", pr.slug()),
+            Some(&format!("pr-unreadable:{}", pr.slug())),
             Scope::Task { task_id: pr.task_id.clone() },
             need, why, diagnosis, vec![],
         );

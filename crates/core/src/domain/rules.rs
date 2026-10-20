@@ -3408,12 +3408,23 @@ impl DomainState {
                         "invalid_input",
                         "pr_id",
                         &format!(
-                            "pr_id \"{}\" cannot be addressed by the apps: use a short id such as \"pr-{number}\" (letters, digits, - and _) or github.com/owner/repo#N in lowercase",
-                            pr_id.0
+                            "pr_id \"{}\" cannot be addressed by the apps: it is {}",
+                            pr_id.0,
+                            hosted_pr_id(host, repository, *number).0
                         ),
                     );
                 }
                 canonical_pr(host, repository, *number)?;
+                if pr_id.0.contains('#') && *pr_id != hosted_pr_id(host, repository, *number) {
+                    return refuse(
+                        "invalid_input",
+                        "pr_id",
+                        &format!(
+                            "pr_id \"{}\" names another PR than {host}/{repository}#{number}",
+                            pr_id.0
+                        ),
+                    );
+                }
                 if !host.contains('.') {
                     return refuse(
                         "invalid_input",
@@ -3428,12 +3439,10 @@ impl DomainState {
                 };
                 if let Some(existing) = self.task(task_id)?.pr_id.clone() {
                     let p = &self.pull_requests[&existing];
-                    if p.repository != *repository || p.number != *number {
+                    if p.host != *host || p.repository != *repository || p.number != *number {
                         return fail("task_already_has_pr", &one_pr_per_task(p.number));
                     }
-                    if existing == *pr_id
-                        && p.host == *host
-                        && p.head == *sha
+                    if p.head == *sha
                         && p.base == *base
                         && p.allowed_methods == *allowed_methods
                     {
@@ -3443,18 +3452,27 @@ impl DomainState {
                         return fail("task_already_has_pr", &one_pr_per_task(p.number));
                     }
                     let corrected = self.pull_requests.get_mut(&existing).unwrap();
-                    corrected.host = host.clone();
                     corrected.head = sha.clone();
                     corrected.base = base.clone();
                     corrected.allowed_methods = allowed_methods.clone();
                     return Ok(());
                 };
                 if self.pull_requests.values().any(|p| {
-                    p.id == *pr_id
-                        || (p.host == *host && p.repository == *repository && p.number == *number)
+                    p.host == *host && p.repository == *repository && p.number == *number
                 }) {
                     return fail("pr_owned_by_other_task", "PR is already registered");
                 };
+                if self.pull_requests.contains_key(pr_id) {
+                    return refuse(
+                        "invalid_input",
+                        "pr_id",
+                        &format!(
+                            "pr_id \"{}\" is another repository's PR: this one is {}",
+                            pr_id.0,
+                            hosted_pr_id(host, repository, *number).0
+                        ),
+                    );
+                }
                 let review = self
                     .task(task_id)?
                     .review_prs

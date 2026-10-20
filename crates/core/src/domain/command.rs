@@ -680,6 +680,11 @@ pub struct SupersededAcceptance {
     pub user_id: String,
     pub accepted_at: Revision,
 }
+/// The id Alondra gives a PR: its host, repository and number, so two repositories with
+/// the same PR number never share one.
+pub fn hosted_pr_id(host: &str, repository: &str, number: u64) -> PrId {
+    PrId(format!("{host}/{repository}#{number}"))
+}
 /// A PR host as a node tends to get it slightly wrong: a scheme, a path, a
 /// trailing slash, capitals, or the bare name "github" for "github.com".
 pub fn normalize_pr_host(host: &str) -> String {

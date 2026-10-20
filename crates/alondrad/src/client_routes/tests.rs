@@ -567,6 +567,17 @@ fn writes_are_named_exactly() {
     }
 }
 
+#[test]
+fn conflicts_are_resolved_for_a_pr_named_by_its_repository() {
+    let encoded = alondra_core::views::id::path_segment("github.com/bitomule/lumo#163");
+    assert_eq!(parse_write(&format!("/pull-requests/{encoded}/resolve-conflicts")),
+        Some(Write::ResolveConflicts("github.com/bitomule/lumo#163".into())));
+    assert_eq!(parse_write("/pull-requests/pr-163/resolve-conflicts"), Some(Write::ResolveConflicts("pr-163".into())));
+    for path in ["/pull-requests/github.com/bitomule/lumo#163/resolve-conflicts", "/pull-requests/a%2Fb/resolve-conflicts"] {
+        assert_eq!(parse_write(path), None, "{path}");
+    }
+}
+
 #[tokio::test]
 async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac() {
     let fixture = Fixture::start().await;

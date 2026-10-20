@@ -1205,7 +1205,7 @@ fn map_merge(
     if pr.state != alondra_core::domain::PrState::Open { return Err(Refusal::PrClosed { number: pr.number }); }
     if let Some(upstream) = state.pull_requests.values().find(|upstream| upstream.id != pr.id
         && upstream.state == alondra_core::domain::PrState::Open
-        && upstream.repository == pr.repository && upstream.head == pr.base) {
+        && upstream.host == pr.host && upstream.repository == pr.repository && upstream.head == pr.base) {
         return Err(Refusal::UpstreamPrOpen { number: upstream.number });
     }
     let method = match (request.option_id.as_deref().filter(|id| !id.is_empty()), pr.allowed_methods.as_slice()) {
@@ -1430,7 +1430,7 @@ fn map_action(
 /// Resolve conflicts is Alondra's own request, whether the user tapped it or Alondra noticed:
 /// one per PR head, so a second one for the same head changes nothing.
 pub(crate) fn conflicts_command_id(pr: &alondra_core::domain::PullRequest) -> CommandId {
-    CommandId(format!("conflicts-{}-{}", pr.id, pr.head))
+    CommandId(format!("conflicts-{}-{}", pr.slug(), pr.head))
 }
 
 pub(crate) use alondra_core::views::pr_presentation;

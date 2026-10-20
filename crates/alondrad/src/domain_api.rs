@@ -650,10 +650,12 @@ async fn resource_command<H: DomainHost>(
     if let Err(error) = check_launch_shape(method.as_str(), uri.path(), &body) {
         return domain_error(error);
     }
-    if let Ok(state) = host.domain().state()
-        && let Err(error) = crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body)
-    {
-        return domain_error(error);
+    if let Ok(state) = host.domain().state() {
+        if let Err(error) = crate::pr_ids::assign(&state, method.as_str(), uri.path(), params.get("id").map(String::as_str), &mut body)
+            .and_then(|()| crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body))
+        {
+            return domain_error(error);
+        }
     }
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));

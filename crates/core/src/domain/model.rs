@@ -375,6 +375,17 @@ pub struct PullRequest {
     pub allowed_methods: Vec<MergeMethod>,
     pub review: Option<PullRequestReview>,
 }
+impl PullRequest {
+    /// The PR in the ids of cards about it: its own id while it is a plain one, its task's
+    /// once the id carries its host and repository, which a card id cannot hold.
+    pub fn slug(&self) -> &str {
+        if self.id.0.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            &self.id.0
+        } else {
+            &self.task_id.0
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestReview {
     pub decisions: Vec<PrDecision>,

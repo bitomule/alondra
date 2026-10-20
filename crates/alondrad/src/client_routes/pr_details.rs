@@ -173,7 +173,7 @@ impl PrDetails {
             loop {
                 let Some(pr) = pending.lock().expect("pull request refresh poisoned").next() else { break };
                 let request = self.begin(&pr.id.0);
-                let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+                let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
                 if let Some(view) = source.view(&url).await {
                     self.complete(&pr.id.0, request, parse(&pr.id.0, pr.number, &view));
                 }
@@ -198,7 +198,7 @@ impl super::Client {
             return Merge::Clean;
         }
         let view = self.pr_view.lock().expect("pull request view poisoned").clone();
-        let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+        let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
         for attempt in 0..attempts {
             if attempt > 0 {
                 tokio::time::sleep(pause).await;
@@ -246,7 +246,7 @@ const PRESENT_ATTEMPTS: usize = 3;
 const PRESENT_PAUSE: Duration = Duration::from_secs(2);
 
 fn presentation_conflicts_text(pr: &PullRequest) -> String {
-    let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+    let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
     let base = &pr.base;
     format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: bring {base} into the branch, \
         resolve the conflicts, run the tests and push, then present the PR again with present_result and its new head. \

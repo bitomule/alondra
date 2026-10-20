@@ -153,7 +153,7 @@ fn checklist_schema() -> Value {
         "item":{"type":"string","description":"The number of the point in the approved plan, from 1"},
         "evidence":{"type":"array","minItems":1,"maxItems":alondra_core::domain::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
             "kind":{"enum":alondra_core::domain::EvidenceKind::ALL.map(alondra_core::domain::EvidenceKind::as_str)},
-            "value":{"type":"string","minLength":1,"maxLength":alondra_core::domain::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your registered pr_id; file: its path; link: the URL"},
+            "value":{"type":"string","minLength":1,"maxLength":alondra_core::domain::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL"},
             "detail":{"type":"string","maxLength":alondra_core::domain::EVIDENCE_MAX_TEXT,"description":"What it showed, such as \"713 passed\""}
         },"required":["kind","value"],"additionalProperties":false}}
     },"required":["item","evidence"],"additionalProperties":false}})
@@ -231,7 +231,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         let target = json!({"type":"array","items":{"oneOf":[
             {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
             {"type":"object","properties":{"kind":{"const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra uses the commit it knows the PR is at"}},"required":["kind","pr_id"],"additionalProperties":false}
+            {"type":"object","description":"The PR your task registered","properties":{"kind":{"const":"pull_request"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra uses the commit it knows the PR is at"}},"required":["kind"],"additionalProperties":false}
         ]}});
         tools.push(domain_tool(
             "present_result",
@@ -346,10 +346,9 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             "register_pr",
             "register_pr",
             "Associate exactly one canonical PR with your Task; a hook can only observe GitHub.",
-            json!({"task_id":{"type":"string"},"pr_id":{"type":"string","description":"A short id of your own, such as pr-123: letters, digits, - and _ only. Never owner/repo#123"},"host":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer","minimum":1},"head":{"type":"string","description":"The full 40-character commit sha you pushed (git rev-parse HEAD after git push), never a branch name"},"base":{"type":"string"},"allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}}),
+            json!({"task_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer","minimum":1},"head":{"type":"string","description":"The full 40-character commit sha you pushed (git rev-parse HEAD after git push), never a branch name"},"base":{"type":"string"},"allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}}),
             vec![
                 "task_id",
-                "pr_id",
                 "host",
                 "repository",
                 "number",
@@ -935,14 +934,26 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
             let host = alondra_core::domain::normalize_pr_host(host);
             command.insert("host".into(), Value::String(host));
         }
+        if let (Some(host), Some(repository), Some(number)) = (
+            command.get("host").and_then(Value::as_str),
+            command.get("repository").and_then(Value::as_str),
+            command.get("number").and_then(Value::as_u64),
+        ) {
+            let id = alondra_core::domain::hosted_pr_id(host, repository, number);
+            command.insert("pr_id".into(), Value::String(id.0));
+        }
     }
     command.insert("kind".into(), Value::String(kind.into()));
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
     let mut typed = envelope.clone();
     for target in typed.pointer_mut("/command/targets").and_then(Value::as_array_mut).into_iter().flatten() {
-        if target.get("kind").and_then(Value::as_str) == Some("pull_request") && target.get("head").is_none() {
-            target["head"] = Value::String("filled-by-alondra".into());
+        if target.get("kind").and_then(Value::as_str) == Some("pull_request") {
+            for field in ["pr_id", "head"] {
+                if target.get(field).is_none() {
+                    target[field] = Value::String("filled-by-alondra".into());
+                }
+            }
         }
     }
     serde_json::from_value::<alondra_core::domain::CommandEnvelope>(typed).map_err(|error| {
@@ -1616,20 +1627,22 @@ mod tests {
             ("https://github.com/org/repo/pull/12", "github.com"),
             ("git.example.com", "git.example.com"),
         ] {
-            let args = json!({"task_id":"task-a","pr_id":"pr-a","host":given,"repository":"org/repo",
+            let args = json!({"task_id":"task-a","host":given,"repository":"org/repo",
                 "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
             let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
             assert_eq!(envelope["command"]["host"], expected, "{given}");
+            assert_eq!(envelope["command"]["pr_id"], format!("{expected}/org/repo#12"), "{given}");
         }
     }
 
     #[test]
     fn register_pr_tool_constructs_a_typed_command() {
         let args = json!({"data_epoch":"epoch","command_id":"register-one","expected_revision":4,
-            "task_id":"task-a","pr_id":"pr-a","host":"github.com","repository":"org/repo",
+            "task_id":"task-a","pr_id":"pr-12","host":"github.com","repository":"org/repo",
             "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
         let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
         assert_eq!(envelope["command"]["kind"], "register_pr");
+        assert_eq!(envelope["command"]["pr_id"], "github.com/org/repo#12", "Alondra names the PR, not the node");
         assert_eq!(envelope["command"]["task_id"], "task-a");
         assert_eq!(envelope["protocol_version"], 2);
         assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"}), "epoch", "register-one").is_err());
@@ -1871,12 +1884,12 @@ mod tests {
     }
 
     #[test]
-    fn a_presented_pr_may_leave_its_head_for_alondra_to_fill() {
+    fn a_presented_pr_may_leave_its_id_and_head_for_alondra_to_fill() {
         let args = json!({"task_id":"task-a","interaction_id":"delivery-a","need":"Review the fix","body":"Done",
             "content":{"kind":"report","body":"Done"},
-            "targets":[{"kind":"pull_request","pr_id":"pr-1"}],"is_final":true});
+            "targets":[{"kind":"pull_request"}],"is_final":true});
         let envelope = domain_envelope("present_result", &args, "epoch", "one").unwrap();
-        assert_eq!(envelope["command"]["targets"][0], json!({"kind":"pull_request","pr_id":"pr-1"}));
+        assert_eq!(envelope["command"]["targets"][0], json!({"kind":"pull_request"}));
     }
 
     #[test]

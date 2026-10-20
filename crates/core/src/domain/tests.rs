@@ -766,7 +766,7 @@ fn a_pr_id_the_views_cannot_address_is_refused_with_the_fix() {
         }
         let error = exec(&mut s, agent(), command).unwrap_err();
         assert_eq!(error.code, "invalid_input", "{pr_id}");
-        assert!(error.message.contains("github.com/owner/repo#N"), "{}", error.message);
+        assert!(error.message.contains("github.com/owner/repo#1"), "{}", error.message);
     }
     assert!(s.pull_requests.is_empty());
     for pr_id in ["pr-1", "github.com/owner/repo#1"] {
@@ -801,6 +801,42 @@ fn the_owning_task_corrects_its_registration_of_the_same_pr() {
         },
         "task_already_has_pr",
     );
+}
+fn with_second_task(s: &mut DomainState) {
+    exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 }).unwrap();
+    exec(s, orchestrator(), Command::CreateTask { plan_items: None, task_id: "t2".into(), request_id: "r".into(),
+        title: "Second task".into(), agent_id: Some("b".into()), review_prs: false, dependencies: BTreeSet::new(),
+        stack: None, launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
+}
+fn second_task_registers(pr_id: &str, host: &str, repository: &str, number: u64) -> Command {
+    Command::RegisterPr { task_id: "t2".into(), pr_id: pr_id.into(), host: host.into(), repository: repository.into(),
+        number, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] }
+}
+#[test]
+fn the_same_repository_and_number_on_another_host_is_another_pr() {
+    let mut s = fixture();
+    register(&mut s);
+    with_second_task(&mut s);
+    let b = Actor::Agent { agent_id: "b".into() };
+    reject_unchanged(&mut s, b.clone(), second_task_registers("github.com/owner/repo#1", "github.com", "owner/repo", 1), "pr_owned_by_other_task");
+    exec(&mut s, b, second_task_registers("ghe.example.com/owner/repo#1", "ghe.example.com", "owner/repo", 1)).unwrap();
+    assert_eq!(s.pull_requests[&"ghe.example.com/owner/repo#1".into()].task_id, "t2".into());
+    assert_eq!(s.pull_requests[&"pr".into()].task_id, "t".into());
+}
+#[test]
+fn an_id_another_repositorys_pr_holds_is_refused_naming_the_id_to_use() {
+    let mut s = fixture();
+    register(&mut s);
+    with_second_task(&mut s);
+    let b = Actor::Agent { agent_id: "b".into() };
+    let error = exec(&mut s, b.clone(), second_task_registers("pr", "github.com", "owner/lumo", 1)).unwrap_err();
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("github.com/owner/lumo#1"), "{}", error.message);
+    let error = exec(&mut s, b.clone(), second_task_registers("github.com/owner/repo#1", "github.com", "owner/lumo", 1)).unwrap_err();
+    assert_eq!(error.code, "invalid_input", "a hosted id names exactly its own PR: {}", error.message);
+    assert_eq!(s.pull_requests.len(), 1);
+    exec(&mut s, b, second_task_registers("github.com/owner/lumo#1", "github.com", "owner/lumo", 1)).unwrap();
+    assert_eq!(s.pull_requests.len(), 2);
 }
 #[test]
 fn a_second_pr_for_a_task_is_refused_and_the_node_is_told_to_ask_for_a_new_task() {
@@ -4337,4 +4373,17 @@ fn alondra_closes_a_request_but_never_one_with_open_tasks() {
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, Actor::System, close(true)).unwrap();
     assert!(s.requests[&"r".into()].closed && s.requests[&"r".into()].withdrawn);
+}
+#[test]
+fn cards_about_a_pr_named_by_its_repository_get_an_id_the_apps_can_open() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::RegisterPr { task_id: "t".into(), pr_id: "github.com/owner/repo#1".into(),
+        host: "github.com".into(), repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(),
+        allowed_methods: vec![MergeMethod::Squash] }).unwrap();
+    let pr = &s.pull_requests[&"github.com/owner/repo#1".into()];
+    assert_eq!(pr.slug(), "t");
+    assert!(crate::views::id::valid(&format!("problem-merge-{}-abc123", pr.slug())));
+    let mut s = fixture();
+    register(&mut s);
+    assert_eq!(s.pull_requests[&"pr".into()].slug(), "pr", "cards already open about an older PR keep their id");
 }

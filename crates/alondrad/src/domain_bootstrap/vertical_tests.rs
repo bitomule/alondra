@@ -5,7 +5,7 @@ use crate::auth::Auth;
 use crate::domain_authority::Principal;
 use axum::http::StatusCode;
 use std::net::SocketAddr;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskState};
+use alondra_core::domain::{Actor, Command, CommandEnvelope, DeliveryTarget, InteractionPayload, PrId, PROTOCOL_VERSION, TaskState};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -384,8 +384,8 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
         .await;
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.pull_requests.len(), 1);
-    assert_eq!(state.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
-    assert_eq!(state.pull_requests[&"pr-1".into()].head, "0123456789abcdef0123456789abcdef01234567");
+    assert_eq!(state.pull_requests[&"github.com/example/project#7".into()].task_id.0, "pr-task");
+    assert_eq!(state.pull_requests[&"github.com/example/project#7".into()].head, "0123456789abcdef0123456789abcdef01234567");
     assert!(state.interactions.contains_key(&"pr-delivery".into()));
     assert_ne!(
         fixture.domain.state().unwrap().tasks[&"pr-task".into()].state,
@@ -393,7 +393,7 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     );
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
-    assert_eq!(persisted.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
+    assert_eq!(persisted.pull_requests[&"github.com/example/project#7".into()].task_id.0, "pr-task");
     assert!(persisted.interactions.contains_key(&"pr-delivery".into()));
     drop(reopened);
     fixture.finish().await;
@@ -471,14 +471,14 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
     let (status, body) = fixture.post(&fixture.agent, &completion).await;
     assert_eq!((status, body["code"].as_str()), (StatusCode::FORBIDDEN, Some("forbidden")), "{body}");
     fixture.user(json!({"kind":"accept_delivery", "presentation_id":"delivery-7",
-        "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]}));
+        "targets":[{"kind":"pull_request", "pr_id":"github.com/example/project#7", "head":head}]}));
     let github = FakeGithub::new();
     github.open(7, head, Checks::Passed);
     Merger::with(Duration::ZERO, Duration::from_secs(60)).merge_due(&fixture.domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1);
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
-    assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
+    assert_eq!(state.pull_requests[&"github.com/example/project#7".into()].merged_head.as_deref(), Some(head));
     fixture.end_node("merge-task");
     assert_eq!(fixture.domain.state().unwrap().tasks[&"merge-task".into()].state, TaskState::Done);
     fixture.finish().await;
@@ -523,4 +523,43 @@ async fn http_the_orchestrator_creates_every_task_with_its_plan() {
     fixture.producer(true, task("later", Value::Null, json!(["first"]), plan("app/later"))).await;
     let stored = fixture.domain.launch_plan(&"later".into()).unwrap().unwrap();
     assert_eq!((stored.name.as_str(), stored.model.as_deref()), ("app/later", Some("sonnet")));
+}
+
+#[tokio::test]
+async fn http_a_pr_number_another_repository_already_used_is_registered_and_presented_as_its_own() {
+    let mut fixture = Fixture::start().await;
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    fixture.task("lumo-task", false).await;
+    let skills: CommandEnvelope = serde_json::from_value(fixture.envelope(json!({"kind":"register_agent",
+        "agent_id":"agent-b", "name":"Skills agent", "at":0}))).unwrap();
+    fixture.domain.execute(&Actor::System, &skills, None, || Ok(())).unwrap();
+    fixture.producer(true, json!({"kind":"create_request", "request_id":"request-skills", "body":"Work on skills"})).await;
+    let cwd = fixture.home.to_str().unwrap().to_owned();
+    fixture.producer(true, json!({"kind":"create_task", "task_id":"skills-task", "request_id":"request-skills",
+        "title":"Task skills", "agent_id":null, "review_prs":false, "dependencies":[], "stack":null,
+        "launch":{"name":"app/skills", "cwd":cwd, "model":"sonnet", "reason":"clear change"}})).await;
+    fixture.user(json!({"kind":"assign_task", "task_id":"skills-task", "agent_id":"agent-b"}));
+    let legacy: CommandEnvelope = serde_json::from_value(fixture.envelope(json!({"kind":"register_pr",
+        "task_id":"skills-task", "pr_id":"pr-163", "host":"github.com", "repository":"bitomule/agent-skills",
+        "number":163, "head":head, "base":"main", "allowed_methods":["squash"]}))).unwrap();
+    fixture.domain.execute(&Actor::Agent { agent_id: "agent-b".into() }, &legacy, None, || Ok(())).unwrap();
+
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"lumo-task", "pr_id":"pr-163",
+        "host":"github.com", "repository":"bitomule/lumo", "number":163, "head":head, "base":"main",
+        "allowed_methods":["squash"]})).await;
+    fixture.producer(false, json!({"kind":"present_result", "task_id":"lumo-task",
+        "interaction_id":"lumo-delivery", "body":"Code ready", "is_final":true,
+        "targets":[{"kind":"pull_request", "pr_id":"pr-163"}]})).await;
+
+    let state = fixture.domain.state().unwrap();
+    let lumo = PrId::from("github.com/bitomule/lumo#163");
+    assert_eq!(state.pull_requests[&lumo].task_id.0, "lumo-task");
+    assert_eq!(state.pull_requests[&PrId::from("pr-163")].repository, "bitomule/agent-skills");
+    assert_eq!(state.tasks[&"lumo-task".into()].pr_id.as_ref(), Some(&lumo));
+    let InteractionPayload::Delivery { targets, .. } = &state.interactions[&"lumo-delivery".into()].payload else {
+        panic!("the result is a delivery");
+    };
+    assert_eq!(targets, &vec![DeliveryTarget::PullRequest { pr_id: lumo, head: head.into() }],
+        "the node's pr-163 is its own Lumo PR, not agent-skills' #163");
+    fixture.finish().await;
 }
