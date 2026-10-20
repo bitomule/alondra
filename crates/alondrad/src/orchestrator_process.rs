@@ -155,7 +155,7 @@ pub enum BatchEnd {
     Limited { reset: Option<i64> },
     /// The resumed conversation is gone: the next run starts a new one.
     SessionMissing,
-    /// The user stopped the run; `effects` are the calls that changed something, if any could have.
+    /// The user stopped the run; `effects` are the changes the daemon let it make, if it made any.
     Cancelled { effects: Option<Vec<String>> },
 }
 
@@ -210,11 +210,8 @@ impl Stream {
             && (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))
     }
     /// How the batch's turn ended.
-    pub fn end(&self, exit_ok: bool, diagnostic: &str, session: &str, resumed: bool, cancelled: bool) -> BatchEnd {
+    pub fn end(&self, exit_ok: bool, diagnostic: &str, session: &str, resumed: bool) -> BatchEnd {
         let effects = self.may_have_effects().then(|| self.alondra_calls.clone());
-        if cancelled {
-            return BatchEnd::Cancelled { effects };
-        }
         if resumed && self.session_missing(exit_ok, diagnostic, session) {
             return BatchEnd::SessionMissing;
         }
@@ -583,8 +580,8 @@ fn prompt_input(cwd: &Path, execution: &str, prompt: &str) -> std::io::Result<st
 }
 
 impl Output {
-    pub fn end(&self, session: &str, resumed: bool, cancelled: bool) -> BatchEnd {
-        self.stream.end(self.exit_ok, &self.diagnostic, session, resumed, cancelled)
+    pub fn end(&self, session: &str, resumed: bool) -> BatchEnd {
+        self.stream.end(self.exit_ok, &self.diagnostic, session, resumed)
     }
 }
 
@@ -597,7 +594,7 @@ mod tests {
     const CREATED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"tool_use","id":"t","name":"mcp__alondra-orchestrator__create_task","input":{}}],"usage":{"input_tokens":2}}}"#;
     const DONE: &str = r#"{"type":"result","session_id":"s","subtype":"success","is_error":false,"permission_denials":[]}"#;
 
-    fn ended(input: Option<&str>, lines: &[&str], exit_ok: bool, diagnostic: &str, resumed: bool, cancelled: bool) -> BatchEnd {
+    fn ended(input: Option<&str>, lines: &[&str], exit_ok: bool, diagnostic: &str, resumed: bool) -> BatchEnd {
         let mut stream = match input {
             Some(input) => Stream::for_input(input),
             None => Stream { restricted: true, ..Stream::default() },
@@ -608,7 +605,7 @@ mod tests {
                 break;
             }
         }
-        stream.end(exit_ok, diagnostic, "s", resumed, cancelled)
+        stream.end(exit_ok, diagnostic, "s", resumed)
     }
 
     #[test]
@@ -618,20 +615,18 @@ mod tests {
         let limited_result = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"You have hit your session limit"}"#;
         let missing = r#"{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"num_turns":0,"duration_api_ms":0,"errors":["No conversation found with session ID: s"]}"#;
         let created = vec!["create_task".to_owned()];
-        assert_eq!(ended(None, &[INIT, WORKED, DONE], true, "", false, false), BatchEnd::Handled);
-        assert!(matches!(ended(None, &[], false, "cannot launch Claude", false, false), BatchEnd::NotStarted { why } if why == "cannot launch Claude"));
-        assert!(matches!(ended(None, &[INIT, WORKED], false, "", false, false), BatchEnd::Interrupted { calls, .. } if calls.is_empty()),
+        assert_eq!(ended(None, &[INIT, WORKED, DONE], true, "", false), BatchEnd::Handled);
+        assert!(matches!(ended(None, &[], false, "cannot launch Claude", false), BatchEnd::NotStarted { why } if why == "cannot launch Claude"));
+        assert!(matches!(ended(None, &[INIT, WORKED], false, "", false), BatchEnd::Interrupted { calls, .. } if calls.is_empty()),
             "Claude was answering when it ended: what came next is unknown");
-        assert!(matches!(ended(None, &[INIT, CREATED], false, "", false, false), BatchEnd::Interrupted { calls, .. } if calls == created));
-        assert!(matches!(ended(None, &[INIT, CREATED, &denied], true, "", false, false), BatchEnd::Denied { calls, .. } if calls == created));
-        assert_eq!(ended(None, &[INIT, limited, limited_result], false, "", false, false), BatchEnd::Limited { reset: Some(1_900_000_000_000) });
-        assert_eq!(ended(None, &[missing], false, "No conversation found with session ID: s", true, false), BatchEnd::SessionMissing);
-        assert!(matches!(ended(None, &[missing], false, "", true, false), BatchEnd::NotStarted { .. }),
+        assert!(matches!(ended(None, &[INIT, CREATED], false, "", false), BatchEnd::Interrupted { calls, .. } if calls == created));
+        assert!(matches!(ended(None, &[INIT, CREATED, &denied], true, "", false), BatchEnd::Denied { calls, .. } if calls == created));
+        assert_eq!(ended(None, &[INIT, limited, limited_result], false, "", false), BatchEnd::Limited { reset: Some(1_900_000_000_000) });
+        assert_eq!(ended(None, &[missing], false, "No conversation found with session ID: s", true), BatchEnd::SessionMissing);
+        assert!(matches!(ended(None, &[missing], false, "", true), BatchEnd::NotStarted { .. }),
             "claude -p says it on stderr too, or it is not the lost conversation");
-        assert_eq!(ended(Some("00000000-0000-4000-8000-000000000001"), &[missing], false, "", true, false), BatchEnd::SessionMissing,
+        assert_eq!(ended(Some("00000000-0000-4000-8000-000000000001"), &[missing], false, "", true), BatchEnd::SessionMissing,
             "through the SDK the result is the fact");
-        assert_eq!(ended(None, &[INIT, CREATED], false, "", false, true), BatchEnd::Cancelled { effects: Some(created.clone()) });
-        assert_eq!(ended(None, &[], false, "", false, true), BatchEnd::Cancelled { effects: None });
     }
 
     #[test]
@@ -639,10 +634,10 @@ mod tests {
         let input = "00000000-0000-4000-8000-000000000001";
         let bound = DONE.replace(r#""permission_denials":[]"#, &format!(r#""permission_denials":[],"user_message_uuid":"{input}""#));
         let other = DONE.replace(r#""permission_denials":[]"#, r#""permission_denials":[],"user_message_uuid":"00000000-0000-4000-8000-0000000000ff""#);
-        assert_eq!(ended(Some(input), &[INIT, WORKED, &bound], true, "", false, false), BatchEnd::Handled);
-        assert!(matches!(ended(Some(input), &[INIT, WORKED, &other], true, "", false, false),
+        assert_eq!(ended(Some(input), &[INIT, WORKED, &bound], true, "", false), BatchEnd::Handled);
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, &other], true, "", false),
             BatchEnd::Interrupted { why, .. } if why.contains("another input")));
-        assert!(matches!(ended(Some(input), &[INIT, WORKED, DONE], true, "", false, false), BatchEnd::Interrupted { .. }),
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, DONE], true, "", false), BatchEnd::Interrupted { .. }),
             "a result that names no input is not this batch's either");
     }
 

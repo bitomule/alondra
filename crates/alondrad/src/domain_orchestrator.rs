@@ -389,12 +389,14 @@ impl Executor {
                 }, |_| mark_spawned.take().map_or(Ok(()), |mark| mark()), || Ok(()), cancel).await
             }
         };
-        if let Err(error) = self.domain.revoke_execution(&run_id) {
-            log!("orchestrator: cannot persist the revoked capability of {run_id}: {error:#}");
-        }
+        let changes = self.domain.end_execution(&run_id);
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
-        let end = output.end(&session, false, runtime.cancel_requested);
+        let end = if runtime.cancel_requested {
+            BatchEnd::Cancelled { effects: (!changes.is_empty()).then_some(changes) }
+        } else {
+            output.end(&session, false)
+        };
         if let Some(context) = output.stream.context() {
             log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));

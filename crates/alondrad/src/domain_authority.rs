@@ -31,12 +31,16 @@ impl Capability {
 pub struct Authority {
     epoch: String,
     entries: BTreeMap<[u8; 32], Principal>,
+    /// What each live orchestrator execution was let change, in order. Recorded under the same
+    /// lock that revokes it, so what `end_execution` returns is all it will ever change.
+    changes: BTreeMap<String, Vec<String>>,
 }
 impl Authority {
     pub fn new(epoch: String) -> Self {
         Self {
             epoch,
             entries: BTreeMap::new(),
+            changes: BTreeMap::new(),
         }
     }
 
@@ -119,10 +123,26 @@ impl Authority {
 
     pub fn revoke_execution(&mut self, execution_id: &str) {
         self.entries.retain(|_, principal| !matches!(principal, Principal::Orchestrator { execution_id: id, .. } if id == execution_id));
+        self.changes.remove(execution_id);
+    }
+
+    /// Notes that `principal`, if it is an orchestrator execution, was let change `what`.
+    pub fn record_change(&mut self, principal: &Principal, what: &str) {
+        if let Principal::Orchestrator { execution_id, .. } = principal {
+            self.changes.entry(execution_id.clone()).or_default().push(what.to_owned());
+        }
+    }
+
+    /// Revokes the execution and returns what it was let change: nothing it does after this can.
+    pub fn end_execution(&mut self, execution_id: &str) -> Vec<String> {
+        let changes = self.changes.remove(execution_id).unwrap_or_default();
+        self.revoke_execution(execution_id);
+        changes
     }
 
     pub fn change_epoch(&mut self, epoch: String) {
         self.entries.clear();
+        self.changes.clear();
         self.epoch = epoch;
     }
 }
@@ -162,6 +182,20 @@ mod tests {
                 .unwrap(),
             agent("session-two")
         );
+    }
+    #[test]
+    fn an_execution_ends_with_what_it_was_let_change_and_nothing_after() {
+        let mut authority = Authority::new("epoch".into());
+        let run = |id: &str| Principal::Orchestrator { generation: 0, execution_id: id.into() };
+        authority.issue(run("run-1")).unwrap();
+        authority.record_change(&run("run-1"), "create_task");
+        authority.record_change(&agent("session"), "ask_question");
+        authority.record_change(&run("run-2"), "launch");
+        authority.record_change(&run("run-1"), "send");
+        assert_eq!(authority.end_execution("run-1"), ["create_task", "send"]);
+        assert!(authority.end_execution("run-1").is_empty(), "taken once");
+        authority.revoke_execution("run-2");
+        assert!(authority.end_execution("run-2").is_empty(), "binding an execution again starts from nothing");
     }
     #[test]
     fn epoch_restart_and_execution_revocation_fence_old_tokens() {

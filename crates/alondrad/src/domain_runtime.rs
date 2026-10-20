@@ -309,10 +309,26 @@ impl DomainRuntime {
         authority.revoke_agent(session);
         capabilities::persist(&self.home, &authority).map_err(anyhow::Error::from)
     }
-    pub fn revoke_execution(&self, execution: &str) -> Result<()> {
+    /// Revokes an orchestrator execution and returns what it was let change.
+    pub fn end_execution(&self, execution: &str) -> Vec<String> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
-        authority.revoke_execution(execution);
-        capabilities::persist(&self.home, &authority).map_err(anyhow::Error::from)
+        let changes = authority.end_execution(execution);
+        if let Err(error) = capabilities::persist(&self.home, &authority) {
+            log!("domain: cannot persist the revoked capability of {execution}: {error:#}");
+        }
+        changes
+    }
+
+    /// The principal of a bearer let change `what`; an orchestrator execution has it recorded
+    /// before it acts, so its end never misses a change already under way.
+    pub fn admit_change(&self, bearer: &str, what: &str) -> Result<Principal, StoreError> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let state = self.state()?;
+        let principal = authority
+            .resolve(&state.data_epoch.0, bearer)
+            .map_err(|message| DomainError::new("forbidden", message))?;
+        authority.record_change(&principal, what);
+        Ok(principal)
     }
 
     /// Expose only the public protocol cursor to a daemon-authorized producer.
@@ -524,13 +540,13 @@ impl DomainRuntime {
         envelope: &CommandEnvelope,
     ) -> Result<CommandOutcome, StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
-        let authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
         let principal = authority
             .resolve(&envelope.data_epoch.0, bearer)
             .map_err(|message| DomainError::new("forbidden", message))?;
         let mut store = self.store.lock().expect("domain store poisoned");
         let state = store.load()?;
-        let actor = match principal {
+        let actor = match principal.clone() {
             Principal::Agent {
                 session_id,
                 task_binding,
@@ -558,6 +574,9 @@ impl DomainRuntime {
             prepared.discard_uncommitted(&self.home);
         }
         let mut commit = commit?;
+        if !commit.replayed && commit.outcome.changed && matches!(principal, Principal::Orchestrator { .. }) {
+            authority.record_change(&principal, &command_kind(&prepared.envelope.command));
+        }
         self.publish(&commit.state);
         if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
             self.seals.put(sealed);
@@ -574,6 +593,11 @@ impl DomainRuntime {
         }
         Ok(commit.outcome)
     }
+}
+
+/// The command's name on the wire, such as `create_task`.
+fn command_kind(command: &Command) -> String {
+    serde_json::to_value(command).ok().and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_default()
 }
 
 pub(crate) fn schedule_command(command: &Command) -> bool {

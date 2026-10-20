@@ -6,6 +6,8 @@ records its arguments and every prompt it gets, and answers each prompt as its f
 
   fixture:hold              answers, then holds the turn until the test writes to FIXTURE_RELEASE,
                             after telling it so through FIXTURE_HELD
+  fixture:quiet-hold        holds the turn the same way before it answers anything, telling the test
+                            its domain capability instead, as its Alondra tools would use it
   fixture:tool-then-exit    calls an Alondra tool that changes something, then dies without a result
   fixture:denied            calls an Alondra tool and ends with it refused
   fixture:limited           usage runs out before it answers
@@ -76,6 +78,13 @@ def result(message, input_id=None, **extra):
     lifecycle(message, 'completed')
 
 
+def hold(said='held'):
+    with open(os.environ['FIXTURE_HELD'], 'w') as held:
+        held.write(said + '\n')
+    with open(os.environ['FIXTURE_RELEASE']) as release:
+        release.read(1)
+
+
 for raw in sys.stdin:
     message = json.loads(raw)
     if message['type'] == 'control_request':
@@ -113,12 +122,11 @@ for raw in sys.stdin:
         assistant(message, [dict(type='tool_use', id='toolu_fixture', name='mcp__%s__create_task' % server, input=dict(title='Fixture'))])
         result(message, permission_denials=[dict(tool_name='mcp__%s__create_task' % server, tool_use_id='toolu_fixture', tool_input={})])
         continue
+    if 'fixture:quiet-hold' in text:
+        hold(os.environ['ALONDRA_DOMAIN_CAPABILITY'])
     assistant(message, [dict(type='text', text='Handling the batch')])
     if 'fixture:hold' in text:
-        with open(os.environ['FIXTURE_HELD'], 'w') as held:
-            held.write('held\n')
-        with open(os.environ['FIXTURE_RELEASE']) as release:
-            release.read(1)
+        hold()
         result(message)
     elif 'fixture:another-input' in text:
         result(message, input_id='00000000-0000-4000-8000-0000000000ff')

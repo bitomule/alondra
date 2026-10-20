@@ -146,7 +146,7 @@ mod tests {
         assert!(matches!(reopened.resolve_bearer(&a).unwrap(), Principal::Agent { session_id, .. } if session_id == "session-a"));
         assert!(matches!(reopened.resolve_bearer(&run).unwrap(), Principal::Orchestrator { execution_id, generation: 0 } if execution_id == "run-1"));
         reopened.revoke_agent("session-a").unwrap();
-        reopened.revoke_execution("run-1").unwrap();
+        reopened.end_execution("run-1");
         assert!(reopened.resolve_bearer(&a).is_err());
         drop(reopened);
 

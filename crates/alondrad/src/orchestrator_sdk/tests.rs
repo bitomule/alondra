@@ -299,7 +299,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         }
     }
     host.stop().unwrap();
-    assert_eq!(stream.end(true, "", session, false, false), process::BatchEnd::Handled);
+    assert_eq!(stream.end(true, "", session, false), process::BatchEnd::Handled);
     assert_eq!(f.prompts(), ["fixture:hold the first batch"], "the refused prompt never reached Claude");
 }
 
@@ -387,22 +387,56 @@ async fn a_batch_that_ran_out_of_usage_before_answering_pauses_and_waits_without
     assert!(f.cards("problem-orchestrator-").is_empty());
 }
 
-#[tokio::test]
-async fn a_cancelled_turn_that_may_have_acted_is_the_users_call() {
+/// Cancels the batch's run once the fake Claude holds its turn, after `meanwhile` got what it
+/// told the test.
+async fn cancelled_while_held(marker: &str, meanwhile: impl FnOnce(&Fixture, &str)) -> Fixture {
     let f = fixture();
-    f.ask(1, "fixture:hold Where do I put change 1?");
+    f.ask(1, &format!("{marker} Where do I put change 1?"));
     let during = async {
         let held = f.held.clone();
-        tokio::task::spawn_blocking(move || {
+        let said = tokio::task::spawn_blocking(move || {
             let mut text = String::new();
             std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
+            text
         }).await.unwrap();
+        meanwhile(&f, said.trim_end());
         let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
         f.executor.cancel(&run).unwrap();
     };
     let ((), ()) = tokio::join!(f.tick(), during);
+    f
+}
+
+/// Claude answered but changed nothing in Alondra: whether the run read that answer before the
+/// cancel or not, the batch is settled without a card.
+#[tokio::test]
+async fn a_turn_cancelled_after_claude_answered_without_changing_anything_is_settled_without_a_card() {
+    let f = cancelled_while_held("fixture:hold", |_, _| {}).await;
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.failure.is_none() && runtime.active_run.is_none(), "{runtime:?}");
+    assert_eq!(runtime.pending_resolutions.len(), 1, "the orchestrator hears it was stopped: {runtime:?}");
+    assert!(f.cards("problem-orchestrator-").is_empty());
+}
+
+/// One of Claude's Alondra tools changed something before anything Claude said reached the run,
+/// as when its call ran while the message announcing it was on its way: the daemon knows, so it
+/// is the user's call.
+#[tokio::test]
+async fn a_turn_cancelled_after_a_change_the_run_never_read_is_the_users_call() {
+    let f = cancelled_while_held("fixture:quiet-hold", |f, capability| {
+        let state = f.domain().state().unwrap();
+        f.domain().execute_bearer(capability, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: "tool-call".into(), expected_revision: state.revision,
+            command: Command::CreateRequest { request_id: "r-2".into(), body: "Change 2".into(), auto_merge: false, maintenance: false, message: false },
+        }).unwrap();
+    }).await;
     let runtime = load(&f.executor.home).unwrap();
     assert_eq!(runtime.failure, Some(Failure::Cancelled), "{runtime:?}");
+    assert!(runtime.pending_resolutions.is_empty(), "the batch is not given up as not done: {runtime:?}");
     assert_eq!(f.attempts(), ["uncertain"]);
-    assert_eq!(f.cards("problem-orchestrator-").len(), 1);
+    let cards = f.cards("problem-orchestrator-");
+    assert_eq!(cards.len(), 1);
+    let body = &f.domain().state().unwrap().interactions[&cards[0].clone().into()].body;
+    assert_eq!(alondra_core::orchestrator_batch::BatchProblem::from_body(body).unwrap().calls, ["create_request"]);
 }

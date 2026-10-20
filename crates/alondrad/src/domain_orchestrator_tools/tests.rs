@@ -45,7 +45,30 @@ fn world() -> Fixture {
 
 fn the_orchestrator(domain: &DomainRuntime) -> Actor {
     let capability = domain.bind_orchestrator("execution-1").unwrap();
-    orchestrator(domain, Some(capability.expose_for_child_environment())).unwrap()
+    orchestrator(domain, Some(capability.expose_for_child_environment()), None).unwrap()
+}
+
+#[test]
+fn an_execution_ends_with_every_change_it_was_let_make_and_none_after() {
+    let f = world();
+    let capability = f.domain.bind_orchestrator("execution-1").unwrap();
+    let bearer = capability.expose_for_child_environment();
+    orchestrator(&f.domain, Some(bearer), None).unwrap();
+    orchestrator(&f.domain, Some(bearer), Some("launch")).unwrap();
+    let state = f.domain.state().unwrap();
+    f.domain.execute_bearer(bearer, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(),
+        expected_revision: state.revision,
+        command: Command::CreateRequest { request_id: "r-2".into(), body: "More".into(), auto_merge: false, maintenance: false, message: false },
+    }).unwrap();
+    let state = f.domain.state().unwrap();
+    assert!(f.domain.execute_bearer(bearer, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "refused".into(),
+        expected_revision: state.revision, command: Command::RetitleTask { task_id: "missing".into(), title: "X".into() },
+    }).is_err());
+    assert_eq!(f.domain.end_execution("execution-1"), ["launch", "create_request"], "reads and refused commands change nothing");
+    assert!(orchestrator(&f.domain, Some(bearer), Some("send")).is_err(), "an ended execution can change nothing more");
+    assert!(f.domain.end_execution("execution-1").is_empty());
 }
 
 fn hard_choices() -> Choices {
@@ -162,10 +185,10 @@ fn settings_files(home: &Path) -> Vec<Value> {
 #[test]
 fn only_a_current_orchestrator_bearer_calls_the_tools() {
     let f = world();
-    assert_eq!(orchestrator(&f.domain, None).unwrap_err().code, "forbidden");
-    assert_eq!(orchestrator(&f.domain, Some(&"a".repeat(64))).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&f.domain, None, None).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&f.domain, Some(&"a".repeat(64)), None).unwrap_err().code, "forbidden");
     let agent = f.domain.bind_agent("agent-b").unwrap();
-    assert_eq!(orchestrator(&f.domain, Some(agent.expose_for_child_environment())).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&f.domain, Some(agent.expose_for_child_environment()), None).unwrap_err().code, "forbidden");
     assert!(matches!(the_orchestrator(&f.domain), Actor::Orchestrator { .. }));
 }
 

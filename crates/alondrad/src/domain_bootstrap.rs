@@ -728,6 +728,7 @@ fn tool_caller(
     state: &DomainDaemon,
     peer: &SocketAddr,
     headers: &HeaderMap,
+    what: Option<&str>,
 ) -> Result<alondra_core::domain::Actor, Response> {
     if let Some(refused) = local_only(peer, headers) {
         return Err(refused);
@@ -736,7 +737,7 @@ fn tool_caller(
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    crate::domain_orchestrator_tools::orchestrator(&state.domain, bearer)
+    crate::domain_orchestrator_tools::orchestrator(&state.domain, bearer, what)
         .map_err(crate::domain_api::domain_error)
 }
 
@@ -753,7 +754,7 @@ async fn orchestrator_launch(
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::LaunchBody>, JsonRejection>,
 ) -> Response {
-    let actor = match tool_caller(&state, &peer, &headers) {
+    let actor = match tool_caller(&state, &peer, &headers, Some("launch")) {
         Ok(actor) => actor,
         Err(refused) => return refused,
     };
@@ -788,7 +789,7 @@ async fn orchestrator_launch_plan(
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::LaunchPlanBody>, JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("set_launch_plan")) {
         return refused;
     }
     let body = match body {
@@ -804,7 +805,7 @@ async fn orchestrator_send(
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::SendBody>, JsonRejection>,
 ) -> Response {
-    let actor = match tool_caller(&state, &peer, &headers) {
+    let actor = match tool_caller(&state, &peer, &headers, Some("send")) {
         Ok(actor) => actor,
         Err(refused) => return refused,
     };
@@ -850,7 +851,7 @@ async fn orchestrator_interrupt(
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::NodeBody>, JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("interrupt")) {
         return refused;
     }
     let Ok(Json(body)) = body else {
@@ -869,7 +870,7 @@ async fn orchestrator_schedule(
     headers: HeaderMap,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("schedule_create")) {
         return refused;
     }
     let Ok(Json(body)) = body else {
@@ -910,7 +911,7 @@ async fn orchestrator_fleet(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
     let (machine, usage) = gauges_json(&state);
@@ -932,7 +933,7 @@ async fn orchestrator_node(
     headers: HeaderMap,
     Query(query): Query<NodeQuery>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
     tool_answer(crate::domain_orchestrator_reads::node(
@@ -1035,7 +1036,7 @@ async fn orchestrator_machine(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
     let (machine, usage) = match &*state.gauges.lock().expect("machine gauges poisoned") {
@@ -1062,7 +1063,7 @@ async fn orchestrator_log(
     headers: HeaderMap,
     Query(query): Query<LogQuery>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
     let lines = query.lines.unwrap_or(LOG_LINES).clamp(1, MAX_LOG_LINES);

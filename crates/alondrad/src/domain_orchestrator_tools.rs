@@ -37,10 +37,15 @@ pub(crate) fn choices_text(user: &str, home: &Path, choices: &Choices) -> String
     lines.join("\n")
 }
 
-/// The orchestrator a local bearer belongs to, while its generation is current.
-pub(crate) fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>) -> Result<Actor, DomainError> {
+/// The orchestrator a local bearer belongs to, while its generation is current. A call that may
+/// change `what` is recorded against its execution before it acts.
+pub(crate) fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>, what: Option<&str>) -> Result<Actor, DomainError> {
     let refused = || DomainError::new("forbidden", "the orchestrator's capability is required");
-    let principal = domain.resolve_bearer(bearer.ok_or_else(refused)?).map_err(|_| refused())?;
+    let bearer = bearer.ok_or_else(refused)?;
+    let principal = match what {
+        Some(what) => domain.admit_change(bearer, what),
+        None => domain.resolve_bearer(bearer),
+    }.map_err(|_| refused())?;
     match principal {
         crate::domain_authority::Principal::Orchestrator { generation, .. } => Ok(Actor::Orchestrator { generation }),
         _ => Err(refused()),

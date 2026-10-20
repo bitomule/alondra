@@ -361,7 +361,7 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
     assert_eq!(claude.launches(), 0, "the automatic one gives way");
     let orchestrator = {
         let capability = f.domain.bind_orchestrator("execution-1").unwrap();
-        crate::domain_orchestrator_tools::orchestrator(&f.domain, Some(capability.expose_for_child_environment())).unwrap()
+        crate::domain_orchestrator_tools::orchestrator(&f.domain, Some(capability.expose_for_child_environment()), None).unwrap()
     };
     let body: LaunchBody = serde_json::from_value(json!({"task": "f1"})).unwrap();
     let refused = launch(&f.domain, &f.home, &orchestrator, body, |_| None, &claude).await.unwrap_err();
@@ -763,7 +763,7 @@ async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the
 
 fn orchestrator(f: &Fixture) -> Actor {
     let capability = f.domain.bind_orchestrator("execution-1").unwrap();
-    crate::domain_orchestrator_tools::orchestrator(&f.domain, Some(capability.expose_for_child_environment())).unwrap()
+    crate::domain_orchestrator_tools::orchestrator(&f.domain, Some(capability.expose_for_child_environment()), None).unwrap()
 }
 
 fn queued_ids(f: &Fixture) -> Vec<(String, bool)> {
