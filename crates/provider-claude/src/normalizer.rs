@@ -109,9 +109,11 @@ impl ObservationNormalizer for Normalizer {
         {
             return Err(AdapterError::InvalidObservation);
         }
-        event
-            .validate_for_application()
-            .map_err(|_| AdapterError::Unsupported)?;
+        event.validate().map_err(|_| AdapterError::Unsupported)?;
+        let unknown_message = matches!(
+            &event.observation,
+            WireObservation::Sdk { kind: SdkEventKind::Unsupported, .. }
+        );
         let prior = metadata.checkpoint().map_err(storage)?;
         let mut checkpoint = if let Some(prior) = prior {
             let decoded: Checkpoint = serde_json::from_slice(prior.bytes())
@@ -141,12 +143,13 @@ impl ObservationNormalizer for Normalizer {
             .session
             .as_ref()
             .ok_or(AdapterError::InvalidObservation)?;
-        if self.host_ended && ended_with_its_host(&event.observation) {
+        if unknown_message || (self.host_ended && ended_with_its_host(&event.observation)) {
             checkpoint.cursor = batch.cursor;
             let bytes = serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
             return Normalization::new(Vec::new(), bytes);
         }
-        let facts = fold(event, session, &mut checkpoint, |ids| {
+        let before = serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
+        let folded = fold(event, session, &mut checkpoint, |ids| {
             let keys = ids
                 .iter()
                 .map(|id| {
@@ -175,7 +178,15 @@ impl ObservationNormalizer for Normalizer {
             ids.iter()
                 .map(|id| mappings.remove(id).ok_or(AdapterError::InvalidObservation))
                 .collect()
-        })?;
+        });
+        let facts = match folded {
+            Ok(facts) => facts,
+            Err(AdapterError::Unsupported) => {
+                checkpoint = serde_json::from_slice(&before).map_err(|_| AdapterError::InvalidObservation)?;
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        };
         checkpoint.cursor = batch.cursor;
         let bytes =
             serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;

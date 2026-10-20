@@ -252,6 +252,9 @@ for raw in sys.stdin:
             lifecycle(message, state)
         if len(pending) == 1:
             send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+            # Like the native Claude 2.1.291: system messages no SDK release declares yet.
+            send(dict(type='system', subtype='dev_intent', session_id=session_id, uuid='00000000-0000-4000-8000-000000000104'))
+            send(dict(type='system', subtype='future_subtype', session_id=session_id, uuid='00000000-0000-4000-8000-000000000105'))
         text = message['message']['content']
         if text.endswith('signed-out'):
             refused = 401

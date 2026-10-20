@@ -55,7 +55,7 @@ class Input implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-const systemMessages = new Set(['init', 'compact_boundary', 'status', 'api_retry', 'local_command_output', 'hook_started', 'hook_progress', 'hook_response', 'plugin_install', 'task_notification', 'task_started', 'task_updated', 'task_progress', 'background_tasks_changed', 'thinking_tokens', 'session_state_changed', 'worker_shutting_down', 'commands_changed', 'notification', 'files_persisted', 'memory_recall', 'elicitation_complete', 'permission_denied', 'informational', 'conversation_reset', 'mirror_error', 'model_refusal_fallback', 'model_refusal_no_fallback', 'control_request_progress']);
+const systemMessages = new Set(['init', 'compact_boundary', 'status', 'api_retry', 'local_command_output', 'hook_started', 'hook_progress', 'hook_response', 'plugin_install', 'task_notification', 'task_started', 'task_updated', 'task_progress', 'background_tasks_changed', 'thinking_tokens', 'session_state_changed', 'worker_shutting_down', 'commands_changed', 'notification', 'files_persisted', 'memory_recall', 'elicitation_complete', 'permission_denied', 'informational', 'conversation_reset', 'mirror_error', 'model_refusal_fallback', 'model_refusal_no_fallback', 'control_request_progress', 'dev_intent', 'session_title_changed']);
 const nonFailureTerminalReasons = new Set(['completed', 'background_requested', 'tool_deferred']);
 export function classify(payload: Record<string, unknown>): Observation & { type: 'sdk' } {
   const failures: Failure[] = [];

@@ -590,7 +590,7 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     let turn_end = observations.last().unwrap();
     assert_eq!(turn_end.index_builds, 1, "the turn end publishes its card once");
     let (traces, facts): (Vec<&Work>, Vec<&Work>) = observations.iter().partition(|work| work.writes == 0);
-    assert_eq!(traces.len(), 2, "the native trace of the first prompt, queued and started: {observations:?}");
+    assert_eq!(traces.len(), 4, "the native trace of the first prompt, queued and started, and two system messages no SDK release declares: {observations:?}");
     assert!(traces.iter().all(|work| work.index_builds == 0), "an observation that changes nothing for readers builds no index: {observations:?}");
     assert!(facts.iter().all(|work| work.index_builds == 1), "each observation with facts builds one index: {observations:?}");
     assert!(launch.aggregate_loads <= launch.transactions, "the launch rebuilds its one task at most once per transaction: {launch:?}");
