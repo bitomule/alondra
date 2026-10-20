@@ -4188,6 +4188,45 @@ fn a_dependency_still_holds_back_the_start() {
         task_id: "after".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
     reject_unchanged(&mut s, agent_b(), Command::StartTask { task_id: "after".into() }, "dependency_not_done");
 }
+fn finish_fix(s: &mut DomainState) {
+    exec(s, agent_b(), Command::StartTask { task_id: "fix".into() }).unwrap();
+    exec(s, agent_b(), Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "fix".into(),
+        interaction_id: "fixed".into(), body: "Fixed".into(), targets: text(), is_final: true, nothing_to_review: false,
+        card: crate::domain::CardSpec::delivery("Review the fix", &[], true) }).unwrap();
+    exec(s, user(), Command::AcceptDelivery { presentation_id: "fixed".into(), targets: text() }).unwrap();
+    exec(s, Actor::System, Command::RecordNodeEnd { task_id: "fix".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    assert_eq!(s.tasks[&"fix".into()].state, TaskState::Done);
+}
+/// t-revival-skip-waiting-nodes showed `running` with a dependency still at work because its
+/// PR had been sent back with changes: the stop hook sent its node back to work.
+#[test]
+fn a_delivery_sent_back_waits_for_its_dependencies_and_goes_on_when_they_are_done() {
+    let mut s = fixture();
+    register_b(&mut s);
+    second_task(&mut s, "fix", Some("b"));
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    hand_back(&mut s, user(), Instruction::Changes).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    exec(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
+    assert_eq!(s.task_handed_back(&"t".into()), Some(Instruction::Changes));
+    finish_fix(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    assert_eq!(s.task_handed_back(&"t".into()), Some(Instruction::Changes), "the changes are still asked for");
+}
+#[test]
+fn a_delivery_waiting_for_review_does_not_wait_for_a_dependency_set_after_it() {
+    let mut s = fixture();
+    register_b(&mut s);
+    second_task(&mut s, "fix", Some("b"));
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    exec(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
+}
 /// The node of “Permisos seguros” asked the user to tell it when main passed the snapshot tests:
 /// waiting is a dependency the orchestrator sets, and Alondra resumes the node when it is done.
 #[test]

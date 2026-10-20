@@ -1368,7 +1368,10 @@ impl DomainState {
             }
             None => {}
         }
-        if self.stack_ready(t).is_err() || (t.final_presentation.is_none() && self.waits_are_over(t).is_err()) {
+        let goes_on = t.final_presentation.as_ref().is_none_or(|p| {
+            self.interactions.get(p).is_some_and(|p| self.handed_back(p).is_some() && !self.accepted(p) && !self.settled(t, p))
+        });
+        if self.stack_ready(t).is_err() || (goes_on && self.waits_are_over(t).is_err()) {
             TaskState::WaitingDependency
         } else if self.blockers(&t.id) {
             TaskState::NeedsYou
