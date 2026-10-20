@@ -239,17 +239,19 @@ for raw in sys.stdin:
             raise RuntimeError('Unexpected fixture control request')
     elif message['type'] == 'user':
         pending.append(message)
-        # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
-        for state in ('queued', 'started'):
-            lifecycle(message, state)
-        if len(pending) == 1:
-            send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+        # The prompt is captured before Claude says anything about it: whoever reads one of its
+        # events knows the capture holds it.
         with open(capture + '.prompts', 'a') as stream:
             stream.write(json.dumps(message['message']['content']) + '\n')
         with open(transcript, 'a') as stream:
             stream.write(json.dumps(message['message']['content']) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
+        # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
+        for state in ('queued', 'started'):
+            lifecycle(message, state)
+        if len(pending) == 1:
+            send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-000000000100', claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
         text = message['message']['content']
         if text.endswith('signed-out'):
             refused = 401

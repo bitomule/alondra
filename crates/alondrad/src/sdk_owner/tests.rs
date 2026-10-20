@@ -1202,6 +1202,9 @@ fn doubtful(slice: &Slice) -> (Arc<DomainRuntime>, Driver, Interaction) {
     slice.settle(&mut driver);
     carry_on(&slice.domain, "Add the tests first unread");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
+    while slice.prompts().len() < 2 {
+        driver.observe().unwrap();
+    }
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);

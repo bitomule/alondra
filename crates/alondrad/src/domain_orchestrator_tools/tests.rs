@@ -442,18 +442,21 @@ fn the_requests_choices_read_as_8ccd131_told_the_orchestrator() {
     assert!(text.contains("attached shot.png: /h/files/att-1") && text.contains("paths in the mission"), "{text}");
 }
 
-fn measured(domain: &DomainRuntime, week_percent: f64) {
+/// Claude measures the week at each of `week_percents`, all with the same reset, as it reports a
+/// window that has not ended.
+fn measured(domain: &DomainRuntime, week_percents: &[f64]) {
     let reset = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t + 5 * 86_400, 0);
-    let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure",
-        "rate_limits": [{"kind": "seven_day", "percent_used": week_percent, "resets_at": reset}]})).unwrap();
-    domain.report(envelope, alondra_core::now_millis());
+    for week_percent in week_percents {
+        let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure",
+            "rate_limits": [{"kind": "seven_day", "percent_used": week_percent, "resets_at": reset}]})).unwrap();
+        domain.report(envelope, alondra_core::now_millis());
+    }
 }
 
 #[tokio::test]
 async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_once_a_day() {
     let f = world();
-    measured(&f.domain, 12.0);
-    measured(&f.domain, 53.0);
+    measured(&f.domain, &[12.0, 53.0]);
     assert!(f.domain.live.mods.usage(alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
     let actor = the_orchestrator(&f.domain);
     let claude = FakeClaude::loading(&f.domain);
@@ -473,8 +476,7 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     assert_eq!(cards().len(), 1, "one card per local day");
 
     let within = world();
-    measured(&within.domain, 12.0);
-    measured(&within.domain, 15.0);
+    measured(&within.domain, &[12.0, 15.0]);
     let answer = launch(&within.domain, &within.home, &the_orchestrator(&within.domain), launch_body(&within, json!({"over_pace_ok": true, "model": "sonnet"})),
         |_| None, &FakeClaude::loading(&within.domain)).await.unwrap();
     assert!(answer.get("warning").is_none(), "over_pace_ok is still accepted: {answer}");
