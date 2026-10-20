@@ -1084,7 +1084,24 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     let args = launched(&slice);
     assert!(args.iter().any(|arg| arg.starts_with("--resume")), "the resumed session: {args:?}");
     assert!(has(&args, "--model", "fixture-model") && has(&args, "--effort", "high") && has(&args, "--disallowedTools", "WebFetch"), "{args:?}");
+    assert!(has(&args, "--settings", &format!("Edit(/{}/**)", slice.worktree.display())), "the resumed session still edits its own worktree without asking: {args:?}");
     resumed.stop().unwrap();
+}
+
+// A node's Claude edits its own worktree without a permission card, by the path it was given and
+// by its real path behind a symlink; a path a rule cannot spell literally gets no rule.
+#[test]
+fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
+    let scratch = Directory::new();
+    let real = scratch.join("real-worktree");
+    std::fs::create_dir_all(&real).unwrap();
+    let real = real.canonicalize().unwrap();
+    assert_eq!(super::own_worktree_edits(&real), vec![format!("Edit(/{}/**)", real.display())]);
+    let link = scratch.join("linked-worktree");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(super::own_worktree_edits(&link), vec![format!("Edit(/{}/**)", link.display()), format!("Edit(/{}/**)", real.display())]);
+    assert!(super::own_worktree_edits(std::path::Path::new("/tmp/odd[name]")).is_empty());
+    assert!(super::own_worktree_edits(std::path::Path::new("relative/worktree")).is_empty());
 }
 
 // Replacing a session interrupts the old turn, detaches the old session and starts the
@@ -1191,7 +1208,10 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
     assert!(!args.contains(&"--strict-mcp-config"), "the user's MCP servers load: {args:?}");
     assert_eq!(after("--plugin-dir"), slice.plugin.to_str(), "{args:?}");
     let settings: serde_json::Value = serde_json::from_str(after("--settings").expect("Alondra's launch settings")).unwrap();
-    assert_eq!(settings, crate::plugins::launch_settings_with(None));
+    let own = super::own_worktree_edits(&slice.worktree);
+    assert!(own.contains(&format!("Edit(/{}/**)", slice.worktree.display())), "{own:?}");
+    assert_eq!(settings, crate::plugins::launch_settings_with(Some(serde_json::json!({"allow": own}))),
+        "the only permission Alondra adds is editing inside the node's own worktree");
     let environment: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     for alondra in ["ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_HOME", "ALONDRA_SDK_HOST"] {
         assert!(environment.contains(&alondra), "{alondra} reaches the node plugin's MCP server: {environment:?}");

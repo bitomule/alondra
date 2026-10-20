@@ -1,7 +1,8 @@
 //! Permission prompts a node does not need to put to the user, because the plugin can prove the
 //! command loses nothing: a `git reset --hard` in the node's own clean, fully pushed worktree, a
 //! copy of a new file into Alondra's files folder, and copies inside the worktree that only
-//! overwrite files git can restore. Anything the reader cannot follow keeps asking.
+//! overwrite files git can restore, and an edit of a file inside the node's own worktree. Anything
+//! the reader cannot follow keeps asking.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -13,8 +14,10 @@ const READ_ONLY_GIT: &[&str] = &["fetch", "log", "status", "rev-parse", "diff", 
 
 pub fn approve(payload: &Value, files_dir: &Path) -> bool {
     let field = |k: &str| payload.get(k).and_then(Value::as_str);
-    if field("tool_name") != Some("Bash") {
-        return false;
+    match field("tool_name") {
+        Some("Edit" | "Write" | "NotebookEdit") => return edit_inside_own_worktree(payload),
+        Some("Bash") => {}
+        _ => return false,
     }
     let (Some(command), Some(cwd)) = (payload.get("tool_input").and_then(|i| i.get("command")).and_then(Value::as_str), field("cwd")) else {
         return false;
@@ -40,6 +43,33 @@ pub fn approve(payload: &Value, files_dir: &Path) -> bool {
             .is_some_and(|targets| targets.iter().all(|t| new_in(files_dir, t) || restorable_in(&worktree, t))),
         Step::Chmod(paths) => paths.iter().all(|p| chmod_inside(&worktree, &cwd.join(&p.text))),
     })
+}
+
+/// A file tool's call whose file lies inside the node's own worktree, by its real path: no `..`, no
+/// symlink on the way out, nothing under the worktree's `.git`.
+fn edit_inside_own_worktree(payload: &Value) -> bool {
+    let Some(cwd) = payload.get("cwd").and_then(Value::as_str) else {
+        return false;
+    };
+    let input = payload.get("tool_input");
+    let Some(file) = ["file_path", "notebook_path"].iter().find_map(|k| input.and_then(|i| i.get(*k)).and_then(Value::as_str)) else {
+        return false;
+    };
+    let cwd = Path::new(cwd);
+    let Some(worktree) = own_worktree(cwd) else {
+        return false;
+    };
+    let target = cwd.join(file);
+    if target.components().any(|c| c == Component::ParentDir) || target.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        return false;
+    }
+    let Some(existing) = target.ancestors().skip(1).find(|a| a.exists()) else {
+        return false;
+    };
+    let (Ok(real_existing), Ok(rest)) = (existing.canonicalize(), target.strip_prefix(existing)) else {
+        return false;
+    };
+    real_existing.join(rest).strip_prefix(&worktree).is_ok_and(|inside| inside.components().next().is_some_and(|first| first.as_os_str() != ".git"))
 }
 
 #[derive(Debug, PartialEq)]
@@ -408,12 +438,50 @@ mod tests {
         }
     }
 
+    fn edit(cwd: &Path, tool: &str, file: &Path) -> Value {
+        json!({"session_id": "s", "hook_event_name": "PermissionRequest", "tool_name": tool, "permission_mode": "default",
+               "cwd": cwd.to_str().unwrap(), "tool_input": {"file_path": file.to_str().unwrap(), "old_string": "a", "new_string": "b"}})
+    }
+
+    // The card of 20 October: a node back in the default mode after its plan was approved asked to
+    // edit a test file in its own worktree.
     #[test]
-    fn only_bash_with_a_cwd_is_considered() {
+    fn an_edit_inside_the_nodes_own_worktree_is_approved() {
+        let r = repo();
+        std::fs::create_dir_all(r.worktree.join("crates/core/src/views")).unwrap();
+        std::fs::write(r.worktree.join("crates/core/src/views/tests.rs"), "a").unwrap();
+        assert!(approve(&edit(&r.worktree, "Edit", &r.worktree.join("crates/core/src/views/tests.rs")), &r.files));
+        assert!(approve(&edit(&r.worktree, "Write", &r.worktree.join("a.txt")), &r.files));
+        assert!(approve(&edit(&r.worktree, "Write", &r.worktree.join("new/dir/file.rs")), &r.files), "a new file in new folders");
+        assert!(approve(&edit(&r.worktree.join("crates"), "Edit", Path::new("core/src/views/tests.rs")), &r.files), "relative to a cwd inside it");
+        let mut notebook = edit(&r.worktree, "NotebookEdit", &r.worktree.join("a.ipynb"));
+        notebook["tool_input"] = json!({"notebook_path": r.worktree.join("a.ipynb").to_str().unwrap()});
+        assert!(approve(&notebook, &r.files));
+    }
+
+    #[test]
+    fn an_edit_that_leaves_the_worktree_keeps_asking() {
+        let r = repo();
+        assert!(!approve(&edit(&r.worktree, "Edit", &r.main.join("a.txt")), &r.files), "the main checkout");
+        assert!(!approve(&edit(&r.worktree, "Edit", &r.worktree.join("../../../a.txt")), &r.files), "through ..");
+        assert!(!approve(&edit(&r.worktree, "Write", &r.root.join("elsewhere.txt")), &r.files), "outside the repository");
+        assert!(!approve(&edit(&r.worktree, "Write", &r.worktree.join(".git")), &r.files), "the worktree's git link");
+        std::os::unix::fs::symlink(&r.main, r.worktree.join("out")).unwrap();
+        assert!(!approve(&edit(&r.worktree, "Edit", &r.worktree.join("out/a.txt")), &r.files), "a folder linked out");
+        std::os::unix::fs::symlink(r.main.join("a.txt"), r.worktree.join("linked.txt")).unwrap();
+        assert!(!approve(&edit(&r.worktree, "Edit", &r.worktree.join("linked.txt")), &r.files), "a file linked out");
+        assert!(!approve(&edit(&r.main, "Edit", &r.main.join("a.txt")), &r.files), "a session in the main checkout");
+    }
+
+    #[test]
+    fn only_bash_and_file_edits_with_a_cwd_are_considered() {
         let r = repo();
         let mut edit = payload(&r.worktree, "git reset --hard");
         edit["tool_name"] = json!("Write");
-        assert!(!approve(&edit, &r.files));
+        assert!(!approve(&edit, &r.files), "a file tool without a file");
+        let mut read = payload(&r.worktree, "git reset --hard");
+        read["tool_name"] = json!("WebFetch");
+        assert!(!approve(&read, &r.files));
         let mut no_cwd = payload(&r.worktree, "git reset --hard");
         no_cwd.as_object_mut().unwrap().remove("cwd");
         assert!(!approve(&no_cwd, &r.files));

@@ -193,7 +193,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         command,
     };
     let binding = binding(backend, capabilities)?;
-    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options)))?;
+    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)))?;
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
@@ -314,7 +314,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let permit = sealed.permits.pop().ok_or_else(|| Failed("the reservation issued no launch permit".into()))?;
     let instance = adoption.stamp.instance().as_str().to_owned();
     let options = LaunchOptions::load(&backend.state_root.join(&instance))?;
-    let mut configuration = configuration(backend, &adoption.directory, &instance, false, Some(worker_profile(plugin, &options)))?;
+    let mut configuration = configuration(backend, &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)))?;
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
@@ -366,7 +366,7 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
     let owner_generation = grant.generation();
     let stamp = adoption.stamp;
     let options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
-    let profile = plugin.map(|plugin| worker_profile(plugin, &options));
+    let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory));
     let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -530,14 +530,35 @@ fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: 
 }
 
 /// Alondra's node plugin and launch settings, which a task's Claude loads on top of the user's own.
-fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions) -> WorkerProfile {
+/// Its Claude runs in the default permission mode, so the settings allow editing inside the node's
+/// own worktree: an edit there never puts a permission card to the user.
+fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions, worktree: &str) -> WorkerProfile {
+    let permissions = serde_json::json!({"allow": own_worktree_edits(std::path::Path::new(worktree))});
     WorkerProfile {
         plugins: vec![plugin.to_path_buf()],
-        settings: crate::plugins::launch_settings_with(None).as_object().cloned().unwrap_or_default(),
+        settings: crate::plugins::launch_settings_with(Some(permissions)).as_object().cloned().unwrap_or_default(),
         model: options.model.clone(),
         effort: options.effort(),
         disallowed_tools: options.disallowed_tools.clone(),
     }
+}
+
+/// Claude Code's `Edit` rules cover Edit, Write and NotebookEdit; `//` anchors a rule at the root
+/// of the disk. The worktree is named as given and as its real path, when they differ. A path a
+/// rule cannot spell literally gets no rule, and edits there ask as before.
+pub(crate) fn own_worktree_edits(worktree: &std::path::Path) -> Vec<String> {
+    let mut paths = vec![worktree.to_path_buf()];
+    if let Ok(real) = worktree.canonicalize() {
+        if real != worktree {
+            paths.push(real);
+        }
+    }
+    paths
+        .iter()
+        .filter_map(|path| path.to_str())
+        .filter(|path| path.starts_with('/') && !path.contains(['*', '?', '[', ']', '{', '}', '(', ')', '!', '\\']))
+        .map(|path| format!("Edit(/{}/**)", path.trim_end_matches('/')))
+        .collect()
 }
 
 /// How the task's Claude reaches Alondra through the node plugin's MCP server: as its node, with
