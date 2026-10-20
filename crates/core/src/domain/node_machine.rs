@@ -61,9 +61,13 @@ pub enum NodePhase {
     /// The user answered its card or sent its result back while it rested: what they said is on
     /// its way and starts its next turn. The first listing that finds it idle may predate the
     /// answer, so only the next one ends the wait as a turn end. `idle_since` is when the first came.
+    /// After a wait of its task ended (`after_wait`), what Alondra told it is on its way: no listing
+    /// ends a turn it has not started, so the words it wrote into the wait never reach the user.
     Resuming {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idle_since: Option<Millis>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        after_wait: bool,
     },
     /// Its turn ended while its task waits for another task: Alondra tells it when that one is done.
     WaitingDependency,
@@ -310,9 +314,13 @@ fn rest(f: &TaskFacts) -> Settled {
 /// Where a resting node goes when the domain's facts change under it: what moved it (an answer, a
 /// result sent back, a task handed to it) is on its way to it.
 fn resume(f: &TaskFacts) -> NodePhase {
+    resume_after(f, false)
+}
+
+fn resume_after(f: &TaskFacts, after_wait: bool) -> NodePhase {
     match rest(f) {
         Settled::At(phase) => phase,
-        Settled::Unheard => NodePhase::Resuming { idle_since: None },
+        Settled::Unheard => NodePhase::Resuming { idle_since: None, after_wait },
     }
 }
 
@@ -331,7 +339,8 @@ pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
         NodePhase::Delivered { in_turn: true } if f.held || f.card => NodePhase::WaitingUser { in_turn: true },
         NodePhase::Delivered { in_turn: true } if !f.delivered => NodePhase::Working,
         NodePhase::Resuming { .. } if f.held || f.card || f.delivered || !f.open || f.awaits => resume(f),
-        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered { in_turn: false } | NodePhase::WaitingDependency | NodePhase::NoTask => resume(f),
+        NodePhase::WaitingDependency => resume_after(f, true),
+        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered { in_turn: false } | NodePhase::NoTask => resume(f),
         phase => phase,
     }
 }
@@ -420,8 +429,10 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::WaitingDependency | P::NoTask, Listed::Idle | Listed::Blocked | Listed::Done) => keep(),
         (P::WaitingBackground(Background { gone: Some(gone), .. }), Listed::Idle | Listed::Blocked | Listed::Done) if at > *gone => rest(f),
         (P::WaitingBackground(_), _) => keep(),
-        (P::Resuming { idle_since: None }, Listed::Idle | Listed::Blocked | Listed::Done) => Settled::At(P::Resuming { idle_since: Some(at) }),
-        (P::Resuming { idle_since: Some(first) }, Listed::Idle | Listed::Blocked | Listed::Done) if at <= *first => keep(),
+        (P::Resuming { after_wait: true, .. }, Listed::Idle | Listed::Blocked | Listed::Done) => keep(),
+        (P::Resuming { idle_since: None, after_wait }, Listed::Idle | Listed::Blocked | Listed::Done) =>
+            Settled::At(P::Resuming { idle_since: Some(at), after_wait: *after_wait }),
+        (P::Resuming { idle_since: Some(first), .. }, Listed::Idle | Listed::Blocked | Listed::Done) if at <= *first => keep(),
         (_, Listed::Idle | Listed::Blocked | Listed::Done) => rest(f),
         (P::WaitingUser { .. } | P::Delivered { .. } | P::WaitingDependency, Listed::Working) => keep(),
         (_, Listed::Working) => Settled::At(P::Working),

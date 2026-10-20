@@ -57,8 +57,9 @@ fn phases() -> Vec<NodePhase> {
         NodePhase::Paused(pause(api_error())),
         NodePhase::Delivered { in_turn: true },
         NodePhase::Delivered { in_turn: false },
-        NodePhase::Resuming { idle_since: None },
-        NodePhase::Resuming { idle_since: Some(SINCE) },
+        NodePhase::Resuming { idle_since: None, after_wait: false },
+        NodePhase::Resuming { idle_since: Some(SINCE), after_wait: false },
+        NodePhase::Resuming { idle_since: None, after_wait: true },
         NodePhase::WaitingDependency,
         NodePhase::NoTask,
         NodePhase::Closing,
@@ -329,7 +330,7 @@ fn an_open_card_takes_the_node_out_of_the_slots_even_inside_a_turn() {
     let card = TaskFacts { card: true, ..OPEN };
     assert_eq!(next_phase(&NodePhase::WaitingUser { in_turn: false }, SINCE, &NodeEvent::TurnStarted, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: true });
     assert_eq!(settle(NodePhase::WaitingUser { in_turn: true }, &OPEN), NodePhase::Working, "the answer lets its turn go on");
-    assert_eq!(settle(NodePhase::WaitingUser { in_turn: false }, &OPEN), NodePhase::Resuming { idle_since: None },
+    assert_eq!(settle(NodePhase::WaitingUser { in_turn: false }, &OPEN), NodePhase::Resuming { idle_since: None, after_wait: false },
         "the answer is on its way to the node and starts its next turn");
 }
 
@@ -574,17 +575,96 @@ fn a_node_waiting_for_its_own_work_rests_on_its_last_words_only_once_that_work_o
 #[test]
 fn an_answered_node_works_until_its_answer_starts_a_turn_or_two_listings_find_it_idle() {
     let resuming = settle(NodePhase::WaitingUser { in_turn: false }, &OPEN);
-    assert_eq!(resuming, NodePhase::Resuming { idle_since: None });
+    assert_eq!(resuming, NodePhase::Resuming { idle_since: None, after_wait: false });
     assert!(resuming.holds_slot());
     assert_eq!(settle(NodePhase::Delivered { in_turn: false }, &OPEN), resuming, "a result sent back for changes goes back to it too");
     let idle = NodeEvent::Listed { listed: Listed::Idle };
     let seen = next_phase(&resuming, SINCE, &idle, &OPEN, AT).unwrap();
-    assert_eq!(seen, NodePhase::Resuming { idle_since: Some(AT) }, "the first idle listing may come before the answer reached it");
+    assert_eq!(seen, NodePhase::Resuming { idle_since: Some(AT), after_wait: false }, "the first idle listing may come before the answer reached it");
     assert_eq!(next_phase(&seen, SINCE, &idle, &OPEN, AT).unwrap(), seen, "the same listing again moves nothing");
     assert!(unheard(&seen, &idle, &OPEN, AT + 1));
     assert_eq!(next_phase(&seen, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
     assert_eq!(settle(resuming.clone(), &TaskFacts { card: true, ..OPEN }), NodePhase::WaitingUser { in_turn: false });
     assert_eq!(settle(resuming, &TaskFacts { awaits: true, ..OPEN }), NodePhase::WaitingDependency);
+}
+
+/// David's rule, 17 October: a node whose task stops waiting for another task has said nothing new
+/// until a turn of its own starts. Alondra's word that the wait ended is on its way, so no listing,
+/// however many and in whatever order, ends a turn it never began; a turn, a lost session or a fact
+/// of the domain moves it.
+#[test]
+fn a_node_whose_wait_ended_waits_for_its_turn_and_no_listing_puts_its_words_on_a_card() {
+    let resuming = settle(NodePhase::WaitingDependency, &OPEN);
+    assert_eq!(resuming, NodePhase::Resuming { idle_since: None, after_wait: true });
+    let unworked = [Listed::Idle, Listed::Blocked, Listed::Done];
+    for first in unworked {
+        for second in unworked {
+            for third in unworked {
+                let mut phase = resuming.clone();
+                for (n, listed) in [first, second, third].into_iter().enumerate() {
+                    let at = AT + n as Millis * HOUR;
+                    let event = NodeEvent::Listed { listed };
+                    assert!(!unheard(&phase, &event, &OPEN, at), "{first:?}, {second:?}, {third:?}: a turn it never began never ends");
+                    phase = next_phase(&phase, SINCE, &event, &OPEN, at).unwrap();
+                }
+                assert_eq!(phase, resuming, "{first:?}, {second:?}, {third:?}");
+            }
+        }
+    }
+    assert_eq!(next_phase(&resuming, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working, "what Alondra told it started its turn");
+    assert_eq!(next_phase(&resuming, SINCE, &NodeEvent::Listed { listed: Listed::Working }, &OPEN, AT).unwrap(), NodePhase::Working);
+    assert_eq!(next_phase(&resuming, SINCE, &NodeEvent::Listed { listed: Listed::Absent }, &OPEN, AT).unwrap(), NodePhase::Lost);
+    assert_eq!(settle(resuming.clone(), &TaskFacts { card: true, ..OPEN }), NodePhase::WaitingUser { in_turn: false });
+    assert_eq!(settle(resuming, &TaskFacts { awaits: true, ..OPEN }), NodePhase::WaitingDependency);
+    assert!(unheard(&NodePhase::Working, &NodeEvent::TurnEnded, &OPEN, AT), "a turn that ends with nothing for the user still reaches them");
+}
+
+/// 16 October, «Vistas rápidas 5/7», replayed: its node asked the orchestrator to make it wait for
+/// phase 4, wrote "Until then, nothing to do" and ended its turn. Phase 4 merged at 04:48 while the
+/// node's session waited for memory to come back, so Alondra's word reached it only at 05:00; two
+/// listings at 04:48 and 04:49 put those old words on a card for David, with «Que siga» alone.
+#[test]
+fn the_16_october_wait_ends_with_no_card_for_the_user() {
+    let mut w = World::new();
+    w.apply(&Step::Launch);
+    w.apply(&Step::Launch);
+    let (phase4, node, task): (TaskId, AgentId, TaskId) = ("t-1".into(), "node-2".into(), "t-2".into());
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    assert!(w.event(&node, NodeEvent::TurnStarted, w.now));
+    w.must(Actor::Agent { agent_id: node.clone() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "wait-phase4".into(), scope: Scope::Task { task_id: task.clone() },
+        recipient: Recipient::Orchestrator, body: "Phase 5 starts from main once phase 4 is merged; its PR is open.".into(), blocking: true,
+        options: vec![
+            QuestionOption { id: "depend".into(), label: "Wait for phase 4".into(), description: None },
+            QuestionOption { id: "start-now".into(), label: "Start now from main".into(), description: None },
+        ],
+        card: CardSpec::new(CardKind::Decide, "Make this task wait for phase 4").why("Phase 5 builds on it"),
+    });
+    w.must(orchestrator.clone(), Command::SetDependencies { task_id: task.clone(), dependencies: BTreeSet::from([phase4]), stack: None });
+    w.must(orchestrator, Command::AnswerQuestion { attachments: vec![], interaction_id: "wait-phase4".into(), option_id: "depend".into(), inputs: BTreeMap::new() });
+    assert_eq!(w.s.tasks[&task].state, TaskState::WaitingDependency);
+    w.must(Actor::System, Command::RecordLastWords { agent_id: node.clone(),
+        text: "This task now depends on phase 4. Alondra will resume it once its PR is merged. Until then, nothing to do.".into() });
+    assert!(w.event(&node, NodeEvent::TurnEnded, w.now));
+    assert_eq!(w.s.node_phase(&node), Some(&NodePhase::WaitingDependency));
+    assert!(w.unheard_cards().is_empty(), "words written into the wait are no card");
+
+    w.apply(&Step::Deliver(0));
+    w.apply(&Step::Accept(0));
+    assert_eq!(w.s.tasks[&task].state, TaskState::Running, "phase 4 is done: phase 5 goes on");
+    assert_eq!(w.s.node_phase(&node), Some(&NodePhase::Resuming { idle_since: None, after_wait: true }));
+    w.real.insert(node.clone(), Listed::Done);
+    for _ in 0..3 {
+        w.now += 60_000;
+        w.reconcile();
+        assert!(w.unheard_cards().is_empty(), "the word that the wait ended has not reached it yet");
+    }
+    assert_eq!(w.s.node_phase(&node), Some(&NodePhase::Resuming { idle_since: None, after_wait: true }));
+    assert!(w.s.open_user_card(&task).is_none(), "nothing waits on David");
+    w.check();
+    w.now += 60_000;
+    assert!(w.event(&node, NodeEvent::TurnStarted, w.now), "Alondra's word reached it");
+    assert_eq!(w.s.node_phase(&node), Some(&NodePhase::Working));
 }
 
 #[derive(Clone, Debug)]
@@ -734,7 +814,7 @@ impl World {
     /// What every node is and what waits on the user, without a single time in it.
     fn shape(&self) -> (Vec<(AgentId, &'static str, bool)>, BTreeSet<(AgentId, InteractionId)>) {
         let seen = |phase: &NodePhase| match phase {
-            NodePhase::Starting { idle_since, .. } | NodePhase::Resuming { idle_since } => idle_since.is_some(),
+            NodePhase::Starting { idle_since, .. } | NodePhase::Resuming { idle_since, .. } => idle_since.is_some(),
             NodePhase::WaitingBackground(work) => work.gone.is_some(),
             _ => false,
         };
@@ -1173,7 +1253,7 @@ fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
     assert!(tasks.contains(&format!("«{said}»")), "the task's row says what its node wrote: {tasks}");
 
     w.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: CARRY_ON.into(), inputs: BTreeMap::new() });
-    assert_eq!(w.s.node_phase(&agent), Some(&NodePhase::Resuming { idle_since: None }), "the answer is on its way to it");
+    assert_eq!(w.s.node_phase(&agent), Some(&NodePhase::Resuming { idle_since: None, after_wait: false }), "the answer is on its way to it");
 }
 
 /// Words longer than a card's why keep their start on the card and the whole text in its detail.

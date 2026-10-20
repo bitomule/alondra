@@ -294,9 +294,13 @@ Pick the tool by what you need:
 
 When you cannot go on until another task is done (its fix is on the default branch, main is
 green again), `ask` the orchestrator (recipient kind `orchestrator`) to make your task depend on
-that task, naming it, and end your turn. Alondra tells you when it is done and you go on; never
-ask the user to tell you, with a card or a `request_action` ("tell me when it is on main"). A
-wait only holds back your work: it never holds back the merge of a PR you already presented.
+that task, naming it, and end your turn without writing anything else. When the orchestrator
+answers that your task now depends on it, end your turn again at once and write nothing: no
+summary of the wait, no "nothing to do until then". The task already shows the user what it waits
+for, and words written then reach no one. Alondra tells you when that task is done and you go on;
+never ask the user to tell you, with a card or a `request_action` ("tell me when it is on main").
+If the orchestrator answers that you should go on without it, go on. A wait only holds back your
+work: it never holds back the merge of a PR you already presented.
 
 ## Messages you receive
 

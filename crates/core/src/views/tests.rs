@@ -1561,8 +1561,8 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
 #[test]
 fn a_running_task_never_says_no_activity_whatever_its_node_does() {
     let work = Background { work: crate::model::BackgroundKind::Shell, label: "./listen-at-home.sh".into(), since: 0, others: 0, gone: None };
-    for phase in [NodePhase::Working, NodePhase::WaitingBackground(work), NodePhase::Resuming { idle_since: None },
-        NodePhase::Resuming { idle_since: Some(0) }, NodePhase::WaitingUser { in_turn: false }, NodePhase::WaitingUser { in_turn: true }]
+    for phase in [NodePhase::Working, NodePhase::WaitingBackground(work), NodePhase::Resuming { idle_since: None, after_wait: false },
+        NodePhase::Resuming { idle_since: Some(0), after_wait: false }, NodePhase::WaitingUser { in_turn: false }, NodePhase::WaitingUser { in_turn: true }]
     {
         let mut state = fixture();
         node_in(&mut state, phase.clone());
@@ -1916,7 +1916,7 @@ fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
         ("home-zero", NodePhase::Working, "t-home-counters-zero", TaskState::Done),
         ("claude-mods", NodePhase::Working, "t-claude-mods-analysis", TaskState::Done),
         ("busy", NodePhase::Working, "t-busy", TaskState::Running),
-        ("idle", NodePhase::Resuming { idle_since: None }, "t-idle", TaskState::Running),
+        ("idle", NodePhase::Resuming { idle_since: None, after_wait: false }, "t-idle", TaskState::Running),
     ] {
         state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
         let mut row = template.clone();
