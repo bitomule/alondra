@@ -17,7 +17,7 @@ const NOTE: &str = "Add the tests first";
 const WRITTEN: &str = "Write the changelog too";
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
-    let Ok(user) = report.step("a phone pairs with Mac 1 through the relay", || User::paired(sandbox, "journey", 1, false)) else {
+    let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
         return;
     };
     report.case("S1", "A task runs through the Agent SDK; its turn-end card asks once and «Carry on» from the phone reaches Claude", |report| {

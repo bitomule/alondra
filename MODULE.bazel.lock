@@ -755,7 +755,7 @@
           "@@//crates/process-group/Cargo.toml": "1d330951d0ea88c428807ff9639316d1ff63e1bd8ffbf6dfe29b95eb6ecfff2a",
           "@@//crates/provider-claude/Cargo.toml": "56a8749269a0b90cd030b6624f52b6ec30084cd9ddb3abd23dabb4d15883253e",
           "@@//crates/provider-contract/Cargo.toml": "836283d2aba9ddf221b21265f9bbe365870106994176cfcb095f105ca8d3c233",
-          "@@//crates/relay/Cargo.toml": "93e8602936d3b764678b1179b45181fd787a037e30606a07d71eb202f22ef57e",
+          "@@//crates/relay/Cargo.toml": "c5efc00d91d964209ac25039b9d319f332936ccd93701a2a2b45035eb7a85a79",
           "@@//crates/store/Cargo.toml": "c22827c420c91ff94f0605d75c672d2b62f337d152b0e13a4c3f86c3f6074aba"
         },
         "recordedDirentsInputs": {},

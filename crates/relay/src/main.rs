@@ -2,13 +2,10 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
-#[cfg(any(test, feature = "lab-waiter-metrics"))]
-mod lab_waiters;
 mod auth;
 mod management;
 mod pairing;
 mod push;
-mod state;
 mod web_session;
 mod web_assets;
 
@@ -17,16 +14,14 @@ use auth::{Auth, Config, IrohNodeBinding, MacRegistration, PhoneDevice, PushRegi
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, Method, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{any, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use state::{Queue, QueueError};
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -34,18 +29,12 @@ use std::{
 use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
-    #[cfg(any(test, feature = "lab-waiter-metrics"))]
-    lab_waiters: Arc<lab_waiters::Metrics>,
     auth: Auth,
     management_keycloak: Option<management::keycloak::Keycloak>,
     web_session: Option<Arc<web_session::WebSession>>,
     web_assets: Option<web_assets::WebAssets>,
     apns: Option<push::Apns>,
-    queue: Queue,
     pairing: pairing::Mailbox,
-    work_waiters: Arc<Semaphore>,
-    change_waiters: Arc<Semaphore>,
-    status_waiters: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     device_gate: Arc<RwLock<()>>,
     waitlist: management::waitlist::Limiter,
@@ -80,15 +69,13 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/push/register", post(register_push))
         .route("/v1/push/unregister", post(unregister_push))
         .route("/v1/mac/push", post(send_push))
-        .route("/v1/requests", post(submit))
-        .route("/v1/requests/{id}", get(request_status))
-        .route("/v1/requests/{id}/ack", post(acknowledge_result))
-        .route("/v1/changes", get(changes))
-        .route("/v1/work", get(work))
-        .route("/v1/work/{id}/receipt", post(receipt))
-        .route("/v1/work/{id}/response", post(respond))
+        .route("/v1/requests", any(mailbox_removed))
+        .route("/v1/requests/{*rest}", any(mailbox_removed))
+        .route("/v1/changes", any(mailbox_removed))
+        .route("/v1/work", any(mailbox_removed))
+        .route("/v1/work/{*rest}", any(mailbox_removed))
         .fallback(web_assets::serve)
-        .layer(DefaultBodyLimit::max(state::MAX_RESPONSE_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(server.clone(),web_session::middleware))
         .layer(middleware::from_fn_with_state(
             server.clone(),
@@ -114,8 +101,8 @@ async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(match &server.iroh_relay {
-            Some(iroh_relay) => json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true,"iroh_relay":iroh_relay}),
-            None => json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true}),
+            Some(iroh_relay) => json!({"protocol":1,"epoch":server.epoch,"iroh_relay":iroh_relay}),
+            None => json!({"protocol":1,"epoch":server.epoch}),
         }),
     )
 }
@@ -272,7 +259,6 @@ async fn revoke_mac(
         .auth
         .revoke_mac(&who)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_revocation_failed"))?;
-    server.queue.purge_mac(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -296,6 +282,9 @@ async fn limit_and_headers(
     response
 }
 
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_PUSH_LIFETIME_MS: u64 = 10 * 60_000;
+
 type ApiResult = Result<Response, (StatusCode, Json<Value>)>;
 fn error(status: StatusCode, code: &str) -> (StatusCode, Json<Value>) {
     (status, Json(json!({"error":code})))
@@ -303,33 +292,10 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<Value>) {
 fn unauthorized() -> (StatusCode, Json<Value>) {
     error(StatusCode::UNAUTHORIZED, "unauthorized")
 }
-fn queued_error(e: QueueError) -> (StatusCode, Json<Value>) {
-    match e {
-        QueueError::Full => error(StatusCode::TOO_MANY_REQUESTS, "queue_full"),
-        QueueError::PayloadTooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "envelope_too_large"),
-        QueueError::Conflict => error(StatusCode::CONFLICT, "request_id_conflict"),
-        QueueError::NotFound | QueueError::WrongDevice => error(StatusCode::NOT_FOUND, "not_found"),
-        QueueError::NotReceived => error(StatusCode::CONFLICT, "mac_receipt_required"),
-        QueueError::Expired => error(StatusCode::GONE, "outcome_unknown"),
-        QueueError::ResultEvicted => error(StatusCode::GONE, "result_evicted"),
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResultAcknowledgment { revision: u64 }
-
-async fn acknowledge_result(
-    State(server): State<Arc<Server>>, axum::extract::Path(id): axum::extract::Path<String>,
-    headers: HeaderMap, method: Method, uri: Uri, body: Bytes,
-) -> ApiResult {
-    if body.len() > 1024 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
-    let _gate = server.device_gate.read().await;
-    let who = server.auth.authenticate_phone(&headers, &method, &uri, &body, now_ms()).await.map_err(authentication_error)?;
-    let acknowledgment: ResultAcknowledgment = serde_json::from_slice(&body)
-        .map_err(|_|error(StatusCode::BAD_REQUEST,"invalid_acknowledgment"))?;
-    server.queue.acknowledge(&who.owner_sub,&who.device_id,&id,acknowledgment.revision,now_ms()).map_err(queued_error)?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+/// Apps and daemons from before iroh read a 404 as "this relay has no mailbox"; a 410 would
+/// read as an outcome they cannot know.
+async fn mailbox_removed() -> (StatusCode, Json<Value>) {
+    error(StatusCode::NOT_FOUND, "mailbox_removed")
 }
 
 async fn enroll(
@@ -373,7 +339,6 @@ async fn revoke(
         .auth
         .revoke(&mac, &id)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
-    server.queue.purge_phone(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -660,7 +625,7 @@ async fn send_push(
         || e.sender != mac.device_id
         || e.recipient != request.device_id
         || e.expires_at_ms <= now
-        || e.expires_at_ms > now.saturating_add(state::MAX_LIFETIME_MS)
+        || e.expires_at_ms > now.saturating_add(MAX_PUSH_LIFETIME_MS)
     {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_push_route"));
     }
@@ -723,377 +688,6 @@ fn apns_failure_response(failure: &anyhow::Error) -> (StatusCode, Json<Value>) {
     }
 }
 
-fn parse_envelope(
-    body: &[u8],
-    max: usize,
-) -> Result<(Envelope, Value), (StatusCode, Json<Value>)> {
-    if body.len() > max {
-        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "envelope_too_large"));
-    }
-    let fields: Envelope = serde_json::from_slice(body)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope"))?;
-    if fields.request_id.is_empty()
-        || fields.request_id.len() > 128
-        || !fields
-            .request_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_request_id"));
-    }
-    let v = serde_json::to_value(&fields)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope"))?;
-    Ok((fields, v))
-}
-
-async fn submit(
-    State(server): State<Arc<Server>>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-    body: Bytes,
-) -> ApiResult {
-    let _gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_phone(&headers, &method, &uri, &body, now_ms())
-        .await
-        .map_err(authentication_error)?;
-    let (fields, v) = parse_envelope(&body, state::MAX_ENVELOPE_BYTES)?;
-    if fields.kind != "request"
-        || fields.route != fields.recipient
-        || fields.sender != who.device_id
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
-    }
-    server
-        .auth
-        .mac_for_owner(&fields.route, &who.owner_sub)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_route"))?;
-    if server
-        .auth
-        .paired_mac_for_phone(&who.device_id, &who.owner_sub)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_route"))?
-        != fields.route
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
-    }
-    let now = now_ms();
-    if fields.expires_at_ms <= now
-        || fields.expires_at_ms > now.saturating_add(state::MAX_LIFETIME_MS)
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_expiry"));
-    }
-    // The envelope signature is verified by the E2E crate before any work is admitted.
-    let sender_key = server
-        .auth
-        .phone_key(&who.device_id)
-        .map_err(authentication_error)?;
-    fields
-        .verify_signature(
-            &sender_key,
-            &who.device_id,
-            &fields.route,
-            &fields.route,
-            now,
-        )
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
-    let digest: [u8; 32] = Sha256::digest(&body).into();
-    let result = server
-        .queue
-        .submit(
-            &who.owner_sub,
-            &who.device_id,
-            &fields.route,
-            &fields.request_id,
-            digest,
-            v,
-            fields.expires_at_ms,
-            now,
-        )
-        .map_err(queued_error)?;
-    let code = match result.status {
-        state::JobStatus::Expired => StatusCode::GONE,
-        state::JobStatus::Completed => StatusCode::OK,
-        _ => StatusCode::ACCEPTED,
-    };
-    Ok((code, Json(json!({"request_id":result.request_id,"status":result.status,"revision":result.revision}))).into_response())
-}
-
-#[derive(Deserialize, Default)]
-struct StatusQuery {
-    #[serde(default)]
-    wait_s: u64,
-}
-
-async fn request_status(
-    State(server): State<Arc<Server>>,
-    Path(id): Path<String>,
-    Query(query): Query<StatusQuery>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-) -> ApiResult {
-    let gate = server.device_gate.read().await;
-    let who = server.auth.authenticate_phone(&headers, &method, &uri, &[], now_ms())
-        .await.map_err(authentication_error)?;
-    let mac = server.auth.paired_mac_for_phone(&who.device_id, &who.owner_sub)
-        .map_err(authentication_error)?;
-    server.auth.mac_for_owner(&mac, &who.owner_sub).map_err(authentication_error)?;
-    let wait_s = query.wait_s.min(25);
-    let initial = server.queue.get(&who.owner_sub, &who.device_id, &id, now_ms())
-        .map_err(queued_error)?;
-    if wait_s == 0 || matches!(initial.status, state::JobStatus::Completed | state::JobStatus::Expired) {
-        return Ok((StatusCode::OK, Json(json!(initial))).into_response());
-    }
-    let subscription = server.queue.subscribe_changes(&who.owner_sub, &who.device_id, &mac);
-    let mut initial_gate = Some(gate);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
-    let mut permit = None;
-    loop {
-        let notified = subscription.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let gate = if let Some(gate) = initial_gate.take() { gate } else {
-            let gate = server.device_gate.read().await;
-            server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
-            gate
-        };
-        let result = server.queue.get(&who.owner_sub, &who.device_id, &id, now_ms())
-            .map_err(queued_error)?;
-        if matches!(result.status, state::JobStatus::Completed | state::JobStatus::Expired)
-            || wait_s == 0 || tokio::time::Instant::now() >= deadline {
-            return Ok((StatusCode::OK, Json(json!(result))).into_response());
-        }
-        drop(gate);
-        if permit.is_none() {
-            permit = Some(server.status_waiters.clone().try_acquire_owned()
-                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
-        }
-        tokio::select! {
-            _ = notified => {},
-            _ = tokio::time::sleep_until(deadline) => {},
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct ChangesQuery {
-    #[serde(default)]
-    since: u64,
-    epoch: Option<String>,
-    #[serde(default = "default_wait")]
-    wait_s: u64,
-}
-fn default_wait() -> u64 {
-    25
-}
-
-async fn changes(
-    State(server): State<Arc<Server>>,
-    Query(query): Query<ChangesQuery>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-) -> ApiResult {
-    // Protect authentication and snapshots, never the idle network wait.
-    let gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_phone(&headers, &method, &uri, &[], now_ms())
-        .await
-        .map_err(authentication_error)?;
-    let mac = server.auth.paired_mac_for_phone(&who.device_id, &who.owner_sub)
-        .map_err(authentication_error)?;
-    let subscription = server.queue.subscribe_changes(&who.owner_sub, &who.device_id, &mac);
-    drop(gate);
-    if query.epoch.as_deref().is_some_and(|e| e != server.epoch) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error":"relay_epoch_changed","epoch":server.epoch})),
-        ));
-    }
-    let wait_s = query.wait_s.min(25);
-    let mut permit = None;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
-    loop {
-        let notified = subscription.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let gate = server.device_gate.read().await;
-        server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
-        let (revision, events) =
-            server
-                .queue
-                .changes(&who.owner_sub, &who.device_id, query.since, now_ms());
-        if query.since > revision {
-            drop(permit);
-            return Err((
-                StatusCode::CONFLICT,
-                Json(json!({"error":"stale_cursor","epoch":server.epoch,"revision":revision})),
-            ));
-        }
-        if !events.is_empty() || wait_s == 0 || tokio::time::Instant::now() >= deadline
-            || server.queue.compacted_since(&who.owner_sub, &who.device_id, query.since) {
-            drop(permit);
-            return Ok((
-                StatusCode::OK,
-                Json(json!({"epoch":server.epoch,"revision":revision,"changes":events})),
-            )
-                .into_response());
-        }
-        // The waiter budget limits idle connections, not authenticated
-        // snapshots that can already return. The global request limit remains.
-        if permit.is_none() {
-            permit = Some(server.change_waiters.clone().try_acquire_owned()
-                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
-        }
-        drop(gate);
-        // On notification or timeout, reacquire the gate and recheck both the
-        // local device registry and account state before producing a snapshot.
-        let waiting = tokio::time::timeout_at(deadline, notified);
-        #[cfg(any(test, feature = "lab-waiter-metrics"))]
-        let waiting = server.lab_waiters.changes.observe(waiting);
-        let _ = waiting.await;
-    }
-}
-
-#[derive(Deserialize)]
-struct WorkQuery {
-    #[serde(default = "default_wait")]
-    wait_s: u64,
-}
-
-async fn work(
-    State(server): State<Arc<Server>>,
-    Query(query): Query<WorkQuery>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-) -> ApiResult {
-    let gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
-        .map_err(authentication_error)?;
-    let subscription = server.queue.subscribe_work(&who.owner_sub, &who.device_id);
-    drop(gate);
-    let wait_s = query.wait_s.min(25);
-    let mut permit = None;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
-    loop {
-        let notified = subscription.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let gate = server.device_gate.read().await;
-        server.auth.mac_for_owner(&who.device_id, &who.owner_sub).map_err(authentication_error)?;
-        server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
-        if let Some(item) = server.queue.next_work(&who.device_id, now_ms()) {
-            drop(permit);
-            return Ok((
-                StatusCode::OK,
-                Json(json!({"request_id":item.request_id,"envelope":item.envelope})),
-            )
-                .into_response());
-        }
-        if wait_s == 0 || tokio::time::Instant::now() >= deadline {
-            drop(permit);
-            return Ok(StatusCode::NO_CONTENT.into_response());
-        }
-        // The waiter budget limits idle connections, not authenticated
-        // snapshots that can already return. The global request limit remains.
-        if permit.is_none() {
-            permit = Some(server.work_waiters.clone().try_acquire_owned()
-                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
-        }
-        drop(gate);
-        let waiting = tokio::time::timeout_at(deadline, notified);
-        #[cfg(any(test, feature = "lab-waiter-metrics"))]
-        let waiting = server.lab_waiters.work.observe(waiting);
-        let _ = waiting.await;
-    }
-}
-
-async fn receipt(
-    State(server): State<Arc<Server>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-    body: Bytes,
-) -> ApiResult {
-    let _gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
-        .map_err(authentication_error)?;
-    if !body.is_empty() {
-        return Err(error(StatusCode::BAD_REQUEST, "receipt_body_must_be_empty"));
-    }
-    let status = server
-        .queue
-        .mark_received(&who.device_id, &id, now_ms())
-        .map_err(queued_error)?;
-    Ok((
-        StatusCode::OK,
-        Json(json!({"request_id":status.request_id,"status":status.status})),
-    )
-        .into_response())
-}
-
-async fn respond(
-    State(server): State<Arc<Server>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    method: Method,
-    uri: Uri,
-    body: Bytes,
-) -> ApiResult {
-    let _gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
-        .map_err(authentication_error)?;
-    let (fields, v) = parse_envelope(&body, state::MAX_RESPONSE_BYTES)?;
-    let phone_id = server
-        .queue
-        .phone_for_mac(&who.device_id, &id, now_ms())
-        .map_err(queued_error)?;
-    if fields.kind != "response"
-        || fields.request_id != id
-        || fields.route != who.device_id
-        || fields.sender != who.device_id
-        || fields.recipient != phone_id
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
-    }
-    if fields.expires_at_ms > now_ms().saturating_add(state::MAX_LIFETIME_MS) {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_expiry"));
-    }
-    fields
-        .verify_signature(
-            &server
-                .auth
-                .mac_key(&who.device_id)
-                .map_err(authentication_error)?,
-            &who.device_id,
-            &phone_id,
-            &who.device_id,
-            now_ms(),
-        )
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
-    server.auth.require_live_route(&who.owner_sub,&who.device_id,Some(&phone_id)).await.map_err(authentication_error)?;
-    let status = server
-        .queue
-        .respond(&who.device_id, &phone_id, &id, v, now_ms())
-        .map_err(queued_error)?;
-    Ok((
-        StatusCode::OK,
-        Json(json!({"request_id":status.request_id,"status":status.status})),
-    )
-        .into_response())
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1147,18 +741,12 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => None,
     };
     let server = Arc::new(Server {
-        #[cfg(any(test, feature = "lab-waiter-metrics"))]
-        lab_waiters: Arc::default(),
         auth,
         web_assets,
         web_session,
         management_keycloak,
         apns,
-        queue: Queue::new(),
         pairing: pairing::Mailbox::default(),
-        work_waiters: Arc::new(Semaphore::new(16)),
-        change_waiters: Arc::new(Semaphore::new(64)),
-        status_waiters: Arc::new(Semaphore::new(16)),
         requests: Arc::new(Semaphore::new(128)),
         device_gate: Arc::new(RwLock::new(())),
         waitlist: management::waitlist::Limiter::from_env()?,
@@ -1168,8 +756,6 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(test)]
         test_directory: None,
     });
-    #[cfg(feature = "lab-waiter-metrics")]
-    server.lab_waiters.start(server.epoch.clone())?;
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
     if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
@@ -1203,10 +789,10 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod http_tests {
-    mod process_fixture { include!("operation_process_fixture.rs"); }
     include!("pg_fault_tests.rs");
     use super::*;
     use alondra_e2e::{Context, Envelope, sign_http_challenge};
+    use sha2::{Digest, Sha256};
     use auth::PhoneDevice;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::elliptic_curve::sec1::ToSec1Point;
@@ -1218,29 +804,6 @@ mod http_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST_REGISTRY: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn response_envelopes_accept_near_one_mib_and_reject_larger_bodies() {
-        let signing = SigningKey::from_slice(&[1u8; 32]).unwrap();
-        let recipient = SecretKey::from_slice(&[2u8; 32]).unwrap();
-        let envelope = Envelope::seal_random(
-            Context {
-                route: "mac-1", sender: "mac-1", recipient: "phone-1",
-                request_id: "request-1", kind: "response", expires_at_ms: now_ms() + 60_000,
-            },
-            &vec![b'a'; 740 * 1024],
-            &signing,
-            &recipient.public_key(),
-        ).unwrap();
-        let bytes = serde_json::to_vec(&envelope).unwrap();
-        assert!(bytes.len() > 256 * 1024 && bytes.len() <= state::MAX_RESPONSE_BYTES);
-        assert!(parse_envelope(&bytes, state::MAX_RESPONSE_BYTES).is_ok());
-        let too_large = vec![b'x'; state::MAX_RESPONSE_BYTES + 1];
-        assert!(matches!(parse_envelope(&too_large, state::MAX_RESPONSE_BYTES),
-            Err((StatusCode::PAYLOAD_TOO_LARGE, _))));
-        assert_eq!(state::MAX_ENVELOPE_BYTES, 256 * 1024);
-        assert_eq!(state::MAX_STORED, 512);
-    }
 
     fn key_bytes(key: &SigningKey) -> String {
         URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes())
@@ -1346,18 +909,12 @@ mod http_tests {
         auth.management=management;
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
-            #[cfg(any(test, feature = "lab-waiter-metrics"))]
-            lab_waiters: Arc::default(),
             auth,
             management_keycloak: None,
             web_session: None,
             web_assets: None,
             apns: apns_endpoint.map(push::Apns::test),
-            queue: Queue::new(),
             pairing: pairing::Mailbox::default(),
-            work_waiters: Arc::new(Semaphore::new(16)),
-            change_waiters: Arc::new(Semaphore::new(64)),
-        status_waiters: Arc::new(Semaphore::new(16)),
             requests: Arc::new(Semaphore::new(128)),
             device_gate: Arc::new(RwLock::new(())),
             waitlist: management::waitlist::Limiter::new(None),
@@ -1379,359 +936,6 @@ mod http_tests {
             .unwrap();
         });
         (url, server, join)
-    }
-
-    fn enroll_receipt_reader(server: &Server, key: &SigningKey) {
-        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
-            PhoneDevice { device_id: "receipt-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(key) }).unwrap();
-        server.queue.submit("owner", "receipt-phone", "mac-1", "deferred-read", [19; 32],
-            json!({"ciphertext":"request-fixture"}), now_ms()+60_000, now_ms()).unwrap();
-    }
-
-    async fn receipt_wait_isolation_case(revoke: bool) {
-        let mac_key = SigningKey::from_slice(&[105; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[106; 32]).unwrap();
-        let (url, server, serving) = test_server(&mac_key).await;
-        enroll_receipt_reader(&server, &phone_key);
-        let client = reqwest::Client::new();
-        let epoch = server.auth.server_epoch();
-        let path = "/v1/requests/deferred-read?wait_s=25";
-        let mut polls = tokio::task::JoinSet::new();
-        for nonce in 1..=16 {
-            polls.spawn(sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-                &phone_key, "receipt-phone", "GET", path, &[], nonce).send());
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while server.status_waiters.available_permits()!=0 { tokio::task::yield_now().await; }
-        }).await.expect("all sixteen receipts must actually wait");
-        assert!(polls.try_join_next().is_none());
-        assert_eq!(server.change_waiters.available_permits(), 64);
-        assert_eq!(server.work_waiters.available_permits(), 16);
-        assert_eq!(server.requests.available_permits(), 112);
-        let overflow = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", path, &[], 17).send().await.unwrap();
-        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
-        let short_path = "/v1/requests/deferred-read";
-        let snapshot = sign(&epoch, client.get(format!("{url}{short_path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", short_path, &[], 18).send().await.unwrap();
-        assert_eq!(snapshot.status(), StatusCode::OK);
-        assert_eq!(snapshot.json::<Value>().await.unwrap()["status"], "queued");
-        let changes_path = "/v1/changes?since=0&wait_s=0";
-        let changes = sign(&epoch, client.get(format!("{url}{changes_path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", changes_path, &[], 19).send().await.unwrap();
-        assert_eq!(changes.status(), StatusCode::OK);
-        if revoke {
-            let revoke_path = "/v1/devices/receipt-phone";
-            let response = sign(&epoch, client.delete(format!("{url}{revoke_path}")), &mac_key,
-                "mac-1", "DELETE", revoke_path, &[], 20).send().await.unwrap();
-            assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        } else {
-            server.queue.next_work("mac-1", now_ms()).unwrap();
-            server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
-            server.queue.respond("mac-1", "receipt-phone", "deferred-read",
-                json!({"ciphertext":"exact-completed-result"}), now_ms()).unwrap();
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while let Some(response) = polls.join_next().await {
-                let response = response.unwrap().unwrap();
-                if revoke { assert_eq!(response.status(), StatusCode::UNAUTHORIZED); }
-                else {
-                    assert_eq!(response.status(), StatusCode::OK);
-                    let body = response.json::<Value>().await.unwrap();
-                    assert_eq!(body["request_id"], "deferred-read");
-                    assert_eq!(body["status"], "completed");
-                    assert_eq!(body["response"], json!({"ciphertext":"exact-completed-result"}));
-                }
-            }
-        }).await.expect("completion or revocation must wake every receipt waiter");
-        assert_eq!(server.status_waiters.available_permits(), 16);
-        assert_eq!(server.requests.available_permits(), 128);
-        serving.abort();
-        let _ = serving.await;
-    }
-
-    #[tokio::test]
-    async fn deferred_receipts_are_bounded_and_return_the_exact_result_without_a_second_get() {
-        receipt_wait_isolation_case(false).await;
-    }
-
-    #[tokio::test]
-    async fn deferred_receipts_recheck_revocation_without_holding_the_device_gate() {
-        receipt_wait_isolation_case(true).await;
-    }
-
-    #[tokio::test]
-    async fn terminal_receipts_bypass_saturated_waiters_and_preserve_owner_and_epoch_checks() {
-        let mac_key = SigningKey::from_slice(&[109; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[110; 32]).unwrap();
-        let (url, server, serving) = test_server(&mac_key).await;
-        enroll_receipt_reader(&server, &phone_key);
-        server.queue.next_work("mac-1", now_ms()).unwrap();
-        server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
-        let opaque = json!({"ciphertext":"unchanged-response"});
-        server.queue.respond("mac-1", "receipt-phone", "deferred-read", opaque.clone(), now_ms()).unwrap();
-        let held = server.status_waiters.clone().acquire_many_owned(16).await.unwrap();
-        let client = reqwest::Client::new();
-        let epoch = server.auth.server_epoch();
-        let path = "/v1/requests/deferred-read?wait_s=25";
-        let ready = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", path, &[], 1).send().await.unwrap();
-        assert_eq!(ready.status(), StatusCode::OK);
-        assert_eq!(ready.json::<Value>().await.unwrap()["response"], opaque);
-        let stale = sign(&[0;16], client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", path, &[], 2).send().await.unwrap();
-        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
-        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
-            PhoneDevice { device_id: "other-reader".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-        let foreign = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "other-reader", "GET", path, &[], 3).send().await.unwrap();
-        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
-        server.queue.submit("owner", "receipt-phone", "mac-1", "expired-read", [20;32],
-            json!({"ciphertext":"expired"}), now_ms()-1, now_ms()-10).unwrap();
-        let path = "/v1/requests/expired-read?wait_s=25";
-        let expired = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &phone_key, "receipt-phone", "GET", path, &[], 4).send().await.unwrap();
-        assert_eq!(expired.status(), StatusCode::OK);
-        assert_eq!(expired.json::<Value>().await.unwrap()["status"], "expired");
-        drop(held);
-        serving.abort();
-        let _ = serving.await;
-    }
-
-    #[tokio::test]
-    async fn immediate_status_authenticates_once_and_waits_revalidate_after_a_wake() {
-        let mac_key = SigningKey::from_slice(&[101; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[102; 32]).unwrap();
-        let (url, server, serving) = test_server(&mac_key).await;
-        enroll_receipt_reader(&server, &phone_key);
-        let client = reqwest::Client::new();
-        for (nonce, path) in [(1, "/v1/requests/deferred-read"), (2, "/v1/requests/deferred-read?wait_s=0")] {
-            let before = server.auth.live_route_check_count();
-            let reply = sign(&server.auth.server_epoch(), client.get(format!("{url}{path}"))
-                .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], nonce)
-                .send().await.unwrap();
-            assert_eq!(reply.status(), StatusCode::OK);
-            assert_eq!(reply.json::<Value>().await.unwrap()["status"], "queued");
-            assert_eq!(server.auth.live_route_check_count()-before, 1,
-                "an immediate receipt must not duplicate the live-route authorization lookup");
-        }
-        let path = "/v1/requests/deferred-read?wait_s=25";
-        let request = sign(&server.auth.server_epoch(), client.get(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], 3)
-            .build().unwrap();
-        let before = server.auth.live_route_check_count();
-        let mut pending = Box::pin(request_status(State(server.clone()), Path("deferred-read".into()),
-            Query(StatusQuery { wait_s: 25 }), request.headers().clone(), Method::GET, path.parse().unwrap()));
-        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
-        assert_eq!(server.status_waiters.available_permits(), 15);
-        assert_eq!(server.auth.live_route_check_count()-before, 1,
-            "the initial waiter snapshot uses the authentication already held under the gate");
-        server.queue.next_work("mac-1", now_ms()).unwrap();
-        server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
-        server.queue.respond("mac-1", "receipt-phone", "deferred-read",
-            json!({"ciphertext":"completed"}), now_ms()).unwrap();
-        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_ready());
-        assert_eq!(server.auth.live_route_check_count()-before, 2,
-            "the completion wake must perform a fresh authorization check");
-        drop(pending);
-        assert_eq!(server.status_waiters.available_permits(), 16);
-        serving.abort();
-        let _ = serving.await;
-    }
-
-    #[tokio::test]
-    async fn cancelling_the_receipt_handler_releases_its_waiter() {
-        let mac_key = SigningKey::from_slice(&[107; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[108; 32]).unwrap();
-        let (url, server, serving) = test_server(&mac_key).await;
-        enroll_receipt_reader(&server, &phone_key);
-        let path = "/v1/requests/deferred-read?wait_s=25";
-        let request = sign(&server.auth.server_epoch(), reqwest::Client::new().get(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], 1)
-            .build().unwrap();
-        let mut pending = Box::pin(request_status(State(server.clone()), Path("deferred-read".into()),
-            Query(StatusQuery { wait_s: 25 }), request.headers().clone(), Method::GET, path.parse().unwrap()));
-        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending(),
-            "a nonterminal request must wait rather than return a queued snapshot");
-        assert_eq!(server.status_waiters.available_permits(), 15,
-            "Pending must reflect admitted receipt work, not another asynchronous operation");
-        drop(pending);
-        assert_eq!(server.status_waiters.available_permits(), 16);
-        serving.abort();
-        let _ = serving.await;
-    }
-
-    // Saturate actual idle HTTP polls from owner A; owner B has either an
-    // immediate empty snapshot or already-queued work, so never needs to wait.
-    async fn saturated_idle_polls_allow_immediate_case(work: bool, ready: bool) {
-        let mac_key = SigningKey::from_slice(&[113; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[114; 32]).unwrap();
-        let (url, server, serving) = test_server(&mac_key).await;
-        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
-            PhoneDevice { device_id: "idle-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-        server.auth.enroll_mac(auth::MacDevice { mac_id: "target-mac".into(), owner_sub: "target-owner".into(),
-            signing_key: key_bytes(&mac_key), agreement_key: key_bytes(&phone_key) }).unwrap();
-        server.auth.enroll(&auth::Identity { device_id: "target-mac".into(), owner_sub: "target-owner".into() },
-            PhoneDevice { device_id: "target-phone".into(), owner_sub: "target-owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-        if ready {
-            server.queue.submit("target-owner", "target-phone", "target-mac", "ready-request", [17; 32],
-                json!({"ciphertext":"opaque-fixture"}), now_ms()+60_000, now_ms()).unwrap();
-        }
-        let client = reqwest::Client::new();
-        let epoch = server.auth.server_epoch();
-        let idle_path = if work { "/v1/work?wait_s=25" } else { "/v1/changes?since=0&wait_s=25" };
-        let permits = if work { &server.work_waiters } else { &server.change_waiters };
-        let capacity = permits.available_permits();
-        let mut polls = tokio::task::JoinSet::new();
-        for nonce in 1..=capacity {
-            let request = client.get(format!("{url}{idle_path}"));
-            let request = if work { request } else { request.bearer_auth(jwt("owner", now_ms())) };
-            polls.spawn(sign(&epoch, request, if work { &mac_key } else { &phone_key },
-                if work { "mac-1" } else { "idle-phone" }, "GET", idle_path, &[], nonce as u8).send());
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while permits.available_permits()!=0 { tokio::task::yield_now().await; }
-        }).await.expect("all real idle requests must hold their waiter slots");
-        assert!(polls.try_join_next().is_none(), "idle controls must still be pending");
-        // A genuinely new empty wait still overloads instead of exceeding the
-        // fixed waiter budget; only nonwaiting snapshots may bypass that budget.
-        let overflow = client.get(format!("{url}{idle_path}"));
-        let overflow = if work { overflow } else { overflow.bearer_auth(jwt("owner", now_ms())) };
-        let overflow = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, overflow,
-            if work { &mac_key } else { &phone_key }, if work { "mac-1" } else { "idle-phone" },
-            "GET", idle_path, &[], 201).send()).await.unwrap().unwrap();
-        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(overflow.json::<serde_json::Value>().await.unwrap()["error"], "too_many_polls");
-        assert_eq!(permits.available_permits(), 0, "waiter capacity remains exhausted, never expanded");
-        let path = match (work, ready) {
-            (true, false) => "/v1/work?wait_s=0",
-            (true, true) => "/v1/work?wait_s=25",
-            (false, false) => "/v1/changes?since=0&wait_s=0",
-            (false, true) => "/v1/changes?since=0&wait_s=25",
-        };
-        let request = client.get(format!("{url}{path}"));
-        let request = if work { request } else { request.bearer_auth(jwt("target-owner", now_ms())) };
-        let result = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, request,
-            if work { &mac_key } else { &phone_key }, if work { "target-mac" } else { "target-phone" },
-            "GET", path, &[], 200).send()).await;
-        polls.abort_all();
-        serving.abort();
-        let response = result.expect("immediate snapshot must not queue behind idle polls").unwrap();
-        let expected = if work && !ready { StatusCode::NO_CONTENT } else { StatusCode::OK };
-        assert_eq!(response.status(), expected, "a request that does not wait must not consume a waiter slot");
-        if ready {
-            let body: serde_json::Value = response.json().await.unwrap();
-            if work { assert_eq!(body["request_id"], "ready-request"); }
-            else { assert_eq!(body["changes"][0]["request_id"], "ready-request"); }
-        }
-    }
-
-    #[tokio::test]
-    async fn saturated_work_waiters_allow_empty_immediate_poll() {
-        saturated_idle_polls_allow_immediate_case(true, false).await;
-    }
-    #[tokio::test]
-    async fn saturated_changes_waiters_allow_empty_immediate_poll() {
-        saturated_idle_polls_allow_immediate_case(false, false).await;
-    }
-    #[tokio::test]
-    async fn saturated_work_waiters_allow_already_ready_work() {
-        saturated_idle_polls_allow_immediate_case(true, true).await;
-    }
-    #[tokio::test]
-    async fn saturated_changes_waiters_allow_already_ready_snapshot() {
-        saturated_idle_polls_allow_immediate_case(false, true).await;
-    }
-
-    async fn idle_poll_revocation_case(work_poll: bool, revoke_mac: bool) {
-            let mac_key = SigningKey::from_slice(&[111; 32]).unwrap();
-            let phone_key = SigningKey::from_slice(&[112; 32]).unwrap();
-            let (url, server, serving) = test_server(&mac_key).await;
-            server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
-                PhoneDevice { device_id: "idle-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-            server.auth.enroll_mac(auth::MacDevice { mac_id: "other-mac".into(), owner_sub: "other".into(),
-                signing_key: key_bytes(&mac_key), agreement_key: key_bytes(&phone_key) }).unwrap();
-            server.auth.enroll(&auth::Identity { device_id: "other-mac".into(), owner_sub: "other".into() },
-                PhoneDevice { device_id: "other-phone".into(), owner_sub: "other".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-            let client = reqwest::Client::new();
-            let epoch = server.auth.server_epoch();
-            let path = if work_poll { "/v1/work?wait_s=25" } else { "/v1/changes?since=0&wait_s=25" };
-            let request = client.get(format!("{url}{path}"));
-            let request = if work_poll { request } else { request.bearer_auth(jwt("owner", now_ms())) };
-            let pending = tokio::spawn(sign(&epoch, request,
-                if work_poll { &mac_key } else { &phone_key },
-                if work_poll { "mac-1" } else { "idle-phone" }, "GET", path, &[], 1).send());
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while if work_poll { server.work_waiters.available_permits() == 16 }
-                    else { server.change_waiters.available_permits() == 64 } {
-                    tokio::task::yield_now().await;
-                }
-            }).await.expect("poll must actually be admitted before revocation");
-            assert!(!pending.is_finished(), "control: idle poll must still be waiting");
-            let revoke_path = if revoke_mac { "/v1/macs/mac-1" } else { "/v1/devices/idle-phone" };
-            let revoked = tokio::time::timeout(Duration::from_secs(3), sign(&epoch,
-                client.delete(format!("{url}{revoke_path}")), &mac_key, "mac-1", "DELETE", revoke_path, &[], 2).send())
-                .await.expect("idle long poll must not hold the global revocation gate").unwrap();
-            assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
-            let response = tokio::time::timeout(Duration::from_secs(3), pending).await
-                .expect("revocation must wake an idle poll even without queued ciphertext").unwrap().unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "revoked poll cannot return a successful snapshot");
-            let path = "/v1/changes?since=0&wait_s=0";
-            let other = tokio::time::timeout(Duration::from_secs(3), sign(&epoch,
-                client.get(format!("{url}{path}")).bearer_auth(jwt("other", now_ms())), &phone_key,
-                "other-phone", "GET", path, &[], 3).send()).await.unwrap().unwrap();
-            assert_eq!(other.status(), StatusCode::OK, "another account remains usable");
-            serving.abort();
-    }
-
-    #[tokio::test]
-    async fn idle_changes_do_not_block_revocation_or_other_accounts() {
-        idle_poll_revocation_case(false, false).await;
-    }
-
-    #[tokio::test]
-    async fn idle_work_does_not_block_revocation_or_other_accounts() {
-        idle_poll_revocation_case(true, true).await;
-    }
-
-    #[tokio::test]
-    async fn idle_changes_wake_when_their_mac_is_revoked_without_queued_jobs() {
-        idle_poll_revocation_case(false, true).await;
-    }
-
-    #[tokio::test]
-    async fn idle_poll_timeout_rechecks_locally_revoked_mac_for_both_clients() {
-        for work_poll in [false, true] {
-            let mac_key = SigningKey::from_slice(&[113; 32]).unwrap();
-            let phone_key = SigningKey::from_slice(&[114; 32]).unwrap();
-            let (url, server, serving) = test_server(&mac_key).await;
-            let identity = auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() };
-            server.auth.enroll(&identity, PhoneDevice { device_id: "timeout-phone".into(),
-                owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
-            let client = reqwest::Client::new();
-            let path = if work_poll { "/v1/work?wait_s=1" } else { "/v1/changes?since=0&wait_s=1" };
-            let request = client.get(format!("{url}{path}"));
-            let request = if work_poll { request } else { request.bearer_auth(jwt("owner", now_ms())) };
-            let pending = tokio::spawn(sign(&server.auth.server_epoch(), request,
-                if work_poll { &mac_key } else { &phone_key },
-                if work_poll { "mac-1" } else { "timeout-phone" }, "GET", path, &[], 1).send());
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while if work_poll { server.work_waiters.available_permits() == 16 }
-                    else { server.change_waiters.available_permits() == 64 } { tokio::task::yield_now().await; }
-            }).await.unwrap();
-            assert!(!pending.is_finished());
-            // Deliberately omit queue notification: the deadline path itself
-            // must reject the revoked Mac, including a surviving phone binding.
-            {
-                let _gate = server.device_gate.write().await;
-                server.auth.revoke_mac(&identity).unwrap();
-            }
-            let response = tokio::time::timeout(Duration::from_secs(3), pending).await.unwrap().unwrap().unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            serving.abort();
-        }
     }
 
     #[tokio::test]
@@ -1807,13 +1011,13 @@ mod http_tests {
         assert!(!listing.to_string().contains("signing_key"));assert!(!listing.to_string().contains("client-other"));
         let denied=client.delete(format!("{url}/v1/account/devices/clients/client-other")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-foreign-0001").send().await?;
         assert_eq!(denied.status(),StatusCode::NOT_FOUND);
-        let path="/v1/changes?since=0&wait_s=25";
-        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","GET",path,&[],181).send();
-        let pending=tokio::spawn(pending);
-        tokio::time::timeout(std::time::Duration::from_secs(3),async {while server.change_waiters.available_permits()==64 {tokio::task::yield_now().await;}}).await?;
+        let path="/v1/iroh-node";
+        let before=sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","DELETE",path,&[],180).send().await?;
+        assert_eq!(before.status(),StatusCode::NO_CONTENT);
         let response=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
         assert_eq!(response.status(),StatusCode::ACCEPTED);
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???.status(),StatusCode::FORBIDDEN);
+        let after=sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","DELETE",path,&[],181).send().await?;
+        assert_eq!(after.status(),StatusCode::FORBIDDEN);
         assert!(server.auth.phone_key("client-first").is_ok(),"SQL tombstone must deny before registry worker runs");
         let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
         assert_eq!(listing["macs"][0]["clients"][0]["status"],"revoked");assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"pending");
@@ -1829,7 +1033,7 @@ mod http_tests {
         server.auth.enroll(&auth::Identity{device_id:"mac-1".into(),owner_sub:"owner".into()},PhoneDevice{device_id:"client-descendant".into(),owner_sub:"owner".into(),signing_key:key_bytes(&phone_key)})?;
         let response=client.delete(format!("{url}/v1/account/devices/macs/mac-1")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-mac-00001").send().await?;
         assert_eq!(response.status(),StatusCode::ACCEPTED);
-        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&mac_key,"mac-1","GET","/v1/work?wait_s=0",&[],183).send().await?;
+        let response=sign(&server.auth.server_epoch(),client.delete(format!("{url}/v1/iroh-node")),&mac_key,"mac-1","DELETE","/v1/iroh-node",&[],183).send().await?;
         assert_eq!(response.status(),StatusCode::FORBIDDEN);
         assert!(db.require_live_device("owner","fresh-mac",Some("client-descendant")).await.is_err(),"Mac revocation persists child IDs independently from the old route");
         while management::worker::step(&server).await? {}
@@ -1930,7 +1134,7 @@ mod http_tests {
 
     #[tokio::test]
     #[ignore="requires disposable local PostgreSQL"]
-    async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage_after_wait() -> anyhow::Result<()> {
+    async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage() -> anyhow::Result<()> {
         let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
         let invitation=db.create_invitation(admin.id,"gate@example.com",300).await?;
         let owner=db.reserve_acceptance(&invitation.token,"Owner").await?.complete("owner").await?;
@@ -1943,98 +1147,22 @@ mod http_tests {
         assert_eq!(response.status(),StatusCode::FORBIDDEN);
         let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("owner",now_ms())).send().await?;
         assert_eq!(response.status(),StatusCode::OK);
-        let path="/v1/work?wait_s=25";
-        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")),&key,"mac-1","GET",path,&[],211).send();
-        let pending=tokio::spawn(pending);
-        let phone_path = "/v1/changes?since=0&wait_s=25";
-        let pending_phone = tokio::spawn(sign(&server.auth.server_epoch(),
-            client.get(format!("{url}{phone_path}")).bearer_auth(jwt("owner", now_ms())),
-            &key, "waiting-phone", "GET", phone_path, &[], 213).send());
-        tokio::time::timeout(std::time::Duration::from_secs(3),async {
-            while server.work_waiters.available_permits()==16 || server.change_waiters.available_permits()==64 {tokio::task::yield_now().await;}
-        }).await?;
+        let path="/v1/iroh-node";
+        let as_mac=|nonce| sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")),&key,"mac-1","DELETE",path,&[],nonce).send();
+        let as_phone=|nonce| sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &key,"waiting-phone","DELETE",path,&[],nonce).send();
+        assert_eq!(as_mac(211).await?.status(),StatusCode::NO_CONTENT);
+        assert_eq!(as_phone(212).await?.status(),StatusCode::NO_CONTENT);
         let disabled = client.post(format!("{url}/v1/admin/accounts/{}/disable", owner.id))
             .bearer_auth(jwt("stable-admin-sub", now_ms()))
             .header("Idempotency-Key", "disable-waiting-account-0001").send().await?;
         assert_eq!(disabled.status(), StatusCode::ACCEPTED);
-        let response=tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???;
-        assert_eq!(response.status(),StatusCode::FORBIDDEN,"already authenticated long poll must revalidate after wake");
-        let response = tokio::time::timeout(Duration::from_secs(3), pending_phone).await???;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "account disable must wake phone polls too");
-        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&key,"mac-1","GET","/v1/work?wait_s=0",&[],212).send().await?;
-        assert_eq!(response.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
+        assert_eq!(as_mac(213).await?.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
+        assert_eq!(as_phone(214).await?.status(),StatusCode::FORBIDDEN,"account disable denies the phone too");
         db.pool.close().await;
         let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("stable-admin-sub",now_ms())).send().await?;
         assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE,"database outage must not fall back to OIDC-only admission");
         join.abort();management::tests::cleanup(db,schema).await
-    }
-
-    #[tokio::test]
-    async fn compacted_http_result_requires_auth_and_changes_cursor_does_not_spin() {
-        let mac_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
-        let phone_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
-        let (url, server, join) = test_server(&mac_key).await;
-        let epoch = server.auth.server_epoch();
-        server.auth.enroll(&auth::Identity {
-            device_id: "mac-1".into(), owner_sub: "owner".into(),
-        }, PhoneDevice {
-            device_id: "phone-1".into(), owner_sub: "owner".into(),
-            signing_key: key_bytes(&phone_key),
-        }).unwrap();
-        let now = now_ms();
-        for index in 0..state::MAX_STORED {
-            let id = format!("retained-{index}");
-            server.queue.submit("owner", "phone-1", "mac-1", &id, [1; 32],
-                json!({"ciphertext":"opaque"}), now + 120_000, now).unwrap();
-            server.queue.next_work("mac-1", now).unwrap();
-            server.queue.mark_received("mac-1", &id, now).unwrap();
-            server.queue.respond("mac-1", "phone-1", &id,
-                json!({"ciphertext":"opaque"}), now).unwrap();
-        }
-        let (before, _) = server.queue.changes("owner", "phone-1", 0, now);
-        // Another device causes compaction without adding a change for phone-1.
-        server.queue.submit("other", "other-phone", "other-mac", "pressure", [2; 32],
-            json!({"ciphertext":"opaque"}), now + 120_000, now).unwrap();
-        let client = reqwest::Client::new();
-        let path = "/v1/requests/retained-0";
-        assert_eq!(client.get(format!("{url}{path}")).send().await.unwrap().status(),
-            StatusCode::UNAUTHORIZED);
-        let response = sign(&epoch, client.get(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", path, &[], 1)
-            .send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::GONE);
-        assert_eq!(response.json::<Value>().await.unwrap(), json!({"error":"result_evicted"}));
-
-        let path = format!("/v1/changes?since={before}&epoch={}&wait_s=25", server.epoch);
-        let response = tokio::time::timeout(Duration::from_secs(2),
-            sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now)),
-                &phone_key, "phone-1", "GET", &path, &[], 2).send()).await
-            .expect("compaction must wake the cursor even without retained events").unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response.json::<Value>().await.unwrap();
-        assert_eq!(body["changes"], json!([]));
-        let revision = body["revision"].as_u64().unwrap();
-        assert!(revision > before);
-        let path = format!("/v1/changes?since={revision}&epoch={}&wait_s=1", server.epoch);
-        let started = tokio::time::Instant::now();
-        let response = sign(&epoch, client.get(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", &path, &[], 3)
-            .send().await.unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(900), "same cursor must long poll");
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.json::<Value>().await.unwrap()["changes"], json!([]));
-        let path = "/v1/devices/phone-1";
-        let response = sign(&epoch, client.delete(format!("{url}{path}")), &mac_key,
-            "mac-1", "DELETE", path, &[], 4).send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        let path = "/v1/requests/retained-0";
-        let response = sign(&epoch, client.get(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", path, &[], 5)
-            .send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(server.queue.get("owner", "phone-1", "retained-0", now).unwrap_err(),
-            QueueError::NotFound);
-        join.abort();
     }
 
     #[tokio::test]
@@ -2066,9 +1194,9 @@ mod http_tests {
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.json::<Value>().await.unwrap(), expected, "only IDs; no keys or content");
         }
-        let response = client.get(format!("{url}/v1/work"))
+        let response = client.delete(format!("{url}/v1/iroh-node"))
             .bearer_auth(jwt("owner", now_ms())).send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "OIDC alone cannot read Mac work");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "OIDC alone cannot act as a device");
         let epoch = server.auth.server_epoch();
         let response = sign(&epoch, client.delete(format!("{url}/v1/macs/mac-z")), &key,
             "mac-z", "DELETE", "/v1/macs/mac-z", &[], 91).send().await.unwrap();
@@ -2939,23 +2067,12 @@ mod http_tests {
             assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/push/register", body)
                 .send().await.unwrap().status(), StatusCode::NO_CONTENT);
         }
-        let envelope = |i: usize, m: usize, rid: &str| {
-            let sealed = Envelope::seal_random(Context { route: mac_ids[m], sender: links[i].0,
-                recipient: mac_ids[m], request_id: rid, kind: "request", expires_at_ms: now_ms() + 120_000 },
-                br#"{"method":"GET","path":"/v1/tasks"}"#, &client_keys[i], &mac_agreements[m].public_key()).unwrap();
-            serde_json::to_vec(&sealed).unwrap()
-        };
         for (i, (id, m)) in links.iter().enumerate() {
-            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/requests",
-                envelope(i, *m, &format!("matrix-{i}"))).send().await.unwrap().status(), StatusCode::ACCEPTED);
+            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "DELETE", "/v1/iroh-node", vec![])
+                .send().await.unwrap().status(), StatusCode::NO_CONTENT);
         }
-        // Possessing valid account credentials and signing keys does not authorize another Mac.
-        for target in [1, 2] {
-            assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "POST", "/v1/requests",
-                envelope(0, target, &format!("reroute-{target}"))).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
-        }
-        assert_eq!(request(&client_keys[0], links[0].0, Some("owner-b"), "POST", "/v1/requests",
-            envelope(0, 0, "wrong-account")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(request(&client_keys[0], links[0].0, Some("owner-b"), "DELETE", "/v1/iroh-node", vec![])
+            .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
         let registration = serde_json::to_vec(&json!({"token":"ff".repeat(32),"environment":"sandbox",
             "push_binding":URL_SAFE_NO_PAD.encode([99u8;32])})).unwrap();
         assert_eq!(request(&client_keys[0], links[0].0, Some("owner-b"), "POST", "/v1/push/register", registration)
@@ -2964,21 +2081,10 @@ mod http_tests {
             assert!(!request(&mac_keys[wrong_mac], mac_ids[wrong_mac], None, "DELETE",
                 "/v1/devices/client-one-a1", vec![]).send().await.unwrap().status().is_success());
         }
-        // Read isolation uses actual authorized HTTP polling, not registry shape alone.
-        let changes_path = "/v1/changes?since=0&wait_s=0";
-        for (i, (id, m)) in links.iter().enumerate() {
-            let reply = request(&client_keys[i], id, Some(owners[*m]), "GET", changes_path, vec![])
-                .send().await.unwrap();
-            assert_eq!(reply.status(), StatusCode::OK);
-            let events = reply.json::<Value>().await.unwrap();
-            assert_eq!(events["changes"].as_array().unwrap().len(), 1);
-            assert_eq!(events["changes"][0]["request_id"], format!("matrix-{i}"));
-        }
         assert_eq!(request(&mac_keys[0], mac_ids[0], None, "DELETE", "/v1/devices/client-one-a1", vec![])
             .send().await.unwrap().status(), StatusCode::NO_CONTENT);
         assert!(server.auth.push_registration(links[0].0).is_none());
-        assert_eq!(server.queue.get("owner", links[0].0, "matrix-0", now_ms()).unwrap_err(), QueueError::NotFound);
-        assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "GET", changes_path, vec![])
+        assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "DELETE", "/v1/iroh-node", vec![])
             .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
         // A removed registration must not dispatch, even with the approving Mac's signature.
         // Nor may another Mac use a surviving link's registration, even in the same account.
@@ -2995,8 +2101,8 @@ mod http_tests {
         }
         for (i, (id, m)) in links.iter().enumerate().skip(1) {
             // Both the other link of client-one and all links of client-two remain usable.
-            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/requests",
-                envelope(i, *m, &format!("after-revoke-{i}"))).send().await.unwrap().status(), StatusCode::ACCEPTED);
+            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "DELETE", "/v1/iroh-node", vec![])
+                .send().await.unwrap().status(), StatusCode::NO_CONTENT);
             let registration = server.auth.push_registration(id).unwrap();
             assert_eq!(registration.push_binding, URL_SAFE_NO_PAD.encode([i as u8 + 1;32]));
             let plaintext = serde_json::to_vec(&json!({"push_binding":registration.push_binding,
@@ -3025,12 +2131,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn signed_opaque_http_flow_rejects_wrong_identities_and_replay() {
+    async fn signed_http_rejects_wrong_identities_and_replay() {
         let mac_sign = SigningKey::from_slice(&[1u8; 32]).unwrap();
         let phone_sign = SigningKey::from_slice(&[2u8; 32]).unwrap();
         let wrong_sign = SigningKey::from_slice(&[3u8; 32]).unwrap();
-        let mac_ecdh = SecretKey::from_slice(&[4u8; 32]).unwrap();
-        let phone_ecdh = SecretKey::from_slice(&[5u8; 32]).unwrap();
         let (url, server, join) = test_server(&mac_sign).await;
         let epoch = server.auth.server_epoch();
         let client = reqwest::Client::new();
@@ -3057,298 +2161,48 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::CREATED);
 
         let now = now_ms();
-        let request = Envelope::seal_random(
-            Context {
-                route: "mac-1",
-                sender: "phone-1",
-                recipient: "mac-1",
-                request_id: "request-1",
-                kind: "request",
-                expires_at_ms: now + 120_000,
-            },
-            br#"{"method":"POST","path":"/v1/requests","body":{"text":"private"}}"#,
-            &phone_sign,
-            &mac_ecdh.public_key(),
-        )
-        .unwrap();
-        let body = serde_json::to_vec(&request).unwrap();
-        let wrong_user = sign(
+        let path = "/v1/iroh-node";
+        let as_phone = |user: &str, key: &SigningKey, nonce: u8| sign(
             &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("intruder", now))
-                .body(body.clone()),
-            &phone_sign,
+            client.delete(format!("{url}{path}")).bearer_auth(jwt(user, now)),
+            key,
             "phone-1",
-            "POST",
-            "/v1/requests",
-            &body,
-            2,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(wrong_user.status(), StatusCode::UNAUTHORIZED);
-        let wrong_device = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("owner", now))
-                .body(body.clone()),
-            &wrong_sign,
-            "phone-1",
-            "POST",
-            "/v1/requests",
-            &body,
-            3,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(wrong_device.status(), StatusCode::UNAUTHORIZED);
-        let oversized = vec![b'x'; state::MAX_ENVELOPE_BYTES + 1];
-        let too_large = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("owner", now))
-                .body(oversized.clone()),
-            &phone_sign,
-            "phone-1",
-            "POST",
-            "/v1/requests",
-            &oversized,
-            30,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(
-            server
-                .queue
-                .changes("owner", "phone-1", 0, now_ms())
-                .1
-                .len(),
-            0,
-            "oversized body must not dispatch partial work"
-        );
-        let accepted = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("owner", now))
-                .body(body.clone()),
-            &phone_sign,
-            "phone-1",
-            "POST",
-            "/v1/requests",
-            &body,
-            4,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-        assert_eq!(accepted.json::<Value>().await.unwrap()["status"], "queued");
-        let duplicate = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("owner", now))
-                .body(body.clone()),
-            &phone_sign,
-            "phone-1",
-            "POST",
-            "/v1/requests",
-            &body,
-            5,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(duplicate.status(), StatusCode::ACCEPTED);
-
-        let bad_mac = sign(
-            &epoch,
-            client.get(format!("{url}/v1/work?wait_s=0")),
-            &wrong_sign,
-            "mac-1",
-            "GET",
-            "/v1/work?wait_s=0",
-            &[],
-            6,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(bad_mac.status(), StatusCode::UNAUTHORIZED);
-        let work = sign(
-            &epoch,
-            client.get(format!("{url}/v1/work?wait_s=0")),
-            &mac_sign,
-            "mac-1",
-            "GET",
-            "/v1/work?wait_s=0",
-            &[],
-            7,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(work.status(), StatusCode::OK);
-        let work: Value = work.json().await.unwrap();
-        let forwarded: Envelope = serde_json::from_value(work["envelope"].clone()).unwrap();
-        let plaintext = forwarded
-            .open(
-                phone_sign.verifying_key(),
-                &mac_ecdh,
-                "phone-1",
-                "mac-1",
-                "mac-1",
-                now_ms(),
-            )
-            .unwrap();
-        assert!(String::from_utf8(plaintext).unwrap().contains("private"));
-
-        let result = Envelope::seal_random(
-            Context {
-                route: "mac-1",
-                sender: "mac-1",
-                recipient: "phone-1",
-                request_id: "request-1",
-                kind: "response",
-                expires_at_ms: now_ms() + 120_000,
-            },
-            br#"{"ok":true,"request_id":"request-1"}"#,
-            &mac_sign,
-            &phone_ecdh.public_key(),
-        )
-        .unwrap();
-        let result_body = serde_json::to_vec(&result).unwrap();
-        let early = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/work/request-1/response"))
-                .body(result_body.clone()),
-            &mac_sign,
-            "mac-1",
-            "POST",
-            "/v1/work/request-1/response",
-            &result_body,
-            8,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(
-            early.status(),
-            StatusCode::CONFLICT,
-            "Mac must persist a receipt before side effects"
-        );
-        let receipt = sign(
-            &epoch,
-            client.post(format!("{url}/v1/work/request-1/receipt")),
-            &mac_sign,
-            "mac-1",
-            "POST",
-            "/v1/work/request-1/receipt",
-            &[],
-            9,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(receipt.status(), StatusCode::OK);
-        let posted = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/work/request-1/response"))
-                .body(result_body.clone()),
-            &mac_sign,
-            "mac-1",
-            "POST",
-            "/v1/work/request-1/response",
-            &result_body,
-            10,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(posted.status(), StatusCode::OK);
-
-        let status_path = "/v1/requests/request-1";
-        let status = sign(
-            &epoch,
-            client
-                .get(format!("{url}{status_path}"))
-                .bearer_auth(jwt("owner", now)),
-            &phone_sign,
-            "phone-1",
-            "GET",
-            status_path,
-            &[],
-            11,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(status.status(), StatusCode::OK);
-        let status: Value = status.json().await.unwrap();
-        assert_eq!(status["status"], "completed");
-        let opaque: Envelope = serde_json::from_value(status["response"].clone()).unwrap();
-        assert_eq!(
-            opaque
-                .open(
-                    mac_sign.verifying_key(),
-                    &phone_ecdh,
-                    "mac-1",
-                    "phone-1",
-                    "mac-1",
-                    now_ms()
-                )
-                .unwrap(),
-            br#"{"ok":true,"request_id":"request-1"}"#
-        );
-
-        let path = "/v1/changes?since=0&wait_s=0";
-        let signed = sign(
-            &epoch,
-            client
-                .get(format!("{url}{path}"))
-                .bearer_auth(jwt("owner", now)),
-            &phone_sign,
-            "phone-1",
-            "GET",
+            "DELETE",
             path,
             &[],
-            12,
+            nonce,
         );
-        let request = signed.build().unwrap();
+        let as_mac = |key: &SigningKey, nonce: u8| sign(
+            &epoch,
+            client.delete(format!("{url}{path}")),
+            key,
+            "mac-1",
+            "DELETE",
+            path,
+            &[],
+            nonce,
+        );
+        assert_eq!(as_phone("intruder", &phone_sign, 2).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(as_phone("owner", &wrong_sign, 3).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let request = as_phone("owner", &phone_sign, 4).build().unwrap();
         let clone = request.try_clone().unwrap();
-        let changes = client.execute(request).await.unwrap();
-        assert_eq!(changes.status(), StatusCode::OK);
-        let changes: Value = changes.json().await.unwrap();
-        assert_eq!(changes["epoch"], server.epoch);
-        assert_eq!(changes["changes"][0]["status"], "completed");
-        assert!(
-            changes["changes"][0].get("response").unwrap().is_null(),
-            "changes carry status only"
-        );
+        assert_eq!(client.execute(request).await.unwrap().status(), StatusCode::NO_CONTENT);
         assert_eq!(
             client.execute(clone).await.unwrap().status(),
             StatusCode::UNAUTHORIZED,
             "one-time device nonce must reject replay"
         );
+        assert_eq!(as_mac(&wrong_sign, 6).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(as_mac(&mac_sign, 7).send().await.unwrap().status(), StatusCode::NO_CONTENT);
         let (url_after_restart, restarted, restarted_join) = test_server(&mac_sign).await;
         assert_ne!(restarted.epoch, server.epoch);
         let replay_after_restart = sign(
             &epoch,
-            client.get(format!("{url_after_restart}/v1/work?wait_s=0")),
+            client.delete(format!("{url_after_restart}/v1/iroh-node")),
             &mac_sign,
             "mac-1",
-            "GET",
-            "/v1/work?wait_s=0",
+            "DELETE",
+            "/v1/iroh-node",
             &[],
             13,
         )
@@ -3391,15 +2245,6 @@ mod http_tests {
         .unwrap();
         assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
         assert!(!server.auth.is_phone_registered("phone-1"));
-        assert_eq!(
-            server
-                .queue
-                .changes("owner", "phone-1", 0, now_ms())
-                .1
-                .len(),
-            0,
-            "revocation purges even completed ciphertext"
-        );
         let persisted: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
         )
@@ -3454,23 +2299,49 @@ mod http_tests {
         .await
         .unwrap();
         assert_eq!(reenroll.status(), StatusCode::CONFLICT);
-        let denied = sign(
-            &epoch,
-            client
-                .get(format!("{url}{status_path}"))
-                .bearer_auth(jwt("owner", now)),
-            &phone_sign,
-            "phone-1",
-            "GET",
-            status_path,
-            &[],
-            15,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(as_phone("owner", &phone_sign, 15).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
         restarted_join.abort();
+        join.abort();
+    }
+
+    /// Apps and daemons from before iroh still call the mailbox. They read a 404 as "no
+    /// mailbox here"; a 410 would read as a lost result.
+    #[tokio::test]
+    async fn old_clients_calling_the_mailbox_learn_it_is_gone() {
+        let mac_key = SigningKey::from_slice(&[41u8; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[42u8; 32]).unwrap();
+        let (url, server, join) = test_server(&mac_key).await;
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "phone-1".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        let epoch = server.auth.server_epoch();
+        let client = reqwest::Client::new();
+        let calls = [
+            (true, "POST", "/v1/requests", br#"{"kind":"request"}"#.to_vec()),
+            (true, "GET", "/v1/requests/request-1", vec![]),
+            (true, "GET", "/v1/requests/request-1?wait_s=25", vec![]),
+            (true, "POST", "/v1/requests/request-1/ack", br#"{"revision":1}"#.to_vec()),
+            (true, "GET", "/v1/changes?since=0&wait_s=25", vec![]),
+            (false, "GET", "/v1/work?wait_s=25", vec![]),
+            (false, "POST", "/v1/work/request-1/receipt", vec![]),
+            (false, "POST", "/v1/work/request-1/response", br#"{"kind":"response"}"#.to_vec()),
+        ];
+        for (nonce, (phone, method, path, body)) in calls.into_iter().enumerate() {
+            let builder = client
+                .request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), format!("{url}{path}"))
+                .body(body.clone());
+            let signed = if phone {
+                sign(&epoch, builder.bearer_auth(jwt("owner", now_ms())), &phone_key, "phone-1", method, path, &body, nonce as u8 + 1)
+            } else {
+                sign(&epoch, builder, &mac_key, "mac-1", method, path, &body, nonce as u8 + 1)
+            };
+            for response in [signed.send().await.unwrap(),
+                client.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), format!("{url}{path}")).send().await.unwrap()] {
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+                assert_eq!(response.json::<Value>().await.unwrap(), json!({"error":"mailbox_removed"}), "{method} {path}");
+            }
+        }
+        let boot: Value = client.get(format!("{url}/v1/bootstrap")).send().await.unwrap().json().await.unwrap();
+        assert!(boot.get("request_wait").is_none() && boot.get("result_ack").is_none(), "{boot}");
         join.abort();
     }
 
@@ -3479,7 +2350,7 @@ mod http_tests {
         let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let (url, server, join) = test_server(&key).await;
         let client = reqwest::Client::new();
-        let path = "/v1/work?wait_s=0";
+        let path = "/v1/pairings/probe";
         let uri: Uri = path.parse().unwrap();
         let earlier_arrival = now_ms();
         let later_arrival = earlier_arrival + 1;
@@ -3530,7 +2401,7 @@ mod http_tests {
         let mac_sign = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let (_url, server, join) = test_server(&mac_sign).await;
         let epoch = server.auth.server_epoch();
-        let uri: Uri = "/v1/work?wait_s=0".parse().unwrap();
+        let uri: Uri = "/v1/pairings/probe".parse().unwrap();
         let headers_at = |time_ms: u64, nonce: u8| {
             let mut headers = HeaderMap::new();
             let nonce_bytes = [nonce; 16];
@@ -3655,7 +2526,7 @@ mod http_tests {
         handle.abort();
     }
     #[tokio::test]
-    async fn recovered_account_token_cannot_replace_device_key_or_read_its_content() {
+    async fn recovered_account_token_cannot_replace_device_key_or_act_as_the_device() {
         let mac = SigningKey::from_slice(&[81;32]).unwrap();
         let approved = SigningKey::from_slice(&[82;32]).unwrap();
         let attacker = SigningKey::from_slice(&[83;32]).unwrap();
@@ -3668,23 +2539,17 @@ mod http_tests {
         // for the original subject, but none of the previously approved keys.
         let recovered=jwt("owner",now);
         assert_eq!(server.auth.verify_jwt(&recovered,now).await.unwrap(),"owner");
-        server.queue.submit("owner","phone-approved","mac-1","prior-content",[4;32],
-            json!({"ciphertext":"opaque request"}),now+60_000,now).unwrap();
-        server.queue.next_work("mac-1",now).unwrap();
-        server.queue.mark_received("mac-1","prior-content",now).unwrap();
-        server.queue.respond("mac-1","phone-approved","prior-content",json!({"ciphertext":"opaque response"}),now).unwrap();
         let client=reqwest::Client::new();
-        let path="/v1/requests/prior-content";
-        // Positive control: the content exists and remains retrievable with the
-        // original device key plus the very same recovered account credential.
-        let response=sign(&epoch,client.get(format!("{url}{path}")).bearer_auth(&recovered),
-            &approved,"phone-approved","GET",path,&[],1).send().await.unwrap();
-        assert_eq!(response.status(),StatusCode::OK);
+        let path="/v1/iroh-node";
+        // Positive control: the original device key with the very same recovered
+        // account credential is still accepted.
+        let response=sign(&epoch,client.delete(format!("{url}{path}")).bearer_auth(&recovered),
+            &approved,"phone-approved","DELETE",path,&[],1).send().await.unwrap();
+        assert_eq!(response.status(),StatusCode::NO_CONTENT);
         for (id,nonce) in [("phone-approved",2),("phone-attacker",3)] {
-            let denied=sign(&epoch,client.get(format!("{url}{path}")).bearer_auth(&recovered),
-                &attacker,id,"GET",path,&[],nonce).send().await.unwrap();
+            let denied=sign(&epoch,client.delete(format!("{url}{path}")).bearer_auth(&recovered),
+                &attacker,id,"DELETE",path,&[],nonce).send().await.unwrap();
             assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
-            assert!(!denied.text().await.unwrap().contains("opaque response"));
         }
         let body=serde_json::to_vec(&json!({"device_id":"phone-approved","owner_sub":"owner","signing_key":key_bytes(&attacker)})).unwrap();
         let denied=sign(&epoch,client.post(format!("{url}/v1/devices")).bearer_auth(&recovered).body(body.clone()),
@@ -3777,25 +2642,8 @@ mod http_tests {
         .await
         .unwrap();
         assert_eq!(pilot_complete.status(), StatusCode::CREATED);
-        server
-            .queue
-            .submit(
-                "owner",
-                "phone-pilot",
-                "mac-1",
-                "prior-content",
-                [9; 32],
-                json!({"ciphertext":"prior-owner"}),
-                now_ms() + 60_000,
-                now_ms(),
-            )
-            .unwrap();
-        assert!(
-            server.queue.next_work("mac-second", now_ms()).is_none(),
-            "a newly registered Mac must not receive the pilot Mac's prior ciphertext"
-        );
         // A valid account token can add a fresh Mac, but that Mac must not inherit
-        // a phone or ciphertext already paired to the pilot Mac.
+        // a phone already paired to the pilot Mac.
         let stolen_key = SigningKey::from_slice(&[65u8; 32]).unwrap();
         let stolen_body = serde_json::to_vec(&json!({
             "mac_id":"mac-stolen", "signing_key":key_bytes(&stolen_key),
@@ -3818,20 +2666,20 @@ mod http_tests {
         .await
         .unwrap();
         assert_eq!(fresh_mac.status(), StatusCode::CREATED);
-        let stolen_work = sign(
+        let stolen_signed = sign(
             &epoch,
-            client.get(format!("{url}/v1/work?wait_s=0")),
+            client.delete(format!("{url}/v1/iroh-node")),
             &stolen_key,
             "mac-stolen",
-            "GET",
-            "/v1/work?wait_s=0",
+            "DELETE",
+            "/v1/iroh-node",
             &[],
             11,
         )
         .send()
         .await
         .unwrap();
-        assert_eq!(stolen_work.status(), StatusCode::NO_CONTENT);
+        assert_eq!(stolen_signed.status(), StatusCode::NO_CONTENT);
         let pilot_phone = PhoneDevice {
             device_id: "phone-pilot".into(),
             owner_sub: "owner".into(),
@@ -3855,39 +2703,6 @@ mod http_tests {
                 .unwrap(),
             "mac-1"
         );
-        let now = now_ms();
-        let rerouted = Envelope::seal_random(
-            Context {
-                route: "mac-stolen",
-                sender: "phone-pilot",
-                recipient: "mac-stolen",
-                request_id: "reroute",
-                kind: "request",
-                expires_at_ms: now + 60_000,
-            },
-            br#"{"private":true}"#,
-            &replaced_key,
-            &agreement.public_key(),
-        )
-        .unwrap();
-        let rerouted_body = serde_json::to_vec(&rerouted).unwrap();
-        let rerouted_response = sign(
-            &epoch,
-            client
-                .post(format!("{url}/v1/requests"))
-                .bearer_auth(jwt("owner", now))
-                .body(rerouted_body.clone()),
-            &replaced_key,
-            "phone-pilot",
-            "POST",
-            "/v1/requests",
-            &rerouted_body,
-            12,
-        )
-        .send()
-        .await
-        .unwrap();
-        assert_eq!(rerouted_response.status(), StatusCode::BAD_REQUEST);
         let new_phone = PhoneDevice {
             device_id: "phone-owner2".into(),
             owner_sub: "owner2".into(),
@@ -3930,20 +2745,20 @@ mod http_tests {
         .unwrap();
         assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
         assert!(!server.auth.is_mac_registered("mac-second"));
-        let revoked_work = sign(
+        let revoked_signed = sign(
             &epoch,
-            client.get(format!("{url}/v1/work?wait_s=0")),
+            client.delete(format!("{url}/v1/iroh-node")),
             &mac_key,
             "mac-second",
-            "GET",
-            "/v1/work?wait_s=0",
+            "DELETE",
+            "/v1/iroh-node",
             &[],
             8,
         )
         .send()
         .await
         .unwrap();
-        assert_eq!(revoked_work.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(revoked_signed.status(), StatusCode::UNAUTHORIZED);
         let after = attempt(&mac_key, "owner2", body.clone(), 7)
             .send()
             .await
@@ -4515,7 +3330,7 @@ mod http_tests {
         let mac_key = SigningKey::from_slice(&[121; 32]).unwrap();
         let (_url, server, serving) = test_server(&mac_key).await;
         let epoch = server.auth.server_epoch();
-        let path = "/v1/work?wait_s=25";
+        let path = "/v1/pairings/probe?wait_s=25";
         let start = now_ms();
 
         let first = signed_headers(&epoch, &mac_key, "mac-1", path, start, [1; 16]);
@@ -4527,7 +3342,7 @@ mod http_tests {
         let replay = mac_rejection(&server, &resent, path, start + 25_000).await;
         assert!(replay.contains("reason=replay"), "{replay}");
         assert!(replay.contains("first_accepted_ms_ago=25000"), "{replay}");
-        assert!(replay.contains("device=mac-1 GET /v1/work "), "the query is left out: {replay}");
+        assert!(replay.contains("device=mac-1 GET /v1/pairings/probe "), "the query is left out: {replay}");
         assert!(replay.contains("cf_ray=9d2a3b4c5d6e7f80-MAD first_cf_ray=8c1f2e3d4c5b6a79-MAD"),
             "a replay names who sent each copy: {replay}");
         for secret in [first["x-device-signature"].to_str().unwrap(), first["x-device-nonce"].to_str().unwrap()] {

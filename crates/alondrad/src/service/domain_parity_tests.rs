@@ -1,12 +1,10 @@
 //! The retained signed loopback and sealed service resource reads see the same
-//! domain state. Everything here runs in a synthetic HOME and loopback relay.
+//! domain state. Everything here runs in a synthetic HOME.
 use super::*;
-use reqwest::StatusCode;
 use alondra_core::domain::{
     Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION, QuestionOption,
     Recipient, Scope,
 };
-use axum::{Router, body::Bytes, routing::post};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use p256::ecdsa::{Signature, signature::Signer};
 use std::{
@@ -100,7 +98,7 @@ async fn encrypted(
     request: Value,
 ) -> Value {
     let work = sealed(service, key, id, request);
-    service.handle(work, &[9; 16]).await.unwrap();
+    service.answer_directly(work, responses).await.unwrap();
     let bytes = responses.lock().unwrap().pop().unwrap();
     let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
     let recipient = &service.devices.snapshot().remove(0).0;
@@ -266,27 +264,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         .into_future(),
     );
     let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let relay = Router::new()
-        .route(
-            "/v1/work/{id}/receipt",
-            post(|| async { StatusCode::ACCEPTED }),
-        )
-        .route(
-            "/v1/work/{id}/response",
-            post({
-                let responses = responses.clone();
-                move |body: Bytes| {
-                    let responses = responses.clone();
-                    async move {
-                        responses.lock().unwrap().push(body.to_vec());
-                        StatusCode::ACCEPTED
-                    }
-                }
-            }),
-        );
-    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let relay_url = format!("http://{}/", relay_listener.local_addr().unwrap());
-    let relay_task = tokio::spawn(axum::serve(relay_listener, relay).into_future());
+    let relay_url = "http://127.0.0.1:1/";
     std::fs::write(home.join("service.toml"), format!(
         "relay_url = \"{relay_url}\"\nmac_id = \"mac-parity\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n[[devices]]\ndevice_id = \"{}\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n",
         device_id,
@@ -392,17 +370,17 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let work = sealed(&service, &phone_key, "command-once", request.clone());
     let ciphertext_digest = Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).to_vec();
     service
-        .handle(
+        .answer_directly(
             Work {
                 request_id: work.request_id.clone(),
                 envelope: work.envelope.clone(),
             },
-            &[9; 16],
+            &responses,
         )
         .await
         .unwrap();
     let first_bytes = responses.lock().unwrap().pop().unwrap();
-    service.handle(work, &[9; 16]).await.unwrap();
+    service.answer_directly(work, &responses).await.unwrap();
     let replay_bytes = responses.lock().unwrap().pop().unwrap();
     assert_eq!(
         first_bytes, replay_bytes,
@@ -630,9 +608,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             .is_err()
     );
     local.abort();
-    relay_task.abort();
     let _ = local.await;
-    let _ = relay_task.await;
     drop(service);
     drop(domain);
     drop(hub);

@@ -1,4 +1,5 @@
-//! A synthetic phone: its own keys per Mac, the same envelopes and relay calls as the iPhone.
+//! A synthetic phone: its own keys per Mac, the same envelopes, relay calls and iroh connection as
+//! the iPhone.
 mod direct;
 mod iroh_session;
 
@@ -43,9 +44,12 @@ pub struct Reply {
     pub response: Value,
 }
 
-pub enum Submitted {
-    Accepted,
-    Refused(u16, String),
+/// What the Mac answered one envelope over iroh.
+pub enum Answer {
+    /// The sealed response envelope.
+    Response(Value),
+    /// A refused hello or envelope, with what the Mac said.
+    Refused(String),
 }
 
 impl<'a> Phone<'a> {
@@ -110,10 +114,10 @@ impl<'a> Phone<'a> {
             &agreement_wire(&link.agreement.public_key()),
         )?;
         wait_for("the Mac to enroll the phone with the relay", Duration::from_secs(30), || {
-            match self.submit(&link, &self.seal(target, &link, &new_request_id()?, &probe())?)? {
-                Submitted::Accepted => Ok(Some(())),
-                Submitted::Refused(401, _) => Ok(None),
-                Submitted::Refused(status, reply) => bail!("relay refused the paired phone ({status}): {reply}"),
+            match self.relay_status(&link)? {
+                204 => Ok(Some(())),
+                401 => Ok(None),
+                status => bail!("relay refused the paired phone ({status})"),
             }
         })?;
         println!("phone {} paired with Mac {} ({}) as {}", self.name, target.number, target.mac.id, link.device_id);
@@ -124,10 +128,7 @@ impl<'a> Phone<'a> {
         let link = self.link(target)?;
         target.mac.revoke_device(&target.local, &link.device_id)?;
         wait_for("the relay to refuse the revoked phone", Duration::from_secs(30), || {
-            match self.submit(&link, &self.seal(target, &link, &new_request_id()?, &probe())?)? {
-                Submitted::Refused(401, _) => Ok(Some(())),
-                _ => Ok(None),
-            }
+            Ok((self.relay_status(&link)? == 401).then_some(()))
         })?;
         println!("phone {} revoked on Mac {}", self.name, target.number);
         Ok(())
@@ -148,9 +149,9 @@ impl<'a> Phone<'a> {
             plaintext["body"] = body;
         }
         let sealed = self.seal(target, &link, &request_id, &plaintext)?;
-        match self.submit(&link, &sealed)? {
-            Submitted::Accepted => self.response(target, &link, &request_id),
-            Submitted::Refused(status, reply) => bail!("relay refused the request ({status}): {reply}"),
+        match self.exchange(target, &link, &sealed)? {
+            Answer::Response(envelope) => Ok(Reply { request_id, response: self.open_response(target, &link, &envelope)? }),
+            Answer::Refused(reply) => bail!("Mac {} refused the request: {reply}", target.number),
         }
     }
 
@@ -172,38 +173,34 @@ impl<'a> Phone<'a> {
         Ok(serde_json::to_vec(&envelope)?)
     }
 
-    pub fn submit(&self, link: &Link, sealed: &[u8]) -> Result<Submitted> {
+    /// The relay's answer to a signed call from this phone that changes nothing it relies on:
+    /// 204 while the relay knows the device, 401 once it does not.
+    fn relay_status(&self, link: &Link) -> Result<u16> {
         let token = self.sandbox.token()?;
         let signer = Signer { id: &link.device_id, key: &link.signing };
-        Ok(match self.sandbox.relay.call(&signer, Some(&token), "POST", "/v1/requests", sealed)? {
-            (200 | 202, _) => Submitted::Accepted,
-            (status, reply) => Submitted::Refused(status, String::from_utf8_lossy(&reply).into()),
+        Ok(self.sandbox.relay.call(&signer, Some(&token), "DELETE", "/v1/iroh-node", &[])?.0)
+    }
+
+    /// Sends one sealed envelope over a fresh iroh connection to the Mac.
+    pub fn exchange(&self, target: &Target, link: &Link, sealed: &[u8]) -> Result<Answer> {
+        let session = match self.connect_iroh(target, link) {
+            Ok(session) => session,
+            Err(error) if error.to_string().contains("\"unauthorized\"") => return Ok(Answer::Refused("unauthorized".into())),
+            Err(error) => return Err(error),
+        };
+        let reply = session.send(sealed)?;
+        Ok(match reply.get("response") {
+            Some(envelope) => Answer::Response(envelope.clone()),
+            None => Answer::Refused(reply.to_string()),
         })
     }
 
-    /// The stored response envelope, as the relay returns it, and its decrypted body.
-    pub fn response_envelope(&self, target: &Target, link: &Link, request_id: &str) -> Result<(Value, Value)> {
-        let token = self.sandbox.token()?;
-        let signer = Signer { id: &link.device_id, key: &link.signing };
-        let path = format!("/v1/requests/{request_id}");
-        let result = wait_for("the Mac's response", Duration::from_secs(90), || {
-            let (status, reply) = self.sandbox.relay.call(&signer, Some(&token), "GET", &path, &[])?;
-            if status != 200 {
-                bail!("relay refused the result ({status}): {}", String::from_utf8_lossy(&reply));
-            }
-            let value: Value = serde_json::from_slice(&reply)?;
-            Ok((value["status"] == "completed").then_some(value))
-        })?;
-        let envelope: Envelope = serde_json::from_value(result["response"].clone())?;
+    pub fn open_response(&self, target: &Target, link: &Link, envelope: &Value) -> Result<Value> {
+        let envelope: Envelope = serde_json::from_value(envelope.clone())?;
         let clear = envelope
             .open(&target.mac.verifying(), &link.agreement, &target.mac.id, &link.device_id, &target.mac.id, now_ms())
             .map_err(|error| anyhow!("open response: {error:?}"))?;
-        Ok((result["response"].clone(), serde_json::from_slice(&clear)?))
-    }
-
-    fn response(&self, target: &Target, link: &Link, request_id: &str) -> Result<Reply> {
-        let (_, response) = self.response_envelope(target, link, request_id)?;
-        Ok(Reply { request_id: request_id.into(), response })
+        Ok(serde_json::from_slice(&clear)?)
     }
 }
 

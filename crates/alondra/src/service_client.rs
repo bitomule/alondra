@@ -136,17 +136,15 @@ impl RelayTransport {
                 let current = self.epoch(deadline)?;
                 if current != epoch {
                     let second = self.send(profile, access, method, path, body, current, deadline)?;
-                    self.observe(path, current, &second);
+                    self.observe(current, &second);
                     return Ok(second);
                 }
             }
-        } else { self.observe(path, epoch, &first); }
+        } else { self.observe(epoch, &first); }
         Ok(first)
     }
-    fn observe(&self, path: &str, used: [u8; 16], result: &(u16, Value)) {
-        if result.0 == 401 || (result.0 == 409
-            && (path == "/v1/changes" || path.starts_with("/v1/changes?"))
-            && result.1["error"] == "relay_epoch_changed") {
+    fn observe(&self, used: [u8; 16], result: &(u16, Value)) {
+        if result.0 == 401 {
             self.invalidate(used);
         }
     }
@@ -184,8 +182,7 @@ impl RelayTransport {
         };
         let status = response.status().as_u16();
         // Fully drain the bounded body so the connection can return to the pool.
-        // A completed work reply wraps the 1 MiB encrypted response in status JSON.
-        let bytes = response.body_mut().with_config().limit(1024 * 1024 + 64 * 1024).read_to_vec()?;
+        let bytes = response.body_mut().with_config().limit(64 * 1024).read_to_vec()?;
         let value = if bytes.is_empty() { Value::Null } else {
             match serde_json::from_slice(&bytes) {
                 Ok(value) => value,
@@ -370,7 +367,7 @@ impl Profile {
         )
     }
 
-    /// Over iroh when the Mac answers there, else the same envelope through the relay mailbox.
+    /// Over the Mac's iroh endpoint; the Mac's journal runs a request it already saw only once.
     pub fn request(
         &self,
         method: &str,
@@ -380,10 +377,8 @@ impl Profile {
     ) -> Result<(u16, Value)> {
         let home = &crate::client::config().home;
         let deadline = Instant::now() + timeout;
-        self.request_over(home, method, path, body, deadline, || self.learn_iroh(home, deadline),
-            |method, path, body, deadline| self.relay_call(method, path, body, deadline))
+        self.request_over(home, method, path, body, deadline, || self.learn_iroh(home, deadline))
     }
-    #[allow(clippy::too_many_arguments)]
     fn request_over(
         &self,
         home: &Path,
@@ -392,26 +387,16 @@ impl Profile {
         body: Option<&Value>,
         deadline: Instant,
         learn: impl FnOnce() -> Option<crate::iroh_client::Dial>,
-        call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
     ) -> Result<(u16, Value)> {
         let (request_id, envelope) = self.seal(method, path, body, deadline)?;
         let bytes = serde_json::to_vec(&envelope)?;
-        if let iroh::OverIroh::Answered(answer) = self.over_iroh(home, &bytes, &request_id, remaining(deadline)?, learn) {
-            return answer;
+        match self.over_iroh(home, &bytes, &request_id, remaining(deadline)?, learn) {
+            iroh::OverIroh::Answered(answer) => answer,
+            iroh::OverIroh::Unanswered => bail!(
+                "{} did not answer; if this was an action, check it on the Mac before repeating it",
+                self.mac_id
+            ),
         }
-        self.submit_via(&request_id, &bytes, deadline, call)
-    }
-    #[cfg(test)]
-    fn request_via(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-        deadline: Instant,
-        call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
-    ) -> Result<(u16, Value)> {
-        let (request_id, envelope) = self.seal(method, path, body, deadline)?;
-        self.submit_via(&request_id, &serde_json::to_vec(&envelope)?, deadline, call)
     }
     fn seal(&self, method: &str, path: &str, body: Option<&Value>, deadline: Instant) -> Result<(String, Envelope)> {
         let timeout = remaining(deadline)?;
@@ -431,83 +416,6 @@ impl Profile {
             &PublicKey::from_sec1_bytes(&B64.decode(&self.mac_agreement_key)?)?,
         )?;
         Ok((request_id, envelope))
-    }
-    fn submit_via(
-        &self,
-        request_id: &str,
-        envelope: &[u8],
-        deadline: Instant,
-        mut call: impl FnMut(&str, &str, &[u8], Instant) -> Result<(u16, Value)>,
-    ) -> Result<(u16, Value)> {
-        let (status, receipt) = call(
-            "POST",
-            "/v1/requests",
-            envelope,
-            deadline,
-        )
-        .context(
-            "request submission uncertain; inspect the destination before repeating an action",
-        )?;
-        remaining(deadline)?;
-        if !matches!(status, 200 | 202) {
-            if status == 401 {
-                bail!("relay authentication failed (HTTP 401); request was not retried. Check account and device access.");
-            }
-            bail!("relay refused request (HTTP {status}); request was not retried");
-        }
-        let receipt_status = receipt["status"].as_str();
-        if receipt["request_id"].as_str() != Some(request_id)
-            || !matches!((status, receipt_status),
-                (202, Some("queued" | "dispatched" | "received")) | (200, Some("completed"))) {
-            bail!("invalid relay submission receipt; inspect destination before repeating an action");
-        }
-        let mut revision = receipt["revision"].as_u64().filter(|n| *n > 0)
-            .context("invalid relay submission revision; inspect destination before repeating an action")?;
-        let mut epoch: Option<String> = None;
-        loop {
-            remaining(deadline)?;
-            let (status, job) = call("GET", &format!("/v1/requests/{request_id}"), &[], deadline)?;
-            remaining(deadline)?;
-            if status != 200 || job["request_id"].as_str() != Some(request_id) {
-                bail!("invalid relay request status ({status})");
-            }
-            let observed_revision = job["revision"].as_u64().filter(|n| *n > 0)
-                .context("invalid relay request revision")?;
-            revision = revision.max(observed_revision);
-            if let Some(value) = job.get("response").filter(|v| !v.is_null()) {
-                return self.open_response(value.clone(), request_id, now_ms()?);
-            }
-            if job["status"].as_str() == Some("expired") || Instant::now() >= deadline {
-                bail!("destination did not finish request; inspect it before repeating an action");
-            }
-            let seconds = deadline
-                .saturating_duration_since(Instant::now())
-                .as_secs()
-                .min(25);
-            let mut route = format!("/v1/changes?since={revision}&wait_s={seconds}");
-            if let Some(e) = &epoch {
-                route.push_str(&format!("&epoch={e}"));
-            }
-            let (status, changes) = call("GET", &route, &[], deadline)?;
-            if status == 409 {
-                revision = 0;
-                epoch = None;
-                continue;
-            }
-            if status != 200 {
-                bail!("relay change wait failed ({status})");
-            }
-            let next = changes["revision"].as_u64().context("missing revision")?;
-            let next_epoch = changes["epoch"].as_str().context("missing relay epoch")?;
-            if B64.decode(next_epoch)?.len() != 16
-                || next < revision
-                || epoch.as_deref().is_some_and(|e| e != next_epoch)
-            {
-                bail!("invalid relay change cursor");
-            }
-            revision = next;
-            epoch = Some(next_epoch.into());
-        }
     }
     fn open_response(&self, value: Value, request_id: &str, now: u64) -> Result<(u16, Value)> {
         let response: Envelope = serde_json::from_value(value)?;
@@ -876,7 +784,7 @@ mod tests {
         (status, json!({"error":error}), Duration::ZERO)
     }
     fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
-        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/requests", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/pairings/p", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
     }
 
     #[test]
@@ -901,20 +809,6 @@ mod tests {
         let error = transport_call(&RelayTransport::new(&server.origin), "POST").unwrap_err();
         assert_eq!(error.to_string(), "invalid relay JSON response (HTTP 200)");
         assert_eq!(server.requests.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn submission_401_does_not_diagnose_revocation_or_repeat_action() {
-        let mut calls = 0;
-        let error = fixture().0.request_via("POST", "/v1/action", None,
-            Instant::now()+Duration::from_secs(1), |method, path, _, _| {
-                calls += 1;
-                assert_eq!((method, path), ("POST", "/v1/requests"));
-                Ok((401, Value::Null))
-            }).unwrap_err();
-        assert_eq!(calls, 1);
-        assert!(error.to_string().contains("HTTP 401"));
-        assert!(!error.to_string().contains("--repair"));
     }
 
     #[test]
@@ -993,8 +887,8 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_epoch_and_cursor_conflict_do_not_trigger_replay() {
-        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"stale_cursor"),reply(200,"ok")]);
+    fn unchanged_epoch_and_conflict_do_not_trigger_replay() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"conflict"),reply(200,"ok")]);
         let transport = RelayTransport::new(&server.origin);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
         assert_eq!(server.count(),3);
@@ -1004,15 +898,15 @@ mod tests {
     }
 
     #[test]
-    fn relay_epoch_conflict_invalidates_and_old_failure_cannot_erase_new_epoch() {
-        let server = HttpFixture::start(vec![boot(1),reply(409,"relay_epoch_changed"),boot(2),reply(200,"ok")]);
+    fn a_refused_epoch_is_dropped_and_an_old_failure_cannot_erase_the_new_one() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(200,"ok")]);
         let transport = RelayTransport::new(&server.origin);
-        assert_eq!(transport.call(&fixture().0,"owner-a","token","GET","/v1/changes?since=0",b"",Instant::now()+Duration::from_secs(2)).unwrap().0,409);
+        assert_eq!(transport_call(&transport,"POST").unwrap().0,401);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
         transport.invalidate([1;16]);
         assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
         assert_eq!(server.count(),4);
-        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_secs(1)).is_err());
+        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/pairings/p",b"{}",Instant::now()+Duration::from_secs(1)).is_err());
         assert_eq!(server.count(),4,"account switch must fail before network I/O");
     }
 
@@ -1044,138 +938,8 @@ mod tests {
         let mut slow = reply(200,"ok"); slow.2=Duration::from_millis(120);
         let server = HttpFixture::start(vec![bootstrap,slow]);
         let transport = RelayTransport::new(&server.origin);
-        assert!(transport.call(&fixture().0,"owner-a","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_millis(200)).is_err());
+        assert!(transport.call(&fixture().0,"owner-a","token","POST","/v1/pairings/p",b"{}",Instant::now()+Duration::from_millis(200)).is_err());
         assert_eq!(server.count(),2,"timed out POST must not be repeated");
-    }
-
-    #[test]
-    fn queued_operation_is_encrypted_and_waits_for_its_correlated_reply_without_resubmitting() {
-        let (profile, mac, mac_agreement) = fixture();
-        let mut stage = 0;
-        let mut request_id = String::new();
-        let mut retained: Vec<Value> = (490..=1000).map(|revision|
-            json!({"request_id":format!("historical-{revision}"),"status":"completed","revision":revision}))
-            .collect();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let result = profile.request_via("POST", "/v1/questions/7/answer", Some(&json!({"text":"yes"})), deadline, |method, path, bytes, budget| {
-            assert_eq!(budget, deadline, "every stage shares one absolute deadline");
-            stage += 1;
-            match stage {
-                1 => {
-                    assert_eq!((method,path), ("POST", "/v1/requests"));
-                    assert!(!String::from_utf8_lossy(bytes).contains("questions"));
-                    let envelope: Envelope = serde_json::from_slice(bytes)?;
-                    let plain = envelope.open(profile.signing()?.verifying_key(), &mac_agreement, "client-a", "mac-a", "mac-a", now_ms()?)?;
-                    assert_eq!(serde_json::from_slice::<Value>(&plain)?, json!({"method":"POST","path":"/v1/questions/7/answer","body":{"text":"yes"}}));
-                    request_id = envelope.request_id;
-                    retained.push(json!({"request_id":request_id,"status":"queued","revision":1001}));
-                    Ok((202,json!({"request_id":request_id,"status":"queued","revision":1001})))
-                }
-                2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","revision":1001,"response":null}))) }
-                3 => {
-                    assert_eq!(method,"GET");
-                    assert!(path.starts_with("/v1/changes?"));
-                    let wait_s = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
-                        .find(|(key,_)| key == "wait_s").expect("long poll wait parameter").1.parse::<u64>().unwrap();
-                    assert!(wait_s <= 25);
-                    // The request was created just before this callback. Permit at
-                    // most the second crossed while entering it, never a fresh budget.
-                    assert!(wait_s <= deadline.saturating_duration_since(Instant::now()).as_secs().saturating_add(1));
-                    let since = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
-                        .find(|(key,_)| key == "since").unwrap().1.parse::<u64>().unwrap();
-                    assert_eq!(since,1001,"the receipt and observed state are already known");
-                    *retained.iter_mut().find(|event| event["request_id"] == request_id).unwrap() =
-                        json!({"request_id":request_id,"status":"completed","revision":1002});
-                    let changes: Vec<_> = retained.iter().filter(|event| event["revision"].as_u64().unwrap()>since).cloned().collect();
-                    assert_eq!(changes.len(),1,"historical jobs and our own queued event must not trigger another GET");
-                    assert_eq!(changes[0]["request_id"],request_id);
-                    Ok((200,json!({"epoch":B64.encode([9;16]),"revision":1002,"changes":changes})))
-                }
-                4 => {
-                    assert_eq!(path, format!("/v1/requests/{request_id}"));
-                    let envelope = Envelope::seal_random(EnvelopeContext { route:"mac-a",sender:"mac-a",recipient:"client-a",request_id:&request_id,kind:"response",expires_at_ms:now_ms()?+5000 }, br#"{"status":200,"body":{"ok":true}}"#, &mac, &profile.agreement()?.public_key())?;
-                    Ok((200,json!({"request_id":request_id,"status":"completed","revision":1002,"response":envelope})))
-                }
-                _ => panic!("operation unexpectedly resubmitted"),
-            }
-        }).unwrap();
-        assert_eq!(result, (200, json!({"ok":true})));
-        assert_eq!(stage, 4);
-    }
-
-    #[test]
-    fn invalid_receipts_fail_closed_without_retrying_submission() {
-        for invalid in ["missing-id","wrong-id","missing-status","wrong-status","missing-revision","fractional-revision","negative-revision","zero-revision"] {
-            let mut calls=0;
-            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
-                |method,_,bytes,_| {
-                    calls+=1;
-                    assert_eq!(method,"POST");
-                    let envelope: Envelope=serde_json::from_slice(bytes)?;
-                    let mut receipt=json!({"request_id":envelope.request_id,"status":"queued","revision":1001});
-                    match invalid {
-                        "missing-id" => { receipt.as_object_mut().unwrap().remove("request_id"); },
-                        "wrong-id" => receipt["request_id"]=json!("other-request"),
-                        "missing-status" => { receipt.as_object_mut().unwrap().remove("status"); },
-                        "wrong-status" => receipt["status"]=json!("completed"),
-                        "missing-revision" => { receipt.as_object_mut().unwrap().remove("revision"); },
-                        "fractional-revision" => receipt["revision"]=json!(1.5),
-                        "negative-revision" => receipt["revision"]=json!(-1),
-                        "zero-revision" => receipt["revision"]=json!(0),
-                        _ => unreachable!(),
-                    }
-                    Ok((202,receipt))
-                });
-            assert!(result.is_err(),"accepted invalid receipt: {invalid}");
-            assert_eq!(calls,1,"invalid receipt must not repeat a possibly accepted mutation");
-        }
-    }
-
-    #[test]
-    fn observed_job_revision_advances_cursor_and_missing_revision_stops_polling() {
-        for revision in [Some(1003),None] {
-            let mut calls=0;
-            let mut id=String::new();
-            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
-                |_,path,bytes,_| {
-                    calls+=1;
-                    match calls {
-                        1 => { id=serde_json::from_slice::<Envelope>(bytes)?.request_id;
-                            Ok((202,json!({"request_id":id,"status":"queued","revision":1001}))) },
-                        2 => Ok((200,json!({"request_id":id,"status":"received","revision":revision,"response":null}))),
-                        3 => { assert!(path.starts_with("/v1/changes?since=1003&")); bail!("stop after verified poll") },
-                        _ => panic!("unexpected replay"),
-                    }
-                });
-            assert!(result.is_err());
-            assert_eq!(calls,if revision.is_some() {3} else {2});
-        }
-    }
-
-    #[test]
-    fn failed_submission_and_expired_budget_never_retry_a_mutation() {
-        let (profile, _, _) = fixture();
-        let mut calls = 0;
-        let result = profile.request_via(
-            "POST",
-            "/v1/requests",
-            Some(&json!({})),
-            Instant::now() + Duration::from_secs(1),
-            |_, _, _, _| {
-                calls += 1;
-                bail!("connection lost after sending")
-            },
-        );
-        assert!(result.unwrap_err().to_string().contains("uncertain"));
-        assert_eq!(calls, 1);
-        let result = profile.request_via(
-            "POST",
-            "/v1/requests",
-            Some(&json!({})),
-            Instant::now(),
-            |_, _, _, _| panic!("expired operations must not send"),
-        );
-        assert!(result.is_err());
     }
 
     #[test]

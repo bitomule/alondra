@@ -29,8 +29,8 @@ Mac apps browse it only when built with `--define=alondra_sandbox=1` and launche
   `settings.json`, `alondrad.log`.
 - `relay.json`, `relay.log`: the real `alondra-relay`, without Postgres or Keycloak.
 - `issuer/`: the RSA key that signs sandbox account tokens and its `jwks.json`, served on loopback.
-- `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac through the relay;
-  `mac-N-direct.json` the one it paired directly.
+- `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac it paired with the
+  account (enrolled at the relay, reached over iroh); `mac-N-direct.json` the one it paired directly.
 - `sandbox.json`: Macs, ports and URLs, for the phone and later tools.
 - `mac-N/start`: runs that Mac's daemon with its environment; a journey restarts the daemon with it.
 - With `FAKES=1`: `fakes/` (the `claude` and `gh` wrappers, every call in `calls.jsonl`, the
@@ -66,7 +66,7 @@ Move a node by hand: `alondra-sandbox fake nodes`, then
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
 
-- `task-cycle` (through the relay):
+- `task-cycle` (over iroh):
   - TC1: request → task → node → PR delivered → review card → merge → clean-up → `claude rm` → finished.
   - TC2: a question answered on its card reaches the node.
   - TC3: requested changes, a second delivery, the new head merged.
@@ -152,10 +152,10 @@ real Alondra. It may only run tmux, the sandbox's binaries and write in its repo
 
 ```sh
 alondra-sandbox phone --mac 1 pair                      # approve on the Mac, wait for relay enrollment
-alondra-sandbox phone --mac 1 request GET /capabilities # one encrypted request, prints the response
+alondra-sandbox phone --mac 1 request GET /capabilities # one encrypted request over iroh, prints the response
 alondra-sandbox phone --mac 1 revoke                    # revoke on the Mac, wait until the relay refuses
 alondra-sandbox phone --mac 1 pair --direct             # pair over the direct listener, codes compared
-alondra-sandbox phone --mac 1 request --direct GET /capabilities   # the same request, without the relay
+alondra-sandbox phone --mac 1 request --direct GET /capabilities   # the same request, over the direct listener
 alondra-sandbox phone --mac 1 press --direct card:<id> "Short name"   # press a view's action by label or id prefix
 alondra-sandbox phone --mac 1 press --direct task:<id> msg: --text "…" # an action with its text field
 alondra-sandbox scenario                                # the automatic checks, on every Mac
@@ -191,8 +191,7 @@ and answers every one from a client. Each card must leave at once, as its action
 `resolves_card` promised, and never come back; each card of the group must open on its own screen.
 
 ```sh
-make e2e-relay-cards                 # the synthetic phone, every request through the relay
-make e2e-direct-cards                # the same, over the Mac's direct listener
+make e2e-direct-cards                # the synthetic phone, over the Mac's direct listener
 make e2e-cards-tui                   # the real TUI in tmux
 make e2e-ios-cards                   # the iOS app in a pooled simulator, driven with MAV
 E2E_CAPTURES=/tmp/cards make e2e-cards-tui   # keeps what the client showed at each step

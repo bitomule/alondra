@@ -6,7 +6,6 @@ use base64::engine::general_purpose::STANDARD;
 use p256::SecretKey;
 use p256::ecdsa::SigningKey;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 fn wire_signing(key: &SigningKey) -> String {
     URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes())
@@ -304,51 +303,6 @@ fn only_private_link_local_loopback_and_tailnet_peers_are_allowed() {
     }
 }
 
-#[tokio::test]
-async fn the_same_envelope_through_the_relay_and_directly_gets_the_same_answer() {
-    let phone = Phone::new("client-a", 30);
-    let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let saved = responses.clone();
-    let relay = Router::new()
-        .route("/v1/work/{id}/receipt", post(|| async { Json(json!({"status": "received"})) }))
-        .route(
-            "/v1/work/{id}/response",
-            post(move |body: Bytes| {
-                let saved = saved.clone();
-                async move {
-                    saved.lock().unwrap().push(body.to_vec());
-                    Json(json!({"status": "completed"}))
-                }
-            }),
-        );
-    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let relay_url = format!("http://{}/", relay_listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(relay_listener, relay).await.unwrap() });
-    let home = home_with(&[&phone], Some(&relay_url));
-    let auth = Arc::new(Auth::open(&home).unwrap());
-    let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
-    service.enroll_with_relay_for_tests("client-a");
-    let service = Arc::new(service);
-    let f = serve(home, service.clone(), auth).await;
-
-    let envelope = phone.request("op-both", routes::PATH);
-    service.handle_relay_for_tests(envelope.clone(), &[9u8; 16]).await.unwrap();
-    let through_relay = responses.lock().unwrap().pop().expect("relay delivered a response");
-    let (status, direct_bytes) = send(&f.base, "/direct/request", &envelope).await;
-    assert_eq!(status, 200);
-    assert_eq!(direct_bytes, through_relay, "one journal answers both transports with the same bytes");
-    assert_eq!(phone.open(&direct_bytes)["status"], 200);
-}
-
-#[tokio::test]
-async fn a_direct_only_device_cannot_use_the_relay() {
-    let phone = Phone::new("client-a", 30);
-    let home = home_with(&[&phone], Some("http://127.0.0.1:1/"));
-    let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
-    let error = service.handle_relay_for_tests(phone.request("op-1", routes::PATH), &[9u8; 16]).await.unwrap_err();
-    assert!(format!("{error:#}").contains("enrolled with the relay"), "{error:#}");
-}
-
 struct Pairing<'a> {
     phone: &'a Phone,
     nonce: String,
@@ -462,29 +416,22 @@ async fn a_denied_device_cannot_ask_again_over_the_network() {
 }
 
 #[tokio::test]
-async fn a_signed_request_on_either_path_records_when_the_device_was_last_used() {
-    let relayed = Phone::new("client-a", 30);
-    let direct = Phone::new("client-b", 40);
-    let relay = Router::new()
-        .route("/v1/work/{id}/receipt", post(|| async { Json(json!({"status": "received"})) }))
-        .route("/v1/work/{id}/response", post(|| async { Json(json!({"status": "completed"})) }));
-    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let relay_url = format!("http://{}/", relay_listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(relay_listener, relay).await.unwrap() });
-    let home = home_with(&[&relayed, &direct], Some(&relay_url));
+async fn a_signed_request_records_when_the_device_was_last_used() {
+    let first = Phone::new("client-a", 30);
+    let second = Phone::new("client-b", 40);
+    let home = home_with(&[&first, &second], None);
     let auth = Arc::new(Auth::open(&home).unwrap());
-    let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
-    service.enroll_with_relay_for_tests("client-a");
-    let service = Arc::new(service);
-    let f = serve(home, service.clone(), auth.clone()).await;
+    let service = Arc::new(Service::open(&home, 0, auth.clone()).unwrap().unwrap());
+    let f = serve(home, service, auth.clone()).await;
     let before = alondra_core::now_millis();
     let used = |id: &str| auth.usage().snapshot(0).devices.get(id).and_then(|used| used.last_used_ms);
     assert_eq!((used("client-a"), used("client-b")), (None, None));
 
-    service.handle_relay_for_tests(relayed.request("op-relay", routes::PATH), &[9u8; 16]).await.unwrap();
-    assert!(used("client-a").is_some_and(|at| at >= before), "through the relay");
-    assert_eq!(send(&f.base, "/direct/request", &direct.request("op-direct", routes::PATH)).await.0, 200);
-    assert!(used("client-b").is_some_and(|at| at >= before), "on the direct path");
+    assert_eq!(send(&f.base, "/direct/request", &first.request("op-first", routes::PATH)).await.0, 200);
+    assert!(used("client-a").is_some_and(|at| at >= before));
+    assert_eq!(used("client-b"), None, "only the device that asked");
+    assert_eq!(send(&f.base, "/direct/request", &second.request("op-second", routes::PATH)).await.0, 200);
+    assert!(used("client-b").is_some_and(|at| at >= before));
 
     auth.usage().flush(alondra_core::now_millis()).unwrap();
     let reopened = crate::device_usage::DeviceUsage::at(&f.home).snapshot(0);

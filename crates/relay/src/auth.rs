@@ -500,7 +500,7 @@ impl Auth {
         Ok(())
     }
 
-    /// A Mac-signed revocation removes the public key durably before queued data is purged.
+    /// A Mac-signed revocation removes the public key durably.
     pub fn revoke(&self, mac: &Identity, device_id: &str) -> Result<()> {
         self.ensure_registry_ready()?;
         if !valid_device_id(device_id) {
@@ -1243,7 +1243,7 @@ impl Auth {
     }
 
     /// A candidate is not enrolled yet. Its account token and proof of possession of the
-    /// advertised signing key are both required before its opaque request enters the mailbox.
+    /// advertised signing key are both required before its pairing request is held.
     pub async fn authenticate_pairing_candidate(
         &self,
         headers: &HeaderMap,
@@ -1269,6 +1269,7 @@ impl Auth {
         Ok(Identity { device_id: device_id.to_owned(), owner_sub: sub })
     }
 
+    #[cfg(test)]
     pub fn phone_key(&self, device_id: &str) -> Result<VerifyingKey> {
         self.ensure_registry_ready()?;
         let device = self
@@ -1344,18 +1345,11 @@ impl Auth {
         if let Some(db)=&self.management {
             db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {
-                    #[cfg(feature = "lab-waiter-metrics")]
-                    crate::management::lab_metrics::record(&error);
                     anyhow::anyhow!(AccountGateError::Unavailable)
                 }
             })?;
         }
         Ok(())
-    }
-    pub async fn require_live_phone(&self,who:&Identity)->Result<()> {
-        let mac=self.paired_mac_for_phone(&who.device_id,&who.owner_sub)?;
-        self.mac_for_owner(&mac,&who.owner_sub)?;
-        self.require_live_route(&who.owner_sub,&mac,Some(&who.device_id)).await
     }
     pub async fn require_active_owner(&self,subject:&str)->Result<()> {
         if let Some(management)=&self.management {
@@ -1363,8 +1357,6 @@ impl Auth {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
                     anyhow::anyhow!(AccountGateError::Denied)
                 } else {
-                    #[cfg(feature = "lab-waiter-metrics")]
-                    crate::management::lab_metrics::record(&error);
                     anyhow::anyhow!(AccountGateError::Unavailable)
                 }
             })?;

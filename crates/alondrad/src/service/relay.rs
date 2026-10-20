@@ -1,16 +1,15 @@
-//! The outbound relay connector: enrolls approved devices with the relay, long-polls it for
-//! envelopes, acknowledges and delivers responses, and hands encrypted pushes to APNs through it.
-//! A relay without the mailbox leaves it a heartbeat that keeps enrollments, revocations and
-//! iroh bindings. Present only when `service.toml` names a relay.
+//! The outbound relay connector: a heartbeat that keeps device enrollments, revocations and iroh
+//! bindings at the relay, and hands encrypted pushes to APNs through it. Present only when
+//! `service.toml` names a relay.
 use super::{
-    Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work, WorkGuard, ExecutionLane, MutationTurn,
-    approval_bound_delivery, approved_method, bounded_response_within, decoded, domain_read_route, now_ms, registration_ended, relay_error_code, without_relay_extensions,
+    Device, EnrollmentDecision, PushDelivery, Service, Transport,
+    decoded, now_ms, registration_ended, relay_error_code, without_relay_extensions,
 };
 use crate::push::local_minutes;
 use alondra_e2e::sign_http_challenge;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use reqwest::{Method, StatusCode, Url};
+use reqwest::{Method, Url};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,41 +22,16 @@ use std::{
     time::Duration,
 };
 
-// The relay accepts a 256 KiB envelope; its work wrapper adds routing metadata.
-const MAX_WORK_BYTES: usize = 256 * 1024 + 4096;
-pub(super) const MAX_ORDINARY_DELIVERIES: usize = 4;
-/// The relay answers a work poll within its 25 s wait; a connection silent past that is dead.
-const WORK_POLL_TIMEOUT: Duration = Duration::from_secs(40);
-/// About 7.5 s of waits, well inside the relay's 30 s lease on a job it handed out.
-#[cfg(not(test))]
-pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [
-    Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4),
-];
-#[cfg(test)]
-pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [Duration::from_millis(5); 4];
-/// With no mailbox to wait on, the connector checks devices, revocations and bindings this often.
+/// The connector checks devices, revocations and bindings this often.
 #[cfg(not(test))]
 const HEARTBEAT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const HEARTBEAT: Duration = Duration::from_millis(50);
-
-/// A dropped connection, a timeout or a busy relay; never a refusal the relay meant.
-pub(super) fn transient_upload_failure(error: &anyhow::Error) -> bool {
-    error.chain().filter_map(|cause| cause.downcast_ref::<reqwest::Error>()).any(|error| match error.status() {
-        Some(status) => status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
-        None => error.is_connect() || error.is_timeout() || error.is_request() || error.is_body(),
-    })
-}
-
-/// Between half and all of `delay`, so uploads failed by one outage do not retry in step.
-fn jittered(delay: Duration) -> Duration {
-    let mut random = [0u8; 2];
-    let fraction = match SystemRandom::new().fill(&mut random) {
-        Ok(()) => f64::from(u16::from_le_bytes(random)) / f64::from(u16::MAX),
-        Err(_) => 1.0,
-    };
-    delay.mul_f64(0.5 + fraction / 2.0)
-}
+/// After a failed check the next one comes this soon.
+#[cfg(not(test))]
+const RETRY: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const RETRY: Duration = Duration::from_millis(5);
 
 pub(crate) struct RelayConnector {
     url: Url,
@@ -68,11 +42,6 @@ pub(crate) struct RelayConnector {
     /// The device endpoints bound on this Mac's behalf in that epoch, and when one last failed.
     devices_bound: std::sync::Mutex<DevicesBound>,
     wake: tokio::sync::Notify,
-    deliveries: Arc<tokio::sync::Semaphore>,
-    /// The relay epoch whose relay answered the work poll as a route it does not have.
-    mailbox_gone: std::sync::Mutex<Option<[u8; 16]>>,
-    #[cfg(test)]
-    pub(super) mailbox_uses: std::sync::Mutex<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -80,13 +49,6 @@ struct DevicesBound {
     epoch: Option<[u8; 16]>,
     nodes: std::collections::BTreeMap<String, String>,
     failed: Option<std::time::Instant>,
-}
-
-pub(super) struct RelayDelivery {
-    response: Vec<u8>,
-    device: Arc<Device>,
-    guard: Arc<WorkGuard>,
-    approval_binding: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -123,32 +85,7 @@ impl RelayConnector {
         Self {
             url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None),
             devices_bound: std::sync::Mutex::default(), wake: tokio::sync::Notify::new(),
-            deliveries: Arc::new(tokio::sync::Semaphore::new(MAX_ORDINARY_DELIVERIES)),
-            mailbox_gone: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            mailbox_uses: std::sync::Mutex::default(),
         }
-    }
-
-    fn mailbox_gone_in(&self, epoch: &[u8; 16]) -> bool {
-        *self.mailbox_gone.lock().expect("mailbox state lock poisoned") == Some(*epoch)
-    }
-
-    /// One line per request that reached this Mac through the relay mailbox, never its content:
-    /// the count that shows when no client needs the mailbox any more.
-    fn note_mailbox_use(&self, sender: &str, request: &super::LocalRequest, changes: bool) {
-        let kind = if changes {
-            "change wait"
-        } else if Service::ordinary_read(request) {
-            "read"
-        } else {
-            "action"
-        };
-        let path = request.path.split('?').next().unwrap_or_default();
-        let line = format!("mailbox {kind} from {sender}: {} {path}", request.method);
-        log!("{line}");
-        #[cfg(test)]
-        self.mailbox_uses.lock().expect("mailbox log lock poisoned").push(line);
     }
 
     /// The device list changed: re-enroll and re-sync revocations on the next iteration.
@@ -410,255 +347,54 @@ impl Service {
     }
 
     pub async fn run(self: Arc<Self>) {
-        let mut work = tokio::task::JoinSet::new();
+        let Ok(relay) = self.relay() else { return };
         let mut enrolled_epoch: Option<[u8; 16]> = None;
         let mut revoked_this_epoch = HashSet::new();
-        let mut failed_last_time = false;
         loop {
-            while let Some(result) = work.try_join_next() {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => log!("service work: {error:#}"),
-                    Err(error) => log!("service work task: {error}"),
+            let wait = match self.keep_registered(&mut enrolled_epoch, &mut revoked_this_epoch).await {
+                Ok(()) => HEARTBEAT,
+                Err(error) => {
+                    log!("service connector: {error:#}");
+                    RETRY
                 }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                () = relay.wake.notified() => {}
             }
-            let result = self
-                .poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut work)
-                .await;
-            if let Err(e) = &result {
-                log!("service connector: {e:#}");
-                // A single refused or cut poll is signed again at once so a waiting phone is not
-                // held; only a failure in a row waits.
-                if failed_last_time {
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-                }
-            }
-            failed_last_time = result.is_err();
         }
     }
 
-    /// One bounded iteration; any failure forces a fresh epoch next time. POSTs
-    /// are never replayed here; work redelivery keeps its durable journal rules.
-    pub(super) async fn poll_work(
-        self: &Arc<Self>,
+    /// One check: a new relay epoch (a restarted relay) re-enrolls every approved device, and
+    /// any failure forces a fresh epoch next time.
+    pub(super) async fn keep_registered(
+        &self,
         enrolled_epoch: &mut Option<[u8; 16]>,
         revoked_this_epoch: &mut HashSet<String>,
-        changes: &mut tokio::task::JoinSet<Result<()>>,
     ) -> Result<()> {
         let relay = self.relay()?;
         if relay.resync.swap(false, Ordering::SeqCst) {
             *enrolled_epoch = None;
         }
         let result = async {
-                let epoch = match *enrolled_epoch {
-                    Some(epoch) => epoch,
-                    None => self.bootstrap().await?,
-                };
-                if *enrolled_epoch != Some(epoch) {
-                    revoked_this_epoch.clear();
-                }
-                self.sync_revocations(&epoch, revoked_this_epoch)
-                    .await?;
-                if *enrolled_epoch != Some(epoch) {
-                    self.enroll(&epoch).await?;
-                    *enrolled_epoch = Some(epoch);
-                }
-                self.keep_iroh_endpoint_bound(&epoch).await;
-                self.keep_device_iroh_nodes_bound(&epoch).await;
-                if relay.mailbox_gone_in(&epoch) {
-                    tokio::select! {
-                        () = tokio::time::sleep(HEARTBEAT) => {}
-                        () = relay.wake.notified() => {}
-                    }
-                    // No signed poll notices a restarted relay; its new epoch re-enrolls and
-                    // asks for the mailbox again.
-                    if self.bootstrap().await? != epoch {
-                        *enrolled_epoch = None;
-                    }
-                    return Ok(());
-                }
-                let path = "/v1/work?wait_s=25";
-                let response = tokio::select! {
-                    response = tokio::time::timeout(WORK_POLL_TIMEOUT, self.signed(Method::GET, path, Vec::new(), &epoch)) => response
-                        .map_err(|_| anyhow!("the relay held the work poll past {}s", WORK_POLL_TIMEOUT.as_secs()))??,
-                    () = relay.wake.notified() => return Ok(()),
-                };
-                if matches!(response.status(), StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED) {
-                    log!("the relay has no mailbox: devices, revocations and iroh bindings are checked every {}s", HEARTBEAT.as_secs());
-                    *relay.mailbox_gone.lock().expect("mailbox state lock poisoned") = Some(epoch);
-                    return Ok(());
-                }
-                let response = response.error_for_status()?;
-                if response.status() == StatusCode::NO_CONTENT {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                let bytes = bounded_response_within(response, MAX_WORK_BYTES).await?;
-                let work: Work = serde_json::from_slice(&bytes)?;
-                drop(bytes);
-                self.schedule_work(work, epoch, changes).await
-        }.await;
+            let epoch = self.bootstrap().await?;
+            if *enrolled_epoch != Some(epoch) {
+                revoked_this_epoch.clear();
+            }
+            self.sync_revocations(&epoch, revoked_this_epoch).await?;
+            if *enrolled_epoch != Some(epoch) {
+                self.enroll(&epoch).await?;
+                *enrolled_epoch = Some(epoch);
+            }
+            self.keep_iroh_endpoint_bound(&epoch).await;
+            self.keep_device_iroh_nodes_bound(&epoch).await;
+            Ok(())
+        }
+        .await;
         if result.is_err() {
             *enrolled_epoch = None;
         }
         result
-    }
-
-    /// Posts a receipt or a response, resending the same bytes while the network or a busy
-    /// relay fails it: the relay accepts a repeated upload, and a lost one would otherwise hold
-    /// the phone's request until the relay's lease hands the job out again.
-    async fn upload(&self, path: &str, body: &[u8], epoch: &[u8; 16]) -> Result<()> {
-        let mut delays = UPLOAD_RETRY_DELAYS.iter();
-        loop {
-            let result = async {
-                Self::drain_ack(self.signed(Method::POST, path, body.to_vec(), epoch).await?).await
-            }.await;
-            match result {
-                Err(error) if transient_upload_failure(&error) => match delays.next() {
-                    Some(delay) => tokio::time::sleep(jittered(*delay)).await,
-                    None => return Err(error),
-                },
-                done => return done,
-            }
-        }
-    }
-
-    async fn drain_ack(response: reqwest::Response) -> Result<()> {
-        let mut response = response.error_for_status()?;
-        let mut bytes = 0usize;
-        while let Some(chunk) = response.chunk().await? {
-            bytes += chunk.len();
-            if bytes > 4096 {
-                bail!("relay acknowledgement too large");
-            }
-        }
-        Ok(())
-    }
-
-    /// Intake reserves mutation order before handing bounded ordinary work to its owner.
-    /// Read-only work uses the same admission budget without waiting for a mutation turn.
-    pub(super) async fn schedule_work(
-        self: &Arc<Self>,
-        work: Work,
-        epoch: [u8; 16],
-        changes: &mut tokio::task::JoinSet<Result<()>>,
-    ) -> Result<()> {
-        let Some(mut prepared) = self.prepare_work(&work, Transport::Relay)? else {
-            return Ok(());
-        };
-        self.relay()?.note_mailbox_use(&work.envelope.sender, &prepared.request, prepared.guard.changes);
-        if prepared.guard.changes {
-            let service = self.clone();
-            changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });
-            Ok(())
-        } else if prepared.guard.saturated {
-            prepared.execution = ExecutionLane::Read;
-            self.handle_prepared(work, &epoch, prepared).await
-        } else {
-            let permit = self.relay()?.deliveries.clone().acquire_owned().await?;
-            prepared.execution = if Self::ordinary_read(&prepared.request) {
-                ExecutionLane::Read
-            } else {
-                ExecutionLane::Mutation(Self::reserve_mutation_turn(self.lane.clone()).await)
-            };
-            let service = self.clone();
-            changes.spawn(async move {
-                let _permit = permit;
-                let result = async {
-                    let delivery = service.execute_relay(&work, &epoch, prepared).await?;
-                    service.deliver_response(work, &epoch, delivery).await
-                }.await;
-                if result.is_err() { service.relay()?.resync(); }
-                result
-            });
-            Ok(())
-        }
-    }
-
-    pub(super) fn ordinary_read(request: &super::LocalRequest) -> bool {
-        request.method == "GET" && request.body.is_none()
-            && approved_method(request).is_ok_and(|method| method == Method::GET)
-    }
-
-    async fn reserve_mutation_turn(lane: Arc<tokio::sync::Mutex<()>>) -> MutationTurn {
-        use std::{future::Future, task::Poll};
-        let mut waiting = Box::pin(lane.lock_owned());
-        let acquired = std::future::poll_fn(|cx| {
-            // Queue insertion must occur even when intake has exhausted its cooperative budget.
-            let first_poll = tokio::task::unconstrained(waiting.as_mut());
-            let mut first_poll = std::pin::pin!(first_poll);
-            Poll::Ready(match first_poll.as_mut().poll(cx) {
-                Poll::Ready(guard) => Some(guard),
-                Poll::Pending => None,
-            })
-        }).await;
-        match acquired { Some(guard) => MutationTurn::Acquired(guard), None => MutationTurn::Waiting(waiting) }
-    }
-
-    #[cfg(test)]
-    pub(super) async fn handle(&self, work: Work, epoch: &[u8; 16]) -> Result<()> {
-        let Some(prepared) = self.prepare_work(&work, Transport::Relay)? else {
-            return Ok(());
-        };
-        self.handle_prepared(work, epoch, prepared).await
-    }
-
-    /// Acknowledges the receipt to the relay once the journal holds it, executes, and uploads
-    /// the sealed response while the approval lease keeps a revocation from finishing mid-delivery.
-    pub(super) async fn handle_prepared(
-        &self,
-        work: Work,
-        epoch: &[u8; 16],
-        prepared: PreparedWork,
-    ) -> Result<()> {
-        let delivery = self.execute_relay(&work, epoch, prepared).await?;
-        self.deliver_response(work, epoch, delivery).await
-    }
-
-    pub(super) async fn execute_relay(
-        &self,
-        work: &Work,
-        epoch: &[u8; 16],
-        prepared: PreparedWork,
-    ) -> Result<RelayDelivery> {
-        let e = &work.envelope;
-        let approval_binding = if prepared.request.body.is_none() && domain_read_route(&prepared.request) {
-            let device = self.devices.get(&e.sender).context("work from unapproved device")?;
-            Some(self.approval_binding(&e.sender, &device, Transport::Relay)?)
-        } else { None };
-        let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
-        let (response, device, guard) = self.execute(e, prepared, Transport::Relay, || async {
-                self.upload(&receipt_path, &[], epoch).await
-            })
-            .await?;
-        Ok(RelayDelivery { response, device, guard, approval_binding })
-    }
-
-    pub(super) async fn deliver_response(
-        &self,
-        work: Work,
-        epoch: &[u8; 16],
-        delivery: RelayDelivery,
-    ) -> Result<()> {
-        let RelayDelivery { response, device, guard: _guard, approval_binding } = delivery;
-        let e = &work.envelope;
-        let response_path = format!("/v1/work/{}/response", e.request_id);
-        approval_bound_delivery(
-            &self.home,
-            || {
-                if let Some(expected) = approval_binding {
-                    anyhow::ensure!(
-                        self.approval_binding(&e.sender, &device, Transport::Relay)? == expected,
-                        "resource read approval generation changed before delivery"
-                    );
-                    Ok(())
-                } else { self.require_device_approval(&e.sender, &device, Transport::Relay) }
-            },
-            || async {
-                self.upload(&response_path, &response, epoch).await
-            },
-        )
-        .await?;
-        Ok(())
     }
 
     pub(super) async fn send_device_push(

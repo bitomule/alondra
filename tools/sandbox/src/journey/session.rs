@@ -20,7 +20,7 @@ use crate::{
 };
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
-    let Ok(user) = report.step("a phone pairs with Mac 1 through the relay", || User::paired(sandbox, "journey", 1, false)) else {
+    let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
         return;
     };
     report.case("S1", "A node whose session crashes is restarted with claude respawn and finishes its task", |report| {

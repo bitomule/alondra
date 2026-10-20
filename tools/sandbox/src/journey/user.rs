@@ -15,7 +15,7 @@ pub struct User<'a> {
 }
 
 impl<'a> User<'a> {
-    /// A phone paired with Mac `mac` through the relay, or directly.
+    /// A phone paired with Mac `mac` with the account (reached over iroh), or directly.
     pub fn paired(sandbox: &'a Sandbox, name: &str, mac: usize, direct: bool) -> Result<Self> {
         let phone = Phone::open(sandbox, name)?;
         let target = sandbox.mac(mac)?;

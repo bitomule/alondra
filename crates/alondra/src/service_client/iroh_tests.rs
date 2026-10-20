@@ -1,5 +1,4 @@
-//! An account-paired Mac over a real iroh endpoint on loopback, with the relay mailbox as a
-//! recording fake that answers through the same sealing Mac.
+//! An account-paired Mac over a real iroh endpoint on loopback.
 use super::super::Profile;
 use super::*;
 use crate::direct_client::iroh_tests::{self as fake, Behaviour, FakeIroh};
@@ -23,75 +22,48 @@ fn home() -> crate::test_support::Directory {
     home
 }
 
-/// The relay mailbox: keeps each submitted envelope and hands back the Mac's sealed answer.
-#[derive(Default)]
-struct Mailbox {
-    submitted: Mutex<Vec<Vec<u8>>>,
-}
-
-impl Mailbox {
-    fn call(&self, method: &str, path: &str, body: &[u8]) -> Result<(u16, Value)> {
-        if method == "POST" && path == "/v1/requests" {
-            self.submitted.lock().unwrap().push(body.to_vec());
-            let envelope: Value = serde_json::from_slice(body)?;
-            return Ok((202, json!({"request_id": envelope["request_id"], "status": "queued", "revision": 1})));
-        }
-        let submitted = self.submitted.lock().unwrap().last().cloned().context("nothing submitted")?;
-        let envelope: Value = serde_json::from_slice(&submitted)?;
-        let response: Value = serde_json::from_slice(&fake::answer(&submitted, &Value::Null))?;
-        Ok((200, json!({"request_id": envelope["request_id"], "status": "completed", "revision": 2, "response": response})))
-    }
-
-    fn submitted(&self) -> Vec<Vec<u8>> {
-        self.submitted.lock().unwrap().clone()
-    }
-}
-
-fn read(home: &Path, learn: impl FnOnce() -> Option<Dial>, mailbox: &Mailbox) -> Result<(u16, Value)> {
-    profile().request_over(home, "GET", "/capabilities", None, Instant::now() + Duration::from_secs(5), learn,
-        |method, path, body, _| mailbox.call(method, path, body))
+fn read(home: &Path, learn: impl FnOnce() -> Option<Dial>) -> Result<(u16, Value)> {
+    profile().request_over(home, "GET", "/capabilities", None, Instant::now() + Duration::from_secs(5), learn)
 }
 
 #[test]
-fn an_account_paired_mac_answers_over_iroh_and_the_mailbox_is_not_used() {
-    let (home, iroh, mailbox) = (home(), FakeIroh::start(Behaviour::Answer), Mailbox::default());
+fn an_account_paired_mac_answers_over_iroh_on_one_connection() {
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::Answer));
     crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
-    assert_eq!(read(&home, || panic!("the known dial works"), &mailbox).unwrap(), (200, json!({"path": "/capabilities"})));
-    assert_eq!(read(&home, || panic!("the open connection is reused"), &mailbox).unwrap().0, 200);
+    assert_eq!(read(&home, || panic!("the known dial works")).unwrap(), (200, json!({"path": "/capabilities"})));
+    assert_eq!(read(&home, || panic!("the open connection is reused")).unwrap().0, 200);
     assert_eq!(iroh.received().len(), 2);
-    assert!(mailbox.submitted().is_empty());
 }
 
 #[test]
-fn an_envelope_lost_on_iroh_goes_through_the_mailbox_byte_for_byte() {
-    let (home, iroh, mailbox) = (home(), FakeIroh::start(Behaviour::DropAfterRequest), Mailbox::default());
+fn an_envelope_lost_on_iroh_is_an_error_that_says_to_check_the_mac() {
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::DropAfterRequest));
     crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
-    assert_eq!(read(&home, || None, &mailbox).unwrap(), (200, json!({"path": "/capabilities"})));
-    assert_eq!(mailbox.submitted(), iroh.received(), "the Mac sees the same envelope twice, and its journal runs it once");
+    let error = read(&home, || None).unwrap_err().to_string();
+    assert!(error.contains("check it on the Mac before repeating it"), "{error}");
+    assert_eq!(iroh.received().len(), 1, "the envelope is not sent again");
 }
 
 #[test]
 fn a_refusal_over_iroh_is_the_macs_answer_and_is_not_sent_again() {
-    let (home, iroh, mailbox) = (home(), FakeIroh::start(Behaviour::Refuse("idempotency_conflict")), Mailbox::default());
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::Refuse("idempotency_conflict")));
     crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
-    assert_eq!(read(&home, || None, &mailbox).unwrap(), (409, json!({"error": "idempotency_conflict"})));
-    assert!(mailbox.submitted().is_empty());
+    assert_eq!(read(&home, || None).unwrap(), (409, json!({"error": "idempotency_conflict"})));
+    assert_eq!(iroh.received().len(), 1);
 }
 
 #[test]
 fn an_unknown_dial_is_learned_once_and_kept_after_it_connects() {
-    let (home, iroh, mailbox) = (home(), FakeIroh::start(Behaviour::Answer), Mailbox::default());
-    assert_eq!(read(&home, || Some(iroh.dial()), &mailbox).unwrap().0, 200);
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::Answer));
+    assert_eq!(read(&home, || Some(iroh.dial())).unwrap().0, 200);
     assert_eq!(crate::iroh_client::load_dial(&home, fake::MAC), Some(iroh.dial()));
-    assert!(mailbox.submitted().is_empty());
 }
 
 #[test]
-fn a_mac_iroh_cannot_reach_goes_through_the_mailbox_and_is_not_dialled_again() {
-    let (home, mailbox) = (home(), Mailbox::default());
-    assert_eq!(read(&home, || None, &mailbox).unwrap(), (200, json!({"path": "/capabilities"})));
-    assert_eq!(read(&home, || panic!("this process already knows iroh is down"), &mailbox).unwrap().0, 200);
-    assert_eq!(mailbox.submitted().len(), 2);
+fn a_mac_iroh_cannot_reach_is_an_error_and_is_not_dialled_again() {
+    let home = home();
+    assert!(read(&home, || None).is_err());
+    assert!(read(&home, || panic!("this process already knows iroh is down")).is_err());
 }
 
 #[test]

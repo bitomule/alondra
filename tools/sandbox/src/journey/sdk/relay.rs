@@ -1,7 +1,7 @@
 //! The phone answers what a task's native Claude asks through the SDK host, over the encrypted
-//! direct connection that stays once the relay's mailbox is gone: «Allow», «Allow always» and
-//! «Deny» reach exactly the request their card shows. An answer built for one request never
-//! decides the next one, and an answer to a request Claude no longer waits on reaches nothing.
+//! direct connection: «Allow», «Allow always» and «Deny» reach exactly the request their card
+//! shows. An answer built for one request never decides the next one, and an answer to a request
+//! Claude no longer waits on reaches nothing.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 

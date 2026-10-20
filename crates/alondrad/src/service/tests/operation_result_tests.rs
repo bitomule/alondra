@@ -187,33 +187,20 @@ async fn a_receipt_does_not_cross_a_domain_reset_even_when_the_journal_survives(
 }
 
 #[tokio::test]
-async fn a_relay_read_returns_the_same_expired_inner_receipt_in_a_fresh_sealed_response() {
-    use std::future::IntoFuture;
-    let mut f = Fixture::new();
-    let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let captured = responses.clone();
-    let relay = Router::new()
-        .route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
-        .route("/v1/work/{id}/response", post(move |body: axum::body::Bytes| {
-            let captured = captured.clone();
-            async move { captured.lock().unwrap().push(body.to_vec()); StatusCode::ACCEPTED }
-        }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    f.service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
-    let server = tokio::spawn(axum::serve(listener, relay).into_future());
+async fn a_later_read_returns_the_same_expired_inner_receipt_in_a_fresh_sealed_response() {
+    let f = Fixture::new();
+    let responses = Mutex::new(Vec::<Vec<u8>>::new());
     let original = f.action();
-    f.service.handle(Work { request_id: original.request_id.clone(), envelope: original.clone() }, &[7;16]).await.unwrap();
+    f.service.answer_directly(Work { request_id: original.request_id.clone(), envelope: original.clone() }, &responses).await.unwrap();
     let bytes = responses.lock().unwrap().pop().unwrap();
     assert_eq!(f.opened(&bytes)["body"]["outcome"], "applied");
     f.clock.store(700_000, Ordering::Relaxed);
-    let read = f.work("relay-historical-read", "GET", &f.path(&original), None);
-    f.service.handle(Work { request_id: read.request_id.clone(), envelope: read }, &[7;16]).await.unwrap();
+    let read = f.work("historical-read", "GET", &f.path(&original), None);
+    f.service.answer_directly(Work { request_id: read.request_id.clone(), envelope: read }, &responses).await.unwrap();
     let recovered = f.opened(&responses.lock().unwrap().pop().unwrap());
     assert_eq!(recovered["status"], 200, "{recovered}");
     assert_eq!(recovered["body"]["response"], serde_json::from_slice::<Value>(&bytes).unwrap());
     assert!(responses.lock().unwrap().is_empty());
-    server.abort();
-    let _ = server.await;
 }
 
 #[test]

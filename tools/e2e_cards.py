@@ -284,21 +284,21 @@ def kind_of(need):
 
 
 class Phone:
-    """The synthetic phone: every request encrypted, through the relay or the direct listener."""
+    """The synthetic phone: every request encrypted, through the direct listener."""
 
-    def __init__(self, sandbox, direct):
-        self.sandbox, self.direct = sandbox, direct
+    def __init__(self, sandbox):
+        self.sandbox = sandbox
         self.env = dict(os.environ, SANDBOX_DIR=sandbox.dir)
-        self.run("pair", *(["--direct"] if direct else []))
+        self.run("pair", "--direct")
 
     def run(self, *args):
-        done = subprocess.run([self.sandbox.tool, "phone", "--name", "e2e-direct" if self.direct else "e2e-relay", "--mac", "1", *args],
+        done = subprocess.run([self.sandbox.tool, "phone", "--name", "e2e-direct", "--mac", "1", *args],
                               env=self.env, capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
         return done.stdout
 
     def request(self, method, path, body=None):
-        args = ["request", *(["--direct"] if self.direct else []), method, path, *([json.dumps(body)] if body else [])]
+        args = ["request", "--direct", method, path, *([json.dumps(body)] if body else [])]
         reply = json.loads(self.run(*args))["response"]
         assert reply["status"] == 200, reply
         return reply["body"]
@@ -326,7 +326,7 @@ class Phone:
 
 def check_phone(phone):
     """Every card answered from the phone leaves the queue at once, as its action promised."""
-    route = "direct" if phone.direct else "relay"
+    route = "direct"
     queue, _ = phone.queue()
     seeded = {card: kind_of(phone.actions(card)[2]) for card in queue}
     seeded = {card: kind for card, kind in seeded.items() if kind}
@@ -467,7 +467,7 @@ def check_tui(sandbox, captures):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--client", choices=["hold", "relay", "direct", "tui", "ios"], default="hold")
+    parser.add_argument("--client", choices=["hold", "direct", "tui", "ios"], default="hold")
     parser.add_argument("--captures", help="keep what each client showed at each step here")
     parser.add_argument("binaries", nargs="+")
     args = parser.parse_args()
@@ -483,8 +483,8 @@ def main():
         seed_orchestrator(sandbox, nodes[1])
         if args.captures:
             os.makedirs(args.captures, exist_ok=True)
-        if args.client in ("relay", "direct"):
-            check_phone(Phone(sandbox, direct=args.client == "direct"))
+        if args.client == "direct":
+            check_phone(Phone(sandbox))
         elif args.client == "tui":
             check_tui(sandbox, args.captures)
         elif args.client == "ios":

@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
-    let Ok(user) = report.step("a phone pairs with Mac 1 through the relay", || User::paired(sandbox, "journey", 1, false)) else {
+    let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
         return;
     };
     report.case("R1", "A task reopened with every slot taken waits in the queue saying why, then starts with a new node", |report| {

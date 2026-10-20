@@ -2,7 +2,7 @@
 use anyhow::{Result, bail, ensure};
 
 use crate::{
-    phone::{Phone, Submitted, new_request_id, probe},
+    phone::{Answer, Phone, new_request_id, probe},
     sandbox::Sandbox,
 };
 
@@ -19,7 +19,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             "Mac {number} answered /capabilities with an error: {}",
             reply.response
         );
-        println!("ok: Mac {number} answers the paired phone through the relay");
+        println!("ok: Mac {number} answers the account-paired phone over iroh");
     }
 
     for number in 1..=count {
@@ -41,16 +41,15 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     }
 
     let target = sandbox.mac(1)?;
-    let relay_link = phone.link(&target)?;
+    let account_link = phone.link(&target)?;
     let request_id = new_request_id()?;
-    let sealed = phone.seal(&target, &relay_link, &request_id, &probe())?;
-    ensure!(matches!(phone.submit(&relay_link, &sealed)?, Submitted::Accepted), "relay send refused");
-    let (through_relay, _) = phone.response_envelope(&target, &relay_link, &request_id)?;
+    let sealed = phone.seal(&target, &account_link, &request_id, &probe())?;
+    let Answer::Response(over_iroh) = phone.exchange(&target, &account_link, &sealed)? else { bail!("iroh send refused") };
     let (status, direct_bytes) = phone.send_direct(&target, &sealed)?;
     ensure!(status == 200, "the same envelope sent directly got {status}");
     let directly: serde_json::Value = serde_json::from_slice(&direct_bytes)?;
-    ensure!(through_relay == directly, "the relay and the direct path answered the same envelope differently");
-    println!("ok: the same envelope gets the same answer through the relay and directly");
+    ensure!(over_iroh == directly, "iroh and the direct path answered the same envelope differently");
+    println!("ok: the same envelope gets the same answer over iroh and directly");
 
     let direct_link = phone.direct_link(&target)?;
     let request_id = new_request_id()?;
@@ -91,18 +90,16 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     ensure!(told["status"] == 403 && told["error"] == "device_revoked", "a revoked direct phone was told {told}");
     println!("ok: revoking the direct phone on the Mac cuts it off at once and tells it so, sealed");
 
-    let link = relay_link;
+    let link = account_link;
     let request_id = new_request_id()?;
     let sealed = phone.seal(&target, &link, &request_id, &probe())?;
-    ensure!(matches!(phone.submit(&link, &sealed)?, Submitted::Accepted), "first send refused");
-    let (first, _) = phone.response_envelope(&target, &link, &request_id)?;
-    ensure!(matches!(phone.submit(&link, &sealed)?, Submitted::Accepted), "repeated send refused");
-    let (again, _) = phone.response_envelope(&target, &link, &request_id)?;
+    let Answer::Response(first) = phone.exchange(&target, &link, &sealed)? else { bail!("first send refused") };
+    let Answer::Response(again) = phone.exchange(&target, &link, &sealed)? else { bail!("repeated send refused") };
     ensure!(first == again, "a repeated request got a different response");
-    match phone.submit(&link, &phone.seal(&target, &link, &request_id, &probe())?)? {
-        Submitted::Refused(409, _) => {}
-        Submitted::Refused(status, reply) => bail!("other bytes under a used request ID: {status} {reply}"),
-        Submitted::Accepted => bail!("other bytes under a used request ID were accepted"),
+    match phone.exchange(&target, &link, &phone.seal(&target, &link, &request_id, &probe())?)? {
+        Answer::Refused(reply) if reply.contains("idempotency_conflict") => {}
+        Answer::Refused(reply) => bail!("other bytes under a used request ID: {reply}"),
+        Answer::Response(_) => bail!("other bytes under a used request ID were accepted"),
     }
     println!("ok: a repeated request gets the stored response; other bytes under its ID conflict");
 
@@ -110,17 +107,15 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         let revoked = sandbox.mac(count)?;
         phone.revoke(&revoked)?;
         let link = phone.link(&revoked)?;
-        match phone.submit(&link, &phone.seal(&revoked, &link, &new_request_id()?, &probe())?)? {
-            Submitted::Refused(401, _) => {}
-            Submitted::Refused(status, reply) => bail!("revoked phone got {status}: {reply}"),
-            Submitted::Accepted => bail!("revoked phone was accepted"),
+        if let Answer::Response(_) = phone.exchange(&revoked, &link, &phone.seal(&revoked, &link, &new_request_id()?, &probe())?)? {
+            bail!("revoked phone was answered over iroh");
         }
         let (status, reply) = phone.send_direct(&revoked, &phone.seal(&revoked, &link, &new_request_id()?, &probe())?)?;
         ensure!(status == 200, "the revoked phone got {status} on the direct port instead of its sealed answer");
         let told = phone.open_direct(&revoked, &link, &reply)?;
         ensure!(told["error"] == "device_revoked", "the revoked phone was told {told} on the direct port");
         phone.request(&target, "GET", "/capabilities", None, None)?;
-        println!("ok: revoked on Mac {count} through the relay and directly, still served by Mac 1");
+        println!("ok: revoked on Mac {count} at the relay, over iroh and directly, still served by Mac 1");
     }
     Ok(())
 }

@@ -24,11 +24,6 @@ pub async fn step(server: &Server) -> Result<bool> {
         server
             .auth
             .reconcile_device_revocation(&job.subject, &r.kind, &r.device_id, &r.mac_id)?;
-        if r.kind == "mac" {
-            server.queue.purge_mac(&r.device_id);
-        } else {
-            server.queue.purge_phone(&r.device_id);
-        }
         server
             .pairing
             .purge_device(&job.subject, &r.kind, &r.device_id);
@@ -48,7 +43,6 @@ pub async fn step(server: &Server) -> Result<bool> {
             if let Some(owner) = &job.subject {
                 let _gate = server.device_gate.write().await;
                 server.auth.revoke_owner(owner)?;
-                server.queue.purge_owner(owner);
                 server.pairing.purge_owner(owner);
             }
         }

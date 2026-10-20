@@ -43,8 +43,9 @@ const MAX_PUSH_PLAINTEXT: usize = 1_500;
 // The views feed supersedes its prior waiter independently of this limit.
 const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
-const MAX_JOURNAL_ACCEPTS: usize = MAX_CHANGES_TOTAL + relay::MAX_ORDINARY_DELIVERIES;
-const MAX_JOURNAL_RECEIPTS: usize = MAX_CHANGES_TOTAL + relay::MAX_ORDINARY_DELIVERIES + 1;
+const MAX_ORDINARY_DELIVERIES: usize = 4;
+const MAX_JOURNAL_ACCEPTS: usize = MAX_CHANGES_TOTAL + MAX_ORDINARY_DELIVERIES;
+const MAX_JOURNAL_RECEIPTS: usize = MAX_CHANGES_TOTAL + MAX_ORDINARY_DELIVERIES + 1;
 
 type WorkKey = (String, String);
 type InFlight = Arc<InFlightSet>;
@@ -108,21 +109,9 @@ impl Drop for WorkGuard {
     }
 }
 
-enum MutationTurn {
-    Acquired(tokio::sync::OwnedMutexGuard<()>),
-    Waiting(std::pin::Pin<Box<dyn std::future::Future<Output = tokio::sync::OwnedMutexGuard<()>> + Send>>),
-}
-
-impl MutationTurn {
-    async fn acquire(self) -> tokio::sync::OwnedMutexGuard<()> {
-        match self { Self::Acquired(guard) => guard, Self::Waiting(waiting) => waiting.await }
-    }
-}
-
 enum ExecutionLane {
     Serial,
     Read,
-    Mutation(MutationTurn),
 }
 
 struct PreparedWork {
@@ -1033,20 +1022,10 @@ impl Service {
     }
 
     #[cfg(test)]
-    pub(crate) fn enroll_with_relay_for_tests(&self, id: &str) {
-        let key = self.devices.get(id).expect("device configured").signing.to_sec1_bytes();
-        self.journal.reserve_enrollment(id, &key).unwrap();
-        self.journal.activate_enrollment(id).unwrap();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_relay_for_tests(&mut self, url: reqwest::Url) {
-        self.set_relay_url(url);
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn handle_relay_for_tests(&self, envelope: Envelope, epoch: &[u8; 16]) -> Result<()> {
-        self.handle(Work { request_id: envelope.request_id.clone(), envelope }, epoch).await
+    pub(crate) async fn answer_directly(&self, work: Work, responses: &std::sync::Mutex<Vec<Vec<u8>>>) -> Result<()> {
+        let (response, _lease) = self.handle_direct(work.envelope).await.map_err(|refusal| anyhow!("{refusal:?}"))?;
+        responses.lock().unwrap().push(response);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1215,7 +1194,6 @@ impl Service {
             match execution {
                 ExecutionLane::Read => None,
                 ExecutionLane::Serial => Some(self.lane.clone().lock_owned().await),
-                ExecutionLane::Mutation(turn) => Some(turn.acquire().await),
             }
         };
         if crate::operation_journal::control(&request.method,&request.path,request.body.is_some()) {
@@ -1322,6 +1300,11 @@ impl Service {
 
     /// One envelope that reached the Mac directly over the local network. The answer is the
     /// sealed response, returned with the approval lease the caller holds while handing it over.
+    fn ordinary_read(request: &LocalRequest) -> bool {
+        request.method == "GET" && request.body.is_none()
+            && approved_method(request).is_ok_and(|method| method == Method::GET)
+    }
+
     /// A retry of an envelope still executing waits for it and gets the stored response.
     pub(crate) async fn handle_direct(
         &self,
@@ -1355,7 +1338,7 @@ impl Service {
                 None => finished.await,
             }
         };
-        // Reads run side by side, as they do from the relay: only writers take turns.
+        // Reads run side by side: only writers take turns.
         if Self::ordinary_read(&prepared.request) {
             prepared.execution = ExecutionLane::Read;
         }
@@ -2952,7 +2935,6 @@ mod domain_parity_tests;
 
 #[cfg(test)]
 mod tests {
-    mod relay_scheduler_tests;
     mod relay_heartbeat_tests;
     mod journal_admission_tests;
     mod journal_transition_tests;
@@ -2966,8 +2948,6 @@ mod tests {
     use crate::push::local_minutes;
     use axum::{
         Router,
-        body::Bytes,
-        extract::State,
         http::HeaderMap,
         response::IntoResponse,
         routing::{delete, get, post},
@@ -3794,34 +3774,13 @@ agreement_key = "{}"
         let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         service = service.with_hub(hub);
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let sent = responses.clone();
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post(move |bytes: Bytes| {
-                    let sent = sent.clone();
-                    async move {
-                        assert!(bytes.len() <= MAX_RELAY_RESPONSE);
-                        sent.lock().unwrap().push(bytes.to_vec());
-                        StatusCode::ACCEPTED
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
-        let relay_task = tokio::spawn(axum::serve(listener, relay).into_future());
-        let epoch = [7; 16];
         let work = changes_work(
             &service,
             "resource-read",
             json!({"method":"GET","path":"/capabilities"}),
         );
         let replay = repeat_work(&work);
-        service.handle(work, &epoch).await.unwrap();
+        direct(&service, work, &responses).await.unwrap();
         let result = opened_results(&service, &phone, &responses).pop().unwrap();
         assert_eq!(result["status"], 200);
 
@@ -3832,15 +3791,14 @@ agreement_key = "{}"
         approved[0]["created_at"] = json!(1);
         std::fs::write(&approvals, serde_json::to_vec(&approved).unwrap()).unwrap();
         let sent_before = responses.lock().unwrap().len();
-        assert!(service.handle(replay, &epoch).await.is_err());
+        assert!(direct(&service, replay, &responses).await.is_err());
         assert_eq!(responses.lock().unwrap().len(), sent_before);
-        relay_task.abort();
         drop(service);
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
-    async fn atomic_local_service_recovers_commit_before_transport_receipt() {
+    async fn atomic_local_service_recovers_a_commit_whose_response_was_not_stored() {
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
@@ -3876,26 +3834,6 @@ agreement_key = "{}"
         .unwrap();
         service = service.with_hub(hub.clone());
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let sent = responses.clone();
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post(move |bytes: axum::body::Bytes| {
-                    let sent = sent.clone();
-                    async move {
-                        sent.lock().unwrap().push(bytes.to_vec());
-                        StatusCode::ACCEPTED
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-report-read",
@@ -3903,8 +3841,7 @@ agreement_key = "{}"
         );
         service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
         assert!(
-            service
-                .handle(repeat_work(&work), &[1u8; 16])
+            direct(&service, repeat_work(&work), &responses)
                 .await
                 .is_err()
         );
@@ -3923,16 +3860,14 @@ agreement_key = "{}"
         drop(service);
         drop(hub);
         let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
+        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.set_relay_url(url);
-        service
-            .handle(repeat_work(&work), &[1u8; 16])
+        direct(&service, repeat_work(&work), &responses)
             .await
             .unwrap();
-        service.handle(work, &[1u8; 16]).await.unwrap();
+        direct(&service, work, &responses).await.unwrap();
         assert_eq!(
             hub.read(|v| v.seq),
             committed_seq,
@@ -3946,7 +3881,6 @@ agreement_key = "{}"
             "completed retransmission uses identical encrypted bytes"
         );
         drop(bytes);
-        relay_task.abort();
         drop(service);
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
@@ -4218,7 +4152,7 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn atomic_composed_review_recovers_commit_before_transport_receipt() {
+    async fn atomic_composed_review_recovers_a_commit_whose_response_was_not_stored() {
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
@@ -4257,26 +4191,6 @@ agreement_key = "{}"
         .unwrap();
         service = service.with_hub(hub.clone());
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let sent = responses.clone();
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post(move |bytes: axum::body::Bytes| {
-                    let sent = sent.clone();
-                    async move {
-                        sent.lock().unwrap().push(bytes.to_vec());
-                        StatusCode::ACCEPTED
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-artifact-review",
@@ -4284,8 +4198,7 @@ agreement_key = "{}"
         );
         service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
         assert!(
-            service
-                .handle(repeat_work(&work), &[1u8; 16])
+            direct(&service, repeat_work(&work), &responses)
                 .await
                 .is_err()
         );
@@ -4309,16 +4222,14 @@ agreement_key = "{}"
         drop(service);
         drop(hub);
         let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
+        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.set_relay_url(url);
-        service
-            .handle(repeat_work(&work), &[1u8; 16])
+        direct(&service, repeat_work(&work), &responses)
             .await
             .unwrap();
-        service.handle(work, &[1u8; 16]).await.unwrap();
+        direct(&service, work, &responses).await.unwrap();
         assert_eq!(
             hub.read(|v| v.seq),
             committed_seq,
@@ -4336,14 +4247,13 @@ agreement_key = "{}"
             "completed retransmission uses identical encrypted bytes"
         );
         drop(bytes);
-        relay_task.abort();
         drop(service);
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
-    async fn atomic_schedule_recovers_commit_before_transport_receipt() {
+    async fn atomic_schedule_recovers_a_commit_whose_response_was_not_stored() {
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
@@ -4367,26 +4277,6 @@ agreement_key = "{}"
         .unwrap();
         service = service.with_hub(hub.clone());
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let sent = responses.clone();
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post(move |bytes: axum::body::Bytes| {
-                    let sent = sent.clone();
-                    async move {
-                        sent.lock().unwrap().push(bytes.to_vec());
-                        StatusCode::ACCEPTED
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-schedule-create",
@@ -4394,8 +4284,7 @@ agreement_key = "{}"
         );
         service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
         assert!(
-            service
-                .handle(repeat_work(&work), &[1u8; 16])
+            direct(&service, repeat_work(&work), &responses)
                 .await
                 .is_err()
         );
@@ -4414,16 +4303,14 @@ agreement_key = "{}"
         drop(service);
         drop(hub);
         let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
-        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
+        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.set_relay_url(url);
-        service
-            .handle(repeat_work(&work), &[1u8; 16])
+        direct(&service, repeat_work(&work), &responses)
             .await
             .unwrap();
-        service.handle(work, &[1u8; 16]).await.unwrap();
+        direct(&service, work, &responses).await.unwrap();
         let schedule_db = Connection::open(home.join("schedules.db")).unwrap();
         assert_eq!(
             schedule_db
@@ -4452,7 +4339,6 @@ agreement_key = "{}"
             "completed retransmission uses identical encrypted bytes"
         );
         drop(bytes);
-        relay_task.abort();
         drop(service);
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
@@ -4659,218 +4545,58 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn work_epoch_is_reused_until_failure_and_revocations_resync_after_restart() {
-        use axum::{Json, http::HeaderMap, routing::delete};
+    async fn revocations_sync_on_each_check_and_again_after_a_relay_restart() {
+        use axum::{Json, routing::delete};
         let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
-        let boots = Arc::new(AtomicUsize::new(0));
-        let polls = Arc::new(AtomicUsize::new(0));
+        let relay_epoch = Arc::new(AtomicUsize::new(1));
         let revokes = Arc::new(AtomicUsize::new(0));
-        let router =
-            Router::new()
-                .route(
-                    "/v1/bootstrap",
-                    get({
-                        let boots = boots.clone();
-                        move || {
-                            let epoch = boots.fetch_add(1, Ordering::SeqCst) + 1;
-                            async move {
-                                Json(json!({"epoch":URL_SAFE_NO_PAD.encode([epoch as u8;16])}))
+        let router = Router::new()
+            .route(
+                "/v1/bootstrap",
+                get({
+                    let relay_epoch = relay_epoch.clone();
+                    move || {
+                        let epoch = relay_epoch.load(Ordering::SeqCst);
+                        async move {
+                            if epoch == 0 {
+                                return StatusCode::SERVICE_UNAVAILABLE.into_response();
                             }
+                            Json(json!({"epoch":URL_SAFE_NO_PAD.encode([epoch as u8;16])})).into_response()
                         }
-                    }),
-                )
-                .route(
-                    "/v1/work",
-                    get({
-                        let polls = polls.clone();
-                        move |headers: HeaderMap| {
-                            let count = polls.fetch_add(1, Ordering::SeqCst) + 1;
-                            async move {
-                                assert_eq!(
-                                    headers["x-relay-epoch"],
-                                    URL_SAFE_NO_PAD
-                                        .encode([if count <= 3 { 1u8 } else { 2u8 }; 16])
-                                );
-                                if count == 3 {
-                                    StatusCode::UNAUTHORIZED
-                                } else {
-                                    StatusCode::NO_CONTENT
-                                }
-                            }
-                        }
-                    }),
-                )
-                .route(
-                    "/v1/devices/phone-1",
-                    delete({
-                        let revokes = revokes.clone();
-                        move || {
-                            revokes.fetch_add(1, Ordering::SeqCst);
-                            async { StatusCode::NO_CONTENT }
-                        }
-                    }),
-                );
+                    }
+                }),
+            )
+            .route(
+                "/v1/devices/phone-1",
+                delete({
+                    let revokes = revokes.clone();
+                    move || {
+                        revokes.fetch_add(1, Ordering::SeqCst);
+                        async { StatusCode::NO_CONTENT }
+                    }
+                }),
+            )
+            .fallback(|| async { StatusCode::OK });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let service = Arc::new(service);
         let mut epoch = None;
         let mut revoked = HashSet::new();
-        let mut tasks = tokio::task::JoinSet::new();
-        service
-            .poll_work(&mut epoch, &mut revoked, &mut tasks)
-            .await
-            .unwrap();
+        service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
         service.journal.revoke_enrollment("phone-1").unwrap();
-        service
-            .poll_work(&mut epoch, &mut revoked, &mut tasks)
-            .await
-            .unwrap();
-        assert_eq!(boots.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            revokes.load(Ordering::SeqCst),
-            1,
-            "local revocation must sync while epoch is cached"
-        );
-        assert!(
-            service
-                .poll_work(&mut epoch, &mut revoked, &mut tasks)
-                .await
-                .is_err()
-        );
+        service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+        service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+        assert_eq!(revokes.load(Ordering::SeqCst), 1, "a local revocation reaches the relay once per epoch");
+        relay_epoch.store(0, Ordering::SeqCst);
+        assert!(service.keep_registered(&mut epoch, &mut revoked).await.is_err());
         assert!(epoch.is_none());
-        assert_eq!(
-            polls.load(Ordering::SeqCst),
-            3,
-            "a failed poll must not replay internally"
-        );
-        service
-            .poll_work(&mut epoch, &mut revoked, &mut tasks)
-            .await
-            .unwrap();
-        assert_eq!(boots.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            revokes.load(Ordering::SeqCst),
-            2,
-            "restart resends durable revocation"
-        );
+        relay_epoch.store(2, Ordering::SeqCst);
+        service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+        assert_eq!(revokes.load(Ordering::SeqCst), 2, "a restarted relay gets the durable revocation again");
         assert_eq!(epoch, Some([2u8; 16]));
         server.abort();
         std::fs::remove_dir_all(&service.home).unwrap();
-    }
-
-    async fn ack_server(
-        replies: Vec<(u16, Vec<u8>)>,
-    ) -> (
-        Url,
-        Arc<AtomicUsize>,
-        Arc<std::sync::Mutex<Vec<String>>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let connections = Arc::new(AtomicUsize::new(0));
-        let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (accepted, seen) = (connections.clone(), paths.clone());
-        let server = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(5),async move {
-                let mut replies=replies.into_iter().peekable();
-                while replies.peek().is_some() {
-                    let (stream,_)=listener.accept().await.unwrap(); accepted.fetch_add(1,Ordering::SeqCst);
-                    let (read,mut write)=stream.into_split(); let mut reader=BufReader::new(read);
-                    while replies.peek().is_some() {
-                        let mut line=String::new();
-                        match reader.read_line(&mut line).await { Ok(0)|Err(_)=>break, Ok(_)=>() }
-                        seen.lock().unwrap().push(line.trim().to_owned());
-                        let mut size=0usize;
-                        loop {
-                            let mut header=String::new(); reader.read_line(&mut header).await.unwrap();
-                            if header=="\r\n" { break; }
-                            if let Some(value)=header.to_ascii_lowercase().strip_prefix("content-length:") { size=value.trim().parse().unwrap(); }
-                        }
-                        let mut body=vec![0;size]; reader.read_exact(&mut body).await.unwrap();
-                        let (status,body)=replies.next().unwrap();
-                        let header=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",body.len());
-                        if write.write_all(header.as_bytes()).await.is_err() { break; }
-                        // Headers arrive before the ACK body. Dropping Response without
-                        // draining cannot accidentally pass through a fully buffered body.
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                        if write.write_all(&body).await.is_err() { break; }
-                    }
-                }
-            }).await.expect("ACK fixture timed out");
-        });
-        (url, connections, paths, server)
-    }
-
-    #[tokio::test]
-    async fn receipt_and_response_ack_bodies_are_drained_for_connection_reuse() {
-        let (_directory, mut service, _) = push_fixture();
-        activate_push(&service);
-        let (url, connections, paths, server) =
-            ack_server(vec![(200, br#"{"ok":true}"#.to_vec()); 4]).await;
-        service.set_relay_url(url);
-        for id in ["ack-one", "ack-two"] {
-            // Invalid local route returns a bounded encrypted error without any
-            // loopback request, leaving only the two real relay POSTs per work.
-            let work = changes_work(&service, id, json!({"method":"GET","path":"/not-allowed"}));
-            tokio::time::timeout(Duration::from_secs(3), service.handle(work, &[1u8; 16]))
-                .await
-                .unwrap()
-                .unwrap();
-        }
-        server.await.unwrap();
-        assert_eq!(connections.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *paths.lock().unwrap(),
-            [
-                "POST /v1/work/ack-one/receipt HTTP/1.1",
-                "POST /v1/work/ack-one/response HTTP/1.1",
-                "POST /v1/work/ack-two/receipt HTTP/1.1",
-                "POST /v1/work/ack-two/response HTTP/1.1"
-            ]
-        );
-        std::fs::remove_dir_all(&service.home).unwrap();
-    }
-
-    #[tokio::test]
-    async fn invalid_receipt_ack_is_bounded_and_never_reposted() {
-        for (status, body) in [(200, vec![b'a'; 4097]), (500, b"{}".to_vec())] {
-            let (_directory, mut service, _) = push_fixture();
-            activate_push(&service);
-            let (url, _, paths, server) = ack_server(vec![(status, body)]).await;
-            service.set_relay_url(url);
-            let work = changes_work(
-                &service,
-                "bad-ack",
-                json!({"method":"GET","path":"/not-allowed"}),
-            );
-            assert!(
-                tokio::time::timeout(Duration::from_secs(3), service.handle(work, &[1u8; 16]))
-                    .await
-                    .unwrap()
-                    .is_err()
-            );
-            server.await.unwrap();
-            assert_eq!(
-                *paths.lock().unwrap(),
-                ["POST /v1/work/bad-ack/receipt HTTP/1.1"]
-            );
-            let count: i64 = service
-                .journal
-                .db()
-                .unwrap()
-                .query_row(
-                    "SELECT count(*) FROM service_receipts WHERE state='accepted'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 1, "invalid ACK must not advance execution");
-            std::fs::remove_dir_all(&service.home).unwrap();
-        }
     }
 
     #[tokio::test]
@@ -5250,6 +4976,10 @@ agreement_key = "{}"
         }
         server.abort();
         std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    async fn direct(service: &Service, work: Work, responses: &Mutex<Vec<Vec<u8>>>) -> Result<()> {
+        service.answer_directly(work, responses).await
     }
 
     fn changes_work(service: &Service, request_id: &str, request: Value) -> Work {
@@ -5672,7 +5402,7 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn changes_wait_does_not_block_mutation_or_misclassify_live_redelivery() {
+    async fn changes_wait_does_not_block_mutation_and_its_retry_waits_for_the_running_read() {
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let entered = Arc::new(tokio::sync::Semaphore::new(0));
@@ -5716,47 +5446,24 @@ agreement_key = "{}"
         service.local_port = listener.local_addr().unwrap().port();
         let local_server = tokio::spawn(axum::serve(listener, local).into_future());
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post({
-                    let responses = responses.clone();
-                    move |body: Bytes| {
-                        let responses = responses.clone();
-                        async move {
-                            responses.lock().unwrap().push(body.to_vec());
-                            StatusCode::ACCEPTED
-                        }
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
-        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let service = Arc::new(service);
         let mut tasks = tokio::task::JoinSet::new();
-        let epoch = [7; 16];
+        let spawn = |tasks: &mut tokio::task::JoinSet<Result<()>>, work: Work| {
+            let (service, responses) = (service.clone(), responses.clone());
+            tasks.spawn(async move { direct(&service, work, &responses).await });
+        };
         let request = json!({"method":"GET","path":"/v1/changes?after=0&wait=50"});
         let first = changes_work(&service, "wait-1", request.clone());
-        service
-            .schedule_work(repeat_work(&first), epoch, &mut tasks)
-            .await
-            .unwrap();
+        spawn(&mut tasks, repeat_work(&first));
         tokio::time::timeout(Duration::from_secs(20), entered.acquire())
             .await
             .unwrap()
             .unwrap()
             .forget();
-        // This is exactly the relay's same-envelope lease retry, while the local
-        // HTTP read is suspended. It must neither execute again nor write 409.
-        service
-            .schedule_work(repeat_work(&first), epoch, &mut tasks)
-            .await
-            .unwrap();
+        // The same envelope again while the local HTTP read is suspended: it waits for that
+        // read instead of executing again or answering 409.
+        spawn(&mut tasks, repeat_work(&first));
+        tokio::task::yield_now().await;
         assert!(responses.lock().unwrap().is_empty());
         assert_eq!(reads.load(Ordering::SeqCst), 1);
         let digest = Sha256::digest(serde_json::to_vec(&first.envelope).unwrap()).into();
@@ -5768,31 +5475,10 @@ agreement_key = "{}"
             Disposition::Executing
         ));
         let altered = changes_work(&service, "wait-1", request.clone());
-        assert!(
-            service
-                .schedule_work(altered, epoch, &mut tasks)
-                .await
-                .is_err()
-        );
-        service
-            .schedule_work(
-                changes_work(&service, "wait-2", request.clone()),
-                epoch,
-                &mut tasks,
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            opened_results(&service, &phone, &responses)[0],
-            json!({"status":429,"error":"changes_busy"})
-        );
+        assert!(direct(&service, altered, &responses).await.is_err());
         tokio::time::timeout(
             Duration::from_secs(20),
-            service.schedule_work(
-                changes_work(&service, "wait-full", request.clone()),
-                epoch,
-                &mut tasks,
-            ),
+            direct(&service, changes_work(&service, "wait-2", request.clone()), &responses),
         )
         .await
         .unwrap()
@@ -5803,39 +5489,32 @@ agreement_key = "{}"
         );
         tokio::time::timeout(
             Duration::from_secs(20),
-            service.schedule_work(
+            direct(
+                &service,
                 changes_work(
                     &service,
                     "write-1",
                     json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"yes"}}),
                 ),
-                epoch,
-                &mut tasks,
+                &responses,
             ),
         )
         .await
         .unwrap()
         .unwrap();
-        tasks.join_next().await.unwrap().unwrap().unwrap();
         assert_eq!(
             writes.load(Ordering::SeqCst),
             1,
             "the occupied read slot leaves mutations available"
         );
-        service
-            .schedule_work(
-                changes_work(
-                    &service,
-                    "bad-query",
-                    json!({"method":"GET","path":"/v1/changes?wait=51"}),
-                ),
-                epoch,
-                &mut tasks,
-            )
-            .await
-            .unwrap();
-        tasks.join_next().await.unwrap().unwrap().unwrap();
-        assert_eq!(tasks.len(), 1, "the original changes read remains held while ordinary replies complete");
+        direct(
+            &service,
+            changes_work(&service, "bad-query", json!({"method":"GET","path":"/v1/changes?wait=51"})),
+            &responses,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tasks.len(), 2, "the original changes read and its retry remain held while ordinary replies complete");
         assert!(
             opened_results(&service, &phone, &responses)
                 .contains(&json!({"status":400,"error":"invalid_changes_query"}))
@@ -5852,15 +5531,14 @@ agreement_key = "{}"
                 .iter()
                 .filter(|value| value["body"]["tick"] == 42)
                 .count(),
-            1
+            2,
+            "the retry gets the one read's answer"
         );
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
         assert!(!results.iter().any(|value| value["error"] == "uncertain"));
 
         let interrupted = changes_work(&service, "interrupted", request);
-        service
-            .schedule_work(repeat_work(&interrupted), epoch, &mut tasks)
-            .await
-            .unwrap();
+        spawn(&mut tasks, repeat_work(&interrupted));
         tokio::time::timeout(Duration::from_secs(20), entered.acquire())
             .await
             .unwrap()
@@ -5872,18 +5550,17 @@ agreement_key = "{}"
             service.inflight.lock().unwrap().is_empty(),
             "cancellation releases the admission guard"
         );
-        let mut restarted = Service::open(
+        let restarted = Service::open(
             &service.home,
             service.local_port,
             Arc::new(Auth::open(&service.home).unwrap()),
         )
         .unwrap()
         .unwrap();
-        restarted.set_relay_url(service.relay_url());
         // The aborted read's server handler may still wait for a permit: release one for it
         // and one for the restarted read, or it can take the only one and starve the read.
         release.add_permits(2);
-        restarted.handle(interrupted, &epoch).await.unwrap();
+        direct(&restarted, interrupted, &responses).await.unwrap();
         assert_eq!(
             opened_results(&service, &phone, &responses).last().unwrap(),
             &json!({"status":200,"body":{"tick":42}}),
@@ -5891,7 +5568,6 @@ agreement_key = "{}"
         );
         assert_eq!(reads.load(Ordering::SeqCst), 3, "the restarted daemon runs the read again");
         local_server.abort();
-        relay_server.abort();
         std::fs::remove_dir_all(&service.home).unwrap();
     }
 
@@ -5949,7 +5625,7 @@ agreement_key = "{}"
     // The transport is deliberately dishonest: its device registry and HTTP
     // authorization cannot be trusted as the Mac's content authorization.
     #[tokio::test]
-    async fn malicious_relay_key_substitution_and_false_revocation_ack_cannot_dispatch() {
+    async fn a_substituted_key_and_a_revoked_device_cannot_dispatch() {
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
@@ -5981,85 +5657,10 @@ agreement_key = "{}"
         };
         let substituted = seal(&attacker, "substituted-key");
         let previously_trusted = seal(&trusted, "after-revocation");
-        let delivered = Arc::new(Mutex::new(json!({
-            "request_id":"positive-control", "envelope":seal(&trusted, "positive-control")
-        })));
-        let work_reads = Arc::new(AtomicUsize::new(0));
-        let deletes = Arc::new(AtomicUsize::new(0));
-        let receipts = Arc::new(AtomicUsize::new(0));
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/response",
-                post({
-                    let responses = responses.clone();
-                    move |body: Bytes| {
-                        let responses = responses.clone();
-                        async move {
-                            responses.lock().unwrap().push(body.to_vec());
-                            StatusCode::ACCEPTED
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/bootstrap",
-                get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }),
-            )
-            .route(
-                "/v1/work",
-                get({
-                    let data = delivered.clone();
-                    let reads = work_reads.clone();
-                    move || {
-                        let data = data.clone();
-                        let reads = reads.clone();
-                        async move {
-                            reads.fetch_add(1, Ordering::SeqCst);
-                            axum::Json(data.lock().unwrap().clone())
-                        }
-                    }
-                }),
-            )
-            // Lie about deletion: retain and redeliver the revoked device's work.
-            .route(
-                "/v1/devices/{id}",
-                delete({
-                    let deletes = deletes.clone();
-                    move || {
-                        let deletes = deletes.clone();
-                        async move {
-                            deletes.fetch_add(1, Ordering::SeqCst);
-                            StatusCode::NO_CONTENT
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/work/{id}/receipt",
-                post({
-                    let receipts = receipts.clone();
-                    move || {
-                        let receipts = receipts.clone();
-                        async move {
-                            receipts.fetch_add(1, Ordering::SeqCst);
-                            StatusCode::ACCEPTED
-                        }
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}/", listener.local_addr().unwrap());
-        service.set_relay_url(Url::parse(&origin).unwrap());
-        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let home = service.home.clone();
-        let service = Arc::new(service);
-        let mut tasks = tokio::task::JoinSet::new();
-        service
-            .poll_work(&mut None, &mut HashSet::new(), &mut tasks)
-            .await
-            .unwrap();
-        while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+        let work = |id: &str, envelope: Envelope| Work { request_id: id.into(), envelope };
+        direct(&service, work("positive-control", seal(&trusted, "positive-control")), &responses).await.unwrap();
         let results = opened_results(&service, &phone, &responses);
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -6067,137 +5668,28 @@ agreement_key = "{}"
             "the resource endpoint accepts an approved signed request"
         );
         assert_eq!(results[0]["body"]["protocol_version"], 2);
-        assert_eq!(receipts.load(Ordering::SeqCst), 1);
-        *delivered.lock().unwrap() = json!({"request_id":"substituted-key","envelope":substituted});
-        let error = service
-            .poll_work(&mut None, &mut HashSet::new(), &mut tasks)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("invalid encrypted work"));
-        assert_eq!(work_reads.load(Ordering::SeqCst), 2);
         assert_eq!(
-            responses.lock().unwrap().len(),
-            1,
-            "invalid relay key never gets a response receipt"
+            service.handle_direct(substituted).await.map(drop).unwrap_err(),
+            DirectRefusal::Unauthorized,
+            "a request signed with another key is refused"
         );
-        assert_eq!(receipts.load(Ordering::SeqCst), 1);
         // Persist revocation, then construct a fresh daemon from disk. The
         // service TOML still contains the old device, just as a stale registry can.
         Auth::open(&home).unwrap().revoke("phone-1").unwrap();
         drop(service);
-        *delivered.lock().unwrap() =
-            json!({"request_id":"after-revocation","envelope":previously_trusted});
-        let mut restarted = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
+        let restarted = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap();
-        restarted.set_relay_url(Url::parse(&origin).unwrap());
-        let restarted = Arc::new(restarted);
-        assert!(
-            restarted
-                .poll_work(&mut None, &mut HashSet::new(), &mut tasks)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            deletes.load(Ordering::SeqCst),
-            1,
-            "dishonest relay acknowledged deletion"
-        );
-        assert_eq!(
-            work_reads.load(Ordering::SeqCst),
-            3,
-            "revoked work actually redelivered after restart"
-        );
+        assert!(direct(&restarted, work("after-revocation", previously_trusted), &responses).await.is_err());
         assert_eq!(
             responses.lock().unwrap().len(),
             1,
-            "revoked device never gets a response receipt"
+            "a revoked device never gets a response"
         );
-        assert_eq!(receipts.load(Ordering::SeqCst), 1);
-        assert!(restarted.journal.enrollment_revoked("phone-1").unwrap());
-        relay_server.abort();
         drop(restarted);
         std::fs::remove_dir_all(home).unwrap();
     }
 
-    #[tokio::test]
-    async fn changes_rechecks_persisted_revocation_after_receipt_before_dispatch() {
-        let (_directory, mut service, _) = push_fixture();
-        activate_push(&service);
-        let received = Arc::new(tokio::sync::Semaphore::new(0));
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let local_calls = Arc::new(AtomicUsize::new(0));
-        let local = Router::new().route(
-            "/v1/changes",
-            get({
-                let calls = local_calls.clone();
-                move || {
-                    let calls = calls.clone();
-                    async move {
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        axum::Json(json!({"tick":1}))
-                    }
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.local_port = listener.local_addr().unwrap().port();
-        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
-        let relay = Router::new().route(
-            "/v1/work/{id}/receipt",
-            post({
-                let received = received.clone();
-                let release = release.clone();
-                move || {
-                    let received = received.clone();
-                    let release = release.clone();
-                    async move {
-                        received.add_permits(1);
-                        release.acquire().await.unwrap().forget();
-                        StatusCode::ACCEPTED
-                    }
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
-        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
-        let service = Arc::new(service);
-        let mut tasks = tokio::task::JoinSet::new();
-        service
-            .schedule_work(
-                changes_work(
-                    &service,
-                    "revoke",
-                    json!({"method":"GET","path":"/v1/changes?wait=0"}),
-                ),
-                [7; 16],
-                &mut tasks,
-            )
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), received.acquire())
-            .await
-            .unwrap()
-            .unwrap()
-            .forget();
-        Auth::open(&service.home)
-            .unwrap()
-            .revoke("phone-1")
-            .unwrap();
-        release.add_permits(1);
-        let result = tokio::time::timeout(Duration::from_secs(2), tasks.join_next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(result.is_err());
-        assert_eq!(local_calls.load(Ordering::SeqCst), 0);
-        assert!(service.inflight.lock().unwrap().is_empty());
-        local_server.abort();
-        relay_server.abort();
-        std::fs::remove_dir_all(&service.home).unwrap();
-    }
 
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
@@ -6534,8 +6026,8 @@ agreement_key = "{}"
 
     /// Real service envelope -> loopback HTTP -> production merge/close executors.
     /// SQLite aborts at the local marker after the provider has succeeded. A second
-    /// injected failure prevents completing the transport receipt, modelling loss
-    /// of the result at this cut. Reopening must return uncertainty, never dispatch.
+    /// injected failure prevents storing the response, modelling loss of the result
+    /// at this cut. Reopening must return uncertainty, never dispatch.
     async fn external_cut_recovery(merge: bool, cut: bool) {
         use alondra_core::{
             Event,
@@ -6630,34 +6122,13 @@ agreement_key = "{}"
         service.local_port = listener.local_addr().unwrap().port();
         let local_server = tokio::spawn(axum::serve(listener, local).into_future());
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let relay = Router::new()
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|| async { StatusCode::ACCEPTED }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post({
-                    let responses = responses.clone();
-                    move |body: Bytes| {
-                        let responses = responses.clone();
-                        async move {
-                            responses.lock().unwrap().push(body.to_vec());
-                            StatusCode::ACCEPTED
-                        }
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
-        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let work = changes_work(
             &service,
             "external-cut",
             json!({"method":"POST","path":route,"body":{"method":"merge"}}),
         );
         let digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).into();
-        let result = service.handle(repeat_work(&work), &[7; 16]).await;
+        let result = direct(&service, repeat_work(&work), &responses).await;
         assert_eq!(result.is_err(), cut);
         assert_eq!(entered.load(Ordering::SeqCst), 1);
         assert_eq!(external.merges.load(Ordering::SeqCst), usize::from(merge));
@@ -6700,16 +6171,14 @@ agreement_key = "{}"
         } else {
             assert_eq!(reopened_hub.read(|v| v.nodes.contains_key("nd")), cut);
         }
-        let mut restarted = Service::open(
+        let restarted = Service::open(
             &service.home,
             service.local_port,
             Arc::new(Auth::open(&service.home).unwrap()),
         )
         .unwrap()
         .unwrap();
-        restarted.set_relay_url(service.relay_url());
-        restarted
-            .handle(repeat_work(&work), &[7; 16])
+        direct(&restarted, repeat_work(&work), &responses)
             .await
             .unwrap();
         let recovered = opened_results(&restarted, &phone, &responses);
@@ -6719,7 +6188,7 @@ agreement_key = "{}"
         } else {
             assert_eq!(recovered.last().unwrap()["status"], 200);
         }
-        restarted.handle(work, &[7; 16]).await.unwrap();
+        direct(&restarted, work, &responses).await.unwrap();
         let bytes = responses.lock().unwrap();
         assert_eq!(
             bytes[bytes.len() - 1],
@@ -6739,9 +6208,7 @@ agreement_key = "{}"
             usize::from(merge && !cut)
         );
         local_server.abort();
-        relay_server.abort();
         let _ = local_server.await;
-        let _ = relay_server.await;
         let home = service.home.clone();
         drop(reopened_hub);
         drop(db);
@@ -6983,33 +6450,6 @@ agreement_key = "{}"
         );
         assert!(registered.load(Ordering::SeqCst));
         assert!(service.journal.enrollment_pending("phone-pending").unwrap());
-        let request = Envelope::seal_random(
-            EnvelopeContext {
-                route: "mac-1",
-                sender: "phone-pending",
-                recipient: "mac-1",
-                request_id: "op-pending",
-                kind: "request",
-                expires_at_ms: now_ms() + 60_000,
-            },
-            br#"{"method":"GET","path":"/summary"}"#,
-            &phone,
-            &service.agreement.public_key(),
-        )
-        .unwrap();
-        assert!(
-            service
-                .handle(
-                    Work {
-                        request_id: "op-pending".into(),
-                        envelope: request
-                    },
-                    &epoch
-                )
-                .await
-                .is_err(),
-            "pending enrollment must not execute work"
-        );
         service
             .sync_revocations(&epoch, &mut HashSet::new())
             .await
@@ -7052,7 +6492,6 @@ agreement_key = "{}"
         let relay_enrollments = enrollments.clone();
         let deletions = Arc::new(AtomicUsize::new(0));
         let relay_deletions = deletions.clone();
-        let relay_responses = responses.clone();
         let relay = Router::new()
             .route(
                 "/v1/devices",
@@ -7073,24 +6512,7 @@ agreement_key = "{}"
                         StatusCode::NO_CONTENT
                     }
                 }),
-            )
-            .route(
-                "/v1/work/{id}/receipt",
-                post(|headers: HeaderMap| async move {
-                    assert!(headers.contains_key("x-device-signature"));
-                    axum::Json(json!({"status":"received"}))
-                }),
-            )
-            .route(
-                "/v1/work/{id}/response",
-                post(
-                    move |State(saved): State<Arc<Mutex<Vec<Vec<u8>>>>>, body: Bytes| async move {
-                        saved.lock().unwrap().push(body.to_vec());
-                        axum::Json(json!({"status":"completed"}))
-                    },
-                ),
-            )
-            .with_state(relay_responses);
+            );
         let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_port = relay_listener.local_addr().unwrap().port();
         let relay_task = tokio::spawn(axum::serve(relay_listener, relay).into_future());
@@ -7254,8 +6676,8 @@ agreement_key = "{}"
             request_id: "op-1".into(),
             envelope: e.clone(),
         };
-        service.handle(work(), &epoch).await.unwrap();
-        service.handle(work(), &epoch).await.unwrap();
+        direct(&service, work(), &responses).await.unwrap();
+        direct(&service, work(), &responses).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let sent = responses.lock().unwrap();
         assert_eq!(sent.len(), 2);
@@ -7278,14 +6700,10 @@ agreement_key = "{}"
         let mut altered = e;
         altered.ciphertext = "changed".into();
         assert!(
-            service
-                .handle(
-                    Work {
+            direct(&service, Work {
                         request_id: "op-1".into(),
                         envelope: altered
-                    },
-                    &epoch
-                )
+                    }, &responses)
                 .await
                 .is_err()
         );
@@ -7310,14 +6728,10 @@ agreement_key = "{}"
             .journal
             .executing("phone-1", "op-2", &digest)
             .unwrap();
-        service
-            .handle(
-                Work {
+        direct(&service, Work {
                     request_id: "op-2".into(),
                     envelope: interrupted,
-                },
-                &epoch,
-            )
+                }, &responses)
             .await
             .unwrap();
         assert_eq!(
@@ -7412,14 +6826,10 @@ agreement_key = "{}"
         )
         .unwrap();
         assert!(
-            service
-                .handle(
-                    Work {
+            direct(&service, Work {
                         request_id: "op-3".into(),
                         envelope: revoked
-                    },
-                    &epoch
-                )
+                    }, &responses)
                 .await
                 .is_err()
         );

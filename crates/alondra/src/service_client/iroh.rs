@@ -1,7 +1,5 @@
-//! An account-paired Mac over its iroh endpoint, with the envelope the relay mailbox would carry.
-//! The Mac's endpoint comes from the account's Mac directory, and this terminal binds its own
-//! endpoint at the relay so the iroh relay lets it in. When iroh gives no answer, the caller sends
-//! the same envelope through the mailbox and the Mac's journal runs it once.
+//! An account-paired Mac over its iroh endpoint. The Mac's endpoint comes from the account's Mac
+//! directory, and this terminal binds its own endpoint at the relay so the iroh relay lets it in.
 use super::{Profile, RELAY, http, now_ms, remaining};
 use crate::iroh_client::{self, Dial, Identity, Reply, Session};
 use anyhow::{Context, Result, anyhow};
@@ -27,7 +25,7 @@ static LINKS: Mutex<BTreeMap<(PathBuf, String), Link>> = Mutex::new(BTreeMap::ne
 
 pub(super) enum OverIroh {
     Answered(Result<(u16, Value)>),
-    /// Not sent, or lost after it left: the mailbox carries the same envelope.
+    /// Not sent, or lost after it left.
     Unanswered,
 }
 

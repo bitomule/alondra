@@ -726,11 +726,7 @@ mod tests {
             web_session: Some(web.clone()),
             web_assets: None,
             apns: None,
-            queue: crate::state::Queue::new(),
             pairing: crate::pairing::Mailbox::default(),
-            work_waiters: Arc::new(Semaphore::new(1)),
-            change_waiters: Arc::new(Semaphore::new(1)),
-            status_waiters: Arc::new(Semaphore::new(1)),
             requests: Arc::new(Semaphore::new(8)),
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
             waitlist: crate::management::waitlist::Limiter::new(None),
@@ -738,7 +734,6 @@ mod tests {
             iroh_access_token: None,
             iroh_relay: None,
             test_directory: Some(scratch_directory),
-            lab_waiters: Arc::default(),
         });
         let run = tokio::spawn(async move {
             axum::serve(listener, crate::router(server)).await.unwrap();

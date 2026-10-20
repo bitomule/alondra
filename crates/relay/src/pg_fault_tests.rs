@@ -1,5 +1,5 @@
 // Opt-in mechanism tests, not attribution of an earlier load failure. A real local
-// PostgreSQL is required; the HTTP fixture uses real auth/crypto/queue, but does
+// PostgreSQL is required; the HTTP fixture uses real auth and crypto, but does
 // not run the background management worker or contact Keycloak.
 mod pg_fault_tests {
     use super::*;
@@ -66,13 +66,13 @@ mod pg_fault_tests {
 
     #[tokio::test]
     #[ignore = "requires disposable local PostgreSQL; explicit pool exhaustion and recovery"]
-    async fn pg_pool_timeout_http_503_and_encrypted_recovery() -> Result<()> {
+    async fn pg_pool_timeout_http_503_and_recovery() -> Result<()> {
         run_case(false).await
     }
 
     #[tokio::test]
     #[ignore = "requires disposable local PostgreSQL; explicit table lock and recovery"]
-    async fn pg_statement_timeout_http_503_and_encrypted_recovery() -> Result<()> {
+    async fn pg_statement_timeout_http_503_and_recovery() -> Result<()> {
         run_case(true).await
     }
 
@@ -90,8 +90,6 @@ mod pg_fault_tests {
             .await?;
         let mac = SigningKey::from_slice(&[21; 32])?;
         let phone = SigningKey::from_slice(&[22; 32])?;
-        let mac_ecdh = SecretKey::from_slice(&[23; 32])?;
-        let phone_ecdh = SecretKey::from_slice(&[24; 32])?;
         let (url, server, join) = test_server_with_management(&mac, None, Some(db.clone())).await;
         let _server_lifetime = AbortServer(join);
         server.auth.enroll(
@@ -109,27 +107,9 @@ mod pg_fault_tests {
             .timeout(Duration::from_secs(12))
             .build()?;
         let epoch = server.auth.server_epoch();
-        let envelope = Envelope::seal_random(
-            Context {
-                route: "mac-1",
-                sender: "phone-1",
-                recipient: "mac-1",
-                request_id: "pg-fault",
-                kind: "request",
-                expires_at_ms: now_ms() + 120_000,
-            },
-            b"private request",
-            &phone,
-            &mac_ecdh.public_key(),
-        )?;
-        let body = serde_json::to_vec(&envelope)?;
-        let request = |is_phone: bool, method: &str, path: &str, body: Vec<u8>, nonce: u8| {
-            let mut builder = client
-                .request(
-                    method.parse::<reqwest::Method>().unwrap(),
-                    format!("{url}{path}"),
-                )
-                .body(body.clone());
+        let path = "/v1/iroh-node";
+        let request = |is_phone: bool, nonce: u8| {
+            let mut builder = client.delete(format!("{url}{path}"));
             if is_phone {
                 builder = builder.bearer_auth(jwt("owner", now_ms()));
             }
@@ -138,9 +118,9 @@ mod pg_fault_tests {
                 builder,
                 if is_phone { &phone } else { &mac },
                 if is_phone { "phone-1" } else { "mac-1" },
-                method,
+                "DELETE",
                 path,
-                &body,
+                &[],
                 nonce,
             )
         };
@@ -154,10 +134,7 @@ mod pg_fault_tests {
             StatusCode::OK
         );
         assert_eq!(
-            request(false, "GET", "/v1/work?wait_s=0", vec![], 1)
-                .send()
-                .await?
-                .status(),
+            request(false, 1).send().await?.status(),
             StatusCode::NO_CONTENT
         );
 
@@ -197,7 +174,7 @@ mod pg_fault_tests {
         }
         let (domain, http) = tokio::join!(
             db.require_live_device("owner", "mac-1", Some("phone-1")),
-            request(true, "POST", "/v1/requests", body.clone(), 2).send()
+            request(true, 2).send()
         );
         let error = domain.expect_err("fault must reach the database authorization query");
         let sql = error
@@ -221,13 +198,6 @@ mod pg_fault_tests {
             http.json::<Value>().await?["error"],
             "account_access_unavailable"
         );
-        assert!(
-            matches!(
-                server.queue.get("owner", "phone-1", "pg-fault", now_ms()),
-                Err(state::QueueError::NotFound)
-            ),
-            "503 must precede queue admission"
-        );
         if let Some(tx) = lock {
             tx.rollback().await?;
         }
@@ -236,103 +206,8 @@ mod pg_fault_tests {
             pool.close().await;
         }
 
-        assert_eq!(
-            request(true, "GET", "/v1/requests/pg-fault", vec![], 3)
-                .send()
-                .await?
-                .status(),
-            StatusCode::NOT_FOUND
-        );
-        let accepted = request(true, "POST", "/v1/requests", body.clone(), 4)
-            .send()
-            .await?;
-        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-        let accepted: Value = accepted.json().await?;
-        let duplicate = request(true, "POST", "/v1/requests", body, 5)
-            .send()
-            .await?;
-        assert_eq!(duplicate.status(), StatusCode::ACCEPTED);
-        assert_eq!(
-            duplicate.json::<Value>().await?,
-            accepted,
-            "same encrypted request must keep its original queue revision"
-        );
-        let work = request(false, "GET", "/v1/work?wait_s=0", vec![], 6)
-            .send()
-            .await?;
-        assert_eq!(work.status(), StatusCode::OK);
-        let work: Value = work.json().await?;
-        let forwarded: Envelope = serde_json::from_value(work["envelope"].clone())?;
-        assert_eq!(
-            forwarded.open(
-                phone.verifying_key(),
-                &mac_ecdh,
-                "phone-1",
-                "mac-1",
-                "mac-1",
-                now_ms()
-            )?,
-            b"private request"
-        );
-        assert_eq!(
-            request(false, "POST", "/v1/work/pg-fault/receipt", vec![], 7)
-                .send()
-                .await?
-                .status(),
-            StatusCode::OK
-        );
-        assert_eq!(
-            request(false, "GET", "/v1/work?wait_s=0", vec![], 8)
-                .send()
-                .await?
-                .status(),
-            StatusCode::NO_CONTENT,
-            "duplicate did not enqueue another work item"
-        );
-        let response = Envelope::seal_random(
-            Context {
-                route: "mac-1",
-                sender: "mac-1",
-                recipient: "phone-1",
-                request_id: "pg-fault",
-                kind: "response",
-                expires_at_ms: now_ms() + 120_000,
-            },
-            b"private result",
-            &mac,
-            &phone_ecdh.public_key(),
-        )?;
-        assert_eq!(
-            request(
-                false,
-                "POST",
-                "/v1/work/pg-fault/response",
-                serde_json::to_vec(&response)?,
-                9
-            )
-            .send()
-            .await?
-            .status(),
-            StatusCode::OK
-        );
-        let result = request(true, "GET", "/v1/requests/pg-fault", vec![], 10)
-            .send()
-            .await?;
-        assert_eq!(result.status(), StatusCode::OK);
-        let result: Value = result.json().await?;
-        assert_eq!(result["status"], "completed");
-        let result: Envelope = serde_json::from_value(result["response"].clone())?;
-        assert_eq!(
-            result.open(
-                mac.verifying_key(),
-                &phone_ecdh,
-                "mac-1",
-                "phone-1",
-                "mac-1",
-                now_ms()
-            )?,
-            b"private result"
-        );
+        assert_eq!(request(true, 3).send().await?.status(), StatusCode::NO_CONTENT);
+        assert_eq!(request(false, 4).send().await?.status(), StatusCode::NO_CONTENT);
         assert_eq!(
             client
                 .get(format!("{url}/v1/macs"))
@@ -348,8 +223,6 @@ mod pg_fault_tests {
             recovered.push(db.pool.acquire().await?);
         }
         drop(recovered);
-        assert_eq!(server.work_waiters.available_permits(), 16);
-        assert_eq!(server.change_waiters.available_permits(), 64);
         assert_eq!(server.requests.available_permits(), 128);
         Ok(())
     }

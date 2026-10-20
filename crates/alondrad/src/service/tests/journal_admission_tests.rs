@@ -20,10 +20,8 @@ fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
         (listener, address)
     }
     let (local_listener, local_address) = listener();
-    let (relay_listener, relay_address) = listener();
     let (daemon_listener, daemon_address) = listener();
     service.local_port = local_address.port();
-    service.set_relay_url(Url::parse(&format!("http://{relay_address}/")).unwrap());
     let service = Arc::new(service);
     let calls = Arc::new(AtomicUsize::new(0));
     let receipts = Arc::new(AtomicUsize::new(0));
@@ -35,28 +33,12 @@ fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
             async { axum::Json(json!({"protocol_version":2})) }
         }
     }));
-    let relay = Router::new()
-        .route("/v1/work/{id}/receipt", post({
-            let receipts = receipts.clone();
-            move || {
-                receipts.fetch_add(1, Ordering::SeqCst);
-                async { StatusCode::ACCEPTED }
-            }
-        }))
-        .route("/v1/work/{id}/response", post({
-            let responses = responses.clone();
-            move |body: Bytes| {
-                responses.lock().unwrap().push(body.to_vec());
-                async { StatusCode::ACCEPTED }
-            }
-        }));
     let daemon = crate::domain_bootstrap::router(state.clone())
         .layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));
     let servers = {
         let _entered = runtime.enter();
         [
             runtime.spawn(axum::serve(tokio::net::TcpListener::from_std(local_listener).unwrap(), local).into_future()),
-            runtime.spawn(axum::serve(tokio::net::TcpListener::from_std(relay_listener).unwrap(), relay).into_future()),
             runtime.spawn(axum::serve(tokio::net::TcpListener::from_std(daemon_listener).unwrap(),
                 daemon.into_make_service_with_connect_info::<SocketAddr>()).into_future()),
         ]
@@ -66,7 +48,7 @@ fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
     let mut prepared = Vec::new();
     for id in ["sql-one", "sql-two"] {
         let work = changes_work(&service, id, json!({"method":"GET","path":"/v1/options"}));
-        let mut request = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
+        let mut request = service.prepare_work(&work, Transport::Direct).unwrap().unwrap();
         assert!(Service::ordinary_read(&request.request));
         request.execution = ExecutionLane::Read;
         prepared.push((work, request));
@@ -82,16 +64,17 @@ fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
         let started = started.clone();
         let completed = completed.clone();
         let entry = entry.clone();
+        let (receipts, responses) = (receipts.clone(), responses.clone());
         jobs.push(runtime.spawn(async move {
             // The productive Read path has no suspension between this marker and accept.
             started.send(index).unwrap();
             entry.wait();
-            let executed = service.execute_relay(&work, &[7;16], prepared).await;
+            let executed = service.execute(&work.envelope, prepared, Transport::Direct, || {
+                receipts.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }).await;
             completed.send((index, executed.is_ok())).unwrap();
-            match executed {
-                Ok(delivery) => service.deliver_response(work, &[7;16], delivery).await,
-                Err(error) => Err(error),
-            }
+            executed.map(|(response, _, _)| responses.lock().unwrap().push(response))
         }));
     }
     drop(started);

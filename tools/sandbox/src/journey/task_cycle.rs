@@ -1,4 +1,4 @@
-//! A task's life through the relay: request, task, node, delivery, card, merge and close, and the
+//! A task's life over iroh: request, task, node, delivery, card, merge and close, and the
 //! refusals Alondra owes on the way.
 use anyhow::{Context, bail};
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
-    let Ok(user) = report.step("a phone pairs with Mac 1 through the relay", || User::paired(sandbox, "journey", 1, false)) else {
+    let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
         return;
     };
     report.case("TC1", "A request becomes a task whose node delivers a PR; merging it closes the task", |report| {

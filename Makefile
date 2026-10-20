@@ -15,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -208,14 +208,11 @@ e2e-doc-review:
 
 # Every kind of card answered from one client against its own sandbox: each leaves at once and never
 # comes back, and each card of a group opens on its own screen (tools/e2e_cards.py, tests/sandbox/README.md).
-# e2e-relay-cards and e2e-direct-cards use the synthetic phone; e2e-cards-tui the real TUI in tmux;
+# e2e-direct-cards uses the synthetic phone; e2e-cards-tui the real TUI in tmux;
 # e2e-ios-cards the iOS app in a pooled simulator. E2E_CAPTURES=<dir> keeps what each client showed.
 E2E_CARDS = bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox && \
 	python3 tools/e2e_cards.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) --client $(1) \
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
-
-e2e-relay-cards:
-	$(call E2E_CARDS,relay)
 
 e2e-direct-cards:
 	$(call E2E_CARDS,direct)
