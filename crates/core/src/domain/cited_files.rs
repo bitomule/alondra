@@ -66,7 +66,7 @@ pub fn cited_files_problem(text: &str) -> Option<(&'static str, String)> {
 }
 
 fn not_openable(paths: &str) -> String {
-    format!("the user cannot open {paths} from the app, and your card must be read on its own: write the content you mean into the card itself, or send the file as an Alondra document")
+    format!("the user cannot open {paths} from the app, and your card must be read on its own: write the content you mean into the card itself, or send the file as an Alondra document; if it is your finished work, deliver it with present_result and the whole report in content.body")
 }
 
 /// `text` with every file it cites included at its end, each read by `read` from where the
