@@ -370,6 +370,8 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
         (_, NodeEvent::SessionClosed) => P::Closed,
         (P::Starting { .. }, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => P::Closed,
         (_, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => return refuse("not_starting", "The node is not starting"),
+        (P::Lost, NodeEvent::RevivalAdmitted) if f.awaits =>
+            return refuse("waits_dependency", "A node whose task waits for other tasks comes back once they are done"),
         (P::Lost, NodeEvent::RevivalAdmitted) => P::Starting { reviving: true, idle_since: None },
         (_, NodeEvent::RevivalAdmitted) => return refuse("not_lost", "Only a node whose session was lost is let back"),
         (P::Starting { .. } | P::Working | P::WaitingBackground(_) | P::Resuming { .. } | P::Delivered { in_turn: true }, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
@@ -397,7 +399,8 @@ fn settled(moved: Settled, f: &TaskFacts) -> Settled {
 /// answered or saw its own work gone may predate that, so only a later one moves it: facts in
 /// their order, never the time between them; one asked for before the node's phase began says
 /// nothing of it. A node whose session is absent is lost: it waits for the gate again, holding no
-/// slot.
+/// slot. A listing that says working never puts back to work a node resting on the user or on its
+/// task's dependencies: only the start of its turn does.
 fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: Millis) -> Settled {
     use NodePhase as P;
     let keep = || Settled::At(phase.clone());
@@ -420,7 +423,7 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (P::Resuming { idle_since: None }, Listed::Idle | Listed::Blocked | Listed::Done) => Settled::At(P::Resuming { idle_since: Some(at) }),
         (P::Resuming { idle_since: Some(first) }, Listed::Idle | Listed::Blocked | Listed::Done) if at <= *first => keep(),
         (_, Listed::Idle | Listed::Blocked | Listed::Done) => rest(f),
-        (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working) => keep(),
+        (P::WaitingUser { .. } | P::Delivered { .. } | P::WaitingDependency, Listed::Working) => keep(),
         (_, Listed::Working) => Settled::At(P::Working),
     }
 }
@@ -480,6 +483,7 @@ impl DomainState {
             None | Some(NodePhase::Closing | NodePhase::Closed | NodePhase::NoTask) => TaskActivity::NodeClosed,
             Some(NodePhase::Starting { reviving: true, .. }) => TaskActivity::Reconnecting,
             Some(NodePhase::Starting { reviving: false, .. }) => TaskActivity::Starting,
+            Some(NodePhase::Lost) if task.state == TaskState::WaitingDependency => TaskActivity::WaitingDependency,
             Some(NodePhase::Lost) => TaskActivity::ComingBack,
             Some(NodePhase::Working | NodePhase::Resuming { .. }) => TaskActivity::Working,
             Some(NodePhase::WaitingBackground(work)) => TaskActivity::WaitingBackground(work.clone()),

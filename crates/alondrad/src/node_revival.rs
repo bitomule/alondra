@@ -12,7 +12,7 @@
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, NodeEvent, NodePhase, QuestionOption, TaskId, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainState, NodeEvent, NodePhase, QuestionOption, TaskId, TaskState, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -80,10 +80,39 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
         }
     }
     tokio::spawn(watch_stalls(domain.clone()));
+    tokio::spawn(wake_when_waits_end(domain.clone()));
     while let Some(session) = lost.recv().await {
         let domain = domain.clone();
         tokio::spawn(async move { revive(&domain, &session, &crate::orchestrate::ClaudeCli, timing).await });
     }
+}
+
+/// A node whose task waits for other tasks is not brought back while it waits. Once a commit ends
+/// the wait, its session is reported lost: if it is gone, the gate brings it back in its turn.
+async fn wake_when_waits_end(domain: Arc<DomainRuntime>) {
+    let mut changed = domain.subscribe();
+    let mut waiting = waiting_nodes(&domain);
+    while changed.changed().await.is_ok() {
+        let now = waiting_nodes(&domain);
+        for session in waiting.difference(&now) {
+            domain.live.losses.report(session);
+        }
+        waiting = now;
+    }
+}
+
+fn waiting_nodes(domain: &DomainRuntime) -> std::collections::BTreeSet<String> {
+    let Ok(state) = domain.state() else { return Default::default() };
+    state.tasks.values()
+        .filter(|task| task.state == TaskState::WaitingDependency && !task.archived)
+        .filter_map(|task| task.agent_id.as_ref().map(|agent| agent.0.clone()))
+        .collect()
+}
+
+/// A node whose task waits for other tasks has nothing to do until they are done: whatever its
+/// session does meanwhile, it is neither restarted nor told to carry on.
+fn awaits_other_tasks(state: &DomainState, session: &str) -> bool {
+    state.task_facts(&AgentId(session.to_owned())).awaits
 }
 
 async fn watch_stalls(domain: Arc<DomainRuntime>) {
@@ -158,6 +187,7 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .filter(|agent| matches!(agent.phase, NodePhase::Working | NodePhase::Delivered { in_turn: true }))
         .map(|agent| agent.id.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
+        .filter(|session| !awaits_other_tasks(&state, session))
         .filter(|session| !crate::sdk_handover::moved(domain, &AgentId(session.clone())))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
         .filter(|session| domain.live.gate.paused(&domain, session).is_none())
@@ -283,7 +313,7 @@ async fn tell_to_carry_on(domain: &DomainRuntime, session: &str) {
 fn needs_work(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let facts = state.task_facts(&AgentId(session.to_owned()));
-    facts.open && !facts.closing && !facts.card && !facts.held && !facts.delivered
+    facts.open && !facts.closing && !facts.card && !facts.held && !facts.delivered && !facts.awaits
 }
 
 /// The mod's connection is recorded a moment before its push link attaches.
@@ -312,6 +342,7 @@ pub(crate) fn needed(domain: &DomainRuntime, session: &str) -> bool {
         && !crate::sdk_handover::moved(domain, &agent)
         && state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
         && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
+        && !awaits_other_tasks(&state, session)
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)
 }
@@ -354,7 +385,9 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             {
                 return;
             }
-            move_node(domain, session, NodeEvent::RevivalAdmitted);
+            if !let_back(domain, session) {
+                return;
+            }
             match launcher.respawn(&short).await {
                 Ok(()) if domain.live.mods.wait_connected(session, timing.settle).await => {
                     tell_to_carry_on(domain, session).await;
@@ -369,6 +402,17 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             return;
         }
     }
+}
+
+/// The gate let the session back: the node machine records it, or refuses it for a node whose task
+/// waits for other tasks, which is then not restarted.
+fn let_back(domain: &DomainRuntime, session: &str) -> bool {
+    let waits = domain.state().is_ok_and(|state| state.node_next(&AgentId(session.to_owned()), &NodeEvent::RevivalAdmitted, alondra_core::now_millis())
+        .is_err_and(|refusal| refusal.code == "waits_dependency"));
+    if !waits {
+        move_node(domain, session, NodeEvent::RevivalAdmitted);
+    }
+    !waits
 }
 
 /// The node machine alone says whether the node waits at the gate or is being restarted: the gate
@@ -1029,5 +1073,98 @@ mod tests {
         revive(&domain, SESSION, &claude, &FAST).await;
         assert_eq!(claude.calls(), 0);
         assert!(!domain.live.is_closed(SESSION) && domain.live.closed_task_ids().is_empty(), "nothing is marked or kept for it");
+    }
+
+    /// The node's task started, then the orchestrator made it wait for another task that is still
+    /// open, and the node's turn ended: «mapa del backend», 16 October 14:40.
+    fn waiting(domain: &DomainRuntime) {
+        command(domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Backend map".into() });
+        command(domain, Actor::Orchestrator { generation: 0 }, "dependency", Command::CreateTask { plan_items: None, task_id: "d".into(), request_id: "r".into(),
+            title: "Remove the legacy code".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        working(domain);
+        crate::domain_agent_lifecycle::node_event(domain, &AgentId(SESSION.into()), NodeEvent::TurnStarted).unwrap();
+        set_dependencies(domain, &["d"]);
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::WaitingDependency);
+        crate::domain_agent_lifecycle::node_event(domain, &AgentId(SESSION.into()), NodeEvent::TurnEnded).unwrap();
+        assert_eq!(phase(domain), NodePhase::WaitingDependency);
+    }
+
+    fn set_dependencies(domain: &DomainRuntime, on: &[&str]) {
+        command(domain, Actor::Orchestrator { generation: 0 }, &format!("depend-{}", on.join("-")), Command::SetDependencies {
+            task_id: "t".into(), dependencies: on.iter().map(|id| (*id).into()).collect(), stack: None,
+        });
+    }
+
+    fn activity(domain: &DomainRuntime) -> Option<alondra_core::domain::TaskActivity> {
+        let state = domain.state().unwrap();
+        state.task_activity(&state.tasks[&"t".into()])
+    }
+
+    /// 16 October, 15:30: the session of a node whose task waits for other tasks ended. Alondra
+    /// queued it at the gate to come back and restarted it at 17:32, its dependencies still open.
+    #[tokio::test]
+    async fn a_session_that_ends_while_its_task_waits_for_other_tasks_is_not_restarted() {
+        let (_home, domain) = world(true);
+        waiting(&domain);
+        crate::domain_agent_lifecycle::node_event(&domain, &AgentId(SESSION.into()), NodeEvent::SessionLost).unwrap();
+        assert_eq!(phase(&domain), NodePhase::Lost);
+        assert_eq!(activity(&domain), Some(alondra_core::domain::TaskActivity::WaitingDependency), "its task waits for another task, not to come back");
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0, "no `claude respawn` while it waits");
+        assert_eq!(phase(&domain), NodePhase::Lost);
+        assert!(!domain.live.mods.connected(SESSION));
+    }
+
+    /// 16 October 22:41, the daemon restarted and reported every known session as lost; 17 October
+    /// 08:35 and 19 October 13:05, the mod's connection was gone: each time a node whose task waits
+    /// for other tasks, still resting on them, was restarted.
+    #[tokio::test]
+    async fn a_node_resting_on_other_tasks_with_no_connection_is_not_restarted() {
+        let (_home, domain) = world(true);
+        waiting(&domain);
+        assert!(!domain.live.mods.connected(SESSION));
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0);
+        assert_eq!(phase(&domain), NodePhase::WaitingDependency);
+    }
+
+    /// 17 October, 08:37: a minute after its turn ended, Claude Code listed the session working.
+    /// The node read as at work, its silent turn as stalled, and at 08:39 it was restarted and
+    /// told it had stopped in the middle of a turn.
+    #[tokio::test]
+    async fn a_node_resting_on_other_tasks_is_never_a_stalled_turn() {
+        let (_home, domain) = world(true);
+        waiting(&domain);
+        let _link = silent_turn(&domain);
+        crate::domain_agent_lifecycle::node_event(&domain, &AgentId(SESSION.into()), NodeEvent::Listed { listed: alondra_core::domain::Listed::Working }).unwrap();
+        assert_eq!(phase(&domain), NodePhase::WaitingDependency, "a listing does not start its turn");
+        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty());
+        let claude = Respawner::new(&domain, 1);
+        revive_stalled(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0);
+    }
+
+    /// Once the tasks it waited for are done, the node whose session ended meanwhile is brought
+    /// back by that fact, through the gate, and told to carry on.
+    #[tokio::test]
+    async fn a_node_whose_wait_ends_is_brought_back_once() {
+        let (_home, domain) = world(true);
+        let mut lost = domain.live.losses.take().unwrap();
+        waiting(&domain);
+        crate::domain_agent_lifecycle::node_event(&domain, &AgentId(SESSION.into()), NodeEvent::SessionLost).unwrap();
+        let watching = tokio::spawn(wake_when_waits_end(domain.clone()));
+        tokio::task::yield_now().await;
+        set_dependencies(&domain, &[]);
+        let reported = tokio::time::timeout(Duration::from_secs(5), lost.recv()).await.expect("the end of the wait reports the node");
+        assert_eq!(reported.as_deref(), Some(SESSION));
+        watching.abort();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Running);
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 1, "restarted once its wait is over");
+        assert_eq!(phase(&domain), NodePhase::Starting { reviving: true, idle_since: None });
     }
 }

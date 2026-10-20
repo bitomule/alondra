@@ -108,6 +108,13 @@ fn refused(phase: NodePhase, event: NodeEvent, at: Millis) -> String {
     }
 }
 
+fn refused_with(phase: NodePhase, event: NodeEvent, f: &TaskFacts) -> String {
+    match next(&phase, SINCE, &event, f, AT) {
+        Ok(moved) => panic!("{phase:?} accepted {event:?} and moved to {moved:?}"),
+        Err(error) => error.code,
+    }
+}
+
 macro_rules! forbid {
     ($($name:ident: $phase:expr, $event:expr => $code:literal;)*) => {$(
         #[test]
@@ -400,6 +407,29 @@ fn a_session_listed_done_rests_while_its_task_needs_it_and_closes_once_it_does_n
     let over = TaskFacts { open: false, closing: true, ..OPEN };
     assert_eq!(next_phase(&NodePhase::Closing, SINCE, &done, &over, AT).unwrap(), NodePhase::Closed);
     assert_eq!(next_phase(&NodePhase::Working, SINCE, &done, &TaskFacts::default(), AT).unwrap(), NodePhase::Closed);
+}
+
+/// 16 and 17 October: the node of «mapa del backend» waited for other tasks, its session ended,
+/// and the gate let it back while they were still open, four times.
+#[test]
+fn a_node_whose_task_waits_for_other_tasks_is_let_back_only_once_they_are_done() {
+    let awaits = TaskFacts { awaits: true, ..OPEN };
+    assert_eq!(next_phase(&NodePhase::WaitingDependency, SINCE, &NodeEvent::SessionLost, &awaits, AT).unwrap(), NodePhase::Lost);
+    assert_eq!(refused_with(NodePhase::Lost, NodeEvent::RevivalAdmitted, &awaits), "waits_dependency");
+    assert_eq!(next_phase(&NodePhase::Lost, SINCE, &NodeEvent::RevivalAdmitted, &OPEN, AT).unwrap(),
+        NodePhase::Starting { reviving: true, idle_since: None }, "once they are done");
+}
+
+/// 17 October, 08:37: a minute after its turn ended, Claude Code still listed the session of a
+/// node waiting for other tasks as working; the node read as at work, its turn as stalled, and it
+/// was restarted.
+#[test]
+fn a_listing_that_says_working_never_puts_a_node_waiting_for_other_tasks_back_to_work() {
+    let awaits = TaskFacts { awaits: true, ..OPEN };
+    let working = NodeEvent::Listed { listed: Listed::Working };
+    assert_eq!(next_phase(&NodePhase::WaitingDependency, SINCE, &working, &awaits, AT).unwrap(), NodePhase::WaitingDependency);
+    assert_eq!(next_phase(&NodePhase::WaitingDependency, SINCE, &NodeEvent::TurnStarted, &awaits, AT).unwrap(), NodePhase::Working,
+        "the start of its own turn does");
 }
 
 /// 13 October: quill's session ended and its restart waited at the fleet gate for memory, every
