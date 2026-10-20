@@ -227,6 +227,34 @@ class SandboxTests(Fixture):
             sleeper.kill()
             sleeper.wait()
 
+    def test_a_cases_processes_signal_each_other_through_one_supervisor_and_nothing_outside(self):
+        supervisor = u.Supervisor(self.rehearsal)
+        outside = subprocess.Popen(['/bin/sleep', '30'])
+        try:
+            env = {'PATH': '/usr/bin:/bin'}
+            sleeper = supervisor.spawn(['/bin/sleep', '30'], env, self.work / 'sleep.log')
+            self.assertIsNone(supervisor.exited(sleeper, 0))
+            stopped = supervisor.run([sys.executable, '-I', '-c', f'import os; os.kill({sleeper}, 15)'], env, 10)
+            self.assertEqual(stopped['code'], 0, stopped['stderr'])
+            self.assertEqual(supervisor.exited(sleeper, 10), -15)
+            refused = supervisor.run([sys.executable, '-I', '-c', f'import os; os.kill({outside.pid}, 15)'], env, 10)
+            self.assertIn('PermissionError', refused['stderr'])
+            self.assertIsNone(outside.poll())
+        finally:
+            supervisor.close()
+            outside.kill()
+            outside.wait()
+
+    def test_separate_sandboxes_cannot_signal_each_other(self):
+        first = subprocess.Popen(u.sandboxed(['/bin/sleep', '30'], self.protected, self.work))
+        try:
+            result = self.sandboxed(f'import os; os.kill({first.pid}, 15)')
+            self.assertIn('PermissionError', result.stderr)
+            self.assertIsNone(first.poll())
+        finally:
+            first.kill()
+            first.wait()
+
     def test_the_rehearsal_directory_cannot_live_inside_the_protected_home(self):
         with self.assertRaisesRegex(u.Failed, 'must be outside'):
             u.sandboxed(['/usr/bin/true'], self.protected, self.live / 'work')
@@ -385,6 +413,39 @@ class UpgradeTests(Fixture):
         self.assertEqual(leftover.returncode, 1, leftover.stdout)
 
 
+class HandoverReadTests(Fixture):
+    def database(self):
+        home = self.work / 'home'
+        home.mkdir()
+        connection = sqlite3.connect(home / 'domain.db')
+        for table in ('tasks', 'requests', 'interactions'):
+            connection.execute(f'CREATE TABLE {table}(id TEXT PRIMARY KEY, state TEXT, title TEXT)')
+            connection.execute(f'INSERT INTO {table} VALUES(?, ?, ?)', (f'{table}-1', 'open', 'One'))
+        connection.commit()
+        return home, connection
+
+    def test_a_changed_task_request_or_card_is_named_with_its_fields(self):
+        home, connection = self.database()
+        before = u.domain_snapshot(home)
+        self.assertEqual(u.snapshot_changes(before, u.domain_snapshot(home)), [])
+        connection.execute("UPDATE tasks SET state='done'")
+        connection.execute("INSERT INTO interactions VALUES('interactions-2', 'open', 'Two')")
+        connection.commit()
+        connection.close()
+        self.assertEqual(u.snapshot_changes(before, u.domain_snapshot(home)),
+                         ['interactions interactions-2: id, state, title', 'tasks tasks-1: state'])
+
+    def test_each_move_lists_its_steps_in_order(self):
+        home, connection = self.database()
+        self.assertEqual(u.journal(home), {})
+        connection.execute('CREATE TABLE sdk_handover_steps(node TEXT, step TEXT, task_id TEXT, at INTEGER, facts TEXT)')
+        for node, step in (('b', 'planned'), ('a', 'done'), ('a', 'planned'), ('a', 'sdk_admitted'), ('a', 'bg_stopped')):
+            connection.execute("INSERT INTO sdk_handover_steps VALUES(?, ?, 't', 0, '{}')", (node, step))
+        connection.commit()
+        connection.close()
+        self.assertEqual(u.journal(home), {'a': list(u.HANDOVER_STEPS), 'b': ['planned']})
+
+
 class LauncherMigrationTests(Fixture):
     def archive(self, files):
         path = self.root / 'release.tar.gz'
@@ -401,6 +462,14 @@ class LauncherMigrationTests(Fixture):
         binary = u.unpack(archive, self.work / 'previous', signed=False, published=True)
         self.assertEqual(binary.read_text(), 'alondrad')
         self.assertFalse(binary.with_name(u.LAUNCHER).exists())
+
+    def test_a_keg_holds_the_binaries_and_the_plugins_with_their_cli_wrappers(self):
+        keg = self.work / 'Cellar/alondra/0.1.2'
+        u.keg_from_archive(self.archive(u.release.PUBLIC_FILES), keg, published=False)
+        self.assertEqual({path.name for path in (keg / 'bin').iterdir()}, {'alondra', 'alondrad', u.LAUNCHER})
+        for plugin in ('plugin', 'plugin-orchestrator'):
+            self.assertTrue((keg / 'libexec/alondra' / plugin / 'bin/alondra').is_file(), plugin)
+        self.assertFalse((keg / 'libexec/alondra/alondrad').exists())
 
     def test_the_release_about_to_ship_must_carry_the_launcher(self):
         archive = self.archive(u.release.PRE_LAUNCHER_FILES)

@@ -12,7 +12,7 @@ mod scenario;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -152,6 +152,16 @@ enum PhoneAction {
         #[arg(long)]
         direct: bool,
     },
+    /// Presses the enabled action of a view, found by its label or the start of its id, as the
+    /// user would on the card or screen; --text fills its text field.
+    Press {
+        view: String,
+        action: String,
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        direct: bool,
+    },
     /// Revokes the phone on the Mac and waits until the relay refuses it.
     Revoke,
 }
@@ -187,6 +197,15 @@ fn main() -> Result<()> {
                         phone.request(&target, &method, &path, body, request_id)?
                     };
                     println!("{}", serde_json::to_string_pretty(&reply)?);
+                    Ok(())
+                }
+                PhoneAction::Press { view, action, text, direct } => {
+                    let user = journey::User { phone, target, direct };
+                    let shown = user.view(&view)?;
+                    let found = user.action_labeled(&shown, &action).or_else(|| user.action(&shown, &action))
+                        .with_context(|| format!("{view} has no enabled action {action}"))?;
+                    let id = found["id"].as_str().context("the action has no id")?;
+                    println!("{}", user.press(id, found["option_id"].as_str(), text.as_deref())?);
                     Ok(())
                 }
                 PhoneAction::Revoke => phone.revoke(&target),

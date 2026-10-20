@@ -21,6 +21,10 @@ IDENTITY = '137E48D7AF54AAA3DFC56B9820DACC897C20AF15'
 TEAM = '658YBSK6MG'
 LOW_FREE = 8 * 1024**3
 REHEARSAL = 'upgrade-rehearsal.json'
+SDK_HANDOVER = 'sdk-handover'
+HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
+SDK_REHEARSAL = {'--sdk-node': '//agent-host:pinned_node', '--sdk-host': '//agent-host:persistent.cjs',
+                 '--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
 
 
 def run(*args, capture=False, env=None):
@@ -89,10 +93,22 @@ def manifest(ver, source, output):
                          for target in release.TARGETS}}
 
 
+def bazel_file(label):
+    execroot = pathlib.Path(run('bazelisk', 'info', 'execution_root', capture=True).strip())
+    files = [line for line in run('bazelisk', 'cquery', '--output=files', label, capture=True).split() if not line.endswith('.ok')]
+    if len(files) != 1:
+        raise RuntimeError(f'{label} does not build exactly one file: {files}')
+    return execroot / files[0]
+
+
 def rehearse_upgrade(ver, output):
-    """The previous release must replace itself with these bytes on copies of this Mac's HOME."""
+    """The previous release must replace itself with these bytes on copies of this Mac's HOME, and
+    its claude --bg nodes move to the Agent SDK with their sessions."""
     archive = output / f'alondra-{ver}-{release.TARGETS[0]}.tar.gz'
-    run(sys.executable, ROOT / 'deploy/brew/upgrade-rehearsal.py', '--new', archive, '--output', output / REHEARSAL)
+    run('bazelisk', 'build', *SDK_REHEARSAL.values())
+    artifacts = [value for flag, label in SDK_REHEARSAL.items() for value in (flag, bazel_file(label))]
+    run(sys.executable, ROOT / 'deploy/brew/upgrade-rehearsal.py', '--new', archive, *artifacts,
+        '--sdk-fixtures', ROOT / 'agent-host', '--output', output / REHEARSAL)
 
 
 def verify_rehearsal(ver, output):
@@ -104,6 +120,9 @@ def verify_rehearsal(ver, output):
     rehearsed = saved.get('archive') or {}
     if saved.get('to') != ver or rehearsed.get('name') != archive or rehearsed.get('sha256') != release.sha(output / archive):
         raise RuntimeError('The upgrade rehearsal ran on other bytes than the prepared archive; prepare them again')
+    handover = saved.get('cases', {}).get(SDK_HANDOVER) or {}
+    if handover.get('crashed_after') != list(HANDOVER_CRASHES):
+        raise RuntimeError('The upgrade rehearsal did not move claude --bg nodes to the Agent SDK with a crash after each step; prepare them again')
 
 
 def verify_prepared(ver, source, output):

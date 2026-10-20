@@ -710,8 +710,13 @@ pub fn agents(fakes: &Fakes) -> Result<i32> {
         .into_iter()
         .filter(|node| node.state != State::Removed)
         .map(|node| {
-            let state = if node.state == State::Running { job_state(&node) } else { "stopped".into() };
-            json!({"id": node.short, "sessionId": node.session_id, "name": node.name, "state": state, "cwd": node.workdir()})
+            // Like Claude Code 2.1.300: a session that runs names its process.
+            let (state, pid) = if node.state == State::Running { (job_state(&node), node.pid) } else { ("stopped".into(), None) };
+            let mut row = json!({"id": node.short, "sessionId": node.session_id, "name": node.name, "state": state, "cwd": node.workdir()});
+            if let Some(pid) = pid {
+                row["pid"] = json!(pid);
+            }
+            row
         })
         .collect();
     println!("{}", serde_json::to_string(&list)?);

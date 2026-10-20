@@ -30,8 +30,19 @@ def archives(directory, ver='0.1.2'):
 
 def rehearsed(directory, ver='0.1.2'):
     archive = directory / f'alondra-{ver}-{l.release.TARGETS[0]}.tar.gz'
-    record = {'schema': 1, 'from': '0.1.1', 'to': ver, 'archive': {'name': archive.name, 'sha256': l.release.sha(archive)}}
+    record = {'schema': 1, 'from': '0.1.1', 'to': ver, 'archive': {'name': archive.name, 'sha256': l.release.sha(archive)},
+              'cases': {l.SDK_HANDOVER: {'crashed_after': list(l.HANDOVER_CRASHES)}}}
     (directory / l.REHEARSAL).write_text(json.dumps(record))
+
+
+def bazel(args):
+    """What Bazel answers about the rehearsal's SDK artifacts."""
+    if args[1] == 'info':
+        return '/execroot\n'
+    if args[1] == 'cquery':
+        built = 'bazel-out/' + args[-1].strip('/').replace(':', '/')
+        return f'{built}\n{built}.clippy.ok\n'
+    return ''
 
 
 def rehearsal_call(args):
@@ -298,6 +309,7 @@ class LocalReleaseTests(unittest.TestCase):
                     directory.mkdir(parents=True)
                     for name in l.SIGNED: (directory / name).touch()
             elif args[0] == 'security': return f'1) {l.IDENTITY} "local identity"'
+            elif args[0] == 'bazelisk': return bazel(args)
             elif rehearsal_call(args): rehearsed(output)
             elif args[0] == 'bash': archives(output)
             elif args[0] == '/usr/bin/arch': return 'x86_64'
@@ -353,9 +365,15 @@ class LocalReleaseTests(unittest.TestCase):
                     directory.mkdir(parents=True)
                     for name in l.SIGNED:
                         (directory / name).write_bytes(f'{arch}:{name}'.encode())
+            elif args[0] == 'bazelisk':
+                return bazel(args)
             elif rehearsal_call(args):
                 self.assertFalse((output / 'manifest.json').exists(), 'the rehearsal runs before the manifest exists')
-                self.assertEqual(args[2:], ('--new', output / 'alondra-0.1.2-aarch64-apple-darwin.tar.gz', '--output', output / l.REHEARSAL))
+                built = pathlib.Path('/execroot/bazel-out')
+                self.assertEqual(args[2:], ('--new', output / 'alondra-0.1.2-aarch64-apple-darwin.tar.gz',
+                                            '--sdk-node', built / 'agent-host/pinned_node', '--sdk-host', built / 'agent-host/persistent.cjs',
+                                            '--sandbox-tool', built / 'tools/sandbox/alondra-sandbox',
+                                            '--sdk-fixtures', l.ROOT / 'agent-host', '--output', output / l.REHEARSAL))
                 if failure == 'rehearsal':
                     raise subprocess.CalledProcessError(1, args)
                 rehearsed(output)
@@ -449,6 +467,16 @@ class LocalReleaseTests(unittest.TestCase):
         (output / l.REHEARSAL).write_text(json.dumps(record))
         with self.assertRaisesRegex(RuntimeError, 'other bytes'):
             l.verify_prepared('0.1.2', 'source', output)
+        for crashes in (None, ['planned', 'bg_stopped']):
+            rehearsed(output)
+            record = json.loads((output / l.REHEARSAL).read_text())
+            if crashes is None:
+                del record['cases']
+            else:
+                record['cases'][l.SDK_HANDOVER]['crashed_after'] = crashes
+            (output / l.REHEARSAL).write_text(json.dumps(record))
+            with self.assertRaisesRegex(RuntimeError, 'Agent SDK'):
+                l.verify_prepared('0.1.2', 'source', output)
         rehearsed(output)
         l.verify_prepared('0.1.2', 'source', output)
         self.assertTrue(archive.exists())

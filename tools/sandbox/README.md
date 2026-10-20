@@ -50,7 +50,9 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
 - **Node** (`claude --bg`): a process with a worktree of `repo/`, its job file in `claude-home/jobs`,
   the plugin's reports and connection (`alondra node event|connect|ack`), the classic hooks
   (`alondra hook`) and the real `alondra mcp-node` with the settings file Alondra wrote. It cleans
-  up when asked and follows its task's script; `claude stop|respawn|rm|agents` act on it.
+  up when asked and follows its task's script; `claude stop|respawn|rm|agents` act on it, and
+  `claude agents` names the process of a running one, as Claude Code does. While
+  `fakes/hold-stop` exists, `claude stop` fails and the session goes on.
 - **GitHub** (`gh`): PRs whose head is their branch's tip in `remote.git`; checks, drafts and merge
   failures are set per PR.
 
@@ -154,6 +156,8 @@ alondra-sandbox phone --mac 1 request GET /capabilities # one encrypted request,
 alondra-sandbox phone --mac 1 revoke                    # revoke on the Mac, wait until the relay refuses
 alondra-sandbox phone --mac 1 pair --direct             # pair over the direct listener, codes compared
 alondra-sandbox phone --mac 1 request --direct GET /capabilities   # the same request, without the relay
+alondra-sandbox phone --mac 1 press --direct card:<id> "Short name"   # press a view's action by label or id prefix
+alondra-sandbox phone --mac 1 press --direct task:<id> msg: --text "…" # an action with its text field
 alondra-sandbox scenario                                # the automatic checks, on every Mac
 ```
 
