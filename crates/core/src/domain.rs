@@ -48,6 +48,8 @@ mod plan_review_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod decision_tests;
+#[cfg(test)]
+mod plan_wait_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;

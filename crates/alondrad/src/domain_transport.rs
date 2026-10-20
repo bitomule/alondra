@@ -2873,6 +2873,26 @@ mod tests {
         assert_eq!(alondra_core::domain::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
     }
 
+    #[test]
+    fn a_plan_of_a_task_that_waits_for_another_goes_back_to_its_node_without_a_card() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        working_agent(&domain, "agent-b");
+        command(&domain, Actor::Orchestrator { generation: 0 }, "depend", Command::SetDependencies {
+            task_id: "task-agent-a".into(), dependencies: BTreeSet::from(["task-agent-b".into()]), stack: None,
+        });
+        let before = domain.state().unwrap().interactions.len();
+        let card = json!({"session_id": "agent-a", "id": "toolu-plan", "kind": "plan", "input": {"plan": "# Step 1\n\n- [ ] Ship the relay"}});
+        match crate::domain_holds::post(&domain, &serde_json::from_value(card).unwrap(), true).unwrap() {
+            crate::domain_holds::Posted::Denied(reason) => assert!(reason.contains("ask the orchestrator to remove it"), "{reason}"),
+            _ => panic!("a plan of a waiting task is put to the user"),
+        }
+        let state = domain.state().unwrap();
+        assert_eq!(state.interactions.len(), before, "no card is put to the user");
+        assert!(state.holds.is_empty());
+    }
+
     #[tokio::test]
     async fn a_plan_waiting_when_its_task_is_cancelled_is_turned_down() {
         let fixture = Fixture::new();

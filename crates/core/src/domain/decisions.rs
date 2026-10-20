@@ -68,7 +68,9 @@ impl DomainState {
             (Hold::Plan, DecisionPrompt::Card { body, .. }) => Some(body.as_str()),
             _ => None,
         };
-        if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan) {
+        let waiting = (hold == Hold::Plan).then(|| self.plan_while_waiting(task)).flatten()
+            .map(|message| DecisionRecord::Deny { message });
+        if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
         }
         let node = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.node().clone()).ok_or_else(|| DomainError::new("stale_execution", "The task has no execution"))?;

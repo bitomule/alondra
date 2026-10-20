@@ -121,6 +121,10 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
         if let Some((_, fix)) = plan_checklist_problem(&plan) {
             return Ok(Posted::Denied(capitalized(&fix)));
         }
+        let task = state.tasks.values().find(|task| task.agent_id.as_ref().is_some_and(|a| a.0 == card.session_id) && !task.over());
+        if let Some(notice) = task.and_then(|task| state.plan_while_waiting(&task.id)) {
+            return Ok(Posted::Denied(notice));
+        }
         match include_cited_files(&plan, |path| read_cited_file(card.cwd.as_deref().map(Path::new), path)) {
             Ok(whole) => input["plan"] = json!(whole),
             Err(fix) => return Ok(Posted::Denied(capitalized(&fix))),

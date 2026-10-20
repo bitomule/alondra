@@ -64,6 +64,8 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "Responde primero a «{need}»; este resultado lo espera.", need = need),
         Refusal::BlockedByTask { title } => tf!(lang, "“{title}” has to finish reviewing this first.",
             "«{title}» tiene que terminar de revisarlo primero.", title = title),
+        Refusal::WaitsForTask { title } => tf!(lang, "This task waits for “{title}”: its plan can be approved once that wait ends.",
+            "Esta tarea espera a «{title}»: su plan se podrá aprobar cuando termine esa espera.", title = title),
         Refusal::UpstreamPrOpen { number } => tf!(lang, "PR #{number} must merge first: this one builds on it.",
             "Antes hay que fusionar la PR #{number}: esta se apoya en ella.", number = number),
         Refusal::MethodNotAllowed { allowed, .. } if allowed.is_empty() => t!(lang,
@@ -166,7 +168,7 @@ mod tests {
     #[test]
     fn every_refusal_reads_in_both_languages() {
         let all = [
-            Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() },
+            Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() }, Refusal::WaitsForTask { title: "t".into() },
             Refusal::UpstreamPrOpen { number: 1 }, Refusal::MethodNotAllowed { method: MergeMethod::Merge, allowed: vec![] },
             Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
             Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::AlreadyAnswered, Refusal::Withdrawn,

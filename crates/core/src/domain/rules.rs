@@ -304,6 +304,13 @@ pub fn dependencies_done_notice(titles: &[&str]) -> String {
     format!("What you were waiting for is done: {}. Go on with your task; update your branch from the default branch \
 first if you need what it changed.", names.join(", "))
 }
+/// What a node is told when it presents a plan while its Task waits for others.
+pub fn plan_while_waiting_notice(titles: &[String]) -> String {
+    let names: Vec<String> = titles.iter().map(|title| format!("“{title}”")).collect();
+    format!("Your task waits for {} to be done, so this plan is not reviewed: do not go on with it. If that wait is no \
+longer needed, ask the orchestrator to remove it, naming the fact that proves it (for example the pull request that is \
+already on the default branch). Once your task is running again, present the plan.", names.join(", "))
+}
 pub fn delivery_withdrawn_for_questions() -> String {
     "You asked the user something after your final delivery, so that delivery was withdrawn and the task \
 is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
@@ -1346,6 +1353,32 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+    /// The titles of the Tasks `task` still waits for, while its state is waiting for them:
+    /// none when it waits for nothing another Task has to do.
+    pub fn waited_tasks(&self, task: &TaskId) -> Vec<String> {
+        let Some(t) = self.tasks.get(task).filter(|t| t.state == TaskState::WaitingDependency) else { return vec![] };
+        let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.state != TaskState::Done));
+        let undelivered = t.delivered_dependencies.iter()
+            .filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.final_presentation.is_none() || d.state == TaskState::Cancelled));
+        let upstream = t.stack.iter().map(|s| &s.upstream_task).filter(|_| self.stack_ready(t).is_err());
+        undone.chain(undelivered).chain(upstream)
+            .map(|dep| self.tasks.get(dep).map_or_else(|| dep.0.clone(), |d| d.title.clone()))
+            .collect()
+    }
+    /// What a node is told when it presents a plan while its Task waits for others: the plan is
+    /// not reviewed, and only the orchestrator ends a wait.
+    pub fn plan_while_waiting(&self, task: &TaskId) -> Option<String> {
+        let waited = self.waited_tasks(task);
+        (!waited.is_empty()).then(|| plan_while_waiting_notice(&waited))
+    }
+    fn plan_waits(&self, task: &TaskId) -> Result<()> {
+        let waited = self.waited_tasks(task);
+        if waited.is_empty() {
+            return Ok(());
+        }
+        refuse("task_waiting", "option_id", &plan_while_waiting_notice(&waited))
+            .map_err(|error| error.because(Refusal::WaitsForTask { title: waited.join(", ") }))
     }
     pub(crate) fn stack_ready(&self, t: &Task) -> Result<()> {
         if let Some(stack) = &t.stack {
@@ -2962,6 +2995,7 @@ impl DomainState {
                 validate_options(options)?;
                 if *hold == Hold::Plan {
                     plan_checklist(body)?;
+                    self.plan_waits(task_id)?;
                 }
                 let scope = Scope::Task { task_id: task_id.clone() };
                 let winding_down = self.tasks.get(task_id).is_some_and(|t| Self::winding_down(t) && t.agent_id.as_ref() == Some(agent_id));
@@ -3168,6 +3202,11 @@ impl DomainState {
                 }
                 validate_answer(options, option_id, inputs, attachments)?;
                 validate_attachments(attachments)?;
+                if let (Some(Hold::Plan), Scope::Task { task_id }) = (self.holds.get(interaction_id), &i.scope)
+                    && option_id == Hold::APPROVE
+                {
+                    self.plan_waits(task_id)?;
+                }
                 let a = Answer {
                     attachments: attachments.clone(),
                     option_id: option_id.clone(),

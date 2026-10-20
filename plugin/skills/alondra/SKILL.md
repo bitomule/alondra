@@ -303,6 +303,10 @@ never ask the user to tell you, with a card or a `request_action` ("tell me when
 If the orchestrator answers that you should go on without it, go on. A wait only holds back your
 work: it never holds back the merge of a PR you already presented.
 
+While your task waits, Alondra turns down a plan you present and the user cannot approve one. If
+you see the wait is no longer needed (the PR you waited for is on the default branch), `ask` the
+orchestrator to remove it, naming that fact; present the plan once your task is running again.
+
 ## Messages you receive
 
 Every message typed into this session starts with who sent it and when: `[From David · 14:32]`,
