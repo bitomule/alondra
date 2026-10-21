@@ -49,7 +49,7 @@ def run(*args):
         log = directory / "failure.log"
         # security cms stdout can contain a complete profile; never log it.
         text = result.stderr.decode(errors="replace")
-        if Path(str(args[0])).name in {"bazelisk", "codesign", "productbuild", "pkgutil", "xcrun"}:
+        if Path(str(args[0])).name in {"bazelisk", "codesign", "productbuild", "pkgutil", "xcrun", "lsbom"}:
             text += result.stdout.decode(errors="replace")
         text = re.sub(r"(?im)^.*(?:authorization|bearer |password|token|secret|api.?key|remote_header).*$", "[redacted]", text)
         with log.open("x") as stream:
@@ -160,6 +160,50 @@ def verify_pkg_leaf(toc, fingerprint):
     require(hashlib.sha1(leaf).hexdigest().upper() == fingerprint, "Actual Installer leaf differs from requested identity")
 
 
+def normalize_bundle(bundle):
+    """Make the unpacked app readable by everyone and free of extended attributes.
+
+    Mode bits and extended attributes are outside the code signature, so this does not invalidate it."""
+    run("xattr", "-cr", bundle)
+    for directory, directories, files in os.walk(bundle):
+        for name in directories:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                os.chmod(path, 0o755)
+        for name in files:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                os.chmod(path, 0o755 if path.stat().st_mode & 0o111 else 0o644)
+    os.chmod(bundle, 0o755)
+
+
+def bom_problems(listing):
+    problems = []
+    for line in listing.splitlines():
+        path, _, mode = line.rpartition("\t")
+        mode = mode.strip()
+        if PurePosixPath(path).name.startswith("._"):
+            problems.append("AppleDouble entry: " + path)
+        elif len(mode) == 10 and (mode[7] != "r" or (mode[0] == "d" and mode[9] != "x")):
+            problems.append(mode + " " + path)
+    return problems
+
+
+def pkg_problems(pkg):
+    with tempfile.TemporaryDirectory(prefix="alondra-pkg-bom-") as directory:
+        expanded = Path(directory) / "expanded"
+        run("pkgutil", "--expand", pkg, expanded)
+        boms = sorted(expanded.rglob("Bom"))
+        require(boms, "Installer package has no Bom")
+        return [problem for bom in boms for problem in bom_problems(run("lsbom", "-p", "fM", bom).decode())]
+
+
+def verify_pkg_contents(pkg):
+    """Refuse the package App Store Connect rejects: ITMS-90255 (root-only entries) and AppleDouble files."""
+    problems = pkg_problems(pkg)
+    require(not problems, "Installer package would be rejected by App Store Connect: " + "; ".join(problems[:5]))
+
+
 def snapshot_archive(source, directory, destination):
     # Bazel outputs may be replaced by another invocation. All subsequent reads,
     # validation and packaging must use this independent private copy.
@@ -251,6 +295,7 @@ def main():
     parser.add_argument("--bazel-output-base", type=Path, help="Reuse the coordinated local Bazel output base")
     parser.add_argument("--preflight-only", action="store_true", help="Validate existing local signing inputs without building")
     args = parser.parse_args()
+    os.umask(0o022)
     os.chdir(ROOT)
     args.version, args.build_number = read_versions()
     args.identity = (args.identity or default_identity()).upper()
@@ -301,7 +346,9 @@ def main():
         snapshot, app = snapshot_archive(source, private, args.destination)
         unpacked = private / "unpacked"
         unpacked.mkdir(mode=0o700)
-        run("ditto", "-x", "-k", snapshot, unpacked)
+        run("ditto", "-x", "-k", "--norsrc", "--noextattr", snapshot, unpacked)
+        if args.destination == "macos":
+            normalize_bundle(unpacked / app)
         verify_bundle(unpacked / app, IOS if args.destination == "ios" else MAC, args.destination,
                       args.version, args.build_number, args.identity, profiles[IOS if args.destination == "ios" else MAC])
         if args.destination == "ios":
@@ -314,6 +361,7 @@ def main():
             # Recheck the exact valid identity immediately before signing.
             local_identity(args.installer_identity.upper(), installer=True)
             run("productbuild", "--component", unpacked / app, "/Applications", "--sign", installer, artifact)
+            verify_pkg_contents(artifact)
             verify_pkg_trust(run("pkgutil", "--check-signature", artifact))
             verify_pkg_leaf(run("xar", "--dump-toc=-", "-f", artifact), args.installer_identity.upper())
     manifest = {"source": source_commit,

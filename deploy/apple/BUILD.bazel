@@ -2,6 +2,7 @@ sh_test(
     name = "prepare_test",
     srcs = ["test_prepare.py"],
     data = ["prepare.py", "//tools:shared.bzl"],
+    env_inherit = ["PATH"],
 )
 
 sh_test(
