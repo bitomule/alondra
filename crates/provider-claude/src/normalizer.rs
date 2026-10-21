@@ -39,9 +39,10 @@ struct Checkpoint {
     /// The decisions Claude asked for and still waits on: the request id of each, by epoch.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     asked: BTreeMap<u64, String>,
-    /// The Agent calls with an isolated worktree whose result is still to come, by tool use id.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    isolated: BTreeSet<String>,
+    /// The Agent calls with an isolated worktree whose result is still to come, by tool use id,
+    /// oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    isolated: Vec<String>,
     /// Work that ended after its turn, oldest first: its notification wakes a root turn of
     /// Claude's own, whose result names the run it took up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -220,10 +221,7 @@ fn fold(
 ) -> Result<Vec<Observation>, AdapterError> {
     match &event.observation {
         WireObservation::DecisionRequested { request_id, tool_use_id, kind, payload } => {
-            if !state.initialized
-                || state.asked.len() >= MAX_ASKED
-                || state.asked.values().any(|open| *open == request_id.0)
-            {
+            if state.asked.len() >= MAX_ASKED || state.asked.values().any(|open| *open == request_id.0) {
                 return Err(AdapterError::InvalidObservation);
             }
             state.asked.insert(event.cursor, request_id.0.clone());
@@ -302,21 +300,30 @@ fn fold(
         // The host's own report, such as a request too large to ask: evidence, no fact.
         return Ok(Vec::new());
     }
-    if payload.get("session_id").and_then(Value::as_str) != Some(session.session_id.as_str()) {
-        return Err(AdapterError::InvalidObservation);
+    let native_session = payload.get("session_id").and_then(Value::as_str);
+    if native_session != Some(session.session_id.as_str()) {
+        eprintln!(
+            "alondrad: an SDK message of Claude session {} is kept as evidence only; this host runs session {}",
+            native_session.map_or("(none)".into(), |id| id.chars().take(64).collect::<String>()),
+            session.session_id
+        );
+        return Ok(Vec::new());
     }
     let kind = string(payload, "type")?;
     let mut facts = Vec::new();
     if kind == "command_lifecycle" {
-        // The native Claude's trace of one of our inputs, even before init: evidence, no fact.
-        lookup(&[native_uuid(payload, "command_uuid")?])?;
+        // The native Claude's trace of an input, ours or its own, even before init: evidence, no fact.
         return Ok(facts);
     }
     if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("init") {
         if state.initialized {
-            // The native Claude repeats init as each new prompt starts; never inside a turn.
-            if state.turn.is_some() {
-                return Err(AdapterError::InvalidObservation);
+            // The native Claude opens each prompt with init: a turn still open ended without a
+            // result to read.
+            if let Some(turn) = state.turn.take() {
+                facts.push(Observation::TurnEnded {
+                    turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
+                    failure: turn.error.map(|error| ApiFailure { error, status: None, resets_at: turn.resets_at }),
+                });
             }
         } else {
             state.initialized = true;
@@ -335,7 +342,15 @@ fn fold(
         return Ok(facts);
     }
     if !state.initialized {
-        return Err(AdapterError::InvalidObservation);
+        // Only an input of ours consumed proves Claude is up; anything else before init is evidence.
+        let consumes = matches!(kind, "assistant" | "result")
+            && payload.get("user_message_uuids").is_some()
+            && payload.get("parent_tool_use_id").is_none_or(Value::is_null);
+        if !consumes {
+            return Ok(facts);
+        }
+        state.initialized = true;
+        facts.push(Observation::Available);
     }
     if kind == "system" {
         match payload.get("subtype").and_then(Value::as_str) {
@@ -409,12 +424,12 @@ fn fold(
         return Ok(facts);
     }
     if kind == "assistant" {
-        note_isolated_agents(payload, state)?;
+        note_isolated_agents(payload, state);
         note_mcp_calls(payload, state);
     }
     if kind == "user" {
         let failed = mcp_call_failed(payload, state);
-        let mut facts = worktree_facts(payload, state)?;
+        let mut facts = worktree_facts(payload, state);
         if failed {
             facts.push(Observation::McpToolFailed);
         }
@@ -427,9 +442,6 @@ fn fold(
         .get("parent_tool_use_id")
         .is_some_and(|value| !value.is_null())
     {
-        if payload.get("user_message_uuids").is_some() {
-            return Err(AdapterError::InvalidObservation);
-        }
         return Ok(facts);
     }
     if kind == "stream_event" {
@@ -458,7 +470,7 @@ fn fold(
     let mut consumed = Vec::new();
     if let Some(list) = payload.get("user_message_uuids") {
         let list = list.as_array().ok_or(AdapterError::InvalidObservation)?;
-        if list.is_empty() || list.len() > 64 {
+        if list.is_empty() {
             return Err(AdapterError::InvalidObservation);
         }
         let mut unique = BTreeSet::new();
@@ -500,16 +512,13 @@ fn fold(
                 facts.push(Observation::InputConsumed { input });
             }
         }
-        if turn.consumed.len() > 64 {
-            return Err(AdapterError::InvalidObservation);
-        }
     }
     if kind == "assistant" {
         if let Some(turn) = state.turn.as_mut() {
             match payload.get("error") {
                 // The synthetic message Claude Code ends a turn with once a Claude API error
                 // outlasted its own retries.
-                Some(error) => turn.error = Some(error_code(error)?),
+                Some(error) => turn.error = Some(error_code(error)),
                 None if !turn.answered && turn.error.is_none() => {
                     turn.answered = true;
                     facts.push(Observation::ModelAnswered);
@@ -542,15 +551,10 @@ fn fold(
         let failure = match &turn.error {
             Some(error) => Some(ApiFailure {
                 error: error.clone(),
-                status: match payload.get("api_error_status") {
-                    None | Some(Value::Null) => None,
-                    Some(status) => Some(
-                        status
-                            .as_u64()
-                            .and_then(|status| u16::try_from(status).ok())
-                            .ok_or(AdapterError::InvalidObservation)?,
-                    ),
-                },
+                status: payload
+                    .get("api_error_status")
+                    .and_then(Value::as_u64)
+                    .and_then(|status| u16::try_from(status).ok()),
                 resets_at: turn.resets_at,
             }),
             None => None,
@@ -626,61 +630,65 @@ fn mcp_call_failed(payload: &Value, state: &mut Checkpoint) -> bool {
 }
 /// Most Agent calls with an isolated worktree that can wait on their result at once.
 const MAX_ISOLATED: usize = 64;
-/// Remembers each Agent call, of the node or of a subagent, that asks for an isolated worktree.
-fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) -> Result<(), AdapterError> {
-    let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return Ok(()) };
+/// Remembers each Agent call, of the node or of a subagent, that asks for an isolated worktree;
+/// past the limit, the oldest is forgotten.
+fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) {
+    let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return };
     for block in content {
         let is_agent = block.get("type").and_then(Value::as_str) == Some("tool_use")
             && matches!(block.get("name").and_then(Value::as_str), Some("Agent" | "Task"));
-        if is_agent && block.pointer("/input/isolation").and_then(Value::as_str) == Some("worktree") {
-            let id = block.get("id").and_then(Value::as_str).ok_or(AdapterError::InvalidObservation)?;
-            if state.isolated.len() >= MAX_ISOLATED {
-                return Err(AdapterError::InvalidObservation);
-            }
-            state.isolated.insert(id.to_owned());
+        if !is_agent || block.pointer("/input/isolation").and_then(Value::as_str) != Some("worktree") {
+            continue;
         }
+        let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| id.len() <= 256) else { continue };
+        if state.isolated.iter().any(|open| open == id) {
+            continue;
+        }
+        if state.isolated.len() >= MAX_ISOLATED {
+            state.isolated.remove(0);
+        }
+        state.isolated.push(id.to_owned());
     }
-    Ok(())
 }
 /// What a tool result says about a worktree: EnterWorktree's and a kept isolated subagent's
 /// `worktreePath`, or the id of an isolated subagent that went on in the background, whose
 /// worktree outlives this result. ExitWorktree's result says nothing settled: its `remove` can
 /// keep the worktree, so only the disk tells whether it is gone.
-fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Result<Vec<Observation>, AdapterError> {
+fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
     let mut facts = Vec::new();
-    let Some(result) = payload.get("tool_use_result").filter(|result| result.is_object()) else { return Ok(facts) };
+    let Some(result) = payload.get("tool_use_result").filter(|result| result.is_object()) else { return facts };
     let ids: Vec<&str> = payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten()
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
         .collect();
-    let isolated = ids.iter().any(|id| state.isolated.remove(*id));
+    let before = state.isolated.len();
+    state.isolated.retain(|open| !ids.contains(&open.as_str()));
+    let isolated = state.isolated.len() != before;
     if let Some(path) = result.get("worktreePath").and_then(Value::as_str).filter(|_| result.get("action").is_none()) {
-        if !path.starts_with('/') || path.len() > 4096 {
-            return Err(AdapterError::InvalidObservation);
+        if path.starts_with('/') && path.len() <= 4096 {
+            facts.push(Observation::WorktreeMade {
+                path: path.to_owned(),
+                branch: optional_string(result, "worktreeBranch").ok().flatten(),
+                subagent: result.get("agentId").is_some(),
+            });
         }
-        facts.push(Observation::WorktreeMade {
-            path: path.to_owned(),
-            branch: optional_string(result, "worktreeBranch")?,
-            subagent: result.get("agentId").is_some(),
-        });
     } else if isolated && result.get("status").and_then(Value::as_str) == Some("async_launched") {
-        let agent = string(result, "agentId")?;
-        if !(agent.len() == 17 || agent.len() == 8) || !agent.starts_with('a') || !agent[1..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-            return Err(AdapterError::InvalidObservation);
+        let agent = result.get("agentId").and_then(Value::as_str).filter(|agent| {
+            (1..=64).contains(&agent.len()) && agent.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        });
+        if let Some(agent) = agent {
+            facts.push(Observation::SubagentWorktree { agent: agent.to_owned() });
         }
-        facts.push(Observation::SubagentWorktree { agent: agent.to_owned() });
     }
-    Ok(facts)
+    facts
 }
-fn error_code(value: &Value) -> Result<String, AdapterError> {
-    let code = value.as_str().ok_or(AdapterError::InvalidObservation)?;
-    if code.is_empty()
-        || code.len() > 64
-        || !code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-    {
-        return Err(AdapterError::InvalidObservation);
-    }
-    Ok(code.to_owned())
+/// The API error Claude Code names; one this release cannot keep is `unknown`.
+fn error_code(value: &Value) -> String {
+    value
+        .as_str()
+        .filter(|code| !code.is_empty() && code.len() <= 64 && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .unwrap_or("unknown")
+        .to_owned()
 }
 fn native_uuid(payload: &Value, key: &str) -> Result<MessageUuid, AdapterError> {
     MessageUuid::new(string(payload, key)?).map_err(|_| AdapterError::InvalidObservation)
@@ -765,21 +773,65 @@ mod tests {
             .collect())
     }
     // What the native Claude 2.1.300 sends around each prompt: its lifecycle, from before init,
-    // and init again as the next prompt starts. Evidence of our own inputs, with no fact.
+    // and init again as the next prompt starts. Evidence of the inputs, ours or not, with no fact.
     #[test]
     fn the_native_prompt_lifecycle_and_a_repeated_init_between_turns_record_nothing() {
         let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         let queued = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"queued","uuid":REPLY}));
         assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![]);
-        let foreign = |_: &[MessageUuid]| Err(AdapterError::InvalidObservation);
-        assert!(matches!(fold(&queued, &session(), &mut state, foreign), Err(AdapterError::InvalidObservation)), "only an input of ours");
+        let foreign = |_: &[MessageUuid]| -> Result<Vec<InputId>, AdapterError> { panic!("a lifecycle needs no input of ours") };
+        let native = event(json!({"type":"command_lifecycle","command_uuid":"cli-own-command","state":"completed","uuid":REPLY}));
+        assert_eq!(fold(&native, &session(), &mut state, foreign).unwrap(), vec![], "Claude's own command is evidence");
         let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available]);
         let again = fold(&init, &session(), &mut state, input);
         assert!(matches!(&again, Ok(facts) if facts.is_empty()), "init again between turns records nothing: {again:?}");
+    }
+    // init marks the start of each turn: a turn still open when it comes ended without a
+    // result to read.
+    #[test]
+    fn an_init_inside_an_open_turn_ends_that_turn_and_goes_on() {
+        let mut state = state();
         let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
         fold(&assistant, &session(), &mut state, input).unwrap();
-        assert!(matches!(fold(&init, &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "never inside a turn");
+        let init = event(json!({"type":"system","subtype":"init","uuid":SECOND,"mcp_servers":[]}));
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![
+            Observation::TurnEnded { turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(), failure: None },
+            Observation::McpServers { servers: vec![] },
+        ]);
+        assert!(state.turn.is_none());
+        let next = event(json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null,"user_message_uuid":SECOND,"user_message_uuids":[SECOND]}));
+        assert!(matches!(fold(&next, &session(), &mut state, input).unwrap().first(), Some(Observation::TurnStarted { .. })), "the next prompt opens its own turn");
+
+        let mut state = self::state();
+        let failed = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"server_error"}));
+        fold(&failed, &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap()[0], Observation::TurnEnded {
+            turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
+            failure: Some(ApiFailure { error: "server_error".into(), status: None, resets_at: None }),
+        });
+    }
+    // Before init only the consumption of an input of ours proves Claude is up; every other
+    // message is evidence, and a decision Claude asks for is asked.
+    #[test]
+    fn before_init_an_input_consumed_makes_claude_available_and_the_rest_is_evidence() {
+        let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        for payload in [
+            json!({"type":"system","subtype":"session_title_changed","title":"Fix","uuid":REPLY}),
+            json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}),
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null}),
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":"toolu_1","user_message_uuid":FIRST,"user_message_uuids":[FIRST]}),
+        ] {
+            assert_eq!(fold(&event(payload.clone()), &session(), &mut state, input).unwrap(), vec![], "{payload}");
+        }
+        assert!(!state.initialized);
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        assert_eq!(fold(&assistant, &session(), &mut state, input).unwrap(), vec![
+            Observation::Available,
+            Observation::TurnStarted { input: InputId::new(FIRST).unwrap(), turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap() },
+            Observation::ModelAnswered,
+        ]);
+        assert!(state.initialized);
     }
     fn tool_result(id: &str, result: Value) -> Event {
         event(json!({"type":"user","uuid":NOTIFIED,"parent_tool_use_id":null,
@@ -826,7 +878,35 @@ mod tests {
         let exited = tool_result("toolu_exit", json!({"action":"remove","worktreePath":"/repo/.claude/worktrees/spike","worktreeBranch":"worktree-spike","message":"Exited worktree but could not remove it"}));
         assert_eq!(fold(&exited, &session(), &mut state, input).unwrap(), vec![]);
         let relative = tool_result("toolu_enter_2", json!({"worktreePath":"spike","message":"Created"}));
-        assert!(matches!(fold(&relative, &session(), &mut state, input), Err(AdapterError::InvalidObservation)));
+        assert_eq!(fold(&relative, &session(), &mut state, input).unwrap(), vec![], "a path Alondra cannot place is evidence");
+    }
+    // An agent id of another shape names its worktree the same way: only one Alondra could not
+    // place in a path loses its fact.
+    #[test]
+    fn a_subagent_id_of_any_path_safe_shape_names_its_worktree() {
+        for (agent, kept) in [("agent_7-Fix", true), (&*"a".repeat(64), true), ("../escape", false), ("", false), (&*"a".repeat(65), false)] {
+            let mut state = state();
+            fold(&agent_call("toolu_bg", Some("worktree")), &session(), &mut state, input).unwrap();
+            let launched = tool_result("toolu_bg", json!({"status":"async_launched","agentId":agent,"outputFile":"/tmp/out"}));
+            let facts = fold(&launched, &session(), &mut state, input).unwrap();
+            assert_eq!(facts, if kept { vec![Observation::SubagentWorktree { agent: agent.into() }] } else { vec![] }, "{agent}");
+            assert!(state.isolated.is_empty(), "the call is settled either way");
+        }
+    }
+    // Past 64 isolated Agent calls waiting on their result, the oldest is forgotten and the
+    // message keeps its facts.
+    #[test]
+    fn past_the_isolated_agent_limit_the_oldest_call_is_forgotten() {
+        let mut state = state();
+        for n in 0..=MAX_ISOLATED {
+            assert_eq!(fold(&agent_call(&format!("toolu_{n}"), Some("worktree")), &session(), &mut state, input).unwrap(), vec![]);
+        }
+        assert_eq!(state.isolated.len(), MAX_ISOLATED);
+        assert_eq!(state.isolated.first().map(String::as_str), Some("toolu_1"));
+        let forgotten = tool_result("toolu_0", json!({"status":"async_launched","agentId":"a0000000000000000","outputFile":"/tmp/out"}));
+        assert_eq!(fold(&forgotten, &session(), &mut state, input).unwrap(), vec![]);
+        let last = tool_result(&format!("toolu_{MAX_ISOLATED}"), json!({"status":"async_launched","agentId":"a0000000000000064","outputFile":"/tmp/out"}));
+        assert_eq!(fold(&last, &session(), &mut state, input).unwrap(), vec![Observation::SubagentWorktree { agent: "a0000000000000064".into() }]);
     }
     // A tool result the host had to shrink to frame it keeps the fields the normalizer reads, and
     // says so: its facts are those of the whole message.
@@ -1171,8 +1251,12 @@ mod tests {
         assert!(matches!(fold(&settled(5, "decision-1", 4, DecisionOutcome::Answered), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "an epoch nobody asked at");
         assert!(matches!(fold(&settled(5, "decision-9", 3, DecisionOutcome::Answered), &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "another request at that epoch");
         assert_eq!(state.asked, BTreeMap::from([(3, "decision-1".to_owned())]));
+    }
+    #[test]
+    fn a_decision_claude_asks_for_before_init_is_asked() {
         let mut fresh = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
-        assert!(matches!(fold(&requested(1, "decision-1"), &session(), &mut fresh, input), Err(AdapterError::InvalidObservation)), "nothing is asked before Claude is up");
+        assert!(matches!(fold(&requested(1, "decision-1"), &session(), &mut fresh, input).unwrap().as_slice(), [Observation::Asked { epoch: 1, .. }]));
+        assert_eq!(fresh.asked, BTreeMap::from([(1, "decision-1".to_owned())]));
     }
     #[test]
     fn provider_owned_retry_and_allowed_rate_limit_do_not_end_business_execution() {
@@ -1252,10 +1336,42 @@ mod tests {
         let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available]);
     }
+    // An error code or status of a shape Alondra does not know still ends the turn as failed.
     #[test]
-    fn an_error_code_outside_claude_codes_grammar_is_refused() {
-        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"Not Logged In"}));
-        assert!(matches!(fold(&assistant, &session(), &mut state(), input), Err(AdapterError::InvalidObservation)));
+    fn an_error_code_or_status_alondra_cannot_read_still_fails_the_turn() {
+        let facts = turn_end(&mut state(), vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"Not Logged In"}),
+            json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":"401","user_message_uuid":FIRST}),
+        ]);
+        assert_eq!(failure(&facts), Some(ApiFailure { error: "unknown".into(), status: None, resets_at: None }));
+    }
+    // A subagent's message that names inputs is evidence: only root messages consume ours.
+    #[test]
+    fn a_subagent_message_naming_inputs_is_evidence() {
+        let mut state = state();
+        let subagent = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":"toolu_1","user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        assert_eq!(fold(&subagent, &session(), &mut state, |_| panic!("a subagent consumes no input of ours")).unwrap(), vec![]);
+        assert!(state.turn.is_none());
+    }
+    // More than 64 inputs of ours consumed in one turn are each consumed.
+    #[test]
+    fn more_than_sixty_four_inputs_consumed_are_each_recorded() {
+        let ids: Vec<String> = (0..80).map(|n| format!("20000000-0000-4000-8000-{n:012}")).collect();
+        let mut state = state();
+        let first = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":ids[0],"user_message_uuids":ids[..70]}));
+        let facts = fold(&first, &session(), &mut state, input).unwrap();
+        assert_eq!(facts.iter().filter(|fact| matches!(fact, Observation::InputConsumed { .. })).count(), 69, "the first starts the turn");
+        let rest = event(json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null,"user_message_uuid":ids[70],"user_message_uuids":ids[60..]}));
+        let facts = fold(&rest, &session(), &mut state, input).unwrap();
+        assert_eq!(facts.iter().filter(|fact| matches!(fact, Observation::InputConsumed { .. })).count(), 10);
+        assert_eq!(state.turn.as_ref().map(|turn| turn.consumed.len()), Some(80));
+    }
+    // Corruption is still refused: an input of ours the store cannot map back.
+    #[test]
+    fn an_input_of_ours_mapped_wrong_is_still_refused() {
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        let unmapped = |_: &[MessageUuid]| Err(AdapterError::InvalidObservation);
+        assert!(matches!(fold(&assistant, &session(), &mut state(), unmapped), Err(AdapterError::InvalidObservation)));
     }
 }
 #[cfg(test)]
@@ -1350,29 +1466,19 @@ mod diagnostic_tests {
             "opaque SDK source must not become host diagnostic authority"
         );
     }
+    // A message of another Claude session, with or without a stderr source, is evidence: it
+    // neither consumes an input of ours nor changes the turn.
     #[test]
-    fn opaque_stderr_source_cannot_bypass_sdk_session_identity() {
+    fn a_message_of_another_session_is_evidence_even_with_a_stderr_source() {
         let mut payload = assistant();
         payload["session_id"] = json!("wrong-session");
-        assert!(matches!(
-            fold(
-                &event(SdkEventKind::Message, payload.clone()),
-                &session(),
-                &mut state(),
-                input
-            ),
-            Err(AdapterError::InvalidObservation)
-        ));
-        payload["source"] = json!("stderr");
-        assert!(matches!(
-            fold(
-                &event(SdkEventKind::Message, payload),
-                &session(),
-                &mut state(),
-                input
-            ),
-            Err(AdapterError::InvalidObservation)
-        ));
+        for payload in [payload.clone(), { payload["source"] = json!("stderr"); payload }] {
+            let mut state = state();
+            let before = serde_json::to_value(&state).unwrap();
+            let facts = fold(&event(SdkEventKind::Message, payload), &session(), &mut state, |_| panic!("another session consumes no input of ours"));
+            assert_eq!(facts.unwrap(), vec![]);
+            assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        }
     }
 
     // The host denies Claude a request too large to ask and reports it: evidence, no fact, even
