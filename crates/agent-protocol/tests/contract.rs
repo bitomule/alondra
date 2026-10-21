@@ -576,7 +576,7 @@ fn every_inspected_sdk_error_code_and_opaque_details_are_preserved() {
         FailureSurface::Iterator,
         FailureSurface::Transport,
     ];
-    let expected_counts = [13, 19, 5, 19, 5, 3, 3, 2, 1, 1, 3, 2, 2];
+    let expected_counts = [13, 19, 5, 19, 5, 3, 3, 2, 1, 1, 3, 2, 4];
     for (surface, expected_count) in surfaces.into_iter().zip(expected_counts) {
         assert_eq!(known_codes(surface).len(), expected_count);
         for code in known_codes(surface) {

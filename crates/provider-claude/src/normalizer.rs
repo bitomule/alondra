@@ -280,6 +280,10 @@ fn fold(
         }
         return Ok(Vec::new());
     }
+    if *kind == SdkEventKind::Diagnostic && payload.get("session_id").is_none() {
+        // The host's own report, such as a request too large to ask: evidence, no fact.
+        return Ok(Vec::new());
+    }
     if payload.get("session_id").and_then(Value::as_str) != Some(session.session_id.as_str()) {
         return Err(AdapterError::InvalidObservation);
     }
@@ -737,6 +741,23 @@ mod tests {
         assert_eq!(fold(&exited, &session(), &mut state, input).unwrap(), vec![]);
         let relative = tool_result("toolu_enter_2", json!({"worktreePath":"spike","message":"Created"}));
         assert!(matches!(fold(&relative, &session(), &mut state, input), Err(AdapterError::InvalidObservation)));
+    }
+    // A tool result the host had to shrink to frame it keeps the fields the normalizer reads, and
+    // says so: its facts are those of the whole message.
+    #[test]
+    fn a_truncated_tool_result_keeps_its_facts() {
+        use alondra_agent_protocol::{FailureSurface, SdkFailure};
+        let mut state = state();
+        fold(&agent_call("toolu_kept", Some("worktree")), &session(), &mut state, input).unwrap();
+        let mut truncated = tool_result("toolu_kept", json!({"status":"completed","agentId":"a9e1782746c156d58",
+            "worktreePath":"/repo/.claude/worktrees/agent-a9e1782746c156d58","worktreeBranch":"worktree-agent-a9e1782746c156d58","content":null}));
+        let WireObservation::Sdk { failures, .. } = &mut truncated.observation else { unreachable!() };
+        failures.push(SdkFailure { surface: FailureSurface::Transport, code: "truncated_sdk_message".into(),
+            details: json!({"bytes":5_242_880,"sha256":"0".repeat(64),"reason":"size"}) });
+        truncated.validate_for_application().unwrap();
+        assert_eq!(fold(&truncated, &session(), &mut state, input).unwrap(), vec![Observation::WorktreeMade {
+            path: "/repo/.claude/worktrees/agent-a9e1782746c156d58".into(), branch: Some("worktree-agent-a9e1782746c156d58".into()), subagent: true,
+        }]);
     }
     #[test]
     fn result_only_plural_preserves_consumption_and_pending_terminal_boundary() {
@@ -1212,6 +1233,23 @@ mod diagnostic_tests {
         ));
     }
 
+    // The host denies Claude a request too large to ask and reports it: evidence, no fact, even
+    // with a turn open.
+    #[test]
+    fn a_decision_too_large_to_ask_is_evidence_without_facts() {
+        use alondra_agent_protocol::{FailureSurface, SdkFailure};
+        let details = json!({"request_id":"decision-1","kind":"permission","bytes":2_097_152,"sha256":"0".repeat(64),"reason":"size"});
+        let mut diagnostic = event(SdkEventKind::Diagnostic, details.clone());
+        let WireObservation::Sdk { failures, .. } = &mut diagnostic.observation else { unreachable!() };
+        failures.push(SdkFailure { surface: FailureSurface::Transport, code: "decision_too_large".into(), details });
+        diagnostic.validate_for_application().unwrap();
+        let mut state = state();
+        fold(&event(SdkEventKind::Message, assistant()), &session(), &mut state, input).unwrap();
+        let before = serde_json::to_value(&state).unwrap();
+        assert_eq!(fold(&diagnostic, &session(), &mut state, |_| panic!("a diagnostic consumes no input")).unwrap(), vec![]);
+        assert_eq!(serde_json::to_value(&state).unwrap(), before, "the turn stays as it was");
+        assert!(!ended_with_its_host(&diagnostic.observation), "the host goes on");
+    }
     #[test]
     fn only_the_exit_and_the_iterator_end_are_what_a_host_leaves_as_it_ends() {
         use alondra_agent_protocol::{FailureSurface, SdkFailure};

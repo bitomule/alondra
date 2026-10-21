@@ -576,7 +576,12 @@ pub fn known_codes(surface: FailureSurface) -> &'static [&'static str] {
         FailureSurface::Auth => &["auth_status_error"],
         FailureSurface::Control => &["control_rejected", "callback_error", "aborted"],
         FailureSurface::Iterator => &["iterator_error", "eof_without_result"],
-        FailureSurface::Transport => &["malformed_sdk_message", "unknown_sdk_message"],
+        FailureSurface::Transport => &[
+            "malformed_sdk_message",
+            "unknown_sdk_message",
+            "truncated_sdk_message",
+            "decision_too_large",
+        ],
     }
 }
 

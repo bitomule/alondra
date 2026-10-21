@@ -150,6 +150,8 @@ def decide(message, scenario, argument):
     model_input = None
     if scenario == 'bash':
         tool, tool_input, extra = 'Bash', dict(command=argument or 'echo fixture'), {}
+    elif scenario == 'huge-bash':
+        tool, tool_input, extra = 'Bash', dict(command='echo ' + 'x' * (2 * 1024 * 1024)), {}
     elif scenario in ('question', 'questions'):
         tool, tool_input, extra = 'AskUserQuestion', dict(questions=[QUESTION, SECOND_QUESTION] if scenario == 'questions' else [QUESTION]), {}
     elif scenario in ('plan', 'unwritten-plan'):
@@ -286,6 +288,14 @@ for raw in sys.stdin:
             # A long turn whose answers are close to the largest event the host keeps.
             for _ in range(int(text[len('bulky:'):])):
                 consume(message, dict(type='text', text='x' * 900_000))
+            result(message)
+        elif text == 'huge-tool-result':
+            consume(message, dict(type='tool_use', id='toolu_fixture_huge', name='Bash', input=dict(command='cat huge.log')))
+            output = 'x' * (5 * 1024 * 1024)
+            serial += 1
+            send(dict(type='user', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
+                      message=dict(role='user', content=[dict(type='tool_result', tool_use_id='toolu_fixture_huge', content=output)]),
+                      tool_use_result=dict(stdout=output, stderr='', interrupted=False)))
             result(message)
         elif text.startswith('[From ') and len(pending) > 1:
             # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is

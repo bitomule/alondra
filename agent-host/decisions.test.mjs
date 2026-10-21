@@ -82,6 +82,16 @@ try {
     await owner.finished(single.input);
     assert.deepEqual(answered(host).at(-1).response, { behavior: 'deny', message: 'The user denied it', toolUseID: single.identity.tool_use_id });
 
+    const requestedBefore = owner.frames.filter((frame) => frame.body.type === 'event' && frame.body.observation.type === 'decision_requested').length;
+    const huge = await owner.prompt('decide:huge-bash');
+    await owner.finished(huge);
+    assert.deepEqual(answered(host).at(-1).response, { behavior: 'deny', message: 'The request is too large for Alondra to show; split it into smaller steps', toolUseID: answered(host).at(-1).tool_use_id },
+      'a request too large to ask is denied to Claude, never allowed or shrunk');
+    assert.equal(owner.frames.filter((frame) => frame.body.type === 'event' && frame.body.observation.type === 'decision_requested').length, requestedBefore, 'and never asked');
+    const tooLarge = (await owner.sdk('diagnostic', (payload) => payload.kind === 'permission' && payload.reason === 'size')).body.observation;
+    assert.deepEqual(tooLarge.failures.map((failure) => [failure.surface, failure.code]), [['transport', 'decision_too_large']]);
+    assert(tooLarge.payload.bytes > 2 * 1024 * 1024 && /^[a-f0-9]{64}$/.test(tooLarge.payload.sha256), host.stderr());
+
     const plan = await owner.ask('decide:plan');
     assert.equal(plan.identity.kind, 'plan');
     assert.match(plan.payload.input.plan, /- \[ \] Change the fixture/);

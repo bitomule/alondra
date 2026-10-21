@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
-import { commandDigest, executionSegments, MAX_MCP_SERVERS, PROTOCOL_VERSION, type Action, type ControlResult, type Frame } from './frame.js';
+import { commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, PROTOCOL_VERSION, type Action, type ControlResult, type Frame } from './frame.js';
 import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
@@ -241,7 +241,9 @@ export class PersistentHost {
   private observe(observation: Observation): number | undefined {
     try {
       const cursor = this.journal.cursor + 1;
-      this.persist({ protocol_version: PROTOCOL_VERSION, body: { type: 'event', fence: this.config.fence, execution: this.config.execution, cursor, observation } } as Frame);
+      const frame = (observation: Observation) => ({ protocol_version: PROTOCOL_VERSION, body: { type: 'event', fence: this.config.fence, execution: this.config.execution, cursor, observation } } as Frame);
+      if (observation.type === 'sdk') observation = fitObservation(observation, (candidate) => framingProblem(frame(candidate)));
+      this.persist(frame(observation));
       try { this.hooks.observation?.(observation); } catch { this.diagnostic('diagnostic_tap_failed'); }
       if (this.owner) this.flush(this.owner);
       return cursor;

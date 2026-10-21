@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES } from './frame.js';
+import { createHash } from 'node:crypto';
+import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES, fitObservation, fitValue, framingProblem } from './frame.js';
 process.env.HOME = process.env.TEST_TMPDIR;
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CLAUDE_HOME;
@@ -97,4 +98,54 @@ for (const code of catalog.SDKAssistantMessageError) assert(classify({ type: 'as
 for (const code of catalog.SDKStartupFailureReason) assert(classify({ type: 'result', subtype: 'error_during_execution', is_error: true, startup_failure_reason: code }).failures.some((f) => f.surface === 'startup' && f.code === code));
 for (const code of catalog.SDKResultErrorSubtype) assert(classify({ type: 'result', subtype: code, is_error: true }).failures.some((f) => f.surface === 'result' && f.code === code));
 for (const code of catalog.TerminalReason) assert(classify({ type: 'result', subtype: 'success', is_error: true, terminal_reason: code }).failures.some((f) => f.surface === 'terminal' && f.code === code));
+{
+  // An SDK message too large, too deep or with a lone surrogate is framed shrunk, with the fields
+  // the normalizer reads whole and the original's size and hash as evidence.
+  const envelope = JSON.parse(fixture('event'));
+  const framed = (observation) => ({ ...envelope, body: { ...envelope.body, observation } });
+  const fit = (payload) => {
+    const observation = classify(payload);
+    const fitted = fitObservation(observation, (candidate) => framingProblem(framed(candidate)));
+    assert.deepEqual(decode(encode(framed(fitted))).body.observation, fitted);
+    const json = Buffer.from(JSON.stringify(payload));
+    assert.deepEqual(fitted.failures.at(-1).details, { bytes: json.length, sha256: createHash('sha256').update(json).digest('hex'), reason: fitted.failures.at(-1).details.reason });
+    assert.equal(fitted.failures.at(-1).code, 'truncated_sdk_message');
+    return fitted;
+  };
+  const session_id = '6216f6b3-0e62-4fb4-a0a0-89e7cb252b30';
+  const toolResult = (content, extra = {}) => ({
+    type: 'user', uuid: '1c5eb967-209b-4b70-b922-11f6762206ee', session_id, parent_tool_use_id: null,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_large', content }] },
+    tool_use_result: { status: 'completed', agentId: 'a9e1782746c156d58', worktreePath: '/repo/.claude/worktrees/agent-a9e1782746c156d58', worktreeBranch: 'worktree-agent-a9e1782746c156d58', stdout: content },
+    ...extra,
+  });
+  const normalized = (payload) => (({ type, uuid, session_id, parent_tool_use_id, message, tool_use_result }) => ({ type, uuid, session_id, parent_tool_use_id, message: { content: message.content.map(({ type, tool_use_id }) => ({ type, tool_use_id })) }, tool_use_result: (({ status, agentId, worktreePath, worktreeBranch }) => ({ status, agentId, worktreePath, worktreeBranch }))(tool_use_result) }))(payload);
+
+  const large = toolResult('x'.repeat(3 * 1024 * 1024));
+  assert.equal(framingProblem(framed(classify(large))), 'size', 'today this stops the host');
+  const shrunk = fit(large);
+  assert.equal(shrunk.failures.at(-1).details.reason, 'size');
+  assert.deepEqual(normalized(shrunk.payload), normalized(large));
+  assert(shrunk.payload.message.content[0].content.startsWith('xxxx'), 'a prefix of the text stays');
+  assert.equal(shrunk.kind, 'message');
+
+  let deep = 'bottom';
+  for (let i = 0; i < 200; i += 1) deep = { deeper: deep };
+  const nested = fit(toolResult('fine', { extra: deep }));
+  assert.equal(nested.failures.at(-1).details.reason, 'depth');
+  assert.equal(nested.payload.message.content[0].content, 'fine', 'only what is too deep is cut');
+
+  const broken = fit(toolResult('half a pair \ud83d here'));
+  assert.equal(broken.failures.at(-1).details.reason, 'lone_surrogate');
+  assert.equal(broken.payload.message.content[0].content, 'half a pair \ufffd here');
+  assert.equal(broken.payload.tool_use_result.worktreePath, '/repo/.claude/worktrees/agent-a9e1782746c156d58');
+
+  const failed = fit({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id, uuid: '1c5eb967-209b-4b70-b922-11f6762206ee', user_message_uuid: '695832ec-2f8d-436b-862e-8effef5118f3', user_message_uuids: ['695832ec-2f8d-436b-862e-8effef5118f3'], result: 'y'.repeat(2 * 1024 * 1024) });
+  assert.deepEqual(failed.failures.map((failure) => [failure.surface, failure.code]), [['result', 'error_during_execution'], ['transport', 'truncated_sdk_message']], 'the result failure stays, its copy of the message is shrunk too');
+  assert.deepEqual([failed.payload.subtype, failed.payload.user_message_uuids], ['error_during_execution', ['695832ec-2f8d-436b-862e-8effef5118f3']]);
+
+  const plain = classify(toolResult('small'));
+  assert.equal(fitObservation(plain, (candidate) => framingProblem(framed(candidate))), plain, 'what fits is framed as it is');
+  assert(Buffer.byteLength(JSON.stringify(fitValue({ message: 'z'.repeat(100_000), unresolved_input_ids: [] }, 16_384))) <= 16_384);
+}
 console.log('Rust-shared frame bytes/digest and inspected SDK error catalog: pass');

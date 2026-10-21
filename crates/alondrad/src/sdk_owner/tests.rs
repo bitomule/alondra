@@ -447,6 +447,24 @@ fn carrying_on_from_a_client_commits_and_reaches_the_sdk() {
     driver.stop().unwrap();
 }
 
+// A tool result of 5 MiB, twice in its SDK message, is kept shrunk with the evidence of what it
+// was: its turn ends with its card and the user's answer reaches the same Claude.
+#[test]
+fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("huge-tool-result");
+    slice.settle(&mut driver);
+    assert_eq!(slice.observations_with("\"code\":\"truncated_sdk_message\""), 1, "the tool result is kept, shrunk");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its card");
+    carry_on(&slice.domain, "Summarize the log");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert!(prompts.len() == 2 && prompts[1].ends_with("Summarize the log"), "the next message reaches the same Claude: {prompts:?}");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 2);
+    driver.stop().unwrap();
+}
+
 // A message goes into the running turn when the provider can, and starts a turn when the
 // turn just closed. Here what someone tells the node while its turn runs reaches the same native
 // turn: the host takes it into its streaming input and Claude consumes it in that turn, which then

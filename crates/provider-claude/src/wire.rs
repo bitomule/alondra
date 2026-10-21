@@ -1,6 +1,6 @@
 use alondra_agent_protocol::{
     Attach, Body, Command, CommandRegistry, CommandStatus, Execution, Fence, Frame, FramedReader,
-    HostExpectation, MAX_FRAME_BYTES, ReceiptOutcome, ReceiptPhase, ReceivedFrame, SDK_VERSION,
+    HostExpectation, ReceiptOutcome, ReceiptPhase, ReceivedFrame, SDK_VERSION,
     encode, owner_proof, verify_host_proof,
 };
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
@@ -13,7 +13,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-const MAX_QUEUED_EVENTS: usize = 64;
+/// What the host may hold without acknowledgement: events that arrive while a command waits for its receipt.
+const MAX_QUEUED_EVENTS: usize = 16_384;
+const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
 
 /// Who may command an owned host: what its fence and execution name, and the owner's generation.
 /// The store's `OwnerGrant` owns a task's host; an orchestrator batch's claim owns its own.
@@ -347,16 +349,8 @@ impl Connection {
     }
     fn queue(&mut self, frame: ReceivedFrame) -> Result<(), AdapterError> {
         self.check_event(&frame)?;
-        let size = self
-            .queued_bytes
-            .checked_add(frame.payload().len())
-            .filter(|size| *size <= MAX_FRAME_BYTES)
-            .ok_or_else(|| invalid("host event byte capacity"))?;
-        if self.queued.len() >= MAX_QUEUED_EVENTS {
-            return Err(invalid("host event count capacity"));
-        }
+        self.queued_bytes = queued_size(self.queued.len(), self.queued_bytes, frame.payload().len())?;
         self.queued.push_back(frame);
-        self.queued_bytes = size;
         Ok(())
     }
     /// Only WorkerController invokes this after evidence, checkpoint and facts commit.
@@ -413,6 +407,16 @@ impl Connection {
         }
         Ok(())
     }
+}
+/// The queue's bytes once one more event of `size` joins its `count` events and `bytes`.
+fn queued_size(count: usize, bytes: usize, size: usize) -> Result<usize, AdapterError> {
+    if count >= MAX_QUEUED_EVENTS {
+        return Err(invalid("host event count capacity"));
+    }
+    bytes
+        .checked_add(size)
+        .filter(|size| *size <= MAX_QUEUED_BYTES)
+        .ok_or_else(|| invalid("host event byte capacity"))
 }
 struct LaneCursor {
     committed: u64,
@@ -556,6 +560,17 @@ mod tests {
         assert!(fresh.deliver(2).is_err());
         assert_eq!(fresh.delivered, None);
         fresh.deliver(1).unwrap();
+    }
+    // While a command waits for its receipt, two large tool results and many small events
+    // arriving meanwhile are queued, up to what the host itself holds without acknowledgement.
+    #[test]
+    fn events_queued_behind_a_receipt_hold_two_large_results() {
+        let large = 900_000;
+        let one = queued_size(0, 0, large).unwrap();
+        assert_eq!(queued_size(1, one, large).unwrap(), 2 * large);
+        assert!(queued_size(1_000, 0, 1).is_ok());
+        assert!(queued_size(MAX_QUEUED_EVENTS, 0, 1).is_err());
+        assert!(queued_size(1, MAX_QUEUED_BYTES - 1, 2).is_err());
     }
     struct Fragmented {
         bytes: Cursor<Vec<u8>>,

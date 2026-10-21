@@ -85,7 +85,8 @@ function boundedJSON(value: unknown): void {
   const active = new WeakSet<object>();
   const add = (amount: number) => { bytes += amount; if (bytes > MAX_FRAME_BYTES) throw new Error('Frame size'); };
   const string = (value: string) => {
-    if (value.length > MAX_FRAME_BYTES || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) throw new Error('Invalid JSON string');
+    if (value.length > MAX_FRAME_BYTES) throw new Error('Frame size');
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) throw new Error('Invalid JSON string');
     add(2 + Buffer.byteLength(value));
     for (let i = 0; i < value.length; i += 1) {
       const code = value.charCodeAt(i);
@@ -208,4 +209,96 @@ export function decode(bytes: Buffer): Frame {
 export function commandDigest(payload: Uint8Array): string {
   if (parsePayload(payload).body.type !== 'command') throw new Error('Command required');
   return createHash('sha256').update(payload).digest('hex');
+}
+
+/** Why this frame cannot be encoded as it is: its size, its depth or a lone UTF-16 surrogate. */
+export function framingProblem(frame: unknown): 'size' | 'depth' | 'lone_surrogate' | 'not_plain_json' | undefined {
+  try { boundedJSON(frame); return undefined; } catch (error) {
+    const message = (error as Error).message;
+    return message === 'Frame size' ? 'size' : message === 'JSON depth' ? 'depth' : message === 'Invalid JSON string' ? 'lone_surrogate' : 'not_plain_json';
+  }
+}
+/** Twice the request has to fit an answer under the frame limit: in `asked` and in `updated_input`. */
+export const MAX_DECISION_BYTES = 458_752;
+export const MAX_DIAGNOSTIC_BYTES = 16_384;
+/** The JSON's UTF-8 size and SHA-256, or nulls when it cannot even be serialized. */
+export function jsonEvidence(value: unknown): { bytes: number | null; sha256: string | null } {
+  try {
+    const json = Buffer.from(JSON.stringify(value) ?? 'null');
+    return { bytes: json.length, sha256: createHash('sha256').update(json).digest('hex') };
+  } catch { return { bytes: null, sha256: null }; }
+}
+type Limits = { text: number; items: number; depth: number };
+const STEPS: Limits[] = [
+  { text: 65_536, items: 1024, depth: 64 }, { text: 4096, items: 64, depth: 32 },
+  { text: 256, items: 8, depth: 12 }, { text: 0, items: 0, depth: 4 },
+];
+const WHOLE: Limits = { text: Infinity, items: Infinity, depth: 64 };
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
+const clip = (value: string, max: number) => (value.length > max ? value.slice(0, max) : value).replace(LONE_SURROGATE, '�');
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+function shrink(value: unknown, limits: Limits, depth = 0): unknown {
+  if (typeof value === 'string') return clip(value, limits.text);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= limits.depth) return null;
+  if (Array.isArray(value)) return value.slice(0, limits.items).map((item) => shrink(item, limits, depth + 1));
+  return Object.fromEntries(Object.entries(value).slice(0, limits.items).map(([key, item]) => [clip(key, Infinity), shrink(item, limits, depth + 1)]));
+}
+/** Every field of an object, the ones `kept` whole; with no limits, only those. */
+function select(value: Record<string, unknown>, limits: Limits | undefined, kept: (key: string, item: unknown) => unknown | undefined): Record<string, unknown> {
+  const selected: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const whole = kept(key, item);
+    if (whole !== undefined) selected[key] = whole;
+    else if (limits) selected[clip(key, Infinity)] = shrink(item, limits, 1);
+  }
+  return selected;
+}
+const NORMALIZED = new Set(['type', 'subtype', 'uuid', 'session_id', 'parent_tool_use_id', 'user_message_uuid', 'user_message_uuids', 'task_id', 'run_id', 'status', 'error', 'origin', 'command_uuid']);
+const NORMALIZED_RESULT = new Set(['worktreePath', 'worktreeBranch', 'agentId', 'status', 'action']);
+const NORMALIZED_BLOCK = new Set(['type', 'name', 'id', 'tool_use_id']);
+/** An SDK message whose fields the normalizer reads stay whole; the rest is shrunk to `limits`. */
+function shrinkMessage(payload: unknown, limits: Limits | undefined): unknown {
+  if (!isRecord(payload)) return limits ? shrink(payload, limits) : null;
+  const block = (item: unknown) => !isRecord(item) ? (limits ? shrink(item, limits, 3) : null) : select(item, limits, (key, field) =>
+    NORMALIZED_BLOCK.has(key) ? shrink(field, WHOLE)
+      : key === 'input' && isRecord(field) ? select(field, limits, (inner, value) => inner === 'isolation' ? shrink(value, WHOLE) : undefined) : undefined);
+  return select(payload, limits, (key, item) => {
+    if (NORMALIZED.has(key)) return shrink(item, WHOLE);
+    if (key === 'tool_use_result' && isRecord(item)) return select(item, limits, (field, value) => NORMALIZED_RESULT.has(field) ? shrink(value, WHOLE) : undefined);
+    if (key === 'message' && isRecord(item)) return select(item, limits, (field, value) => field === 'content' && Array.isArray(value) ? value.map(block) : undefined);
+    return undefined;
+  });
+}
+type Failure = { surface: string; code: string; details: unknown };
+type SdkObservation = { type: 'sdk'; payload: unknown; failures: Failure[] };
+/**
+ * The observation as it can be framed: an SDK message too large, too deep or with a lone surrogate
+ * is shrunk in ever stricter steps, never in the fields the normalizer reads, and says so in its
+ * failures. `problem` names what keeps a candidate from being framed.
+ */
+export function fitObservation<T extends SdkObservation>(observation: T, problem: (candidate: T) => string | undefined): T {
+  const reason = problem(observation);
+  if (reason === undefined) return observation;
+  const evidence: Failure = { surface: 'transport', code: 'truncated_sdk_message', details: { ...jsonEvidence(observation.payload), reason } };
+  const failures = observation.failures.slice(0, 31);
+  for (const limits of [...STEPS, undefined]) {
+    const candidate = {
+      ...observation,
+      payload: shrinkMessage(observation.payload, limits),
+      failures: [...failures.map((failure) => ({ ...failure, details: limits ? shrink(failure.details, limits) : null })), evidence],
+    };
+    if (problem(candidate) === undefined) return candidate;
+  }
+  throw new Error('Frame size');
+}
+/** The value shrunk until its JSON takes at most `budget` bytes; null when nothing of it fits. */
+export function fitValue(value: unknown, budget: number): unknown {
+  const fits = (candidate: unknown) => { const { bytes } = jsonEvidence(candidate); return bytes !== null && bytes <= budget && framingProblem(candidate) === undefined; };
+  if (fits(value)) return value;
+  for (const limits of STEPS) {
+    const candidate = shrink(value, limits);
+    if (fits(candidate)) return candidate;
+  }
+  return null;
 }

@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
-import { hasToolUse, type Decision, type DecisionKind } from './frame.js';
+import { fitValue, framingProblem, hasToolUse, jsonEvidence, MAX_DECISION_BYTES, MAX_DIAGNOSTIC_BYTES, type Decision, type DecisionKind } from './frame.js';
 
 export type Failure = { surface: string; code: string; details: unknown };
 export type Observation =
@@ -102,6 +102,7 @@ function safeDiagnostic(text: string): string {
 }
 
 const MAX_PENDING_DECISIONS = 32;
+const DECISION_TOO_LARGE = 'The request is too large for Alondra to show; split it into smaller steps';
 const defined = (fields: Record<string, unknown>) => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 const decisionKind = (tool: string): DecisionKind => tool === 'AskUserQuestion' ? 'question' : tool === 'ExitPlanMode' ? 'plan' : 'permission';
 /** A string is why no answer reached the request: Claude is denied, never granted by default. */
@@ -140,6 +141,13 @@ export class PermissionCallbacks {
     if (this.closed || signal.aborted) return Promise.resolve(answer('Permission request cancelled'));
     if (this.pending.has(requestId)) return Promise.resolve(answer('Duplicate permission request'));
     if (this.pending.size >= MAX_PENDING_DECISIONS) return Promise.resolve(answer('Permission request capacity exceeded'));
+    const { bytes, sha256 } = jsonEvidence(payload);
+    const problem = bytes === null || bytes > MAX_DECISION_BYTES ? 'size' : framingProblem({ body: { action: { decision: { updated_input: payload } } } });
+    if (problem === 'size' || problem === 'depth' || problem === 'lone_surrogate') {
+      const details = { request_id: requestId, kind, bytes, sha256, reason: problem };
+      try { this.observe({ type: 'sdk', kind: 'diagnostic', native: {}, payload: details, failures: [{ surface: 'transport', code: 'decision_too_large', details }] }); } catch { /* The host records its own storage failure. */ }
+      return Promise.resolve(answer(DECISION_TOO_LARGE));
+    }
     return new Promise<T>((resolve) => {
       const entry: Pending = { kind, toolUseId, asked: JSON.parse(JSON.stringify(payload)), settled: false, finish: (outcome) => {
         if (this.pending.get(requestId) !== entry) return;
@@ -323,6 +331,7 @@ export class Session {
     }
   }
   private diagnostic(code: string, details: unknown, surface = 'iterator'): void {
+    details = fitValue(details, MAX_DIAGNOSTIC_BYTES);
     this.config.observe({ type: 'sdk', kind: 'diagnostic', native: {}, payload: details, failures: [{ surface, code, details }] });
   }
 }
