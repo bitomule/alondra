@@ -344,11 +344,6 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }
     }
 
-    func test_node_detail() throws {
-        let store = try presentation(detail: "node-mac")
-        assertWindow(size: CGSize(width: 900, height: 700)) { MacServiceDetail(presentation: store) }
-    }
-
     func test_tasks_board() throws {
         let store = try presentation(detail: "tasks-mac")
         assertWindow(size: CGSize(width: 900, height: 1150)) { MacServiceDetail(presentation: store) }
@@ -363,21 +358,10 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 1500)) { MacServiceDetail(presentation: store) }
     }
 
-    func test_fleet_overview() throws {
-        let store = try presentation(detail: "fleet-mac")
-        assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
-    }
-
     /// A node whose turn ended with nothing for the user: what it wrote in its terminal is a card.
     func test_card_aNodesLastWords_spanish() throws {
         let store = try presentation(detail: "card-unheard-es-mac", spanish: true)
         assertWindow(size: CGSize(width: 900, height: 620), spanish: true) { MacServiceDetail(presentation: store) }
-    }
-
-    /// A node that waits for its own command is working, and the command is not shown.
-    func test_fleet_aNodeWaitingForItsCommandIsWorking() throws {
-        let store = try presentation(detail: "node-states-fleet-mac")
-        assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
 
     // MARK: One connection state, every indicator
@@ -385,7 +369,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     /// A view picked in the saved sidebar that never loaded, while the Mac is not answering: the
     /// same problem the window's subtitle names, not «Loading…» forever.
     func test_detail_nothingSavedWhileTheMacIsNotAnswering() throws {
-        let store = try presentation { $0.selection = .viewKey("fleet"); $0.selectedViewKey = "fleet" }
+        let store = try presentation { $0.selection = .viewKey("tasks"); $0.selectedViewKey = "tasks" }
         for spanish in [false, true] {
             assertWindow(size: CGSize(width: 900, height: 520), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
                 MacServiceDetail(presentation: store).environment(\.connectionState, .unreachable(.macNotAnswering))
@@ -396,9 +380,18 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     /// A saved view whose reload failed: while the Mac does not answer, the subtitle says so and the
     /// view stays clean, without a second, red «couldn’t load» over it.
     func test_detail_savedWhileTheMacIsNotAnsweringHasNoSecondError() throws {
-        let store = try presentation(detail: "fleet-mac") { $0.viewError = "Couldn’t load this from your Mac. Try again." }
+        let store = try presentation(detail: "tasks-mac") { $0.viewError = "Couldn’t load this from your Mac. Try again." }
         assertWindow(size: CGSize(width: 900, height: 520), variants: [.light]) {
             MacServiceDetail(presentation: store).environment(\.connectionState, .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_sidebar_connectingToYourMac() throws {
+        let store = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        for spanish in [false, true] {
+            assertWindow(size: CGSize(width: 320, height: 200), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                MacServiceSidebar(presentation: store)
+            }
         }
     }
 

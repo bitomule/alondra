@@ -342,6 +342,7 @@ public struct MacPresentationFeature: Sendable {
                     })
                 }
             case .select(let selection):
+                if let key = viewKey(for: selection), !Self.opens(key) { return .none }
                 guard let key = viewKey(for: selection) else {
                     state.selection = nil
                     state.selectedViewKey = nil
@@ -584,6 +585,11 @@ public struct MacPresentationFeature: Sendable {
         state.selectedViewKey = next
         state.detailDocument = nil
         return loadAndOpenView(next, visibleKeys: visibleViewKeys(state))
+    }
+
+    /// The Mac opens tasks, never the fleet or a node: a node lives and dies with its task.
+    private static func opens(_ key: String) -> Bool {
+        key != "fleet" && !key.hasPrefix("node:")
     }
 
     public static func cardID(forViewKey key: String) -> String? {

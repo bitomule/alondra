@@ -23,7 +23,7 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
     }
 
     private var subtitle: String {
-        indicators.subtitle(summary: presentation.sidebarDocument?.status.summary ?? String(localized: "Connecting to the fleet…"))
+        indicators.subtitle(summary: presentation.sidebarDocument?.status.summary ?? String(localized: "Connecting to your Mac…"))
     }
 
     /// The cards the sidebar lists as waiting; nil until it has loaded.
@@ -115,7 +115,6 @@ public struct MacServiceSidebar: View {
     public var body: some View {
         List(selection: Binding(get: { presentation.selection }, set: { presentation.send(.select($0)) })) {
             Section {
-                Label("Fleet", systemImage: "square.grid.2x2").tag(MacPresentationFeature.Selection.viewKey(ViewKey.fleet.rawValue))
                 Label("Tasks", systemImage: "checklist").tag(MacPresentationFeature.Selection.viewKey(ViewKey.tasks.rawValue))
             }
             if let document = presentation.sidebarDocument {
@@ -144,7 +143,7 @@ public struct MacServiceSidebar: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ProgressView("Connecting to the fleet…").frame(maxWidth: .infinity)
+                ProgressView("Connecting to your Mac…").frame(maxWidth: .infinity)
             }
         }
         .animation(.snappy, value: presentation.sidebarDocument?.version)
@@ -215,7 +214,7 @@ public struct MacServiceSidebar: View {
                 Text(section.title ?? String(section.id.dropFirst("project:".count)))
                 if urgent > 0 {
                     Circle().fill(.orange).frame(width: 6, height: 6)
-                        .help("\(urgent) nodes waiting")
+                        .help("\(urgent) tasks waiting")
                 }
             }
         } else if let title = section.title {

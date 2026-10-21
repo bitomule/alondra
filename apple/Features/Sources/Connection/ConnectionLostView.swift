@@ -35,7 +35,7 @@ public struct ConnectionLostView: View {
             } else {
                 VStack(spacing: 16) {
                     ProgressView().controlSize(.large).tint(Palette.dawn)
-                    Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Connecting to your Mac…").font(.subheadline).foregroundStyle(.secondary)
                 }
             }
         }

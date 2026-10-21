@@ -265,9 +265,9 @@ struct MacServiceNavigationTests {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
         let second = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
         first.send(.select(.viewKey("pull_request:p2")))
-        second.send(.select(.viewKey("node:worker")))
+        second.send(.select(.viewKey("task:t1")))
         #expect(first.selection == .viewKey("pull_request:p2"))
-        #expect(second.selection == .viewKey("node:worker"))
+        #expect(second.selection == .viewKey("task:t1"))
     }
 }
 
@@ -676,12 +676,27 @@ struct MacAnsweringTests {
     }
 
     @Test
-    func fleetTasksAndTheNewRequestFormStayOpenAcrossSidebarUpdates() async throws {
-        for key in ["fleet", "tasks", "new_request"] {
+    func tasksATaskAndTheNewRequestFormStayOpenAcrossSidebarUpdates() async throws {
+        for key in ["tasks", "task:t1", "new_request"] {
             let store = try makeStore(waiting: ["a", "b"], selected: key)
             await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["b"]))))
             #expect(store.state.selection == .viewKey(key))
         }
+    }
+
+    @Test
+    func theFleetAndANodeOpenNothingAndTheTaskStaysOpen() async throws {
+        let loaded = LockIsolated<[String]>([])
+        let store = try makeStore(waiting: ["a"], selected: "task:t1") { key in
+            loaded.withValue { $0.append(key.rawValue) }
+            return .document(try makeDocument(key: key.rawValue, version: "d1"))
+        }
+        for key in ["fleet", "node:worker"] {
+            await store.send(.select(.viewKey(key)))
+            #expect(store.state.selection == .viewKey("task:t1"))
+            #expect(store.state.detailDocument?.key == "task:t1")
+        }
+        #expect(loaded.value.isEmpty)
     }
 }
 

@@ -979,6 +979,16 @@
         }
       }
     },
+    "Connecting to your Mac…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectando con tu Mac…"
+          }
+        }
+      }
+    },
     "Connecting…": {
       "localizations": {
         "es": {

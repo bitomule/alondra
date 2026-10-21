@@ -222,7 +222,6 @@
     "Content is truncated.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El contenido está recortado."}}}},
     "Couldn’t load the sidebar": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar la barra lateral"}}}},
     "Couldn’t load content": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el contenido"}}}},
-    "Fleet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Flota"}}}},
     "Filter issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Filtrar incidencias"}}}},
     "Issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Incidencias"}}}},
     "Action completed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acción completada"}}}},
@@ -298,7 +297,7 @@
     "Open Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir Ajustes"}}}},
     "Try Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar"}}}},
     "Trying again automatically…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentando automáticamente…"}}}},
-    "Connecting to the fleet…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectando con la flota…"}}}},
+    "Connecting to your Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectando con tu Mac…"}}}},
     "Looking for Alondra on this Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscando Alondra en este Mac…"}}}},
     "Alondra isn’t running on this Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no está en marcha en este Mac"}}}},
     "Connect to Another Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectar con otro Mac…"}}}},
@@ -491,7 +490,7 @@
         }
       }
     },
-    "%lld nodes waiting": {
+    "%lld tasks waiting": {
       "localizations": {
         "en": {
           "variations": {
@@ -499,13 +498,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld node waiting"
+                  "value": "%lld task waiting"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld nodes waiting"
+                  "value": "%lld tasks waiting"
                 }
               }
             }
@@ -517,13 +516,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld nodo espera"
+                  "value": "%lld tarea espera"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld nodos esperan"
+                  "value": "%lld tareas esperan"
                 }
               }
             }
@@ -3241,16 +3240,6 @@
         }
       }
     },
-    "Keep up with your fleet, answer a question, and help your work move forward.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sigue a tu flota, responde preguntas y haz avanzar tu trabajo."
-          }
-        }
-      }
-    },
     "Your Mac": {
       "localizations": {
         "es": {
@@ -3481,12 +3470,12 @@
         }
       }
     },
-    "Connect your account and the Mac running your fleet. Your questions, tasks and conversations come together here.": {
+    "Connect your account and the Mac where Alondra works. Your questions, tasks and conversations come together here.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Conecta tu cuenta y el Mac donde se ejecuta tu flota. Aquí encontrarás tus preguntas, tareas y conversaciones."
+            "value": "Conecta tu cuenta y el Mac donde trabaja Alondra. Aquí encontrarás tus preguntas, tareas y conversaciones."
           }
         }
       }
