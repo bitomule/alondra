@@ -235,7 +235,6 @@ impl App {
             screen: match self.screen {
                 Screen::Inbox => "inbox",
                 Screen::Tasks => "tasks",
-                Screen::Fleet => "fleet",
             }
             .into(),
             schedules_open: self.schedules_open,
@@ -269,7 +268,6 @@ impl App {
     pub(super) fn restore(&mut self, r: Restore) {
         self.show(match r.screen.as_str() {
             "tasks" => Screen::Tasks,
-            "fleet" => Screen::Fleet,
             _ => Screen::Inbox,
         });
         if r.schedules_open {
@@ -499,7 +497,7 @@ mod tests {
         let mut app = app();
         let state = Restore {
             restarted_for: NEWER.into(),
-            screen: "fleet".into(),
+            screen: "tasks".into(),
             schedules_open: false,
             rules_open: false,
             detail_focused: false,
@@ -516,13 +514,23 @@ mod tests {
             drafts: vec![],
         };
         app.restore(state);
-        assert!(app.screen == Screen::Fleet);
+        assert!(app.screen == Screen::Tasks);
         assert_eq!(app.agent_scroll, 3);
         assert_eq!(app.composer.as_ref().map(|c| c.input.text()), Some("still here".into()));
         behind(&mut app);
         app.updated.countdown_until = Some(now_millis() - 1);
         app.version_tick();
         assert!(!app.updated.restart);
+    }
+
+    #[test]
+    fn a_terminal_restored_on_the_old_fleet_screen_opens_the_inbox() {
+        let mut app = app();
+        app.show(Screen::Tasks);
+        let mut state = app.to_restore();
+        state.screen = "fleet".into();
+        app.restore(state);
+        assert!(app.screen == Screen::Inbox);
     }
 
     #[test]

@@ -311,15 +311,12 @@ fn no_waiting_card_fixture_has_an_unusable_action() {
 }
 
 #[test]
-fn failed_views_feed_marks_cached_fleet_as_outdated_until_recovery() {
+fn failed_views_feed_marks_cached_tasks_as_outdated_until_recovery() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    let mut fleet = view_fixture("home-tui.json");
-    fleet["view"] = serde_json::json!("fleet");
-    fleet["key"] = serde_json::json!("fleet");
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
     app.on_msg(Msg::ViewFeed(Err("offline".into())));
     assert!(app.offline);
     assert!(screen(&mut app, 120, 26).contains("saved data · connection lost"));
@@ -338,15 +335,12 @@ fn failed_views_feed_marks_cached_fleet_as_outdated_until_recovery() {
 }
 
 #[test]
-fn fleet_search_shows_pending_and_uses_the_typed_query() {
+fn tasks_search_shows_pending_and_uses_the_typed_query() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    let mut fleet = view_fixture("home-tui.json");
-    fleet["view"] = serde_json::json!("fleet");
-    fleet["key"] = serde_json::json!("fleet");
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
     press(&mut app, KeyCode::Char('/'));
     assert!(app.search.as_ref().is_some_and(|search| search.editing));
     press(&mut app, KeyCode::Char('N'));
@@ -359,10 +353,10 @@ fn fleet_search_shows_pending_and_uses_the_typed_query() {
 }
 
 #[test]
-fn fleet_search_paste_loads_the_pasted_query() {
+fn tasks_search_paste_loads_the_pasted_query() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
+    app.screen = Screen::Tasks;
     press(&mut app, KeyCode::Char('/'));
     app.on_paste("Issue 42");
     assert_eq!(
@@ -457,80 +451,11 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
 }
 
 #[test]
-fn fleet_node_view_renders_facts_activity_and_actions() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+fn tasks_search_key_opens_the_server_search_view() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    let id = "550e8400-e29b-41d4-a716-446655440000";
-    let mut fleet = view_fixture("home-tui.json");
-    fleet["view"] = serde_json::json!("fleet");
-    fleet["key"] = serde_json::json!("fleet");
-    fleet["sections"] = serde_json::json!([{
-        "id": "nodes", "title": "App", "collapsed": false, "items": [{
-            "type": "row", "id": id, "icon": "node", "title": "Instance A",
-            "subtitle": "Working", "depth": 0, "struck": false,
-            "link": {"kind": "view", "key": format!("node:{id}")}
-        }]
-    }]);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
-    app.sel = Some(Key(id.into()));
-    let mut node = view_fixture("card-question.json");
-    node["view"] = serde_json::json!("node");
-    node["key"] = serde_json::json!(format!("node:{id}"));
-    node["title"] = serde_json::json!("Instance A");
-    node["sections"] = serde_json::json!([
-        {"id": "header", "collapsed": false, "items": [{
-            "type": "facts", "items": [
-                {"label": "State", "value": "Working"},
-                {"label": "Tasks", "value": "2"}
-            ]
-        }]},
-        {"id": "activity", "title": "Activity", "collapsed": false, "items": [{
-            "type": "row", "id": "activity-1", "icon": "history",
-            "title": "Running the suite", "depth": 0, "struck": false
-        }]},
-        {"id": "actions", "collapsed": false, "items": [{
-            "type": "actions", "actions": [{
-                "id": format!("msg:{id}@1"), "label": "Message",
-                "style": "primary", "presentation": "button",
-                "input": {"kind": "text", "placeholder": "Write to Instance A…", "required": true, "multiline": true},
-                "attachments": true, "enabled": true, "key": "m"
-            }]
-        }]}
-    ]);
-    app.on_msg(Msg::ViewCard {
-        key: format!("node:{id}"),
-        result: Ok(serde_json::from_value(node).unwrap()),
-    });
-
-    let shown = screen(&mut app, 150, 35);
-    for text in [
-        "Instance A",
-        "State: Working",
-        "Tasks: 2",
-        "Running the suite",
-        "Message",
-    ] {
-        assert!(shown.contains(text), "{text}: {shown}");
-    }
-    press(&mut app, KeyCode::Char('m'));
-    typed(&mut app, "Status?");
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(posted(&app)[0].0, "/actions");
-    assert_eq!(posted(&app)[0].1["action_id"], format!("msg:{id}@1"));
-    assert_eq!(posted(&app)[0].1["input"]["text"], "Status?");
-}
-
-#[test]
-fn fleet_search_key_opens_the_server_search_view() {
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    let mut fleet = view_fixture("home-tui.json");
-    fleet["view"] = serde_json::json!("fleet");
-    fleet["key"] = serde_json::json!("fleet");
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
 
     press(&mut app, KeyCode::Char('/'));
 
@@ -1228,11 +1153,8 @@ fn footers_name_the_next_screen_and_never_offer_a_terminal() {
     app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
     app.view_navigation.push("task:t-1".into());
     app.card_view = Some(attachable("task:t-1"));
-    assert!(has(&app, "⏎/o", "expand") && has(&app, "Tab", "fleet"));
+    assert!(has(&app, "⏎/o", "expand") && has(&app, "Tab", "inbox"));
     assert!(!terminal(&app), "an old daemon's attach link never offers a terminal");
-    app.screen = Screen::Fleet;
-    app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
-    assert!(has(&app, "⏎/o", "expand") && has(&app, "Tab", "inbox") && !terminal(&app));
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎/o", "expandir"));
 }
@@ -1302,7 +1224,8 @@ fn header_has_the_alondra_badge_the_bars_and_how_many_are_working() {
     app.loaded = true;
     app.view_status = Some(status_with(production_gauges()));
     let shown = screen(&mut app, 140, 6);
-    for expected in [" Alondra ", "Fleet 1", "2 working", "RAM ▰▰▱▱ 42%  CPU ▰▱▱▱ 34%", "Disk ▰▰▰▱ 120 GB free"] {
+    assert!(!shown.contains("Fleet"), "{shown}");
+    for expected in [" Alondra ", "Inbox ", "Tasks 1", "2 working", "RAM ▰▰▱▱ 42%  CPU ▰▱▱▱ 34%", "Disk ▰▰▰▱ 120 GB free"] {
         assert!(shown.contains(expected), "{expected}: {shown}");
     }
     assert!(shown.contains("34%  Disk"), "the gauges are separated: {shown}");
@@ -1349,7 +1272,8 @@ fn header_gauges_come_in_the_servers_language() {
         {"id": "disk", "label": "Disco", "value": 0.72, "text": "120 GB libres", "level": "calm"}
     ])));
     let shown = screen(&mut app, 140, 6);
-    assert!(shown.contains("Flota 1") && shown.contains("Disco ▰▰▰▱ 120 GB libres"), "{shown}");
+    assert!(!shown.contains("Flota"), "{shown}");
+    assert!(shown.contains("Tareas 1") && shown.contains("Disco ▰▰▰▱ 120 GB libres"), "{shown}");
 }
 
 #[test]
@@ -1359,7 +1283,7 @@ fn header_drops_the_gauge_names_before_it_overflows() {
     let mut app = App::new(tx);
     app.loaded = true;
     app.view_status = Some(status_with(production_gauges()));
-    let shown = screen(&mut app, 92, 6);
+    let shown = screen(&mut app, 84, 6);
     assert!(shown.contains("▰▰▱▱ 42% ▰▱▱▱ 34%") && !shown.contains("RAM"), "{shown}");
     let shown = screen(&mut app, 50, 6);
     assert!(!shown.contains("▰"), "{shown}");
@@ -1382,22 +1306,7 @@ fn tasks_open_on_the_first_task_and_leave_scheduled_to_the_s_key() {
 }
 
 #[test]
-fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap())));
-    app.sel = None;
-    app.card_view_asked = None;
-    let shown = screen(&mut app, 120, 20);
-    for expected in ["The fleet right now", "2 working", "1 waiting"] {
-        assert!(shown.contains(expected), "{expected}: {shown}");
-    }
-}
-
-#[test]
-fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
+fn help_lists_scheduled_tasks_the_disk_bar_and_no_fleet() {
     for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Es] {
         crate::i18n::set_for_this_thread(lang);
         let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -1411,13 +1320,14 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
         assert!(help.contains("RAM") && help.contains("CPU"), "{help}");
         assert!(!help.to_lowercase().contains("agent"), "{help}");
         assert!(!help.contains("sesión") && !help.contains("session"), "{help}");
+        assert!(!help.to_lowercase().contains("fleet") && !help.to_lowercase().contains("flota"), "{help}");
     }
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     let help: String = crate::tui::draw::help_lines(&app).iter().map(|line| line.to_string()).collect();
-    assert!(help.contains("scheduled") && help.contains(":fleet"), "{help}");
+    assert!(help.contains("scheduled") && help.contains(":tasks"), "{help}");
 }
 
 fn held_plan_card() -> alondra_core::views::View {

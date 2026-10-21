@@ -8,10 +8,9 @@ Set up
   config       Show or change settings  (list · get · set · unset)
 
 Daily
-  status       Questions, tasks and fleet, as text
+  status       Questions and tasks, as text
   answer       Answer a question
-  send         Send a message to a task, a node or the orchestrator
-  close        Close a node's session
+  send         Send a message to a task or the orchestrator
   cancel       Cancel tasks
 
 Devices and Macs

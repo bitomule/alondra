@@ -17,7 +17,6 @@ pub(super) enum Act {
     Diff,
     Form,
     NextScreen,
-    PrevScreen,
     NewWork,
     Schedules,
     CloseSchedules,
@@ -221,7 +220,7 @@ impl App {
     pub(super) fn bindings(&self) -> Table {
         let mut t = Table::default();
         let finding = self.reader.as_ref().is_some_and(|r| r.find.as_ref().is_some_and(|find| find.editing));
-        let searching = self.screen == Screen::Fleet && self.reader.is_none() && !self.schedules_open
+        let searching = self.screen == Screen::Tasks && self.reader.is_none() && !self.schedules_open
             && self.search.as_ref().is_some_and(|search| search.editing);
         if (self.composer.is_some() || self.cmdline.is_some() || finding || searching) && self.modal.is_none() {
             return t;
@@ -254,8 +253,8 @@ impl App {
             self.list_bindings(&mut t);
         }
         t.help(vec![char('?')], "?", tr!("help", "ayuda"), Act::Help);
-        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :fleet :<number>",
-            "línea de órdenes: :q :inbox :tasks :fleet :<número>"), Act::CmdLine);
+        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :<number>",
+            "línea de órdenes: :q :inbox :tasks :ajustes :<número>"), Act::CmdLine);
         t.help(vec![char(']')], "]", tr!("next Mac, when this terminal is connected to several",
             "siguiente Mac, si este terminal está conectado a varios"), Act::NextMac);
         t
@@ -467,7 +466,7 @@ impl App {
                     }
                     t.add(keys, "⏎/o", tr!("open", "abrir"), Act::Open);
                 }
-                Screen::Tasks | Screen::Fleet => {
+                Screen::Tasks => {
                     let mut keys = vec![plain(KeyCode::Enter), char('o')];
                     if !self.detail_view.shown {
                         keys.extend([char('l'), plain(KeyCode::Right)]);
@@ -482,8 +481,8 @@ impl App {
         self.screen_action_bindings(t);
         match self.screen {
             Screen::Inbox => {}
-            Screen::Tasks => t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules),
-            Screen::Fleet => {
+            Screen::Tasks => {
+                t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules);
                 t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search);
                 t.add(vec![char('a')], "a", tr!("allowed always", "permitidos siempre"), Act::Rules);
             }
@@ -491,13 +490,11 @@ impl App {
         t.add(vec![char(',')], ",", tr!("settings", "ajustes"), Act::McpServers);
         let next = match self.screen {
             Screen::Inbox => tr!("tasks", "tareas"),
-            Screen::Tasks => tr!("fleet", "flota"),
-            Screen::Fleet => tr!("inbox", "bandeja"),
+            Screen::Tasks => tr!("inbox", "bandeja"),
         };
-        t.add(vec![plain(KeyCode::Tab)], "Tab", next, Act::NextScreen);
+        t.add(vec![plain(KeyCode::Tab), plain(KeyCode::BackTab)], "Tab", next, Act::NextScreen);
         t.add(vec![char('n')], "n", tr!("new", "nuevo"), Act::NewWork);
         t.add(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
-        t.help(vec![plain(KeyCode::BackTab)], "Shift+Tab", tr!("previous screen", "pantalla anterior"), Act::PrevScreen);
     }
 
     /// Runs what the table says `key` does now; a key the table does not list does nothing.
@@ -546,7 +543,6 @@ impl App {
                 }
             }
             Act::NextScreen => self.switch_screen(),
-            Act::PrevScreen => self.switch_screen_back(),
             Act::NewWork => self.compose(Target::Form { view: "new_request".into() }, ""),
             Act::Schedules => {
                 self.schedules_open = true;

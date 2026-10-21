@@ -242,7 +242,13 @@ fn states() -> Vec<State> {
             app.reconcile();
             app
         })),
-        ("fleet", false, Box::new(|| on(Screen::Fleet, "fleet-tui.json"))),
+        ("tasks, searching", false, Box::new(|| {
+            let mut app = on(Screen::Tasks, "tasks-tui.json");
+            app.on_key(plain(KeyCode::Char('/')));
+            app.on_key(plain(KeyCode::Char('x')));
+            app.on_key(plain(KeyCode::Enter));
+            app
+        })),
         ("reader, a document question", false, Box::new(|| reader_on_question(false))),
         ("reader, a commented block", false, Box::new(|| reader_on_question(true))),
         ("reader, searching", false, Box::new(|| {

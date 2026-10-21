@@ -3,7 +3,7 @@
 Seeds a throwaway HOME with a production-shaped domain (115 tasks, 669 interactions with long
 bodies, one agent per simulated node), starts that alondrad on its own port with no Claude and no
 GitHub on its PATH, and drives it with N nodes sending hooks and clients reading views. While the
-load runs it times the unsigned /daemon liveness route, `alondra status` (the home, tasks and fleet views) and every hook,
+load runs it times the unsigned /daemon liveness route, `alondra status` (the home and tasks views) and every hook,
 and reads the daemon's CPU time.
 
     make load-bench LOAD_BENCH_ARGS="--nodes 9 --seconds 60"

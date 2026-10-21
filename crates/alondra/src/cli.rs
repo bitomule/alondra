@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use alondra_core::domain::{Command, InteractionId, InteractionPayload, QuestionOption, TaskId};
-use alondra_core::views::{Action, Item, Link, View};
+use alondra_core::views::{Action, Item, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
@@ -137,58 +137,23 @@ pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<String>)> {
-    let fleet = client.views("fleet", None)?;
-    let mut found = Vec::new();
-    fn rows(items: &[Item], out: &mut Vec<(String, String)>) {
-        for item in items { if let Item::Row(row) = item {
-            if let Some(Link::View { key }) = &row.link {
-                if let Some(id) = key.strip_prefix("node:") { out.push((id.into(), row.title.clone())); }
-            }
-            rows(&row.children.iter().cloned().map(Item::Row).collect::<Vec<_>>(), out);
-        }}
-    }
-    for section in &fleet.sections { rows(&section.items, &mut found); }
-    found.retain(|(id, _)| id != "orchestrator");
-    let exact: Vec<_> = found.iter().filter(|(id, title)| id == name || title.eq_ignore_ascii_case(name) || id.rsplit('-').next() == Some(name)).collect();
-    let matches: Vec<(String, String)> = if exact.is_empty() {
-        found.iter().filter(|(id, _)| id.starts_with(name)).cloned().collect()
-    } else {
-        exact.into_iter().map(|(id, title)| (id.clone(), title.clone())).collect()
-    };
-    match matches.as_slice() {
-        [one] => Ok((Some(one.0.clone()), Some(one.0.clone()))),
-        [] => bail!(trf!("No node is called {name}; for the orchestrator use orchestrator", "Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
-        _ => bail!(trf!("{name} names several nodes", "{name} nombra varios nodos")),
-    }
+/// The view a message goes through: the orchestrator's, or the Task's, whose node it reaches.
+fn send_view_key(name: &str) -> String {
+    if name == "orchestrator" { name.to_owned() } else { format!("task:{name}") }
 }
 
-/// The orchestrator's view when the daemon resolves `name` to it: "orchestrator", or the
-/// session the orchestrator runs in now.
-fn orchestrator_view(client: &Client, name: &str) -> Option<View> {
-    let key = if name == "orchestrator" { name.to_owned() } else { format!("node:{name}") };
-    let view = client.views(&key, None).ok()?;
-    view_action(&view, |action| action.id.starts_with("msg:view@")).is_some().then_some(view)
-}
-
-/// A Task id sends to the Task's agent, about that Task; a name the daemon resolves to the
-/// orchestrator sends to it, and the daemon makes that maintenance unless `reply` asks for an
-/// answer; any other name must be a node's.
+/// A Task id sends to the Task's node, about that Task; `orchestrator` sends to the orchestrator,
+/// and the daemon makes that maintenance unless `reply` asks for an answer.
 pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
-    let view = if name.starts_with("t-") {
-        client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?
-    } else if let Some(view) = orchestrator_view(&client, name) {
-        view
+    let view = client.views(&send_view_key(name), None).with_context(|| trf!(
+        "No task {name}; for the orchestrator use orchestrator",
+        "No hay ninguna tarea {name}; para el orquestador usa orchestrator"))?;
+    let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name == "orchestrator" {
+        tr!("Message action unavailable", "No se puede mandar un mensaje").into()
     } else {
-        let agent = resolved(&client, name)?.0.with_context(|| trf!("No node is called {name}", "Ningún nodo se llama {name}"))?;
-        client.views(&format!("node:{agent}"), None)?
-    };
-    let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name.starts_with("t-") {
         trf!("{name} has no node right now, so nothing was sent. Ask the orchestrator to start one for it.",
             "{name} no tiene nodo ahora, así que no se envió nada. Pide al orquestador que le arranque uno.")
-    } else {
-        tr!("Message action unavailable", "No se puede mandar un mensaje").into()
     })?;
     let fields = serde_json::json!({"from_cli": true, "reply": reply, "from_claude": std::env::var_os("CLAUDECODE").is_some()});
     let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text,"fields":fields}))?;
@@ -212,29 +177,43 @@ fn sent_notice(answer: &Value, name: &str) -> String {
     }
 }
 
-pub fn close(name: &str) -> Result<()> {
-    let client = Client::for_user(Duration::from_secs(90));
-    if orchestrator_view(&client, name).is_some() {
-        bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente"));
+fn status_row(out: &mut String, row: &alondra_core::views::Row, depth: usize) {
+    use std::fmt::Write;
+    match row.badges.first() {
+        Some(badge) => { let _ = writeln!(out, "{:indent$}{:<24} {}", "", badge.text, row.title, indent = depth * 2); }
+        None => { let _ = writeln!(out, "{:indent$}{}", "", row.title, indent = depth * 2); }
     }
-    let Some(agent) = resolved(&client, name)?.0 else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
-    let view = client.views(&format!("node:{agent}"), None)?;
-    let action = view_action(&view, |a| a.id.starts_with("close:" )).context("Close action unavailable")?;
-    let answer = submit(&client, &view, &action, None, serde_json::json!({}))?;
-    println!("{}", closed_notice(&answer, name)?);
-    Ok(())
+    for child in &row.children { status_row(out, child, depth + 1); }
 }
 
-fn closed_notice(answer: &Value, name: &str) -> Result<String> {
-    if answer.get("outcome").and_then(Value::as_str) != Some("applied") {
-        bail!("{}", answer.get("message").and_then(Value::as_str).map(str::to_owned)
-            .unwrap_or_else(|| trf!("{name} was not closed", "{name} no se cerró")));
+/// `alondra status`: the summary, what waits for the user, the tasks and the machine.
+pub fn status_text(home: &View, tasks: &View) -> String {
+    use std::fmt::Write;
+    let mut out = format!("{}\n", home.status.summary);
+    for (view, heading) in [(home, tr!("Waiting for You", "Te espera")), (tasks, tr!("Tasks", "Tareas"))] {
+        let _ = write!(out, "\n{heading}:\n");
+        for section in &view.sections {
+            if view.key != "home" {
+                if let Some(title) = &section.title { let _ = writeln!(out, "  {title}:"); }
+            }
+            for item in &section.items {
+                match item {
+                    Item::Card(card) => {
+                        let summary = card.body.as_ref().map(|body| body.text.lines().next().unwrap_or_default()).unwrap_or(&card.title);
+                        let _ = writeln!(out, "  {:<16} {}", card.eyebrow.as_ref().map_or("item", |label| label.text.as_str()), summary);
+                    }
+                    Item::Row(row) => status_row(&mut out, row, 1),
+                    Item::Markdown(markdown) => { let _ = writeln!(out, "  {}", markdown.text.lines().next().unwrap_or_default()); }
+                    _ => {}
+                }
+            }
+        }
     }
-    Ok(if answer.get("detail").and_then(|detail| detail.get("interactive")).and_then(Value::as_bool) == Some(true) {
-        trf!("{name} left the fleet; it is an interactive session, so close its terminal with /exit", "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit")
-    } else {
-        trf!("Closed {name}", "Cerrado {name}")
-    })
+    if !home.status.gauges.is_empty() {
+        let _ = write!(out, "\n{}:\n", tr!("Machine", "Máquina"));
+        for gauge in &home.status.gauges { let _ = writeln!(out, "  {}: {}", gauge.label, gauge.text); }
+    }
+    out
 }
 
 pub fn recover(action: Recovery, run_id: &str) -> Result<()> {
@@ -298,16 +277,23 @@ mod tests {
     }
 
     #[test]
-    fn close_fails_with_the_reason_unless_the_node_was_closed() {
+    fn status_lists_what_waits_and_the_tasks_without_a_fleet() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
-        let refused = serde_json::json!({"outcome": "rejected", "code": "close_refused", "message": "No se cerró: está trabajando; espera a que termine"});
-        assert_eq!(closed_notice(&refused, "nodo").unwrap_err().to_string(), "No se cerró: está trabajando; espera a que termine");
-        let gone = serde_json::json!({"outcome": "no_longer_available"});
-        assert_eq!(closed_notice(&gone, "nodo").unwrap_err().to_string(), "nodo no se cerró");
-        assert_eq!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": false}}), "nodo").unwrap(), "Cerrado nodo");
-        assert!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": true}}), "nodo").unwrap().contains("/exit"));
+        let s = world();
+        let d = alondra_core::domain::ReadIndex::build(&s);
+        let live = alondra_core::views::LiveSnapshot::default();
+        let view = |key: &str| alondra_core::views::build(key, alondra_core::views::RenderContext { domain: &s, index: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::Es, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" }).unwrap();
+        let text = status_text(&view("home"), &view("tasks"));
+        assert!(text.contains("Te espera:") && text.contains("Tareas:") && text.contains("Build"), "{text}");
+        assert!(!text.contains("Flota") && !text.contains("Instance A"), "{text}");
     }
 
+    #[test]
+    fn send_reaches_a_task_or_the_orchestrator_and_never_looks_up_a_node_by_name() {
+        assert_eq!(send_view_key("orchestrator"), "orchestrator");
+        assert_eq!(send_view_key("t-login-fix"), "task:t-login-fix");
+        assert_eq!(send_view_key("login-fix"), "task:login-fix");
+    }
 
     #[test]
     fn the_node_limit_is_set_through_the_action_this_macs_settings_offer() {

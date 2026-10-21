@@ -79,7 +79,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
 }
 
 /// Four nodes with one task each, three finished and one working, plus a scheduled task nobody
-/// has started: the owner's fleet on 2026-10-03.
+/// has started: the owner's nodes on 2026-10-03.
 pub(super) fn busy() -> (DomainState, LiveSnapshot) {
     let mut domain = DomainState::new("screens");
     domain.revision = 1;
@@ -188,17 +188,29 @@ fn empty_inbox_shows_one_empty_state_and_no_empty_sections() {
 }
 
 #[test]
-fn fleet_lists_each_live_node_once_with_its_state_and_the_header_counts_them() {
+fn tab_alternates_inbox_and_tasks_and_no_screen_or_command_is_the_fleet() {
     let (domain, live) = busy();
-    let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
-    let screen = rendered(&mut app, 100, 24);
-    dump("fleet", &screen);
-    assert_eq!(screen.matches(ODD_STATE).count(), 1, "{screen}");
-    assert!(!screen.contains(NIGHTLY) && !screen.contains("Terminado"), "a node whose task ended is not in Fleet: {screen}");
-    assert!(screen.contains("Flota 1"), "the header counts the rows Fleet lists: {screen}");
-    assert!(!screen.contains("↳"), "{screen}");
-    assert!(!screen.contains("· 0"), "{screen}");
-    assert!(screen.contains("Trabajando"), "{screen}");
+    let mut app = app_on(Screen::Inbox, build(&domain, &live, "home"));
+    let screen = rendered(&mut app, 120, 24);
+    dump("inbox header", &screen);
+    assert!(screen.contains("Bandeja") && screen.contains("Tareas"), "{screen}");
+    assert!(!screen.contains("Flota"), "{screen}");
+    press(&mut app, KeyCode::Tab);
+    assert!(app.screen == Screen::Tasks);
+    press(&mut app, KeyCode::Tab);
+    assert!(app.screen == Screen::Inbox);
+    app.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert!(app.screen == Screen::Tasks, "Shift+Tab goes the other way round the same two screens");
+    for command in ["fleet", "f", "agents"] {
+        app.flash = None;
+        app.on_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        for c in command.chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.screen == Screen::Tasks, ":{command}");
+        assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("No es un comando")), ":{command}");
+    }
 }
 
 #[test]
@@ -241,7 +253,7 @@ fn the_tasks_list_is_three_blocks_with_the_chain_folded_and_names_a_new_request_
 /// 13 October: a task read as in review with no card left to review, after the release task's
 /// deliveries were accepted. The terminal never says it waits for you when no card does.
 #[test]
-fn a_task_in_review_without_a_card_is_not_for_you_in_tasks_nor_in_fleet() {
+fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
     let (mut domain, mut live) = busy();
     domain.tasks.get_mut(&"t-3".into()).unwrap().state = TaskState::ForYourReview;
     domain.agents.get_mut(&"a-3".into()).unwrap().phase = alondra_core::domain::NodePhase::Delivered { in_turn: false };
@@ -252,10 +264,6 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks_nor_in_fleet() {
     dump("tasks (in review, no card)", &screen);
     assert!(!screen.contains("PARA TI") && !screen.contains("Para revisar"), "{screen}");
     assert!(screen.contains(ODD_STATE) && screen.contains("Entregada"), "{screen}");
-    let mut fleet = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
-    let screen = rendered(&mut fleet, 120, 30);
-    dump("fleet (in review, no card)", &screen);
-    assert!(!screen.contains("Espera tu revisión"), "{screen}");
 }
 
 #[test]
@@ -392,20 +400,15 @@ fn task_keys_message_the_node_and_capitals_work_with_shift() {
 }
 
 #[test]
-fn fleet_footer_names_the_selected_nodes_real_keys() {
+fn a_working_tasks_footer_names_its_real_keys() {
     let (domain, live) = busy();
-    let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
-    app.sel = Some(Key("a-3".into()));
-    app.on_msg(Msg::ViewCard {
-        key: "node:a-3".into(),
-        result: Ok(build(&domain, &live, "node:a-3")),
-    });
+    let mut app = task_screen(&domain, &live, "r-3", "t-3");
     let footer = draw::footer_keys(&app);
     for (key, label) in [("r", "Mensaje"), ("i", "Interrumpir")] {
         assert!(footer.iter().any(|(k, l)| k == key && l == label), "{key}: {footer:?}");
     }
     assert!(!footer.iter().any(|(_, l)| l == "Cerrar nodo"), "a node ends with its task: {footer:?}");
-    dump("fleet with node detail", &rendered(&mut app, 120, 30));
+    dump("working task detail", &rendered(&mut app, 120, 30));
 }
 
 fn press(app: &mut App, code: KeyCode) {
@@ -927,11 +930,11 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
 }
 
 #[test]
-fn l_on_the_fleet_never_changes_the_limit() {
+fn l_on_the_tasks_never_changes_the_limit() {
     let (domain, mut live) = busy();
     live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
         queued: vec![], paused: vec![] });
-    let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
+    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.card_menu.is_none(), "the limit is changed with `alondra config set max_working_nodes`");
     assert!(app.posted.borrow().is_empty());

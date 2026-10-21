@@ -8,10 +8,9 @@ Instalar
   config       Enseña o cambia los ajustes  (list · get · set · unset)
 
 Día a día
-  status       Preguntas, tareas y flota, en texto
+  status       Preguntas y tareas, en texto
   answer       Contesta una pregunta
-  send         Manda un mensaje a una tarea, a un nodo o al orquestador
-  close        Cierra la sesión de un nodo
+  send         Manda un mensaje a una tarea o al orquestador
   cancel       Cancela tareas
 
 Dispositivos y Macs

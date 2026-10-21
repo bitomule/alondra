@@ -10,9 +10,9 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn fleet_search_types_and_pastes_into_the_views_key() {
+fn tasks_search_types_and_pastes_into_the_views_key() {
     let mut app = app();
-    app.screen = Screen::Fleet;
+    app.screen = Screen::Tasks;
     press(&mut app, KeyCode::Char('/'));
     assert!(app.search.as_ref().is_some_and(|search| search.editing));
     press(&mut app, KeyCode::Char('N'));
@@ -263,9 +263,9 @@ fn machine(rules: Vec<Value>) -> ViewDocument {
 
 fn rules_open(rules: Vec<Value>) -> App {
     let mut app = app();
-    app.screen = Screen::Fleet;
+    app.screen = Screen::Tasks;
     press(&mut app, KeyCode::Char('a'));
-    assert!(app.rules.is_some(), "a on the Fleet opens the rules");
+    assert!(app.rules.is_some(), "a on the Tasks opens the rules");
     app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine(rules)) });
     app
 }

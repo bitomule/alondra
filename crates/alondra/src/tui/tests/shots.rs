@@ -78,16 +78,6 @@ fn answered(lang: crate::i18n::Lang, outcome: Outcome) -> App {
     app
 }
 
-fn fleet(lang: crate::i18n::Lang) -> App {
-    crate::i18n::set_for_this_thread(lang);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Fleet;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("fleet-tui.json")).unwrap())));
-    app.reconcile();
-    app
-}
-
 fn tasks(lang: crate::i18n::Lang) -> App {
     crate::i18n::set_for_this_thread(lang);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -128,7 +118,7 @@ fn tui_shots() {
             ("3-refused", answered(lang, Outcome::refused(&Refusal::UpstreamPrOpen { number: 11 }, view_lang))),
             ("4-changed", answered(lang, changed)),
         ];
-        let shots = shots.into_iter().chain([("5-fleet", fleet(lang)), ("6-tasks", tasks(lang))]);
+        let shots = shots.into_iter().chain([("5-tasks", tasks(lang))]);
         for (shot, mut app) in shots {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();

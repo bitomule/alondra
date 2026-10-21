@@ -428,8 +428,6 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
     let cases = [
         ("orchestrator", "es", false, "Sube t-cards a prioridad Alta"),
         ("orchestrator", "en", false, "Lanza dos nodos más"),
-        (SESSION, "es", false, "Revisa la cola"),
-        ("0123456789ab", "en", false, "Prioriza t-docs"),
         ("orchestrator", "es", true, "¿Cuántos nodos quedan?"),
     ];
     for (name, lang, reply, text) in cases {
@@ -454,17 +452,14 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
             "{name}: the answer to maintenance is no card for David");
     }
     let requests = daemon.domain.state().unwrap().requests.len();
-    for name in ["orquestador", "Orquestador", "Orchestrator", "orquestadr", "an-earlier-session"] {
+    for name in ["orquestador", "Orquestador", "Orchestrator", "orquestadr", "an-earlier-session", SESSION, "0123456789ab"] {
         let refused = alondra_as_claude(&home, daemon.port, "es", &["send", name, "Para el nodo de release"]);
-        assert!(!refused.status.success(), "{name}: a name no node has is refused, never sent to the orchestrator");
-        assert!(String::from_utf8_lossy(&refused.stderr).contains(&format!("Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
+        assert!(!refused.status.success(), "{name}: only a task id or orchestrator is sent to");
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(&format!("No hay ninguna tarea {name}; para el orquestador usa orchestrator")),
             "{}", String::from_utf8_lossy(&refused.stderr));
     }
     assert_eq!(daemon.domain.state().unwrap().requests.len(), requests, "nothing reached the orchestrator");
-    for name in ["orchestrator", SESSION] {
-        let closed = alondra_as_claude(&home, daemon.port, "es", &["close", name]);
-        assert!(String::from_utf8_lossy(&closed.stderr).contains("Alondra gestiona el orquestador"), "{name}: {}", String::from_utf8_lossy(&closed.stderr));
-    }
+    assert!(!alondra_as_claude(&home, daemon.port, "es", &["close", "orchestrator"]).status.success(), "there is no close");
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

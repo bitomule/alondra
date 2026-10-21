@@ -308,7 +308,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
             .and_then(|s| s.counts.iter().find(|c| c.id == id))
             .map_or(fallback, |c| c.value as usize)
     };
-    let (inbox, tasks, agents) = (app.attention(), count("tasks", 0), count("agents", 0));
+    let (inbox, tasks) = (app.attention(), count("tasks", 0));
     left.push(tab(
         trf!("Inbox {inbox}", "Bandeja {inbox}"),
         app.screen == Screen::Inbox,
@@ -323,10 +323,6 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
             app.schedules_open,
         ));
     }
-    left.push(tab(
-        trf!("Fleet {agents}", "Flota {agents}"),
-        app.screen == Screen::Fleet,
-    ));
     if app.offline {
         left.push(Span::raw(" "));
         left.push(Span::styled(
@@ -474,7 +470,6 @@ fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::Vi
         let lw = match app.screen {
             _ if !lists && w >= 170 => 50,
             _ if !lists => (w * 2 / 5).clamp(36, 56),
-            Screen::Fleet => (w * 11 / 20).clamp(56, 90),
             _ => (w * 3 / 5).clamp(56, 96),
         };
         let [list, detail] =
@@ -491,7 +486,6 @@ fn list_title(app: &App) -> &'static str {
         Screen::Inbox => tr!(" Inbox ", " Bandeja "),
         Screen::Tasks if app.schedules_open => tr!(" Schedules ", " Programaciones "),
         Screen::Tasks => tr!(" Tasks ", " Tareas "),
-        Screen::Fleet => tr!(" Fleet ", " Flota "),
     }
 }
 
@@ -555,9 +549,6 @@ fn empty_list(app: &App) -> Vec<Line<'static>> {
             Line::default(),
             hint("n", tr!(" order new work", " encarga trabajo nuevo")),
         ],
-        Screen::Fleet => vec![Line::from(
-            tr!("No nodes yet.", "Todavía no hay nodos.").fg(DIM),
-        )],
     }
 }
 
@@ -718,16 +709,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             tr!("Select an item", "Elige un elemento")
         };
-        let summary = if app.card_view_asked.is_none() && app.screen == Screen::Fleet {
-            fleet_summary(app)
-        } else {
-            vec![]
-        };
-        if summary.is_empty() {
-            centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
-        } else {
-            f.render_widget(Paragraph::new(summary), inner);
-        }
+        centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
         return;
     };
     let mut lines = super::view_render::document_lines(document, inner.width as usize);
@@ -1468,26 +1450,6 @@ fn composer_action(t: &Target) -> &'static str {
     }
 }
 
-/// The fleet in one glance for an empty detail pane, from the counts the server sends.
-fn fleet_summary(app: &App) -> Vec<Line<'static>> {
-    let Some(status) = app.view_status.as_ref() else {
-        return vec![];
-    };
-    let mut lines = vec![
-        Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()),
-        Line::default(),
-    ];
-    for id in ["working", "waiting"] {
-        if let Some(count) = status.counts.iter().find(|count| count.id == id) {
-            lines.push(Line::from(vec![
-                Span::styled("● ", Style::new().fg(ACCENT)),
-                Span::raw(format!("{} {}", count.value, count.label)),
-            ]));
-        }
-    }
-    lines
-}
-
 /// What a document lets you do, one line each and all alike, as 8ccd131 drew a card's keys: each
 /// action and option with the key the table gives it. Only what can be done is listed.
 pub(super) fn action_menu(table: &super::bindings::Table) -> Vec<Line<'static>> {
@@ -1533,7 +1495,7 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
     if app.reader.as_ref().is_some_and(|reader| reader.find.as_ref().is_some_and(|find| find.editing)) {
         return vec![k("⏎", tr!("find", "buscar")), k("Esc", tr!("cancel", "cancela"))];
     }
-    if app.screen == Screen::Fleet && app.reader.is_none() && !app.schedules_open
+    if app.screen == Screen::Tasks && app.reader.is_none() && !app.schedules_open
         && app.search.as_ref().is_some_and(|search| search.editing)
     {
         return vec![k("⏎/↑/↓", tr!("go to the results", "ir a los resultados")), k("Esc", tr!("cancel", "cancela"))];

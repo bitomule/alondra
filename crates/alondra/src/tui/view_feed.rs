@@ -85,7 +85,7 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                     let known = snapshot.get(&key).map(String::as_str);
                     match client.views(&key, known) {
                         Ok(view)
-                            if matches!(key.as_str(), "home" | "tasks" | "fleet" | "schedules") =>
+                            if matches!(key.as_str(), "home" | "tasks" | "schedules") =>
                         {
                             let _ = tx.send(Msg::ViewHome(Ok(view)));
                         }

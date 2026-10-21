@@ -99,7 +99,7 @@ enum Cmd {
         #[command(subcommand)]
         command: ConfigCmd,
     },
-    #[command(about = tr!("Questions, tasks and fleet, as text", "Preguntas, tareas y flota, en texto"),
+    #[command(about = tr!("Questions and tasks, as text", "Preguntas y tareas, en texto"),
         after_help = examples(&["alondra status"]))]
     Status,
     #[command(about = tr!("Answer a question", "Contesta una pregunta"),
@@ -111,19 +111,15 @@ enum Cmd {
         option: Option<String>,
         text: Vec<String>,
     },
-    #[command(about = tr!("Send a message to a task, a node or the orchestrator", "Manda un mensaje a una tarea, a un nodo o al orquestador"),
-        long_about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator (orchestrator, or the id of the session it runs in). Anything about one task in progress goes to its task id, not to the orchestrator. A message to the orchestrator is maintenance: it acts on it and the user gets no card, unless --reply asks for an answer.", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador (orchestrator, o el id de la sesión en la que corre). Lo que trata de una tarea en marcha va a su id de tarea, no al orquestador. Un mensaje al orquestador es de mantenimiento: actúa y el usuario no recibe tarjeta, salvo que --reply pida respuesta."),
+    #[command(about = tr!("Send a message to a task or the orchestrator", "Manda un mensaje a una tarea o al orquestador"),
+        long_about = tr!("Send a message to a Task's node (task id) or the orchestrator (orchestrator). Anything about one task in progress goes to its task id, not to the orchestrator. A message to the orchestrator is maintenance: it acts on it and the user gets no card, unless --reply asks for an answer.", "Manda un mensaje al nodo de una tarea (id de tarea) o al orquestador (orchestrator). Lo que trata de una tarea en marcha va a su id de tarea, no al orquestador. Un mensaje al orquestador es de mantenimiento: actúa y el usuario no recibe tarjeta, salvo que --reply pida respuesta."),
         after_help = examples(&["alondra send t-login-fix Use the new endpoint", "alondra send orchestrator --reply Why is this task waiting?"]))]
     Send {
-        node: String,
+        to: String,
         #[arg(long, help = tr!("The orchestrator answers the user with a card", "El orquestador responde al usuario con una tarjeta"))]
         reply: bool,
         text: Vec<String>,
     },
-    #[command(about = tr!("Close a node's session", "Cierra la sesión de un nodo"),
-        long_about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"),
-        after_help = examples(&["alondra close login-fix"]))]
-    Close { node: String },
     #[command(about = tr!("Cancel tasks", "Cancela tareas"),
         long_about = tr!("Cancel tasks by id", "Cancela tareas por su id"),
         after_help = examples(&["alondra cancel t-1 t-2 --reason \"Done elsewhere\""]))]
@@ -375,7 +371,7 @@ fn main() -> Result<()> {
         Some(_) => !cli.json,
     };
     let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. }
-        | Cmd::Close { .. } | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
+        | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
         eprintln!("{warning}");
@@ -426,8 +422,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         },
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
-        Some(Cmd::Send { node, reply, text }) => cli::send(&node, &text.join(" "), reply),
-        Some(Cmd::Close { node }) => cli::close(&node),
+        Some(Cmd::Send { to, reply, text }) => cli::send(&to, &text.join(" "), reply),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
         Some(Cmd::Device { command }) => match command {
             DeviceCmd::List => commands::device_list(json),
@@ -721,37 +716,11 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 fn status() -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
     let home = client.views("home", None)?;
-    println!("{}", home.status.summary);
-    for (key, fallback) in [
-        ("home", tr!("Waiting for You", "Te espera")),
-        ("tasks", tr!("Tasks", "Tareas")),
-        ("fleet", tr!("Fleet", "Flota")),
-    ] {
-        let view = if key == "home" { home.clone() } else { client.views(key, None)? };
-        println!("\n{fallback}:");
-        for section in &view.sections {
-            if key != "home" {
-                if let Some(title) = &section.title { println!("  {title}:"); }
-            }
-            for item in &section.items {
-                match item {
-                    alondra_core::views::Item::Card(card) => {
-                        let summary = card.body.as_ref().map(|body| body.text.lines().next().unwrap_or_default()).unwrap_or(&card.title);
-                        println!("  {:<16} {}", card.eyebrow.as_ref().map_or("item", |label| label.text.as_str()), summary);
-                    }
-                    alondra_core::views::Item::Row(row) => println!("  {:<24} {}", row.badges.first().map_or("", |badge| badge.text.as_str()), row.title),
-                    alondra_core::views::Item::Markdown(markdown) => println!("  {}", markdown.text.lines().next().unwrap_or_default()),
-                    _ => {}
-                }
-            }
-        }
-    }
-    if !home.status.gauges.is_empty() {
-        println!("\n{}:", tr!("Machine", "Máquina"));
-        for gauge in &home.status.gauges { println!("  {}: {}", gauge.label, gauge.text); }
-    }
+    let tasks = client.views("tasks", None)?;
+    print!("{}", cli::status_text(&home, &tasks));
     Ok(())
 }
+
 
 fn keys_probe() -> anyhow::Result<()> {
     use std::io::Read;
@@ -806,13 +775,12 @@ mod mcp_entrypoint_tests {
     }
 
     #[test]
-    fn cancel_takes_several_tasks_and_close_one_node() {
+    fn cancel_takes_several_tasks_and_there_is_no_close() {
         let Some(Cmd::Cancel { tasks, reason }) = Cli::try_parse_from(["alondra", "cancel", "t-1", "t-2", "--reason", "done elsewhere"]).unwrap().command
             else { panic!("cancel did not parse") };
         assert_eq!((tasks, reason.as_deref()), (vec!["t-1".to_string(), "t-2".to_string()], Some("done elsewhere")));
         assert!(Cli::try_parse_from(["alondra", "cancel"]).is_err());
-        assert!(matches!(Cli::try_parse_from(["alondra", "close", "node"]).unwrap().command, Some(Cmd::Close { .. })));
-        assert!(Cli::try_parse_from(["alondra", "close", "node", "--force"]).is_err(), "--force would discard unsaved work, so it does not exist");
+        assert!(Cli::try_parse_from(["alondra", "close", "node"]).is_err(), "cancelling a task closes its node");
     }
 }
 

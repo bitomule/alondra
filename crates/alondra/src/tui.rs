@@ -147,7 +147,6 @@ pub struct Key(pub String);
 pub enum Screen {
     Inbox,
     Tasks,
-    Fleet,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -604,10 +603,6 @@ enum Msg {
         key: Option<Key>,
         result: Result<String, String>,
     },
-    Closed {
-        name: String,
-        result: Result<Closed, String>,
-    },
     File {
         route: String,
         result: Result<files::FileBody, String>,
@@ -642,14 +637,6 @@ enum Msg {
     },
 }
 
-/// How a close that alondrad accepted ended: a background job is gone; an interactive session
-/// only left the fleet and its terminal is still open.
-#[derive(Debug, PartialEq)]
-pub enum Closed {
-    Removed,
-    LeftFleet,
-}
-
 pub enum Flow {
     Go,
     Quit,
@@ -675,9 +662,9 @@ pub struct App {
     pub offline: bool,
     pub screen: Screen,
     pub schedules_open: bool,
-    /// This Mac's permissions allowed always, open over the Fleet.
+    /// This Mac's permissions allowed always, open over the Tasks.
     pub rules: Option<rules::Rules>,
-    /// The MCP servers of the nodes and projects, open over the Fleet.
+    /// The MCP servers of the nodes and projects, open over the list screens.
     pub mcp_servers: Option<mcp_servers::McpServers>,
     pub sel: Option<Key>,
     sel_idx: usize,
@@ -1316,7 +1303,7 @@ impl App {
                 .reader
                 .as_ref()
                 .is_some_and(|r| r.find.as_ref().is_some_and(|f| f.editing))
-            || (self.screen == Screen::Fleet
+            || (self.screen == Screen::Tasks
                 && self.reader.is_none()
                 && self.search.as_ref().is_some_and(|s| s.editing))
     }
@@ -1370,7 +1357,6 @@ impl App {
             Screen::Inbox => "home",
             Screen::Tasks if self.schedules_open => "schedules",
             Screen::Tasks => "tasks",
-            Screen::Fleet => "fleet",
         }
     }
 
@@ -1792,17 +1778,6 @@ impl App {
         }
     }
 
-    fn closed(&mut self, name: &str, result: Result<Closed, String>) {
-        match result {
-            Ok(Closed::Removed) => self.flash(trf!("{name} closed", "{name} cerrado")),
-            Ok(Closed::LeftFleet) => self.flash(trf!(
-                "{name} left the fleet; it is an interactive session, so close its terminal with /exit",
-                "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit"
-            )),
-            Err(why) => self.fail(trf!("{name} was not closed: {why}", "{name} no se cerró: {why}")),
-        }
-    }
-
     /// Copies a dropped file into Alondra's storage while the user keeps writing.
     fn attach(&mut self, path: std::path::PathBuf) {
         let name = path
@@ -2117,7 +2092,6 @@ impl App {
                     ));
                 }
             },
-            Msg::Closed { name, result } => self.closed(&name, result),
             Msg::McpOpened { card, server, result } => self.mcp_opened(card, server, result),
             Msg::File { route, result } => {
                 self.loading.remove(&route);
@@ -2486,7 +2460,7 @@ impl App {
             self.find_key(k);
             return Flow::Go;
         }
-        if self.screen == Screen::Fleet
+        if self.screen == Screen::Tasks
             && self.reader.is_none()
             && !self.schedules_open
             && self.search.as_ref().is_some_and(|s| s.editing)
@@ -2502,20 +2476,10 @@ impl App {
         self.press(key)
     }
 
-    /// Inbox, Tasks, Agents and round again.
     fn switch_screen(&mut self) {
         self.show(match self.screen {
             Screen::Inbox => Screen::Tasks,
-            Screen::Tasks => Screen::Fleet,
-            Screen::Fleet => Screen::Inbox,
-        });
-    }
-
-    fn switch_screen_back(&mut self) {
-        self.show(match self.screen {
-            Screen::Inbox => Screen::Fleet,
             Screen::Tasks => Screen::Inbox,
-            Screen::Fleet => Screen::Tasks,
         });
     }
 
@@ -2601,10 +2565,6 @@ impl App {
                 self.reader = None;
                 self.show(Screen::Tasks);
             }
-            "fleet" | "f" | "agents" => {
-                self.reader = None;
-                self.show(Screen::Fleet);
-            }
             "settings" | "ajustes" | "mcp" => {
                 self.reader = None;
                 self.open_mcp_servers();
@@ -2614,8 +2574,8 @@ impl App {
                 self.move_inbox(i);
             }
             other => self.fail(trf!(
-                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :settings, :<number>)",
-                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :agents, :ajustes, :<número>)"
+                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :settings, :<number>)",
+                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :ajustes, :<número>)"
             )),
         }
         Flow::Go

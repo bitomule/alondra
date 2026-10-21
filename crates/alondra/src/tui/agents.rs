@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::keys::{self, Cmd, Motion};
 use super::{
-    App, Closed, Flow, Msg, Pane, Remote, Search, THREADS_EVERY_MS, Target, input::TextInput,
+    App, Flow, Msg, Pane, Remote, Search, THREADS_EVERY_MS, Target, input::TextInput,
 };
 use crate::client::Client;
 use crate::ops::{self, MessageKind, Recovery};
