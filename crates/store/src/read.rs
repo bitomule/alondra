@@ -45,7 +45,7 @@ pub fn read_journal<T, E: From<Error>>(
         let initial = InputId::new(initial).map_err(Error::from)?;
         let texts = texts(connection, &task)?;
         let (lifecycle, entries) =
-            persistence::replay(connection, &task, initial.clone(), revision, |aggregate, event| read(aggregate, event, &texts))?;
+            persistence::replay(connection, &task, initial.clone(), revision, &mut Default::default(), |aggregate, event| read(aggregate, event, &texts))?;
         tasks.insert(task, JournalTask { initial, entries, texts, lifecycle });
     }
     Ok(tasks)

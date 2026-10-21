@@ -2852,6 +2852,44 @@ fn a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending() {
     );
 }
 
+#[test]
+fn a_transaction_looks_up_each_input_once_however_many_writes_it_makes_on_the_task() {
+    const TOLD: usize = 400;
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    fixture.launch("task");
+    let task: TaskId = "task".into();
+    let before = measure::counts();
+    let mut tx = fixture.transaction();
+    for told in 0..TOLD {
+        let input = format!("told-{told}");
+        tx.put_input(&task, payload(&input)).unwrap();
+        let revision = tx.load(&task).unwrap().revision();
+        tx.apply(&task, revision, &input, Event::Tell { input: id(&input) }).unwrap();
+        tx.stage_input(&task, &id(&input)).unwrap();
+    }
+    tx.commit().unwrap();
+    let written = measure::counts() - before;
+    let stored = u64::try_from(TOLD + 1).unwrap();
+    assert!(
+        written.input_checks <= stored,
+        "writing {TOLD} tells in one transaction looked up {} inputs for {stored} stored ones",
+        written.input_checks
+    );
+
+    let tx = fixture.transaction();
+    tx.load(&task).unwrap();
+    let loaded = measure::counts();
+    for _ in 0..3 {
+        assert_eq!(tx.load(&task).unwrap().pending_inputs().len(), TOLD + 1);
+    }
+    assert_eq!(
+        (measure::counts() - loaded).input_checks,
+        0,
+        "reading a task this transaction already replayed looks up none of its inputs again"
+    );
+}
+
 fn tamper_after_a_read(
     through_inspect: bool,
     tamper: impl FnOnce(&Connection),

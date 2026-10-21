@@ -510,12 +510,15 @@ impl<'connection> LifecycleTransaction<'connection> {
     }
     fn aggregate(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
         if let Some(aggregate) = self.aggregates.get(task) {
-            persistence::revalidate(&self.transaction, &self.scope, &aggregate)?;
+            self.aggregates
+                .inputs(task, |known| persistence::revalidate(&self.transaction, &self.scope, &aggregate, known))?;
             return Ok(aggregate);
         }
-        Ok(self
-            .aggregates
-            .keep(persistence::load(&self.transaction, &self.scope, task)?))
+        Ok(self.aggregates.keep(self.replay(task)?))
+    }
+    fn replay(&self, task: &TaskId) -> Result<TaskLifecycle> {
+        self.aggregates
+            .inputs(task, |known| persistence::load(&self.transaction, &self.scope, task, known))
     }
     pub fn create(&mut self, task: &TaskId, initial: InputPayload) -> Result<()> {
         staging!(self, {
@@ -531,6 +534,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 params![task.0, initial.id.as_str(), initial.text],
             )?;
             savepoint.commit()?;
+            self.aggregates.inputs(task, |known| known.stored(&initial.id));
             self.touched.insert(task.clone());
             Ok(())
         })
@@ -552,6 +556,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 params![task.0, initial.as_str()],
             )?;
             savepoint.commit()?;
+            self.aggregates.inputs(task, |known| known.stored(&initial));
             self.touched.insert(task.clone());
             Ok(())
         })
@@ -578,6 +583,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                     )?;
                 }
             }
+            self.aggregates.inputs(task, |known| known.stored(input));
             self.touched.insert(task.clone());
             Ok(())
         })
@@ -631,6 +637,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                     params![task.0, input.id.as_str(), input.text],
                 )?;
             }
+            self.aggregates.inputs(task, |known| known.stored(&input.id));
             self.touched.insert(task.clone());
             Ok(())
         })
@@ -650,7 +657,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             self.aggregates.take(task);
             let mut aggregate = match Arc::try_unwrap(shared) {
                 Ok(aggregate) => aggregate,
-                Err(_) => persistence::load(&self.transaction, &self.scope, task)?,
+                Err(_) => self.replay(task)?,
             };
             let prior: Option<(Revision, String)> = self
                 .transaction
@@ -703,7 +710,8 @@ impl<'connection> LifecycleTransaction<'connection> {
                 })
                 .collect();
             let savepoint = self.transaction.savepoint()?;
-            persistence::require_inputs(&savepoint, &aggregate)?;
+            self.aggregates
+                .inputs(task, |known| known.require(&savepoint, &aggregate))?;
             persistence::save_relations(&savepoint, &aggregate)?;
             savepoint.execute(
                 "INSERT INTO lifecycle_events(task_id,revision,command_id,event) VALUES(?1,?2,?3,?4)",
@@ -1430,7 +1438,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             let (mut permits, mut control_permits) = (vec![], vec![]);
             for task in &self.touched {
                 let aggregate = self.load(task)?;
-                persistence::require_inputs(&self.transaction, &aggregate)?;
+                self.aggregates
+                    .inputs(task, |known| known.require(&self.transaction, &aggregate))?;
                 let sdk = aggregate.execution().is_some_and(|stamp| through_sdk(stamp).is_ok());
                 if sdk {
                     persistence::require_intents(&self.transaction, &aggregate)?;

@@ -8,10 +8,11 @@ pub(super) fn load(
     connection: &Connection,
     scope: &AuthorityScope,
     task: &TaskId,
+    known: &mut KnownInputs,
 ) -> Result<TaskLifecycle> {
     let (initial, revision) = head(connection, scope, task)?;
     crate::measure::aggregate_loaded();
-    let (aggregate, _) = replay(connection, task, InputId::new(initial)?, revision, |_, _| Ok::<_, Error>(()))?;
+    let (aggregate, _) = replay(connection, task, InputId::new(initial)?, revision, known, |_, _| Ok::<_, Error>(()))?;
     Ok(aggregate)
 }
 
@@ -22,10 +23,10 @@ pub(super) fn replay<T, E: From<Error>>(
     task: &TaskId,
     initial: InputId,
     revision: Revision,
+    known: &mut KnownInputs,
     mut read: impl FnMut(&TaskLifecycle, &Event) -> std::result::Result<T, E>,
 ) -> std::result::Result<(TaskLifecycle, Vec<T>), E> {
     let mut aggregate = TaskLifecycle::planned(task.clone(), initial).map_err(Error::from)?;
-    let mut known = KnownInputs::default();
     known.require(connection, &aggregate)?;
     let mut statement = connection
         .prepare_cached("SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision")
@@ -61,6 +62,7 @@ pub(super) fn revalidate(
     connection: &Connection,
     scope: &AuthorityScope,
     aggregate: &TaskLifecycle,
+    known: &mut KnownInputs,
 ) -> Result<()> {
     let (_, revision) = head(connection, scope, aggregate.task())?;
     let (events, last): (Revision, Revision) = connection.query_row(
@@ -71,7 +73,7 @@ pub(super) fn revalidate(
     if aggregate.revision() != revision || (events, last) != (revision, revision) {
         return Err(Error::CorruptJournal);
     }
-    require_inputs(connection, aggregate)?;
+    known.require(connection, aggregate)?;
     verify_relations(connection, aggregate)
 }
 
@@ -91,17 +93,17 @@ fn head(connection: &Connection, scope: &AuthorityScope, task: &TaskId) -> Resul
     Ok((initial, revision))
 }
 
-pub(super) fn require_inputs(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
-    KnownInputs::default().require(connection, aggregate)
-}
-
-/// The inputs of one task a replay already found stored. Its inputs never change once written, so
-/// a replay looks each one up once however many events it stays pending for, and after each event
-/// only looks at the inputs that event names: no other can have become pending.
+/// The inputs of one task already found stored, or written by the transaction that keeps them.
+/// Its inputs never change once written, so a replay or a transaction looks each one up once
+/// however many events it stays pending for, and after each event a replay only looks at the
+/// inputs that event names: no other can have become pending.
 #[derive(Default)]
 pub(super) struct KnownInputs(BTreeSet<InputId>);
 
 impl KnownInputs {
+    pub(super) fn stored(&mut self, input: &InputId) {
+        self.0.insert(input.clone());
+    }
     pub(super) fn require(&mut self, connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
         for input in aggregate.pending_inputs() {
             if !self.0.contains(input) {

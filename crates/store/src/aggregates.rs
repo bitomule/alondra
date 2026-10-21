@@ -1,7 +1,8 @@
 //! Each task's aggregate, replayed from its journal at most once per transaction while only the
 //! store's own operations write the journal. A journal write outside them, a schema change or a
-//! failed operation forgets every entry, so the next read replays the journal again.
-use crate::Result;
+//! failed operation forgets every entry, so the next read replays the journal again. The inputs a
+//! task's reads found stored are kept and forgotten the same way.
+use crate::{Result, persistence::KnownInputs};
 use alondra_domain::TaskLifecycle;
 use alondra_foundation::TaskId;
 use rusqlite::{Connection, Transaction};
@@ -32,6 +33,7 @@ const JOURNAL: [&str; 8] = [
 #[derive(Default)]
 pub(super) struct Aggregates {
     entries: RefCell<BTreeMap<TaskId, Arc<TaskLifecycle>>>,
+    inputs: RefCell<BTreeMap<TaskId, KnownInputs>>,
     journal_writes: Arc<AtomicU64>,
     mark: Cell<Option<Mark>>,
 }
@@ -68,7 +70,11 @@ impl Aggregates {
     }
     fn forget(&self) {
         self.entries.borrow_mut().clear();
+        self.inputs.borrow_mut().clear();
         self.mark.set(None);
+    }
+    pub(super) fn inputs<T>(&self, task: &TaskId, use_them: impl FnOnce(&mut KnownInputs) -> T) -> T {
+        use_them(self.inputs.borrow_mut().entry(task.clone()).or_default())
     }
     pub(super) fn get(&self, task: &TaskId) -> Option<Arc<TaskLifecycle>> {
         self.entries.borrow().get(task).cloned()
