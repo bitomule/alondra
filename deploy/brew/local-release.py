@@ -8,6 +8,7 @@ import pathlib
 import platform
 import plistlib
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -26,15 +27,14 @@ FIRST_SDK_RELEASE = (0, 3, 0)
 FRESH_SDK = 'fresh-sdk'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
-# What a release builds, by the name it ships under.
+# What a release ships, by the name it ships under: the binaries `bazelisk test //crates/...` built
+# and tested, in the same configuration, so the release never compiles them a second time.
 RELEASE_TARGETS = {
     'alondra': '//crates/alondra:alondra',
     'alondrad': '//crates/alondrad:alondrad',
     'alondrad-launcher': '//crates/alondrad:alondrad-launcher',
     'alondra-host': '//agent-host:release_host',
 }
-# Cargo.toml's release profile, as the Rust action of each shipped binary runs it (.bazelrc).
-RELEASE_CODEGEN = ('-Clto=thin', '-Ccodegen-units=1', '-Cpanic=abort', '-Cstrip=symbols')
 HOST_IDENTIFIER = 'com.bitomule.alondra-host'
 # V8 compiles JavaScript at run time; the hardened runtime allows it only with this entitlement.
 HOST_ENTITLEMENTS = ROOT / 'agent-host/host-entitlements.plist'
@@ -115,22 +115,33 @@ def bazel_file(label, *flags):
     return execroot / files[0]
 
 
-def release_build():
-    """Builds what ships with Bazel's release configuration, and checks that each shipped Rust
-    binary was compiled as Cargo's release profile compiles it."""
-    run('bazelisk', 'build', '--config=release', *RELEASE_TARGETS.values())
-    for name, label in RELEASE_TARGETS.items():
-        if not label.startswith('//crates/'):
-            continue
-        action = run('bazelisk', 'aquery', '--config=release', f'mnemonic("Rustc", {label})', '--output=text', capture=True)
-        missing = [flag for flag in RELEASE_CODEGEN if flag not in action]
-        if missing:
-            raise RuntimeError(f'{name} was not built with {", ".join(missing)}: check build:release in .bazelrc')
-        if action.rfind('-Cstrip=symbols') < action.rfind('--codegen=strip='):
-            raise RuntimeError(f'{name} keeps its symbols: another strip level comes after -Cstrip=symbols')
-    built = {name: bazel_file(label, '--config=release') for name, label in RELEASE_TARGETS.items()}
+def release_build(ver):
+    """Finds what ships among the outputs the tests just built: with the tests' flags, Bazel runs
+    no new compile action for the Rust binaries."""
+    run('bazelisk', 'build', *RELEASE_TARGETS.values())
+    built = {name: bazel_file(label) for name, label in RELEASE_TARGETS.items()}
+    check_versions(ver, built)
     built['alondra-host.json'] = built['alondra-host'].with_name('alondra-host.manifest.json')
     return built
+
+
+def closed_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+def check_versions(ver, built):
+    """Never sign binaries that would report another version than the one being released."""
+    with tempfile.TemporaryDirectory(prefix='alondra-release-version-') as home:
+        environment = {'HOME': home, 'ALONDRA_HOME': str(pathlib.Path(home) / '.alondra'), 'ALONDRA_LANG': 'en',
+                       'ALONDRA_PORT': str(closed_port()), 'PATH': '/usr/bin:/bin'}
+        daemon = run(built['alondrad'], '--version', capture=True, env=environment).strip()
+        cli = run(built['alondra'], '--version', capture=True, env=environment).strip()
+    if daemon != f'alondrad {ver}':
+        raise RuntimeError(f'alondrad reports {daemon!r}, not {ver}: bump version.bzl with Cargo.toml')
+    if not cli.startswith(f'alondra {ver} '):
+        raise RuntimeError(f'alondra reports {cli!r}, not {ver}: bump version.bzl with Cargo.toml')
 
 
 def rehearse_upgrade(ver, output):
@@ -257,7 +268,7 @@ def prepare(ver, source, output):
     output.chmod(0o700)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
     run('bazelisk', 'test', '//crates/...')
-    built = release_build()
+    built = release_build(ver)
     for target in release.TARGETS:
         with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
             payload = pathlib.Path(temp)

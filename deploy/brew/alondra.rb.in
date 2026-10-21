@@ -3,7 +3,7 @@ class Alondra < Formula
   homepage "https://davidcollado.dev"
   version "@VERSION@"
 
-  depends_on macos: :sonoma
+  depends_on macos: :tahoe
   depends_on arch: :arm64
   depends_on "tuicr"
 

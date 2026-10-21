@@ -1,8 +1,7 @@
 version: 1
 
-# Brew ships with Cargo, so a crate dependency missing from a BUILD.bazel only breaks
-# the Bazel build that `make build/install/test/e2e-sandbox` use. These checks run Bazel
-# whenever a Rust source, manifest or build file changes.
+# Brew, `make build/install/test/e2e-sandbox` and the tests all use the Bazel build. These
+# checks run Bazel whenever a Rust source, manifest or build file changes.
 checks:
   bazel-build:
     uses: bazel/build

@@ -247,7 +247,7 @@ class LocalReleaseTests(unittest.TestCase):
             l.preflight('0.1.2', retry_source='source')
 
 
-    def release_fixture(self, *, failure=None, codegen=l.RELEASE_CODEGEN):
+    def release_fixture(self, *, failure=None, reported='0.1.2'):
         """A prepare whose Bazel, signing and packaging are fakes: Bazel answers with built files in a
         fake execution root, and each signature appends who signed it."""
         execroot = self.root / 'execroot'
@@ -255,10 +255,12 @@ class LocalReleaseTests(unittest.TestCase):
         built = {name: execroot / 'bazel-out/release' / label.split(':')[-1] for name, label in l.RELEASE_TARGETS.items()}
         signed, archive_bytes, built_with = [], {}, []
         def fake(*args, **kwargs):
+            if args[0] == 'bazelisk':
+                self.assertFalse(any(str(arg).startswith('--config') for arg in args), 'one configuration: the tests\'')
             if args[:2] == ('bazelisk', 'info'):
                 return f'{execroot}\n'
-            if args[:3] == ('bazelisk', 'build', '--config=release'):
-                built_with.append(args[3:])
+            if args[:2] == ('bazelisk', 'build') and args[2:] == tuple(l.RELEASE_TARGETS.values()):
+                built_with.append(args[2:])
                 for name, path in built.items():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(name.encode())
@@ -268,14 +270,17 @@ class LocalReleaseTests(unittest.TestCase):
                 if failure == 'build':
                     raise subprocess.CalledProcessError(1, args)
                 return ''
-            if args[:3] == ('bazelisk', 'aquery', '--config=release'):
-                return "'--codegen=strip=debuginfo' " + ' '.join(f"'{flag}'" for flag in codegen)
-            if args[:3] == ('bazelisk', 'cquery', '--config=release'):
+            if args[:2] == ('bazelisk', 'cquery') and args[-1] in l.RELEASE_TARGETS.values():
                 name = next(name for name, label in l.RELEASE_TARGETS.items() if label == args[-1])
                 relative = built[name].relative_to(execroot)
                 return f'{relative}\n{relative}.clippy.ok\n' + (f'{relative.with_name("alondra-host.manifest.json")}\n' if name == 'alondra-host' else '')
             if args[0] == 'bazelisk':
                 return bazel(args)
+            if args[1:] == ('--version',):
+                self.assertNotEqual(kwargs['env']['HOME'], str(pathlib.Path.home()))
+                self.assertEqual(kwargs['env']['PATH'], '/usr/bin:/bin')
+                name = pathlib.Path(args[0]).name
+                return f'alondrad {reported}\n' if name == 'alondrad' else f'alondra {reported} · service not running\n'
             if rehearsal_call(args):
                 self.assertFalse((output / 'manifest.json').exists(), 'the rehearsal runs before the manifest exists')
                 if failure == 'rehearsal':
@@ -317,7 +322,7 @@ class LocalReleaseTests(unittest.TestCase):
         patch.object(l, 'require_disk_space').start()
         return output, built, signed, archive_bytes, built_with
 
-    def test_a_release_ships_the_bazel_release_build_signed_with_each_identity(self):
+    def test_a_release_signs_copies_of_the_binaries_the_tests_built(self):
         output, built, signed, originals, built_with = self.release_fixture()
         l.prepare('0.1.2', 'source', output)
         self.assertEqual(built_with, [tuple(l.RELEASE_TARGETS.values())])
@@ -328,16 +333,12 @@ class LocalReleaseTests(unittest.TestCase):
             self.assertEqual((output / name).read_bytes(), original)
         l.verify_prepared('0.1.2', 'source', output)
 
-    def test_a_binary_built_without_the_release_profile_never_reaches_a_signature(self):
-        for flag in l.RELEASE_CODEGEN:
-            output, _, signed, _, _ = self.release_fixture(codegen=tuple(f for f in l.RELEASE_CODEGEN if f != flag))
-            with self.assertRaisesRegex(RuntimeError, flag):
-                l.prepare('0.1.2', 'source', output)
-            self.assertEqual(signed, [])
-            self.assertFalse((output / 'manifest.json').exists())
-            patch.stopall()
-            for child in self.root.iterdir():
-                shutil.rmtree(child) if child.is_dir() else child.unlink()
+    def test_binaries_that_report_another_version_never_reach_a_signature(self):
+        output, _, signed, _, _ = self.release_fixture(reported='0.1.0')
+        with self.assertRaisesRegex(RuntimeError, "reports 'alondrad 0.1.0', not 0.1.2"):
+            l.prepare('0.1.2', 'source', output)
+        self.assertEqual(signed, [])
+        self.assertFalse((output / 'manifest.json').exists())
 
     def test_the_host_entitlements_grant_only_what_v8_needs(self):
         import plistlib
