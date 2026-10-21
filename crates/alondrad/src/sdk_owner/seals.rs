@@ -22,15 +22,17 @@ impl Seals {
         take_of(&mut self.queued.lock().expect("seals poisoned"), task)
     }
 
-    /// Blocks until something of `task` arrives or `stopped` says the owner ends.
-    pub(crate) fn wait(&self, task: &TaskId, stopped: impl Fn() -> bool) -> Committed {
+    /// Blocks until something of `task` arrives, `stopped` says the owner ends, or `timeout` passes.
+    pub(crate) fn wait_for(&self, task: &TaskId, timeout: std::time::Duration, stopped: impl Fn() -> bool) -> Committed {
+        let deadline = std::time::Instant::now() + timeout;
         let mut queued = self.queued.lock().expect("seals poisoned");
         loop {
             let taken = take_of(&mut queued, task);
-            if !empty(&taken) || stopped() {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if !empty(&taken) || stopped() || left.is_zero() {
                 return taken;
             }
-            queued = self.arrived.wait(queued).expect("seals poisoned");
+            queued = self.arrived.wait_timeout(queued, left).expect("seals poisoned").0;
         }
     }
 

@@ -437,7 +437,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         let batch = OrderedObservation { owner_generation, execution: stamp.clone(), cursor: event.cursor, evidence: event.payload.clone() };
         let binding = grant.binding().clone();
         let (normalizer, home) = (worker.normalizer(), domain.home());
-        domain.own(scope.clone(), |owner| owner.stage_observation(&binding, owner_generation, &batch, normalizer, home))
+        commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home)
             .map_err(failed("committing what the ended host observed"))?;
     }
     let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
@@ -718,7 +718,7 @@ impl Driver {
             _ => None,
         };
         let epoch = self.scope.epoch().clone();
-        self.domain
+        let recorded = self.domain
             .own(self.scope.clone(), |owner| {
                 owner.record_control_receipt(control, receipt(handoff))?;
                 let Some((stamp, id, turn)) = accepted else { return Ok(()) };
@@ -733,9 +733,17 @@ impl Driver {
                     expected_revision: 0,
                     command: Command::RecordInterruptAccepted { task_id: stamp.task().clone(), generation: stamp.generation(), turn: turn.as_str().into() },
                 };
+                if let Some(refusal) = owner.refusal(&envelope) {
+                    log!("the interrupt Claude accepted on {} is left out: {}", stamp.task(), refusal.message);
+                    return Ok(());
+                }
                 owner.stage_command(&Actor::System, &envelope, Attached::None).map(drop)
-            })
-            .map_err(failed("recording the control's handoff"))?;
+            });
+        match recorded {
+            Ok(_) => {}
+            Err(StoreError::Storage(error)) if stale(&error) => log!("the handoff of a control to the SDK host of {} is no longer the store's to record", self.task),
+            Err(error) => return Err(failed("recording the control's handoff")(error)),
+        }
         self.sealed();
         self.results.extend(awaited);
         Ok(())
@@ -762,9 +770,11 @@ impl Driver {
         if handoff == Handoff::Uncertain && self.worker.host_exited() {
             self.host_closed = true;
         }
-        self.domain
-            .own(self.scope.clone(), |owner| owner.record_receipt(command, receipt(handoff)))
-            .map_err(failed("recording the handoff"))?;
+        match self.domain.own(self.scope.clone(), |owner| owner.record_receipt(command, receipt(handoff))) {
+            Ok(_) => {}
+            Err(StoreError::Storage(error)) if stale(&error) => log!("the handoff of an input to the SDK host of {} is no longer the store's to record", self.task),
+            Err(error) => return Err(failed("recording the handoff")(error)),
+        }
         self.sealed();
         if handoff == Handoff::Offered {
             self.awaiting = Some(input);
@@ -794,8 +804,7 @@ impl Driver {
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let binding = self.worker.binding().clone();
         let (worker, home) = (&self.worker, self.domain.home());
-        let (acceptance, _) = self.domain
-            .own(self.scope.clone(), |owner| owner.stage_observation(&binding, generation, &batch, worker.normalizer(), home))
+        let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home)
             .map_err(failed("committing the observation"))?;
         if let Some(answered) = answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);
@@ -807,6 +816,12 @@ impl Driver {
             #[cfg(test)]
             self.domain.before_acknowledge();
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
+        }
+        if !unrecorded.is_empty() {
+            // The task's record no longer follows its Claude: only that turn fails, cut by a new
+            // host that resumes the same session, as one whose host ended does.
+            self.owner_failed = true;
+            return Err(Failed(format!("Alondra could not record what its Claude did ({}): its session goes on in a new host", unrecorded.join("; "))));
         }
         Ok(acceptance)
     }
@@ -835,8 +850,8 @@ impl Driver {
     }
 
     /// One step: send a waiting control first, then a waiting dispatch unless a pause holds it,
-    /// else read the host when the lifecycle waits for it and the host has something, else wait
-    /// for what the store issues for this task.
+    /// else read the host when the lifecycle waits for it or the host has something, else wait a
+    /// moment for what the store issues for this task.
     pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
         let stepped = self.step_once(stopped);
         if stepped.is_err() {
@@ -864,7 +879,12 @@ impl Driver {
             }
             return self.observe().map(drop);
         }
-        let sealed = self.domain.seals.wait(&self.task, || stopped() || paused && !self.paused());
+        // Claude goes on by itself while the task rests, as when a subagent hands its report back
+        // after the turn ended: what its host says is read as it comes.
+        if !self.replacement && self.worker.readable(Duration::ZERO).unwrap_or(true) {
+            return self.observe().map(drop);
+        }
+        let sealed = self.domain.seals.wait_for(&self.task, WAKE, || stopped() || paused && !self.paused());
         self.permits.extend(sealed.permits);
         self.controls.extend(sealed.control_permits);
         Ok(())
@@ -975,6 +995,26 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         self.domain.contexts.forget(&self.task);
+    }
+}
+
+/// Commits what the host observed. What the domain refuses never stops the node: the observation
+/// commits again without it, and the second value says what of the task's lifecycle it left out.
+#[allow(clippy::too_many_arguments)]
+fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domain: &DomainRuntime, scope: &AuthorityScope, binding: &ProviderBinding,
+    generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
+    let stage = |probe: bool| domain
+        .own(scope.clone(), |owner| {
+            let acceptance = owner.stage_observation(binding, generation, batch, normalizer, home, probe)?;
+            Ok((acceptance, owner.unrecorded().to_vec()))
+        })
+        .map(|(staged, _)| staged);
+    match stage(false) {
+        Err(StoreError::Domain(refusal)) => {
+            log!("the domain refused part of what an SDK host observed ({}): it commits without it", refusal.message);
+            stage(true)
+        }
+        staged => staged,
     }
 }
 

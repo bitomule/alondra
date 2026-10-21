@@ -220,7 +220,7 @@ fn a_question_that_holds_a_delivery_back_hides_its_card_until_it_is_answered() {
         card,
     });
     assert_eq!(notified_user(&asked), ["q"]);
-    assert_eq!(s.attention(&s.tasks[&"a".into()]), Attention::Wait(WaitReason::Answer { need: "Pick a name".into() }));
+    assert_eq!(s.attention(&s.tasks[&"a".into()]), Attention::Wait(WaitReason::Answer { card: "q".into(), need: "Pick a name".into() }));
     assert!(!s.item(&s.interactions[&"da".into()]).pending);
     let answered = ok(&mut s, user(), Command::AnswerQuestion {
         attachments: vec![], interaction_id: "q".into(), option_id: "x".into(), inputs: Default::default(),
@@ -442,7 +442,7 @@ fn only_an_open_blocker_puts_a_task_in_awaiting_blocker_and_other_waits_show_the
         ],
         card,
     });
-    assert_eq!(s.attention(&s.tasks[&"a".into()]), Attention::Wait(WaitReason::Answer { need: "Pick a name".into() }));
+    assert_eq!(s.attention(&s.tasks[&"a".into()]), Attention::Wait(WaitReason::Answer { card: "q".into(), need: "Pick a name".into() }));
     assert_ne!(state_of(&s, "a"), TaskState::AwaitingBlocker, "a question is not a task blocking it");
     let mut s = pair();
     review_relation(&mut s);

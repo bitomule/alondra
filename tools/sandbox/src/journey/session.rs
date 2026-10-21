@@ -14,11 +14,14 @@ use super::{Report, User, steps::*, user::mentions};
 use crate::{
     fake::{
         Fakes,
-        native::{self, Session},
+        native::{self, Order, Session},
         script::Step,
     },
     sandbox::{Sandbox, wait_for},
 };
+
+/// A title longer than a card's headline can hold with what the card asks.
+const S5_TITLE: &str = "Plan the onboarding without the login barrier and the GitHub permissions it asks for";
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
@@ -107,6 +110,67 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             None => bail!("the resumed session holds no bearer"),
         })
     });
+    report.case("S5", "Claude asks to leave plan mode with 41 points from a turn it started by itself while the user's message waits: it gets why, shortens the plan, and the user approves it", |report| {
+        request(report, fakes, &user, &task_script("req-s5", "t-s5", S5_TITLE), S5_TITLE)?;
+        let node = launched(report, fakes, "t-s5")?;
+        act(report, fakes, &node, "the node's turn ends while its research runs", &[Step::Speak { said: "Waiting for the research report".into(), behind: None, listed: None }])?;
+        let ended = wait(report, "a card asks how it goes on", || card_in_inbox(&user, "turn-ended-t-s5-"))?;
+        let view = user.view(&format!("card:{ended}"))?;
+        report.snapshot("card-long-title", &view)?;
+        report.step("the card says all it asks: the long title is shortened, never the sentence", || {
+            anyhow::ensure!(mentions(&view, "…” stopped without delivering or asking: tell it how to go on"), "{view}");
+            Ok(())
+        })?;
+        act(report, fakes, &node, "the research report starts a turn of Claude's own", &[Step::OwnTurn { said: "The report is in: writing the plan".into() }])?;
+        wait(report, "the card that asked how it goes on leaves Inbox: the node works", || {
+            let inbox = user.inbox()?;
+            Ok(((!inbox.contains(&ended)).then_some(()), format!("{inbox:?}")))
+        })?;
+        state(report, &user, "t-s5", WORKING)?;
+        let agent = wait(report, "Fleet lists the working node", || Ok((node_of(&user, "Plan the onboarding")?, "no node yet".into())))?;
+        report.step("the user writes to the node while its turn runs", || {
+            let (status, body) = user.send("POST", &format!("/agents/{agent}/messages"), Some(json!({"text": "Submit your plan"})))?;
+            anyhow::ensure!((200..300).contains(&status), "{status} {body}");
+            Ok(())
+        })?;
+        wait(report, "the native Claude has the message queued behind its turn", || told(fakes, &node, "Submit your plan"))?;
+        refused(report, fakes, &node, "Claude asks to leave plan mode with 41 points and is told why it was refused",
+            &Step::LeavePlanMode { points: 41 }, "at most 40 points")?;
+        report.step("the node keeps its host and nobody was asked", || {
+            anyhow::ensure!(fakes.session(&node.short)?.running() && fakes.starts(&node.short)?.len() == 1, "the native Claude was restarted or stopped");
+            let inbox = user.inbox()?;
+            anyhow::ensure!(!inbox.iter().any(|id| id.starts_with("host-lost-t-s5-") || id.starts_with("decision-t-s5-")), "{inbox:?}");
+            Ok(())
+        })?;
+        std::thread::scope(|scope| {
+            let shorter = scope.spawn(|| native::order(fakes, &node, &Order { steps: vec![Step::LeavePlanMode { points: 2 }], end_turn: false }));
+            let card = wait(report, "Claude asks again with a plan of 2 points: its Review card waits in Inbox", || card_in_inbox(&user, "decision-t-s5-"))?;
+            let view = user.view(&format!("card:{card}"))?;
+            report.snapshot("card-shorter-plan", &view)?;
+            let approve = user.action(&view, "accept:").with_context(|| format!("the card offers no «Approve»: {view}"))?;
+            report.step("the user approves the plan", || user.press(approve["id"].as_str().unwrap_or_default(), None, None))?;
+            report.step("the approval reaches Claude", || {
+                let outcome = shorter.join().map_err(|_| anyhow::anyhow!("the order panicked"))??.pop().context("no outcome")?;
+                anyhow::ensure!(outcome.ok, "{}", outcome.text);
+                Ok(())
+            })
+        })?;
+        act(report, fakes, &node, "Claude's own turn ends and the message that waited runs", &[Step::EndOwnTurn])?;
+        wait(report, "the turn of the message ends with one card", || {
+            let inbox = user.inbox()?;
+            let cards = inbox.iter().filter(|id| id.starts_with("turn-ended-t-s5-")).count();
+            Ok(((cards == 1 && !inbox.iter().any(|id| id.starts_with("host-lost-t-s5-"))).then_some(()), format!("{inbox:?}")))
+        })?;
+        report.snapshot("fleet-after-plan", &user.view("fleet")?)
+    });
+}
+
+/// The node Fleet lists for the task titled `title`.
+fn node_of(user: &User, title: &str) -> Result<Option<String>> {
+    let fleet = user.view("fleet")?;
+    let mut rows = vec![];
+    super::user::collect(&fleet, &mut |item| item.pointer("/link/key").and_then(serde_json::Value::as_str).is_some_and(|key| key.starts_with("node:")) && mentions(item, title), &mut rows);
+    Ok(rows.first().and_then(|row| row["id"].as_str()).map(str::to_owned))
 }
 
 /// The node's native Claude dies without a word. A host's end is not the user's decision: no card

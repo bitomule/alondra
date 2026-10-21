@@ -249,8 +249,10 @@ fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
 fn waiting_for(task: &Task, reason: &WaitReason, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     match reason {
-        WaitReason::Answer { need } => Presentation::new(t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Info, Block::Waiting,
-            Some(tf!(lang, "“{need}”", "«{need}»"))),
+        WaitReason::Answer { card, need } => {
+            let need = context.domain.interactions.get(card).map_or_else(|| need.clone(), |card| super::card::shown_need(card, context.domain, lang));
+            Presentation::new(t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Info, Block::Waiting, Some(tf!(lang, "“{need}”", "«{need}»")))
+        }
         WaitReason::UpstreamPr { number } => waiting_pr(*number, lang),
         WaitReason::NodeFixing { .. } => Presentation::new(t!(lang, "Resolving conflicts", "Resolviendo conflictos"), Tone::Accent,
             Block::InProgress, None),

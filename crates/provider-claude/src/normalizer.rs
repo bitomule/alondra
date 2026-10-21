@@ -79,6 +79,9 @@ struct LogicalTurn {
     /// The run of the work whose notification opened this turn, when no input of Alondra's did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     woken_by: Option<String>,
+    /// Claude opened this turn by itself: whatever result comes next ends it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unprompted: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -354,6 +357,21 @@ fn fold(
                     },
                 });
             }
+            // A prompt no input of ours started and no work woke: Claude goes on by itself, as
+            // when a subagent hands its report back after the last turn ended.
+            if state.taken.is_empty() && state.woken.is_empty() {
+                let logical = format!("claude-message:{}", native_uuid(payload, "uuid")?.as_str());
+                facts.push(Observation::TurnUnprompted { turn: TurnId::new(logical.clone()).map_err(|_| AdapterError::InvalidObservation)? });
+                state.turn = Some(LogicalTurn {
+                    id: logical,
+                    consumed: BTreeSet::new(),
+                    answered: false,
+                    error: None,
+                    resets_at: None,
+                    woken_by: None,
+                    unprompted: true,
+                });
+            }
         } else {
             state.initialized = true;
             facts.push(Observation::Available);
@@ -494,6 +512,7 @@ fn fold(
             error: None,
             resets_at: None,
             woken_by: Some(woken.run),
+            unprompted: false,
         });
     }
     if kind == "result" && state.initialized && let Some(input) = undelivered(payload, failures, state) {
@@ -539,6 +558,7 @@ fn fold(
                 error: None,
                 resets_at: None,
                 woken_by: None,
+                unprompted: false,
             });
         }
         let turn = state
@@ -568,7 +588,7 @@ fn fold(
     if kind == "result" {
         // A singular failed-delivery echo alone cannot prove input consumption or a turn.
         let turn = state.turn.as_ref().ok_or(AdapterError::Unsupported)?;
-        if consumed.is_empty() {
+        if consumed.is_empty() && !turn.unprompted {
             match &turn.woken_by {
                 Some(run) => {
                     let origin = payload.get("origin");
@@ -840,9 +860,10 @@ mod tests {
             .collect())
     }
     // What the native Claude 2.1.300 sends around each prompt: its lifecycle, from before init,
-    // and init again as the next prompt starts. Evidence of the inputs, ours or not, with no fact.
+    // and init again as the next prompt starts. Evidence of the inputs, ours or not, with no fact;
+    // init again with no prompt of ours started is a turn Claude opens by itself.
     #[test]
-    fn the_native_prompt_lifecycle_and_a_repeated_init_between_turns_record_nothing() {
+    fn the_native_prompt_lifecycle_records_nothing_and_an_init_no_prompt_of_ours_started_opens_claudes_own_turn() {
         let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         let queued = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"queued","uuid":REPLY}));
         assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![]);
@@ -851,8 +872,31 @@ mod tests {
         assert_eq!(fold(&native, &session(), &mut state, foreign).unwrap(), vec![], "Claude's own command is evidence");
         let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available]);
-        let again = fold(&init, &session(), &mut state, input);
-        assert!(matches!(&again, Ok(facts) if facts.is_empty()), "init again between turns records nothing: {again:?}");
+        let started = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":SECOND}));
+        assert_eq!(fold(&started, &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![], "init as a prompt of ours starts records nothing");
+        let completed = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"completed","uuid":THIRD}));
+        fold(&completed, &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![
+            Observation::TurnUnprompted { turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap() },
+        ], "init with no prompt of ours started opens a turn of Claude's own");
+    }
+    // A subagent hands its report back after the turn ended: Claude takes it up in a turn of its
+    // own, which its next result ends whatever it names, and a message of ours that arrives
+    // meanwhile joins that turn.
+    #[test]
+    fn a_turn_claude_opens_by_itself_ends_with_its_result_and_takes_in_what_we_send_meanwhile() {
+        let mut state = state();
+        let init = event(json!({"type":"system","subtype":"init","uuid":REPLY}));
+        let own = TurnId::new(format!("claude-message:{REPLY}")).unwrap();
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::TurnUnprompted { turn: own.clone() }]);
+        let answer = event(json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null}));
+        assert_eq!(fold(&answer, &session(), &mut state, |_| panic!("no input of ours opened this turn")).unwrap(), vec![Observation::ModelAnswered]);
+        let ours = event(json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        assert_eq!(fold(&ours, &session(), &mut state, input).unwrap(), vec![Observation::InputConsumed { input: InputId::new(FIRST).unwrap() }]);
+        let result = event(json!({"type":"result","subtype":"success","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":"10000000-0000-4000-8000-000000000099"}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn: own, outcome: TurnOutcome::Completed }]);
+        assert!(state.turn.is_none());
     }
     // init marks the start of each turn: a turn still open when it comes ended without a
     // result to read.
@@ -1091,6 +1135,7 @@ mod tests {
             error: None,
             resets_at: None,
             woken_by: None,
+            unprompted: false,
         });
         let started = event(
             json!({"type":"system","subtype":"task_started","uuid":REPLY,"task_id":"task-native","run_id":"run-first"}),
@@ -1242,6 +1287,8 @@ mod tests {
             McpServerReport { name: "files".into(), status: "connected".into(), error: None, source: None, transport: None, url: None },
         ];
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available, Observation::McpServers { servers: listed("needs-auth") }]);
+        let started = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":SECOND}));
+        fold(&started, &session(), &mut state, input).unwrap();
         let again = event(json!({"type":"system","subtype":"init","uuid":REPLY,"mcp_servers":[{"name":"linear","status":"connected","source":"user"},{"name":"files","status":"connected"}]}));
         assert_eq!(fold(&again, &session(), &mut state, input).unwrap(), vec![Observation::McpServers { servers: listed("connected") }], "init repeated as a prompt starts");
 

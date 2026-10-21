@@ -789,6 +789,9 @@ pub fn without_recommended_suffix(label: &str) -> Option<String> {
 }
 impl CardSpec {
     pub const NEED_MAX: usize = 90;
+    /// The longest headline of Alondra's own cards that name their task: it fits a notification's
+    /// title too, so no screen cuts what the card asks.
+    pub const TITLED_NEED_MAX: usize = 80;
     pub const WHY_MAX: usize = 240;
     pub const SUMMARY_MAX: usize = 60;
 
@@ -877,6 +880,16 @@ fn fallback_need(kind: CardKind) -> &'static str {
         CardKind::Problem => "Fix the problem",
         CardKind::Propose => "Consider this suggestion",
     }
+}
+/// `sentence` naming `title`, in at most `max` characters: when it is too long the title is
+/// shortened, never the sentence, which says what the card asks.
+pub fn fit_title(title: &str, max: usize, sentence: impl Fn(&str) -> String) -> String {
+    let whole = sentence(title.trim());
+    if whole.chars().count() <= max {
+        return whole;
+    }
+    let room = max.saturating_sub(sentence("").chars().count()).max(1);
+    sentence(&clip(title, room))
 }
 /// At most `max` characters, cut at a character boundary and marked with an ellipsis.
 pub fn clip(text: &str, max: usize) -> String {

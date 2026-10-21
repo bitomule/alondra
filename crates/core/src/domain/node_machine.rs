@@ -23,7 +23,7 @@ pub(super) const LAST_WORDS_MAX: usize = 20_000;
 /// What the card with a node's last words asks of the user, naming its task: whether it said
 /// anything decides the words.
 fn unheard_need(title: &str, said: bool) -> String {
-    clip(&if said { format!("“{title}” stopped and wrote to you") } else { format!("“{title}” stopped without a word") }, CardSpec::NEED_MAX)
+    fit_title(title, CardSpec::TITLED_NEED_MAX, |title| if said { format!("“{title}” stopped and wrote to you") } else { format!("“{title}” stopped without a word") })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

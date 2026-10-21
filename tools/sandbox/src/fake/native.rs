@@ -403,7 +403,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         Some(task) => fakes.task_script(task)?,
         None => None,
     };
-    let mut native = Native { fakes, out, session, script, turn: None, fresh: history == 0, asked, servers, dir, log };
+    let mut native = Native { fakes, out, session, script, turn: None, own: None, fresh: history == 0, asked, servers, dir, log };
     let ended = native.live(inbox);
     let _ = fs::remove_file(&socket);
     if native.session.state == State::Running {
@@ -432,6 +432,8 @@ struct Native<'a> {
     script: Option<TaskScript>,
     /// The inputs of the open turn, the latest last.
     turn: Option<Vec<String>>,
+    /// The inputs that wait queued behind a turn Claude started by itself, while it runs.
+    own: Option<Vec<String>>,
     /// Its next input is the mission of a session that never ran before.
     fresh: bool,
     asked: Asked,
@@ -515,6 +517,10 @@ impl Native<'_> {
             };
         }
         self.lifecycle(input, "queued")?;
+        if let Some(queued) = self.own.as_mut() {
+            queued.push(input.into());
+            return Ok(());
+        }
         if !mission && self.fakes.dir.join(DROP_INPUT).exists() {
             return self.lifecycle(input, "completed");
         }
@@ -621,6 +627,9 @@ impl Native<'_> {
                 }
                 (Ok(work::done("said")), Leave::Stay)
             }
+            Step::OwnTurn { said } => (self.own_turn(said), Leave::Stay),
+            Step::LeavePlanMode { points } => (self.leave_plan_mode(*points), Leave::Stay),
+            Step::EndOwnTurn => (self.end_own_turn(), Leave::Stay),
             Step::End => (Ok(work::done("ended")), Leave::Exit),
             Step::Die => (Ok(work::done("killed")), Leave::Die),
             _ => {
@@ -688,6 +697,77 @@ impl Native<'_> {
             return Ok(None);
         }
         Ok(Some(decision["message"].as_str().unwrap_or("The user did not allow the command").to_owned()))
+    }
+
+    /// A root message of the turn Claude started by itself: it answers no input of Alondra's.
+    fn own_message(&self, content: Value) -> Result<()> {
+        self.send(json!({
+            "type": "assistant", "session_id": self.session.session_id, "uuid": uuid()?, "parent_tool_use_id": null,
+            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "sandbox",
+                "content": content, "stop_reason": null, "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
+        }))
+    }
+
+    fn own_turn(&mut self, said: &str) -> Result<mcp::Reply> {
+        if self.turn.is_some() || self.own.is_some() {
+            bail!("a turn is already open");
+        }
+        self.send(json!({
+            "type": "system", "subtype": "init", "session_id": self.session.session_id, "uuid": uuid()?,
+            "claude_code_version": VERSION, "model": "sandbox", "cwd": self.session.cwd, "tools": ["Bash", "ExitPlanMode"],
+            "mcp_servers": [], "permissionMode": "plan", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "apiKeySource": "none",
+        }))?;
+        self.own = Some(vec![]);
+        self.own_message(json!([{"type": "text", "text": said}]))?;
+        Ok(work::done("started a turn of its own"))
+    }
+
+    /// Asks the host to leave plan mode with a plan of `points` points, as Claude Code does with
+    /// the plan file Claude wrote, and waits: what Claude was told.
+    fn leave_plan_mode(&mut self, points: usize) -> Result<mcp::Reply> {
+        if self.own.is_none() {
+            bail!("no turn of its own is open");
+        }
+        let plan = format!("# Sandbox plan\n\n{}", (1..=points).map(|point| format!("- [ ] Point {point}")).collect::<Vec<_>>().join("\n"));
+        let file = self.dir.join("plan.md");
+        fs::write(&file, &plan)?;
+        let tool_use = format!("toolu_{}", hex(&random::<6>()?));
+        self.own_message(json!([{"type": "tool_use", "id": tool_use, "name": "ExitPlanMode", "input": {}}]))?;
+        let request = format!("plan-{}", hex(&random::<6>()?));
+        let (answer, answered) = mpsc::channel();
+        self.asked.lock().map_err(|_| anyhow!("asked poisoned"))?.insert(request.clone(), answer);
+        self.send(json!({
+            "type": "control_request", "request_id": request,
+            "request": {"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "input": {"plan": plan, "planFilePath": file}, "tool_use_id": tool_use},
+        }))?;
+        let reply = answered.recv().unwrap_or_else(|_| json!({"cancelled": true}));
+        let decision = &reply["response"];
+        let allowed = decision["behavior"] == "allow";
+        let told = if allowed { "User has approved your plan".to_owned() } else { decision["message"].as_str().unwrap_or("denied").to_owned() };
+        self.send(json!({
+            "type": "user", "session_id": self.session.session_id, "uuid": uuid()?, "parent_tool_use_id": null,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use, "is_error": !allowed, "content": told}]},
+        }))?;
+        Ok(mcp::Reply { refused: !allowed, text: told })
+    }
+
+    fn end_own_turn(&mut self) -> Result<mcp::Reply> {
+        let queued = self.own.take().context("no turn of its own is open")?;
+        self.send(json!({
+            "type": "result", "subtype": "success", "is_error": false, "session_id": self.session.session_id, "uuid": uuid()?,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "result": "Done.", "terminal_reason": "completed", "user_message_uuid": uuid()?,
+        }))?;
+        if !queued.is_empty() {
+            for input in &queued {
+                self.lifecycle(input, "started")?;
+            }
+            self.turn = Some(queued);
+            self.assistant(json!([{"type": "text", "text": "On it."}]))?;
+            self.end_turn("Done.")?;
+        }
+        Ok(work::done("ended its own turn"))
     }
 
     /// Dies at once, without a word, as a crashed Claude does; its SDK host goes on.

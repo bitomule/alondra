@@ -471,6 +471,29 @@ fn a_turn_that_ends_on_its_own_says_it_stopped_without_delivering_or_asking() {
     assert!(!es.contains("interrumpiste"), "{es}");
 }
 
+// The card of 2026-10-21 named a task with a long title and was cut before it said what it asks,
+// in English. The title is shortened instead: the card says all it asks, in the viewer's language,
+// within what a notification's title shows.
+#[test]
+fn a_card_naming_a_task_with_a_long_title_shortens_the_title_and_says_all_it_asks_in_each_language() {
+    use crate::views::text::Lang;
+    const TITLE: &str = "Parcel: quitar la barrera del login y los permisos de GitHub en el onboarding";
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    s.tasks.get_mut(&TaskId::from("t")).unwrap().title = TITLE.into();
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    let stored = &s.interactions[&InteractionId::from(card.as_str())].card.need;
+    assert!(stored.starts_with("“Parcel: quitar la") && stored.ends_with("…” stopped without delivering or asking: tell it how to go on"), "{stored}");
+    assert!(stored.chars().count() <= CardSpec::TITLED_NEED_MAX, "{stored}");
+    let en = turn_end_shown(&s, "t", Lang::En);
+    assert!(en.contains(stored.as_str()), "{en}");
+    let es_need = fit_title(TITLE, CardSpec::TITLED_NEED_MAX, |title| format!("«{title}» paró sin entregar ni preguntar: dile cómo seguir"));
+    assert!(es_need.starts_with("«Parcel: quitar") && es_need.ends_with("…» paró sin entregar ni preguntar: dile cómo seguir"), "{es_need}");
+    assert!(es_need.chars().count() <= CardSpec::TITLED_NEED_MAX, "{es_need}");
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains(es_need.as_str()) && !es.contains("stopped"), "{es}");
+}
+
 #[test]
 fn interrupting_a_turn_does_not_change_how_a_later_turn_ends() {
     let mut s = world();
@@ -570,6 +593,26 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
     assert_eq!(kinds(&s, "t")[4..], ["work_started", "turn_ended", "work_ended", "turn_resumed", "turn_ended"]);
     let journal = s.lifecycle_journal[&TaskId::from("t")].clone();
     assert!(replay(&TaskId::from("t"), &journal).is_ok(), "the journal replays");
+    assert_aggregate_rules(&s);
+}
+
+// A subagent hands its report back after the turn ended and Claude takes it up by itself: the card
+// that asked how the task goes on is withdrawn, the task runs, and the end of that turn asks again.
+#[test]
+fn a_turn_claude_opens_by_itself_withdraws_the_card_that_asked_how_it_goes_on() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnUnprompted { turn: "turn-2".into() },
+    ] });
+    assert!(s.interactions[&InteractionId::from(card.as_str())].withdrawn, "the card no longer waits on the user");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_eq!(kinds(&s, "t")[4..], ["turn_ended", "turn_unprompted", "turn_ended"]);
+    assert!(replay(&TaskId::from("t"), &s.lifecycle_journal[&TaskId::from("t")]).is_ok(), "the journal replays");
     assert_aggregate_rules(&s);
 }
 

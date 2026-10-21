@@ -1754,6 +1754,133 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
+// Alondra cannot record the end of Claude's turn, so the task's record no longer follows its
+// Claude: only that turn fails. The owner stops that host, a new one resumes the same session and
+// the task goes on by itself, with no card to try again.
+#[test]
+fn a_turn_end_alondra_cannot_record_fails_only_that_turn_and_a_new_host_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+    let failed = loop {
+        if let Err(Failed(why)) = driver.observe() {
+            break why;
+        }
+    };
+    assert!(failed.starts_with("Alondra could not record what its Claude did (the end of its turn"), "{failed}");
+    assert!(driver.host_to_replace(), "its host is replaced, not lost");
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
+    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
+    assert_eq!(Slice::read_cards(&slice.domain).iter().filter(|(_, answered)| !answered).count(), 1, "the resumed turn ends with its one card");
+    resumed.stop().unwrap();
+}
+
+// The same happens again in the session Alondra resumed, before any of its turns ended: resuming
+// once more would only end the same way, so one card asks the user how it goes on.
+#[test]
+fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    let unrecorded = |driver: &mut Driver| loop {
+        if let Err(Failed(why)) = driver.observe() {
+            break why;
+        }
+    };
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+    unrecorded(&mut driver);
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    resumed.step(&|| false).unwrap();
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+    unrecorded(&mut resumed);
+    assert!(resumed.host_to_replace());
+    let again = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
+    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("one card asks how it goes on");
+    let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };
+    assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), [CARRY_ON, CANCEL_TASK]);
+    let open = slice.domain.read().state().interactions.values()
+        .filter(|card| card.scope == alondra_core::domain::Scope::Task { task_id: TASK.into() } && !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
+        .count();
+    assert_eq!(open, 1, "only that card waits on the user");
+    drop(again);
+}
+
+// A subagent hands its report back after the turn ended: Claude starts a turn by itself while the
+// task rests. Its owner reads it as it comes: the card that asked how the task goes on is withdrawn
+// and the node works, with nothing sent to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("own-turn-later");
+    slice.settle(&mut driver);
+    let card = open_card(&slice.domain, TURN_ENDED_PREFIX).expect("the turn ended with its card").id;
+    let owner = Owner::spawn(driver);
+    let mut changed = slice.domain.subscribe();
+    std::fs::write(format!("{}.own-turn", slice.capture.display()), "").unwrap();
+    let reader = Arc::clone(&slice.domain);
+    changed.wait_for(|_| reader.read().state().interactions[&card].withdrawn).await.unwrap();
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Working, "the node works");
+    assert_eq!(slice.prompts().len(), 1, "nothing was sent to it");
+    drop(owner);
+}
+
+// The domain refuses to record that Claude accepted an interrupt: the owner goes on, and the turn
+// Claude ends still ends with one card.
+#[test]
+fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    press_interrupt(&slice, driver.agent());
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::InterruptAccepted);
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
+    slice.settle(&mut driver);
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "with one card");
+    driver.stop().unwrap();
+}
+
+// The task of 2026-10-21 as its «Try again» card left it: its host ended with Claude's request to
+// leave plan mode with 41 points in its journal, unread, asked from a turn Claude opened by itself
+// while what the user told it waited. «Try again» reads that journal: the plan is refused with
+// why, and a host that resumes the same session takes the task.
+#[tokio::test(flavor = "multi_thread")]
+async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("own-turn-plan");
+    slice.settle(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Submit your plan"})).unwrap();
+    crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true).await.unwrap();
+    driver.step(&|| false).unwrap();
+    while !driver.worker.poll().unwrap().is_some_and(|batch| String::from_utf8_lossy(&batch.evidence).contains("decision_requested")) {
+        driver.observe().unwrap();
+    }
+    kill_host_and_daemon(driver);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has the card to try again");
+    refuse(false);
+    answer(&restarted, &card.id, RETAKE);
+    restarted.join_retakes();
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again: {:?}", open_card(&restarted, HOST_LOST_PREFIX).and_then(|card| card.card.content));
+    let mut changed = restarted.subscribe();
+    let capture = slice.capture.clone();
+    changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    restarted.stop_sdk_owners();
+    let starts = slice.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    let refused = restarted.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record,
+        alondra_core::domain::LifecycleRecord::DecidedByPolicy { decision: alondra_core::domain::DecisionRecord::Deny { message }, .. } if message.contains("at most 40 points")));
+    assert!(refused, "the plan the ended host left was refused for its length");
+}
+
 fn prompts_at(capture: &Path) -> Vec<String> {
     let path = PathBuf::from(format!("{}.prompts", capture.display()));
     std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
@@ -2552,6 +2679,62 @@ fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
     slice.rest(&mut driver);
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": alondra_core::domain::UNWRITTEN_PLAN}));
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    driver.stop().unwrap();
+}
+
+/// Tells the node `text` as the user does from a client.
+fn tell(slice: &Slice, driver: &Driver, text: &str) {
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .unwrap();
+}
+
+// The node of 2026-10-21: its turn ended, a subagent's report started a turn of Claude's own, and
+// while what the user told it waited behind that turn Claude asked to leave plan mode with 41
+// points. Alondra refuses the plan for its length and Claude gets why as the tool's result; it
+// shortens the plan, the user approves it on its card, and what the user told it reaches Claude.
+#[test]
+fn a_plan_refused_in_a_turn_claude_started_by_itself_reaches_claude_and_its_shorter_plan_is_reviewed() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("own-turn-plan");
+    slice.settle(&mut driver);
+    tell(&slice, &driver, "Submit your plan");
+    slice.until(&mut driver, |slice| !Slice::open_decision_cards(&slice.domain).is_empty());
+    let decisions = slice.decisions();
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["response"]["behavior"], "deny", "{decisions:?}");
+    assert!(decisions[0]["response"]["message"].as_str().is_some_and(|message| message.contains("at most 40 points")), "{decisions:?}");
+    let card = Slice::open_decision_cards(&slice.domain).remove(0);
+    let shown = slice.domain.state().unwrap().interactions[&InteractionId(card.clone())].shown_content().map(|content| content.body.clone());
+    assert!(shown.as_deref().is_some_and(|plan| plan.contains("- [ ] Change the fixture")), "the card shows the shorter plan: {shown:?}");
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(slice.decisions()[1]["response"]["behavior"], "allow");
+    assert!(slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Submit your plan")), "{:?}", slice.prompts());
+    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
+    driver.stop().unwrap();
+}
+
+// Alondra cannot record Claude's request as a card: Claude is denied it with why, as a decision
+// of Alondra's own, and goes on; the node keeps its host and nobody is asked.
+#[test]
+fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_on() {
+    let slice = Slice::new();
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::DecisionRequest);
+    let mut driver = slice.launch_with("decide:question");
+    slice.until(&mut driver, decided_or_asked);
+    slice.rest(&mut driver);
+    let response = only_response(&slice);
+    assert_eq!(response["behavior"], "deny", "{response}");
+    let message = response["message"].as_str().unwrap_or_default();
+    assert_eq!(message, format!("{}: the test refuses it", alondra_core::domain::UNASKABLE));
+    assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its one card");
+    carry_on(&slice.domain, "Ask it again");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert!(slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Ask it again")), "the same Claude goes on");
     driver.stop().unwrap();
 }
 

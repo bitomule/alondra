@@ -14,7 +14,7 @@ use super::{
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
+    InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip, fit_title,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -281,7 +281,7 @@ fn node_name(item: &InboxItem, context: &RenderContext<'_>) -> String {
 
 /// What a delivery or a card stands for in another card's chip: "PR #649", a document title, or
 /// the card's own need.
-fn target_label(domain: &DomainState, id: &InteractionId) -> String {
+fn target_label(domain: &DomainState, id: &InteractionId, lang: Lang) -> String {
     let Some(interaction) = domain.interactions.get(id) else { return id.0.clone() };
     if let Some(pr) = pr_target(interaction, domain) {
         return format!("PR #{}", pr.number);
@@ -293,7 +293,12 @@ fn target_label(domain: &DomainState, id: &InteractionId) -> String {
             }
         }
     }
-    clip(&interaction.card.need, 50)
+    clip(&shown_need(interaction, domain, lang), 50)
+}
+
+/// What `interaction` asks, as its card shows it to the viewer.
+pub(super) fn shown_need(interaction: &Interaction, domain: &DomainState, lang: Lang) -> String {
+    own_text(interaction, domain, lang).map_or_else(|| humanize_task_ids(&interaction.card.need, domain), |(need, _)| need)
 }
 
 fn chips(item: &InboxItem, context: &RenderContext<'_>) -> (Vec<BlockChip>, Vec<BlockChip>) {
@@ -306,12 +311,12 @@ fn chips(item: &InboxItem, context: &RenderContext<'_>) -> (Vec<BlockChip>, Vec<
     let blocks = item
         .blocks
         .iter()
-        .map(|id| chip(id, tf!(lang, "blocks {target}", "bloquea {target}", target = target_label(context.domain, id))))
+        .map(|id| chip(id, tf!(lang, "blocks {target}", "bloquea {target}", target = target_label(context.domain, id, lang))))
         .collect();
     let blocked_by = item
         .blocked_by
         .iter()
-        .map(|id| chip(id, tf!(lang, "blocked by {target}", "bloqueada por {target}", target = target_label(context.domain, id))))
+        .map(|id| chip(id, tf!(lang, "blocked by {target}", "bloqueada por {target}", target = target_label(context.domain, id, lang))))
         .collect();
     (blocks, blocked_by)
 }
@@ -323,7 +328,7 @@ fn blocked_reason(item: &InboxItem, context: &RenderContext<'_>) -> Option<Strin
     let blocker = domain.interactions.get(first)?;
     Some(match pr_target(blocker, domain) {
         Some(pr) => tf!(context.lang, "Merge #{number} first", "Fusiona primero la #{number}", number = pr.number),
-        None => tf!(context.lang, "Answer “{need}” first", "Responde primero «{need}»", need = clip(&blocker.card.need, 50)),
+        None => tf!(context.lang, "Answer “{need}” first", "Responde primero «{need}»", need = clip(&shown_need(blocker, domain, context.lang), 50)),
     })
 }
 
@@ -983,11 +988,11 @@ fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> 
     let title = domain.tasks.get(task_id)?.title.as_str();
     let silent = interaction.body.trim() == interaction.card.need.trim();
     if !silent {
-        let need = tf!(lang, "“{title}” stopped and wrote to you", "«{title}» se ha parado y te escribe");
-        return Some((clip(&need, CardSpec::NEED_MAX), interaction.card.why.clone()));
+        let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped and wrote to you", "«{title}» se ha parado y te escribe"));
+        return Some((need, interaction.card.why.clone()));
     }
-    let need = tf!(lang, "“{title}” stopped without a word", "«{title}» se ha parado sin decir nada");
-    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped without a word", "«{title}» se ha parado sin decir nada"));
+    Some((need, t!(lang,
         "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.",
         "Terminó su turno sin un resultado ni una pregunta para ti. Respóndele o escríbele y sigue.").into()))
 }
@@ -1000,8 +1005,8 @@ fn decision_cancelled_text(interaction: &Interaction, domain: &DomainState, lang
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
-    let need = tf!(lang, "“{title}” stopped waiting for your decision: tell it how to go on", "«{title}» dejó de esperar tu decisión: dile cómo seguir");
-    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped waiting for your decision: tell it how to go on", "«{title}» dejó de esperar tu decisión: dile cómo seguir"));
+    Some((need, t!(lang,
         "Claude Code stopped waiting for the decision it asked you for. Tell it to go on, write to it what to do, or cancel the task.",
         "Claude Code dejó de esperar la decisión que te pidió. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
 }
@@ -1015,10 +1020,10 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
     if interaction.card.why == crate::domain::REFUSED_WHY {
-        let error = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))?;
-        let refusal = api_refusal_text(error, lang);
-        let need = tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}");
-        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+        let refusal = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))
+            .map_or(t!(lang, "Claude Code cannot use the Claude API", "Claude Code no puede usar la API de Claude"), |error| api_refusal_text(error, lang));
+        let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}"));
+        return Some((need, t!(lang,
             "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
             "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));
     }
@@ -1033,8 +1038,8 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.",
             "Claude Code terminó su turno como fallido. Dile cómo seguir, escríbele qué hacer o cancela la tarea.").into()));
     }
-    let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
-    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir"));
+    Some((need, t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
         "Su turno terminó sin nada que explique qué hace después. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
 }
@@ -1048,8 +1053,8 @@ fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
-    let need = tf!(lang, "“{title}” stopped: Alondra could not resume its session", "«{title}» se paró: Alondra no pudo retomar su sesión");
-    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: Alondra could not resume its session", "«{title}» se paró: Alondra no pudo retomar su sesión"));
+    Some((need, t!(lang,
         "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.",
         "Su sesión no pudo volver a arrancar; el detalle dice por qué. Reinténtalo cuando esté arreglado o cancela la tarea.").into()))
 }
@@ -1066,8 +1071,8 @@ fn dropped_text(interaction: &Interaction, lang: Lang) -> Option<(String, String
 
 /// The card of a turn the user stopped, by interrupting it or forcing it to stop.
 fn interrupted_text(title: &str, lang: Lang) -> (String, String) {
-    let need = tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir");
-    (clip(&need, CardSpec::NEED_MAX), t!(lang,
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir"));
+    (need, t!(lang,
         "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.",
         "Paraste su turno. Dile que siga, escríbele qué hacer o cancela la tarea.").into())
 }
@@ -1084,8 +1089,8 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
         return Some(interrupted_text(title, lang));
     }
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {
-        let need = tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
-            "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir");
+        let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
+            "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir"));
         let why = if interaction.card.why == crate::domain::SESSION_ENDED_AGAIN_WHY {
             t!(lang, "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.",
                 "Alondra retomó su sesión después de cerrarse, y se volvió a cerrar antes de terminar un turno. Retoma con todo su contexto si le dices que siga.")
@@ -1093,12 +1098,12 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
             t!(lang, "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.",
                 "Su sesión se cerró a medias, como al apagar el Mac. Retoma con todo su contexto; lo que corría en segundo plano se paró.")
         };
-        return Some((clip(&need, CardSpec::NEED_MAX), why.into()));
+        return Some((need, why.into()));
     }
     if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
         return None;
     }
-    let need = tf!(lang, "“{title}” may not have got your message: send it again?", "«{title}» quizá no recibió tu mensaje: ¿se lo reenvío?");
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” may not have got your message: send it again?", "«{title}» quizá no recibió tu mensaje: ¿se lo reenvío?"));
     let launch = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == crate::domain::CANCEL_TASK));
     let why = if launch {
         t!(lang, "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.",
@@ -1107,7 +1112,7 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
         t!(lang, "Its session closed right after the message was handed over and before it showed it had read it. Nothing is sent until you decide.",
             "Su sesión se cerró justo después de entregarle el mensaje y antes de mostrar que lo leyó. No se envía nada hasta que decidas.")
     };
-    Some((clip(&need, CardSpec::NEED_MAX), why.into()))
+    Some((need, why.into()))
 }
 
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
@@ -1119,7 +1124,7 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     }
     if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {
         let question = domain.interactions.get(&InteractionId(question.into()))?;
-        let need = humanize_task_ids(&question.card.need, domain);
+        let need = shown_need(question, domain, lang);
         return Some((
             clip(&tf!(lang, "No longer waits for your answer: {need}", "Ya no espera tu respuesta: {need}", need = need), CardSpec::NEED_MAX),
             t!(lang, "The work was finished before you answered", "El trabajo se terminó antes de que respondieras").into(),

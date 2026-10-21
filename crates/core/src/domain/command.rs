@@ -637,6 +637,14 @@ pub enum Command {
         mcp_server: Option<McpServerOrigin>,
         prompt: DecisionPrompt,
     },
+    /// Alondra could not put the request its host persisted at `epoch` in front of the user, for
+    /// `reason`: Claude is denied it with that reason and goes on.
+    RefuseDecisionRequest {
+        task_id: TaskId,
+        generation: u64,
+        epoch: u64,
+        reason: String,
+    },
     /// The decision of the request at `epoch` reached Claude.
     RecordDecisionSettled {
         task_id: TaskId,

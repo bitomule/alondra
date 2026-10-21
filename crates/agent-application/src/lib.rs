@@ -289,6 +289,10 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             turn: turn.clone(),
             trigger: Trigger::OwnedContinuation(continuation.clone()),
         },
+        Observation::TurnUnprompted { turn } => RuntimeFact::TurnStarted {
+            turn: turn.clone(),
+            trigger: Trigger::Unprompted,
+        },
         Observation::InputConsumed { input } => RuntimeFact::InputConsumed {
             input: input.clone(),
         },
@@ -366,8 +370,16 @@ impl PendingObservation {
     }
     /// The domain recorded every fact: the task's runtime moved by exactly that many.
     pub fn settle(self, transaction: &mut LifecycleTransaction<'_>) -> Result<ObservationAcceptance> {
+        let moved = self.facts.iter().map(ObservedFact::runtime_moves).sum();
+        self.settle_moved(transaction, moved)
+    }
+    /// Settles the observation by the moves the domain recorded of its facts: those it refused
+    /// are left out, and the observation still commits.
+    pub fn settle_recorded(self, transaction: &mut LifecycleTransaction<'_>, moved: usize) -> Result<ObservationAcceptance> {
+        self.settle_moved(transaction, moved)
+    }
+    fn settle_moved(self, transaction: &mut LifecycleTransaction<'_>, moved: usize) -> Result<ObservationAcceptance> {
         if self.acceptance == ObservationAcceptance::Accepted {
-            let moved = self.facts.iter().map(ObservedFact::runtime_moves).sum();
             transaction.settle_observation(&self.execution, self.cursor, moved)?;
         }
         Ok(self.acceptance)

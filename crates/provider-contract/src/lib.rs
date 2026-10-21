@@ -152,6 +152,11 @@ pub enum Observation {
         continuation: ContinuationId,
         turn: TurnId,
     },
+    /// Claude opened a root turn by itself, with no input of Alondra's and no work that woke it:
+    /// a message a subagent handed back after the last turn ended.
+    TurnUnprompted {
+        turn: TurnId,
+    },
     InputConsumed {
         input: InputId,
     },

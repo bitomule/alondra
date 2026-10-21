@@ -373,12 +373,14 @@ impl DrainRecord {
 pub(super) enum TriggerRecord {
     Input(String),
     OwnedContinuation(String),
+    Unprompted,
 }
 impl From<&Trigger> for TriggerRecord {
     fn from(event: &Trigger) -> Self {
         match event {
             Trigger::Input(value) => Self::Input(value.as_str().to_owned()),
             Trigger::OwnedContinuation(value) => Self::OwnedContinuation(value.as_str().to_owned()),
+            Trigger::Unprompted => Self::Unprompted,
         }
     }
 }
@@ -391,6 +393,7 @@ impl TriggerRecord {
             TriggerRecord::OwnedContinuation(value) => {
                 Trigger::OwnedContinuation(ContinuationId::new(value).map_err(Error::from)?)
             }
+            TriggerRecord::Unprompted => Trigger::Unprompted,
         })
     }
 }

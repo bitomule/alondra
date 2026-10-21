@@ -183,6 +183,8 @@ pub enum RuntimeObservation {
     TurnStarted { turn: String, input: String },
     /// Work that outlived its turn woke Claude, which took it up in a root turn of its own.
     TurnResumed { turn: String, continuation: String },
+    /// Claude opened a root turn by itself, with nothing the task gave it or knows of.
+    TurnUnprompted { turn: String },
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
@@ -207,6 +209,9 @@ pub enum LifecycleRecord {
     /// A root turn Claude opened by itself to take up the `continuation` of work that outlived
     /// its turn.
     TurnResumed { turn: String, continuation: String },
+    /// A root turn Claude opened by itself, with nothing the task gave it or knows of: the cards
+    /// that asked how it goes on no longer hold.
+    TurnUnprompted { turn: String },
     InputConsumed { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
@@ -488,6 +493,10 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
                 trigger: Trigger::OwnedContinuation(ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?),
             })?
         }
+        LifecycleRecord::TurnUnprompted { turn } => runtime(RuntimeFact::TurnStarted {
+            turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+            trigger: Trigger::Unprompted,
+        })?,
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
         LifecycleRecord::InputDropped { input, card } => runtime(RuntimeFact::InputDropped { input: input_id(task, input)?, card: card.clone() })?,
         LifecycleRecord::DroppedDiscarded { card, unheard_card } => Event::Discard { card: card.clone(), unheard_card: unheard_card.clone() },
@@ -733,6 +742,9 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         }
         Event::Runtime { fact: RuntimeFact::TurnStarted { turn, trigger: Trigger::OwnedContinuation(continuation) }, .. } => {
             LifecycleRecord::TurnResumed { turn: turn.as_str().into(), continuation: continuation.as_str().into() }
+        }
+        Event::Runtime { fact: RuntimeFact::TurnStarted { turn, trigger: Trigger::Unprompted }, .. } => {
+            LifecycleRecord::TurnUnprompted { turn: turn.as_str().into() }
         }
         Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
         Event::Runtime { fact: RuntimeFact::InputDropped { input, card }, .. } => {
@@ -1555,6 +1567,15 @@ impl DomainState {
                     }
                     LifecycleRecord::TurnResumed { turn, continuation }
                 }
+                RuntimeObservation::TurnUnprompted { turn } => {
+                    let held: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
+                    self.decide(lifecycles, task, LifecycleRecord::TurnUnprompted { turn })?;
+                    let kept = self.lifecycle(lifecycles, task)?;
+                    for card in held.iter().filter(|card| !kept.cards().iter().any(|(still, _)| still == card)) {
+                        self.retire(card);
+                    }
+                    continue;
+                }
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
                 RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
                 RuntimeObservation::WorkEnded { work, continuation } => LifecycleRecord::WorkEnded { work, continuation },
@@ -1873,7 +1894,7 @@ const DECISION_CANCELLED_WHY: &str = "Claude Code stopped waiting for the decisi
 
 pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
     let mut card = turn_ended_card(id, task, title, TurnEnd::Unexplained, revision);
-    let need = clip(&format!("“{title}” stopped waiting for your decision: tell it how to go on"), CardSpec::NEED_MAX);
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped waiting for your decision: tell it how to go on"));
     card.body = need.clone();
     card.card = CardSpec::new(CardKind::Decide, need).why(DECISION_CANCELLED_WHY);
     card
@@ -1924,15 +1945,18 @@ enum TurnEnd<'a> {
 /// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
 fn interrupted(journal: &[LifecycleRecord], turn: &str) -> bool {
     journal.iter().rev()
-        .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } | LifecycleRecord::TurnResumed { turn: started, .. } if started == turn))
+        .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } | LifecycleRecord::TurnResumed { turn: started, .. } | LifecycleRecord::TurnUnprompted { turn: started } if started == turn))
         .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: Some(stopped) }, .. } if stopped == turn))
 }
 
 fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, revision: u64) -> Interaction {
     let (need, why) = match end {
-        TurnEnd::Refused(failure) => (format!("“{title}” stopped: {}", api_refusal(&failure.error)), REFUSED_WHY),
-        TurnEnd::Interrupted => (format!("You interrupted “{title}”: tell it how to go on"), INTERRUPTED_WHY),
-        TurnEnd::Unexplained => (format!("“{title}” stopped without delivering or asking: tell it how to go on"), TURN_ENDED_WHY),
+        TurnEnd::Refused(failure) => {
+            let refusal = api_refusal(&failure.error);
+            (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped: {refusal}")), REFUSED_WHY)
+        }
+        TurnEnd::Interrupted => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("You interrupted “{title}”: tell it how to go on")), INTERRUPTED_WHY),
+        TurnEnd::Unexplained => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without delivering or asking: tell it how to go on")), TURN_ENDED_WHY),
         TurnEnd::Failed(code) => (format!("Claude's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), FAILED_WHY),
     };
     let need = clip(&need, CardSpec::NEED_MAX);
@@ -2007,7 +2031,7 @@ pub fn retakes(card: &Interaction) -> bool {
 }
 
 fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, revision: u64) -> Interaction {
-    let need = clip(&format!("“{title}” stopped: Alondra could not resume its session"), CardSpec::NEED_MAX);
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped: Alondra could not resume its session"));
     let mut card = CardSpec::new(CardKind::Problem, need).why(HOST_LOST_WHY).content(ContentKind::Diagnosis, &capitalized(reason));
     card.recommended = Some(RETAKE.into());
     Interaction {
@@ -2040,7 +2064,7 @@ fn capitalized(text: &str) -> String {
 }
 
 fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, why: &str, revision: u64) -> Interaction {
-    let need = clip(&format!("“{title}” was interrupted when its session closed: tell it how to go on"), CardSpec::NEED_MAX);
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” was interrupted when its session closed: tell it how to go on"));
     Interaction {
         attachments: vec![],
         id,
@@ -2069,7 +2093,7 @@ const HOST_LOST_WHY: &str = "Its session could not be started again; the details
 pub const SESSION_ENDED_AGAIN_WHY: &str = "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.";
 
 fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
-    let need = clip(&format!("“{title}” may not have got your message: send it again?"), CardSpec::NEED_MAX);
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” may not have got your message: send it again?"));
     let mut options = vec![QuestionOption { id: RESEND.into(), label: RESEND_LABEL.into(), description: Some(RESEND_MEANS.into()) }];
     options.push(if launch {
         QuestionOption { id: CANCEL_TASK.into(), label: CANCEL_TASK_LABEL.into(), description: Some(CANCEL_TASK_MEANS.into()) }

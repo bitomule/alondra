@@ -12,7 +12,7 @@ mod mcp;
 mod mcp_wait;
 pub use mcp::{MAX_MCP_SERVERS, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
 pub use mcp_wait::{MCP_GO_ON_WITHOUT, MCP_WAIT_PREFIX, McpServerKey, McpWaiting};
-pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNWRITTEN_PLAN, decision_policy};
+pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy};
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
     Err(DomainError::new(code, msg))
@@ -2020,6 +2020,7 @@ impl DomainState {
             | Command::CompactConversation { task_id }
             | Command::TellNode { task_id, .. }
             | Command::RecordDecisionRequest { task_id, .. }
+            | Command::RefuseDecisionRequest { task_id, .. }
             | Command::RecordDecisionSettled { task_id, .. }
             | Command::RecordDecisionAborted { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
@@ -4254,6 +4255,9 @@ impl DomainState {
             Command::RecordDecisionRequest { task_id, generation, epoch, hold, tool, input, mcp_server, prompt } => {
                 self.record_decision_request(actor, task_id, *generation, *epoch, *hold, tool.as_deref(), input,
                     mcp_server.as_ref(), prompt, effects, created, lifecycles)?;
+            }
+            Command::RefuseDecisionRequest { task_id, generation, epoch, reason } => {
+                self.refuse_decision_request(actor, task_id, *generation, *epoch, reason, lifecycles)?;
             }
             Command::RecordDecisionSettled { task_id, generation, epoch } => {
                 self.end_decision(actor, task_id, *generation, *epoch, true, effects, lifecycles)?;

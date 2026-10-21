@@ -2973,9 +2973,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordHostLost { .. } => 91,
         Command::RecordDroppedInput { .. } => 92,
         Command::RecordAccounts { .. } => 93,
+        Command::RefuseDecisionRequest { .. } => 94,
     }
 }
-const COMMAND_KINDS: usize = 94;
+const COMMAND_KINDS: usize = 95;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3124,6 +3125,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
+        (Command::RefuseDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, reason: "It cannot be a card".into() }, false),
         (Command::RecordDecisionSettled { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
         (Command::RecordDecisionAborted { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
         (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),

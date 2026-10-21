@@ -881,7 +881,10 @@ fn wait_text(reason: &crate::domain::WaitReason, context: &RenderContext<'_>) ->
             tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = title)
         }
         W::UpstreamPr { number } => tf!(lang, "Waits for PR #{number} to merge", "Espera a que se fusione la PR #{number}", number = number),
-        W::Answer { need } => tf!(lang, "Waits for your answer to “{need}”", "Espera tu respuesta a «{need}»", need = need),
+        W::Answer { card, need } => {
+            let need = context.domain.interactions.get(card).map_or_else(|| need.clone(), |card| super::card::shown_need(card, context.domain, lang));
+            tf!(lang, "Waits for your answer to “{need}”", "Espera tu respuesta a «{need}»", need = need)
+        }
         W::NodeFixing { node, pr } => tf!(lang, "“{node}” is resolving the conflicts on PR #{pr}", "«{node}» está resolviendo los conflictos de la PR #{pr}", node = node, pr = pr),
         W::Merging { pr } => tf!(lang, "Merging PR #{pr}", "Fusionando la PR #{pr}", pr = pr),
         W::Closing => t!(lang, "Closing", "Cerrando").into(),

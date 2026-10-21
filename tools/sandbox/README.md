@@ -99,6 +99,7 @@ as the user through views and actions, the way the iPhone does.
   - S2: «Interrupt» in Fleet ends the turn with one card, and the node's Claude is not restarted.
   - S3: a daemon restart keeps the card, the task and the node, whose host it adopts.
   - S4: a crashed session's bearer is refused once it resumes with a new one.
+  - S5: from a turn Claude started by itself, with the user's message waiting behind it, a plan of 41 points is refused and Claude gets why; its shorter plan reaches the user's Review card and the message then runs.
 - `local` (last, since it stops the relay):
   - L1: a whole task over the direct listener with the relay down.
   - L2: each Mac shows only its own tasks, and a terminal pairs directly with both.

@@ -155,6 +155,49 @@ def foreground_ended(status):
               output_file='fixture-output', summary='sleep 4', uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
     foreground = None
 
+# Like the native Claude whose background subagent hands its report back after the turn ended: it
+# starts a turn of its own, with no prompt of Alondra's. Set by `own-turn-plan`, it starts as the
+# next prompt arrives, which waits queued behind it.
+own_turn = None
+LONG_PLAN = '# Own plan\n\n' + '\n'.join('- [ ] Point ' + str(n) for n in range(1, 42))
+
+def own_turn_plan(plan):
+    global serial, decisions
+    decisions += 1
+    request_id = 'decision-' + str(decisions)
+    tool_use_id = 'toolu_fixture_' + str(decisions)
+    plan_file = capture + '.plan.md'
+    with open(plan_file, 'w') as stream:
+        stream.write(plan)
+    serial += 1
+    send(dict(type='assistant', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
+              message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant', model='fixture',
+                           content=[dict(type='tool_use', id=tool_use_id, name='ExitPlanMode', input={})],
+                           stop_reason=None, stop_sequence=None, usage=SMALL_USAGE)))
+    asked[request_id] = dict(message=None, tool_name='ExitPlanMode', tool_use_id=tool_use_id, cancelled=False, plan=plan)
+    send(dict(type='control_request', request_id=request_id,
+              request=dict(subtype='can_use_tool', tool_name='ExitPlanMode', input=dict(plan=plan, planFilePath=plan_file), tool_use_id=tool_use_id)))
+
+def own_turn_started(message):
+    global serial, own_turn
+    own_turn = message
+    lifecycle(message, 'queued')
+    serial += 1
+    send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='plan', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+    own_turn_plan(LONG_PLAN)
+
+def own_turn_ended():
+    global serial, own_turn
+    queued, own_turn = own_turn, None
+    serial += 1
+    send(dict(type='result', subtype='success', is_error=False, session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+              duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
+              result='Fixture own turn', terminal_reason='completed', user_message_uuid='00000000-0000-4000-8000-' + str(serial + 1).zfill(12)))
+    serial += 1
+    lifecycle(queued, 'started')
+    consume(queued)
+    result(queued)
+
 ALONDRA_TOOL = 'mcp__plugin_alondra_alondra__ask'
 # Claude Code names a plugin's MCP server `plugin:<plugin>:<server>`; its tools `mcp__plugin_<plugin>_<server>__<tool>`.
 ALONDRA_SERVER = 'plugin:alondra:alondra'
@@ -224,6 +267,13 @@ def decided(message):
         send(dict(type='user', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
                   message=dict(role='user', content=[dict(type='tool_result', tool_use_id=entry['tool_use_id'], is_error=not allowed,
                                                           content=json.dumps(answer.get('updatedInput')) if allowed else answer.get('message', 'denied'))])))
+    if entry['message'] is None:
+        # Claude's own turn: a plan refused for its length is shortened and asked again.
+        if answer.get('behavior') != 'allow' and entry['plan'] == LONG_PLAN:
+            own_turn_plan(FIXTURE_PLAN)
+        else:
+            own_turn_ended()
+        return
     result(entry['message'])
 
 for raw in sys.stdin:
@@ -295,6 +345,9 @@ for raw in sys.stdin:
             for state in ('queued', 'completed'):
                 lifecycle(message, state)
             continue
+        if own_turn == 'next':
+            own_turn_started(message)
+            continue
         # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
         for state in ('queued', 'started'):
             lifecycle(message, state)
@@ -334,6 +387,27 @@ for raw in sys.stdin:
             result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
             consume(message)
+        elif text == 'own-turn-later':
+            # The turn ends; once the test drops a file next to the capture, Claude starts a turn
+            # of its own, as when a subagent hands its report back while the task rests.
+            consume(message)
+            result(message)
+            def later():
+                global serial
+                while not os.path.exists(capture + '.own-turn'):
+                    time.sleep(0.05)
+                serial += 1
+                send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+                serial += 1
+                send(dict(type='assistant', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
+                          message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant', model='fixture',
+                                       content=[dict(type='text', text='The report is in')], stop_reason=None, stop_sequence=None, usage=SMALL_USAGE)))
+            import threading
+            threading.Thread(target=later, daemon=True).start()
+        elif text == 'own-turn-plan':
+            consume(message)
+            result(message)
+            own_turn = 'next'
         elif text == 'ignore-interrupt':
             stubborn = True
             signal.signal(signal.SIGTERM, signal.SIG_IGN)

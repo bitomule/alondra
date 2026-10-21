@@ -249,6 +249,9 @@ impl From<IdentityError> for Refusal {
 pub enum Trigger {
     Input(InputId),
     OwnedContinuation(ContinuationId),
+    /// Claude started the turn by itself, with nothing the task gave it or knows of: a message a
+    /// subagent handed back after the last turn ended.
+    Unprompted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1270,7 +1273,10 @@ fn add_callback_wake(activity: &mut Activity, callback: CallbackId) -> Result<()
             *pending = NonEmpty::new(values)?;
         }
         Activity::Resting => *activity = Activity::Continuation(NonEmpty::new([wake])?),
-        _ => return Err(Refusal::InvalidState),
+        // Claude asks from a turn the task did not see start, before it reads the pending input:
+        // it goes on inside that turn, so nothing has to wake it.
+        Activity::InputPending(_) => {}
+        Activity::Launching(_) => return Err(Refusal::InvalidState),
     }
     Ok(())
 }

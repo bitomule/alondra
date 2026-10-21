@@ -34,6 +34,9 @@ pub(crate) struct OwnerTransaction<'connection> {
     cached: &'connection Option<Cached>,
     journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
+    /// What the host observed that moves the task's lifecycle and the domain refused to record,
+    /// with why: the task's record no longer follows its Claude.
+    unrecorded: Vec<String>,
 }
 
 /// What the commands staged so far add up to. A later replay or no-op never takes back an
@@ -91,6 +94,7 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         RuntimeFact::TurnStarted { turn, trigger: Trigger::OwnedContinuation(continuation) } => {
             RuntimeObservation::TurnResumed { turn: turn.as_str().into(), continuation: continuation.as_str().into() }
         }
+        RuntimeFact::TurnStarted { turn, trigger: Trigger::Unprompted } => RuntimeObservation::TurnUnprompted { turn: turn.as_str().into() },
         RuntimeFact::InputConsumed { input } => RuntimeObservation::InputConsumed { input: input.as_str().into() },
         RuntimeFact::WorkStarted { turn, work } => RuntimeObservation::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() },
         RuntimeFact::WorkEnded { work, continuation } => {
@@ -99,6 +103,69 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         RuntimeFact::ContinuationConsumed { continuation } => RuntimeObservation::WorkContinued { continuation: continuation.as_str().into() },
         other => return Err(StoreError::Storage(anyhow::anyhow!("provider observation refused: the domain does not record {other:?} yet"))),
     })
+}
+/// What a test has the domain refuse, once, as it refuses what it cannot record.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Refuse {
+    TurnEnd,
+    DecisionRequest,
+    InterruptAccepted,
+}
+
+#[cfg(test)]
+thread_local! {
+    static REFUSE: std::cell::Cell<Option<Refuse>> = const { std::cell::Cell::new(None) };
+}
+
+/// The next `what` this thread observes is refused.
+#[cfg(test)]
+pub(crate) fn refuse_next(what: Refuse) {
+    REFUSE.with(|refuse| refuse.set(Some(what)));
+}
+
+/// The refusal the test asked for; the run that probes takes it.
+#[cfg(test)]
+fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
+    let what = match command {
+        Command::RecordTurnBoundary { .. } => Refuse::TurnEnd,
+        Command::RecordDecisionRequest { .. } => Refuse::DecisionRequest,
+        Command::RecordInterruptAccepted { .. } => Refuse::InterruptAccepted,
+        _ => return None,
+    };
+    let refused = REFUSE.with(|refuse| {
+        let asked = refuse.get() == Some(what);
+        if asked && probe {
+            refuse.set(None);
+        }
+        asked
+    });
+    refused.then(|| DomainError::new("conflict", "the test refuses it").into())
+}
+
+#[cfg(not(test))]
+fn refused_for_test(_: &Command, _: bool) -> Option<StoreError> {
+    None
+}
+
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::RecordRuntimeFacts { .. } => "its runtime facts",
+        Command::RecordTurnBoundary { .. } => "the end of its turn",
+        Command::RecordDroppedInput { .. } => "an input Claude dropped",
+        Command::RecordDecisionRequest { .. } => "a request for a decision",
+        Command::RecordDecisionSettled { .. } | Command::RecordDecisionAborted { .. } => "the end of a decision",
+        Command::RecordTaskWorktree { .. } => "a worktree",
+        Command::RecordMcpServers { .. } | Command::RecordMcpSignIn { .. } | Command::ReadMcpStatus { .. } => "its MCP servers",
+        _ => "a fact",
+    }
+}
+
+/// Whether `command` moves the task's lifecycle: refused, the task's record no longer follows
+/// what its Claude does.
+fn moves_lifecycle(command: &Command) -> bool {
+    matches!(command, Command::RecordRuntimeFacts { .. } | Command::RecordTurnBoundary { .. } | Command::RecordDroppedInput { .. }
+        | Command::RecordDecisionRequest { .. } | Command::RecordDecisionSettled { .. } | Command::RecordDecisionAborted { .. })
 }
 fn application_error(error: alondra_agent_application::Error) -> StoreError {
     match error {
@@ -131,7 +198,13 @@ impl<'connection> OwnerTransaction<'connection> {
                 schedule_changed: false,
                 version,
             },
+            unrecorded: vec![],
         })
+    }
+
+    /// What this transaction's observations moved in Claude and the domain refused to record.
+    pub(crate) fn unrecorded(&self) -> &[String] {
+        &self.unrecorded
     }
 
     /// The domain's own guarded command, decided against this transaction's current state.
@@ -142,6 +215,9 @@ impl<'connection> OwnerTransaction<'connection> {
         envelope: &CommandEnvelope,
         attached: Attached<'_>,
     ) -> std::result::Result<&CommandOutcome, StoreError> {
+        if let Some(refusal) = refused_for_test(&envelope.command, true) {
+            return Err(refusal);
+        }
         let (conn, cached) = (self.conn, self.cached);
         let prepared = self.journal.inspect_mut(|journal| {
             if matches!(envelope.command, Command::CreateDocument { .. } | Command::ReviseDocument { .. }) {
@@ -163,6 +239,9 @@ impl<'connection> OwnerTransaction<'connection> {
     /// RecordDecisionRequest once its request is kept, and its end by RecordDecisionSettled or
     /// RecordDecisionAborted. Facts the domain does not record yet (a lost connection, a released
     /// resource) refuse the whole observation. `home` is Alondra's, where «allow always» is judged.
+    /// With `probe`, each command is first decided on a copy and one the domain refuses is left
+    /// out, a request for a decision denied to Claude with why: what Alondra cannot record never
+    /// stops the node, and `unrecorded` says what of its lifecycle was left out.
     pub(crate) fn stage_observation<N: ObservationNormalizer>(
         &mut self,
         binding: &ProviderBinding,
@@ -170,6 +249,7 @@ impl<'connection> OwnerTransaction<'connection> {
         batch: &OrderedObservation,
         normalizer: &N,
         home: &std::path::Path,
+        probe: bool,
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
         let pending = alondra_agent_application::stage_observation(
             &mut self.journal,
@@ -181,6 +261,11 @@ impl<'connection> OwnerTransaction<'connection> {
         .map_err(application_error)?;
         let execution = pending.execution().clone();
         let (task_id, generation) = (execution.task().clone(), execution.generation());
+        let cursor = |journal: &LifecycleTransaction<'_>| -> std::result::Result<Option<u64>, StoreError> {
+            let lifecycle = journal.load(&task_id)?;
+            Ok((lifecycle.execution() == Some(&execution)).then(|| lifecycle.cursor().unwrap_or(0)))
+        };
+        let before = if probe { cursor(&self.journal)? } else { None };
         let mut commands = vec![];
         let mut read_status = false;
         let mut technical = vec![];
@@ -309,9 +394,57 @@ impl<'connection> OwnerTransaction<'connection> {
             if matches!(envelope.command, Command::ReadMcpStatus { .. }) && self.draft.state.guard(&Actor::System, &envelope).is_err() {
                 continue;
             }
-            self.stage_command(&Actor::System, &envelope, Attached::None)?;
+            // What Alondra cannot record never stops the node's owner or its host: a command the
+            // domain refuses changed nothing, and the rest of the observation still commits.
+            if !probe {
+                if let Some(refusal) = refused_for_test(&envelope.command, false) {
+                    return Err(refusal);
+                }
+                self.stage_command(&Actor::System, &envelope, Attached::None)?;
+                continue;
+            }
+            // What Alondra cannot record never stops the node's owner or its host: each command is
+            // first decided on a copy, and one the domain refuses is left out of the observation.
+            let Some(refusal) = self.refusal(&envelope) else {
+                self.stage_command(&Actor::System, &envelope, Attached::None)?;
+                continue;
+            };
+            if let Command::RecordDecisionRequest { task_id, generation, epoch, .. } = &envelope.command {
+                let denial = CommandEnvelope {
+                    command_id: format!("{}:refused", envelope.command_id.0).as_str().into(),
+                    command: Command::RefuseDecisionRequest { task_id: task_id.clone(), generation: *generation, epoch: *epoch, reason: refusal.message.clone() },
+                    ..envelope.clone()
+                };
+                if self.refusal(&denial).is_none() {
+                    self.stage_command(&Actor::System, &denial, Attached::None)?;
+                    log!("Claude's request {epoch} on task {task_id} could not be asked ({}): it is denied with why", refusal.message);
+                    continue;
+                }
+            }
+            let what = format!("{} at {}: {}", command_name(&envelope.command), batch.cursor, refusal.message);
+            log!("the domain refused what the SDK host of {task_id} observed, {what}: the observation commits without it");
+            if moves_lifecycle(&envelope.command) {
+                self.unrecorded.push(what);
+            }
         }
-        pending.settle(&mut self.journal).map_err(application_error)
+        if !probe {
+            return pending.settle(&mut self.journal).map_err(application_error);
+        }
+        let moved = match (before, cursor(&self.journal)?) {
+            (Some(before), Some(after)) => after.saturating_sub(before),
+            _ => 0,
+        };
+        pending.settle_recorded(&mut self.journal, usize::try_from(moved).unwrap_or(usize::MAX)).map_err(application_error)
+    }
+
+    /// Why the domain would refuse `envelope` now, decided on a copy of this transaction's state.
+    pub(crate) fn refusal(&self, envelope: &CommandEnvelope) -> Option<DomainError> {
+        if let Some(StoreError::Domain(refusal)) = refused_for_test(&envelope.command, true) {
+            return Some(refusal);
+        }
+        let mut probe = DomainState::clone(&self.draft.state);
+        let envelope = CommandEnvelope { expected_revision: probe.revision, ..envelope.clone() };
+        probe.execute(&Actor::System, &envelope).err()
     }
 
     /// Whether `servers` changes what the task's node holds of its MCP servers: init repeats them

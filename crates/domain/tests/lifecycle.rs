@@ -861,7 +861,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..36, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..39, 1..160)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for action in actions {
             let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -901,6 +901,9 @@ proptest! {
                 32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
                 34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
                 35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
+                36 => Some(Event::Tell { input: input("told") }),
+                37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
+                38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
                 _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
             };
             let Some(event) = event else { continue };
@@ -2294,6 +2297,85 @@ fn a_policy_decision_opens_its_callback_answered_without_a_card() {
     fact(&mut task, RuntimeFact::ContinuationConsumed { continuation });
     assert_eq!(task.callback(&callback), None);
     assert_eq!(task.activity(), ActivityView::Working);
+}
+
+/// A subagent hands its report back after the turn ended and Claude takes it up by itself: the
+/// task sees it working, the card that asked how it goes on no longer holds, and a message that
+/// waited joins that turn.
+#[test]
+fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_message() {
+    let mut rested = running();
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    assert_eq!(rested.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
+    fact(&mut rested, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
+    assert!(rested.cards().is_empty(), "Claude goes on by itself");
+    assert_eq!(rested.activity(), ActivityView::Working);
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("own"), unheard_card: card("own-card") });
+    assert_eq!(rested.cards(), [(&card("own-card"), WaitReason::Unheard)], "its end asks again how it goes on");
+
+    let mut told = running();
+    fact(&mut told, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    apply(&mut told, Event::Tell { input: input("told") });
+    fact(&mut told, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
+    assert_eq!((told.activity(), told.pending_inputs()), (ActivityView::Working, vec![&input("told")]));
+    fact(&mut told, RuntimeFact::InputConsumed { input: input("told") });
+    assert!(told.pending_inputs().is_empty(), "the message joins the turn Claude opened");
+
+    let mut asking = running();
+    fact(&mut asking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    apply(&mut asking, Event::Ask { card: card("question") });
+    fact(&mut asking, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
+    assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
+
+    let mut working = running();
+    let refused = working.apply(working.revision(), Event::Runtime {
+        stamp: working.execution().unwrap().clone(), cursor: working.cursor().unwrap() + 1,
+        fact: RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted },
+    });
+    assert_eq!(refused, Err(Refusal::CorrelationMismatch), "a turn already runs");
+}
+
+/// Claude asks from a turn the task did not see start while what it was told waits for it: the
+/// node of 2026-10-21, whose plan Alondra refused while a message waited behind its own turn.
+#[test]
+fn a_decision_asked_while_what_the_node_was_told_waits_settles_and_the_message_still_starts_its_turn() {
+    let told = || {
+        let mut task = running();
+        fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+        apply(&mut task, Event::Tell { input: input("told") });
+        assert_eq!(task.activity(), ActivityView::Starting);
+        task
+    };
+    let refused = Decision::Deny { message: "your plan's checklist holds at most 40 points".into() };
+    let mut policy = told();
+    let callback = decision_callback(policy.generation(), 7);
+    fact(&mut policy, RuntimeFact::AnsweredByPolicy { callback: callback.clone(), decision: refused });
+    assert_eq!(policy.callback(&callback), Some(CallbackView::Answered));
+    assert!(policy.cards().is_empty());
+    let continuation = decision_continuation(policy.generation(), 7);
+    fact(&mut policy, RuntimeFact::CallbackSettled { callback: callback.clone(), continuation });
+    assert_eq!(policy.callback(&callback), None);
+    assert_eq!((policy.activity(), policy.pending_inputs()), (ActivityView::Starting, vec![&input("told")]), "the message still waits for its turn");
+    fact(&mut policy, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
+    assert_eq!(policy.activity(), ActivityView::Working);
+
+    let mut asked = told();
+    let callback = decision_callback(asked.generation(), 8);
+    fact(&mut asked, RuntimeFact::Ask { card: card("plan"), callback: callback.clone(), reason: WaitReason::Permission });
+    assert_eq!(asked.cards(), [(&card("plan"), WaitReason::Permission)]);
+    apply(&mut asked, Event::Decide { card: card("plan"), decision: Decision::Allow });
+    assert!(asked.cards().is_empty());
+    let continuation = decision_continuation(asked.generation(), 8);
+    fact(&mut asked, RuntimeFact::CallbackSettled { callback, continuation });
+    fact(&mut asked, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
+    assert_eq!(asked.activity(), ActivityView::Working);
+
+    let mut aborted = told();
+    let callback = decision_callback(aborted.generation(), 9);
+    fact(&mut aborted, RuntimeFact::Ask { card: card("plan"), callback: callback.clone(), reason: WaitReason::Permission });
+    fact(&mut aborted, RuntimeFact::CallbackAborted { callback, unheard_card: card("unheard") });
+    assert!(aborted.cards().is_empty(), "the message that waits explains what comes next");
+    assert_eq!(aborted.pending_inputs(), [&input("told")]);
 }
 
 #[test]

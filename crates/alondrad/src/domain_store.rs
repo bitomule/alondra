@@ -7,6 +7,8 @@ mod connection;
 mod live_read_trace;
 mod owner;
 pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
+#[cfg(test)]
+pub(crate) use owner::{Refuse, refuse_next};
 pub(crate) mod model_metrics;
 mod lifecycle_migration;
 mod handover;

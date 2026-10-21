@@ -82,6 +82,14 @@ pub enum Step {
     /// Runs a command with Bash in the worktree. A native Claude of the Agent SDK first asks for
     /// its permission unless the project's local settings allow it.
     Bash { command: String },
+    /// Claude starts a turn by itself, with no prompt of Alondra's, as when a subagent hands its
+    /// report back after the last turn ended. What Alondra sends meanwhile waits queued behind it.
+    OwnTurn { said: String },
+    /// In the turn it started by itself, Claude asks to leave plan mode with a plan of `points`
+    /// checklist points and waits for the answer.
+    LeavePlanMode { points: usize },
+    /// The turn Claude started by itself ends; what waited behind it then runs as a turn of its own.
+    EndOwnTurn,
     /// The session ends as when the user exits it: `session.end`, then the process goes.
     End,
     /// The process dies without a word, as a crashed session does.

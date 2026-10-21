@@ -25,6 +25,8 @@ impl TaskLifecycle {
         let mut resting_card = None;
         let mut resume_instead = None;
         let mut ended_callbacks = Vec::new();
+        // Claude went on by itself: the cards that asked the user how it goes on no longer hold.
+        let mut unprompted = false;
         if execution.resource != ResourceEvidence::Available
             && matches!(
                 fact,
@@ -125,6 +127,7 @@ impl TaskLifecycle {
                 if execution.resource != ResourceEvidence::Available {
                     return Err(Refusal::InvalidState);
                 }
+                let trigger_unprompted = trigger == Trigger::Unprompted;
                 let (work, continuations) = match (&execution.activity, trigger) {
                     (Activity::InputPending(expected), Trigger::Input(input))
                         if expected == &input =>
@@ -165,8 +168,16 @@ impl TaskLifecycle {
                         execution.inbox.pop_front();
                         (BTreeSet::new(), pending.values())
                     }
+                    (Activity::Resting, Trigger::Unprompted) => (BTreeSet::new(), BTreeSet::new()),
+                    (Activity::InputPending(input), Trigger::Unprompted) => {
+                        execution.inbox.push_front(input.clone());
+                        (BTreeSet::new(), BTreeSet::new())
+                    }
+                    (Activity::Continuation(pending), Trigger::Unprompted) => (BTreeSet::new(), pending.values()),
+                    (Activity::OwnWork { work, continuations }, Trigger::Unprompted) => (work.values(), continuations.clone()),
                     _ => return Err(Refusal::CorrelationMismatch),
                 };
+                unprompted = trigger_unprompted;
                 execution.activity = Activity::Turn {
                     id: turn,
                     work,
@@ -334,7 +345,8 @@ impl TaskLifecycle {
                     Activity::Resting => {
                         Activity::Continuation(NonEmpty::new([Wake::Owned(continuation)])?)
                     }
-                    _ => return Err(Refusal::InvalidState),
+                    Activity::InputPending(input) => Activity::InputPending(input.clone()),
+                    Activity::Launching(_) => return Err(Refusal::InvalidState),
                 };
             }
             RuntimeFact::CallbackAborted {
@@ -455,6 +467,9 @@ impl TaskLifecycle {
                 session,
             }) => {
                 let mut updated = cards.map();
+                if unprompted {
+                    updated.retain(|_, card| card.reason != WaitReason::Unheard);
+                }
                 if let Some((callback, _)) = &aborted_callback {
                     updated.retain(|_, card| card.callback.as_ref() != Some(callback));
                 }
@@ -506,6 +521,9 @@ impl TaskLifecycle {
             State::InProgress(Progress::Dependency {
                 decisions, session, ..
             }) => {
+                if unprompted {
+                    decisions.retain(|_, card| card.reason != WaitReason::Unheard);
+                }
                 if let Some((callback, _)) = aborted_callback {
                     decisions.retain(|_, card| card.callback.as_ref() != Some(&callback));
                 }
@@ -527,6 +545,9 @@ impl TaskLifecycle {
                 *session = Session::Present(execution);
             }
             State::Delivered(delivered) => {
+                if unprompted {
+                    delivered.decisions.retain(|_, card| card.reason != WaitReason::Unheard);
+                }
                 if let Some((callback, _)) = aborted_callback {
                     delivered
                         .decisions

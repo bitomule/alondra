@@ -9,6 +9,8 @@ pub const ALONDRA_MCP_SERVER: &str = "plugin:alondra:alondra";
 pub const PLUGIN_SOURCE: &str = "plugin";
 const USER_DENIED: &str = "The user denied it";
 const USER_REQUESTED_CHANGES: &str = "The user requests changes to the plan";
+/// What Claude is told of a request Alondra could not put in front of the user, before the reason.
+pub const UNASKABLE: &str = "Alondra could not ask the user this, so it is denied; change the request and ask again, or go on without it";
 /// Claude Code asks to leave plan mode with the plan file's content, and with none while Claude
 /// has not written that file.
 pub const UNWRITTEN_PLAN: &str = "There is no plan to review: write your plan to the plan file plan mode gave you, then call ExitPlanMode again";
@@ -106,6 +108,17 @@ impl DomainState {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card_id });
         }
         self.decide(lifecycles, task, LifecycleRecord::DecisionAsked { card: held, epoch, reason: reason_of(hold) })
+    }
+
+    /// Alondra could not put the request at `epoch` in front of the user: Claude is denied it with
+    /// `reason`, as a decision of Alondra's own, and goes on.
+    pub(super) fn refuse_decision_request(&mut self, actor: &Actor, task: &TaskId, generation: u64, epoch: u64, reason: &str,
+        lifecycles: &mut Lifecycles) -> Result<()> {
+        system(actor)?;
+        self.task(task)?;
+        self.sdk_execution(task, generation, lifecycles)?;
+        let message = format!("{UNASKABLE}: {}", reason.trim());
+        self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Deny { message } })
     }
 
     /// The records that end the request at `epoch`, judged on a replay of the task: its decision

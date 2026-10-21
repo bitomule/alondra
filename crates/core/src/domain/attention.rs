@@ -21,7 +21,7 @@ pub enum WaitReason {
     /// It is stacked on a PR that is not merged.
     UpstreamPr { number: u64 },
     /// An open card of the task holds it back until the user answers.
-    Answer { need: String },
+    Answer { card: InteractionId, need: String },
     /// Its node is resolving the conflicts Alondra handed back.
     NodeFixing { node: String, pr: u64 },
     Merging { pr: u64 },
@@ -121,7 +121,7 @@ impl DomainState {
             return Attention::Wait(WaitReason::BlockedBy { task: blocker });
         }
         if let Some(card) = holds.first_card(&p.id).and_then(|id| self.interactions.get(&id)) {
-            return Attention::Wait(WaitReason::Answer { need: card.card.need.clone() });
+            return Attention::Wait(WaitReason::Answer { card: card.id.clone(), need: card.card.need.clone() });
         }
         if let Some(stack) = &t.stack
             && let Some(upstream) = self.interactions.get(&stack.presentation_id)

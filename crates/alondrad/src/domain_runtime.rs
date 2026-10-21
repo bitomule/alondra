@@ -738,6 +738,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::CompactConversation { task_id }
         | Command::TellNode { task_id, .. }
         | Command::RecordDecisionRequest { task_id, .. }
+        | Command::RefuseDecisionRequest { task_id, .. }
         | Command::RecordDecisionSettled { task_id, .. }
         | Command::RecordDecisionAborted { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
