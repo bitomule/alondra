@@ -104,13 +104,13 @@ def refuse(message, status):
         lifecycle(entry, 'completed')
     pending.clear()
 
-def result(message, failed=False, subtype=None):
+def result(message, failed=False, subtype=None, model_usage=None):
     global serial
     serial += 1
     value = dict(type='result', subtype=subtype or ('error_during_execution' if failed else 'success'), is_error=failed or subtype is not None,
                  session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
                  duration_ms=0, duration_api_ms=0, num_turns=0 if failed else 1,
-                 total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
+                 total_cost_usd=0, usage={}, modelUsage=model_usage or {}, permission_denials=[],
                  user_message_uuid=message['uuid'])
     if failed:
         value['errors'] = ['Fixture delivery failed before consumption']
@@ -340,7 +340,11 @@ for raw in sys.stdin:
             consume(message)
         elif text == 'large-context':
             assistant(message, usage=LARGE_USAGE)
-            result(message)
+            result(message, model_usage={'fixture': dict(inputTokens=3, outputTokens=400, contextWindow=1_000_000)})
+        elif text == 'large-context-unsized':
+            # Claude sized only a subagent's model, never the one the conversation runs on.
+            assistant(message, usage=LARGE_USAGE)
+            result(message, model_usage={'fixture-subagent': dict(inputTokens=1, outputTokens=1, contextWindow=200_000)})
         elif text.startswith('bulky:'):
             # A long turn whose answers are close to the largest event the host keeps.
             for _ in range(int(text[len('bulky:'):])):

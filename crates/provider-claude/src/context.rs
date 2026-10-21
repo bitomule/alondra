@@ -11,14 +11,16 @@ use std::time::Duration;
 const HOUR: Duration = Duration::from_secs(60 * 60);
 const FIVE_MINUTES: Duration = Duration::from_secs(5 * 60);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextEvent {
     /// Claude sends the model the next request of the root conversation: a tool's result goes
     /// back to it.
     Requested,
-    /// The model answered a request of the root conversation `tokens` long; `cache` is how long
+    /// `model` answered a request of the root conversation `tokens` long; `cache` is how long
     /// the prompt cache that request wrote lasts, unknown when it wrote none.
-    Answered { tokens: u64, cache: Option<Duration> },
+    Answered { tokens: u64, cache: Option<Duration>, model: Option<String> },
+    /// A turn ended, and Claude said the context window of each model it used in it.
+    Windows(Vec<(String, u64)>),
     /// Claude compacted the conversation: what was measured before no longer holds.
     Compacted,
 }
@@ -46,7 +48,14 @@ fn of(payload: &Value) -> Option<ContextEvent> {
             } else {
                 None
             };
-            Some(ContextEvent::Answered { tokens, cache })
+            let model = payload.pointer("/message/model").and_then(Value::as_str).map(str::to_owned);
+            Some(ContextEvent::Answered { tokens, cache, model })
+        }
+        "result" => {
+            let windows: Vec<(String, u64)> = payload.get("modelUsage").and_then(Value::as_object).into_iter().flatten()
+                .filter_map(|(model, usage)| Some((model.clone(), usage.get("contextWindow")?.as_u64().filter(|window| *window > 0)?)))
+                .collect();
+            (!windows.is_empty()).then_some(ContextEvent::Windows(windows))
         }
         "system" if payload.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => Some(ContextEvent::Compacted),
         _ => None,
@@ -66,19 +75,33 @@ mod tests {
     fn an_answer_measures_everything_its_request_sent_and_answered_and_how_long_its_cache_lasts() {
         let hour = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 1_000, "cache_read_input_tokens": 250_000, "output_tokens": 400,
             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_000}}));
-        assert_eq!(of(&hour), Some(ContextEvent::Answered { tokens: 251_403, cache: Some(HOUR) }));
+        assert_eq!(of(&hour), Some(ContextEvent::Answered { tokens: 251_403, cache: Some(HOUR), model: None }));
         let minutes = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 0, "output_tokens": 1,
             "cache_creation": {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 0}}));
-        assert_eq!(of(&minutes), Some(ContextEvent::Answered { tokens: 14, cache: Some(FIVE_MINUTES) }));
+        assert_eq!(of(&minutes), Some(ContextEvent::Answered { tokens: 14, cache: Some(FIVE_MINUTES), model: None }));
     }
 
     #[test]
     fn an_answer_that_cached_nothing_says_nothing_of_when_the_cache_ends() {
         let read_only = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 300_000, "output_tokens": 1,
             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}}));
-        assert_eq!(of(&read_only), Some(ContextEvent::Answered { tokens: 300_004, cache: None }));
+        assert_eq!(of(&read_only), Some(ContextEvent::Answered { tokens: 300_004, cache: None, model: None }));
         let unsplit = answer(json!({"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}));
-        assert_eq!(of(&unsplit), Some(ContextEvent::Answered { tokens: 2, cache: None }));
+        assert_eq!(of(&unsplit), Some(ContextEvent::Answered { tokens: 2, cache: None, model: None }));
+    }
+
+    #[test]
+    fn an_answer_names_its_model_and_a_turns_result_the_window_of_each_model() {
+        let mut answered = answer(json!({"input_tokens": 1, "output_tokens": 1}));
+        answered["message"]["model"] = json!("claude-opus-5-5");
+        assert_eq!(of(&answered), Some(ContextEvent::Answered { tokens: 2, cache: None, model: Some("claude-opus-5-5".into()) }));
+        let result = json!({"type": "result", "subtype": "success", "modelUsage": {
+            "claude-opus-5-5": {"inputTokens": 9, "contextWindow": 1_000_000},
+            "claude-haiku-4-5-20251001": {"inputTokens": 3, "contextWindow": 200_000},
+            "unsized": {"inputTokens": 1}}});
+        let Some(ContextEvent::Windows(mut windows)) = of(&result) else { panic!("a result with modelUsage says its windows") };
+        windows.sort();
+        assert_eq!(windows, vec![("claude-haiku-4-5-20251001".into(), 200_000), ("claude-opus-5-5".into(), 1_000_000)]);
     }
 
     #[test]

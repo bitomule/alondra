@@ -2220,6 +2220,36 @@ fn a_large_conversation_resting_on_its_card_compacts_once_before_its_cache_expir
     driver.stop().unwrap();
 }
 
+/// The context the live view shows for the SDK task's node, launched told `prompt`.
+fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with(prompt);
+    slice.settle(&mut driver);
+    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let state = slice.domain.state().unwrap();
+    let live = tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::views::live::gather(&client, &state, alondra_core::views::Lang::En, &[], false, false));
+    let node = live.nodes.iter().find(|node| node.agent_id == driver.agent().0).expect("the task's node is live");
+    let shown = (node.context_percent, node.context_window);
+    driver.stop().unwrap();
+    shown
+}
+
+// The node of an SDK task shows how much of its model's window its last answer used: 250 403
+// tokens of the million Claude said its model has.
+#[test]
+fn an_sdk_node_shows_the_context_its_last_answer_used_of_its_models_window() {
+    assert_eq!(shown_context("large-context"), (Some(25), Some(1_000_000)));
+}
+
+// Without a window Claude gave for the conversation's own model, the node shows no percent rather
+// than one against a window nobody said.
+#[test]
+fn an_sdk_node_without_its_models_window_shows_no_context() {
+    assert_eq!(shown_context("large-context-unsized"), (None, None), "Claude sized only another model");
+    assert_eq!(shown_context("Write the release notes"), (None, None), "Claude sized no model");
+}
+
 // C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
 // fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
 // and its status is kept.

@@ -42,14 +42,16 @@ pub(crate) struct LiveSnapshots {
 }
 
 /// What a snapshot was read from: the domain revision, every row written to the store, hooks,
-/// node reports, the usage pause, the fleet gate, pull request details, and what only the live
-/// sampler sees by looking (clocks, files, gauges), which it announces on the feeds' clock.
+/// node reports, the SDK tasks' measured contexts, the usage pause, the fleet gate, pull request
+/// details, and what only the live sampler sees by looking (clocks, files, gauges), which it
+/// announces on the feeds' clock.
 #[derive(Clone)]
 struct Facts {
     epoch: String,
     revision: alondra_core::domain::Revision,
     store_rows: u64,
     pull_requests: u64,
+    contexts: u64,
     domain: watch::Receiver<alondra_core::domain::Revision>,
     hooks: watch::Receiver<()>,
     reports: watch::Receiver<()>,
@@ -70,9 +72,10 @@ impl Facts {
         let gate = live.gate.subscribe();
         let sampled = client.feeds.subscribe();
         let pull_requests = client.details.version();
+        let contexts = client.domain.contexts.version();
         let (store_rows, newest) = client.domain.store.lock().expect("domain store poisoned").write_mark().ok()?;
         (newest <= state.revision && *domain.borrow() == state.revision).then(|| Self {
-            epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests,
+            epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts,
             domain, hooks, reports, usage, gate, sampled,
         })
     }
@@ -85,7 +88,7 @@ impl Facts {
         [self.domain.has_changed(), self.hooks.has_changed(), self.reports.has_changed(),
             self.usage.has_changed(), self.gate.has_changed(), self.sampled.has_changed()]
             .into_iter().all(|changed| matches!(changed, Ok(false)))
-            && now.store_rows == Some(self.store_rows) && now.pull_requests == self.pull_requests
+            && now.store_rows == Some(self.store_rows) && now.pull_requests == self.pull_requests && now.contexts == self.contexts
     }
 }
 
@@ -93,6 +96,7 @@ impl Facts {
 struct Marks {
     store_rows: Option<u64>,
     pull_requests: u64,
+    contexts: u64,
 }
 
 impl Marks {
@@ -100,6 +104,7 @@ impl Marks {
         Self {
             store_rows: client.domain.store.lock().expect("domain store poisoned").write_mark().ok().map(|(rows, _)| rows),
             pull_requests: client.details.version(),
+            contexts: client.domain.contexts.version(),
         }
     }
 }
@@ -366,6 +371,11 @@ async fn gather_inner(
                 if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
                 text
             });
+            let context = reported.context.as_ref().map(|context| (context.percent, Some(context.window))).or_else(|| {
+                let used = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
+                    .find_map(|task| client.domain.contexts.used(&task.id))?;
+                Some((used.percent(), used.window))
+            });
             Some(LiveNode {
                 agent_id: node.session_id,
                 short_id: Some(node.short_id),
@@ -425,8 +435,8 @@ async fn gather_inner(
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
                 tool: tool.map(|tool| tool.chars().take(141).collect()),
-                context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
-                context_window: reported.context.as_ref().map(|context| context.window),
+                context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
+                context_window: context.and_then(|(_, window)| window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
                 model: reported.model.clone(),
                 disconnected: agent.phase == NodePhase::Closed && open_task,
