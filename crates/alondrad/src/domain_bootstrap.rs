@@ -25,17 +25,28 @@ pub(crate) struct DomainDaemon {
     direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,
 }
 
+fn require_database(home: &Path) -> Result<()> {
+    let database = crate::domain_database_migration::active_path(home);
+    let metadata = std::fs::symlink_metadata(&database).with_context(|| {
+        format!("committed domain database missing: {}", database.display())
+    })?;
+    ensure!(
+        metadata.is_file(),
+        "committed domain database must be a regular file"
+    );
+    Ok(())
+}
+
 impl DomainDaemon {
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
-        let database = crate::domain_database_migration::active_path(home);
-        let metadata = std::fs::symlink_metadata(&database).with_context(|| {
-            format!("committed domain database missing: {}", database.display())
-        })?;
-        ensure!(
-            metadata.is_file(),
-            "committed domain database must be a regular file"
-        );
-        let domain = Arc::new(DomainRuntime::open(home)?);
+        require_database(home)?;
+        Self::over(home, DomainRuntime::open(home)?)
+    }
+
+    /// The daemon over the domain its start already opened, so the journal is replayed once.
+    pub(crate) fn over(home: &Path, domain: DomainRuntime) -> Result<Arc<Self>> {
+        require_database(home)?;
+        let domain = Arc::new(domain);
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),

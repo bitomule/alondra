@@ -33,7 +33,8 @@ pub fn read_journal(connection: &Connection, scope: &AuthorityScope) -> Result<B
         let task = TaskId::from(task.as_str());
         let initial = InputId::new(initial)?;
         let mut aggregate = TaskLifecycle::planned(task.clone(), initial.clone())?;
-        persistence::require_inputs(connection, &aggregate)?;
+        let mut known = persistence::KnownInputs::default();
+        known.require(connection, &aggregate)?;
         let mut events = vec![];
         let mut journal = connection.prepare_cached("SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision")?;
         let entries = journal.query_map(params![task.0], |row| Ok((crate::read_number(row, 0)?, row.get::<_, String>(1)?)))?;
@@ -46,7 +47,7 @@ pub fn read_journal(connection: &Connection, scope: &AuthorityScope) -> Result<B
             crate::measure::event_decoded();
             let event = record.decode(&aggregate)?;
             aggregate.apply(aggregate.revision(), event.clone()).map_err(|_| Error::CorruptJournal)?;
-            persistence::require_inputs(connection, &aggregate)?;
+            known.require(connection, &aggregate)?;
             events.push(event);
         }
         if aggregate.revision() != revision {

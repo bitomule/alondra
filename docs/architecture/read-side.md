@@ -172,6 +172,30 @@ median, 2.7 ms max against 10 ms.
 
 What is left of a cold home on the real copy is the live gather; the commit cost is SQLite.
 
+## What a daemon start reads
+
+A start (and `alondrad --preflight`, which runs the same start on a snapshot of HOME) opens the
+domain once (`DomainRuntime::open`, handed to `DomainDaemon::over`) and builds the first snapshot
+from:
+
+- the domain tables (`repository::load_rows`);
+- the lifecycle journal of every task: `lifecycle_tasks`, `lifecycle_events` replayed in order,
+  `lifecycle_inputs` (each input a task holds pending is looked up once, `persistence::KnownInputs`)
+  and the relations a replay checks (`lifecycle_cards`, `lifecycle_dependencies`,
+  `lifecycle_delivery`, `lifecycle_current_execution`);
+- `PRAGMA integrity_check` and `foreign_key_check`, which walk every page (66 ms on 64 MB).
+
+Beyond those checks it reads no row of `provider_observations`, `provider_commands`,
+`command_audit` or `semantic_receipts`: the SDK owners read their own rows when they adopt an
+execution. What a start
+costs grows with the journal's events and inputs, and only linearly; `store_test`
+`a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending` holds it.
+
+21 October, copy of the real HOME (64 MB `domain.db`, 4974 journal events; one closing task held
+1568 pending inputs, 1563 of them the same closer message): preflight 5.15 s → 0.48 s. Before, each
+event looked up every pending input again with a freshly prepared statement (1.2 M lookups per
+open, the domain opened twice), 81 % of the time.
+
 ## Rules for new work
 
 1. **A new screen reads the index.** If it needs something the index does not have, add it to

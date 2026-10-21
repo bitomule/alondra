@@ -2794,8 +2794,8 @@ fn a_transaction_replays_each_task_once_and_reads_its_own_applies() {
     assert_eq!(tx.load(&"task".into()).unwrap().revision(), 2);
     drop(tx);
     assert_eq!(
-        measure::counts() - before,
-        measure::Counts { transactions: 1, aggregate_loads: 1, event_decodes: 1 },
+        measure::Counts { input_checks: 0, ..measure::counts() - before },
+        measure::Counts { transactions: 1, aggregate_loads: 1, event_decodes: 1, input_checks: 0 },
         "a transaction replays the journal of the task it touches once"
     );
 
@@ -2804,6 +2804,46 @@ fn a_transaction_replays_each_task_once_and_reads_its_own_applies() {
         tx.load(&"task".into()).unwrap().revision(),
         1,
         "an apply rolled back with its transaction is not read by the next one"
+    );
+}
+
+#[test]
+fn a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending() {
+    const TOLD: usize = 400;
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    fixture.launch("task");
+    let task: TaskId = "task".into();
+    let mut tx = fixture.transaction();
+    for told in 0..TOLD {
+        let input = format!("told-{told}");
+        tx.put_input(&task, payload(&input)).unwrap();
+        let revision = tx.load(&task).unwrap().revision();
+        tx.apply(&task, revision, &input, Event::Tell { input: id(&input) }).unwrap();
+        tx.stage_input(&task, &id(&input)).unwrap();
+    }
+    tx.commit().unwrap();
+    let stored = u64::try_from(TOLD + 1).unwrap();
+
+    let before = measure::counts();
+    let journal = read_journal(&fixture.connection, &scope()).unwrap();
+    let read = measure::counts() - before;
+    assert_eq!(journal[&task].events.len(), TOLD + 1);
+    assert!(
+        read.input_checks <= stored,
+        "reading the journal at startup looked up {} inputs for {stored} stored ones",
+        read.input_checks
+    );
+
+    let before = measure::counts();
+    let tx = fixture.transaction();
+    assert_eq!(tx.load(&task).unwrap().pending_inputs().len(), TOLD + 1);
+    drop(tx);
+    let replayed = measure::counts() - before;
+    assert!(
+        replayed.input_checks <= stored,
+        "replaying the task looked up {} inputs for {stored} stored ones",
+        replayed.input_checks
     );
 }
 

@@ -211,7 +211,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let _domain = domain_runtime::DomainRuntime::open(&config.home)?;
+    let domain = domain_runtime::DomainRuntime::open(&config.home)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
         // start the long-running workers or HTTP listener.
@@ -224,7 +224,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         );
         return Ok(());
     }
-    run_domain(&config).await
+    run_domain(&config, domain).await
 }
 
 fn ensure_domain_protocol(home: &std::path::Path) -> Result<()> {
@@ -458,8 +458,8 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 }
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
-async fn run_domain(config: &Config) -> Result<()> {
-    let state = domain_bootstrap::DomainDaemon::open(&config.home)?;
+async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> Result<()> {
+    let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
         Arc::new(

@@ -12,7 +12,8 @@ pub(super) fn load(
     let (initial, revision) = head(connection, scope, task)?;
     crate::measure::aggregate_loaded();
     let mut aggregate = TaskLifecycle::planned(task.clone(), InputId::new(initial)?)?;
-    require_inputs(connection, &aggregate)?;
+    let mut known = KnownInputs::default();
+    known.require(connection, &aggregate)?;
     let mut statement = connection.prepare(
         "SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision",
     )?;
@@ -30,7 +31,7 @@ pub(super) fn load(
         aggregate
             .apply(aggregate.revision(), event)
             .map_err(|_| Error::CorruptJournal)?;
-        require_inputs(connection, &aggregate)?;
+        known.require(connection, &aggregate)?;
     }
     if aggregate.revision() != revision {
         return Err(Error::CorruptJournal);
@@ -75,17 +76,31 @@ fn head(connection: &Connection, scope: &AuthorityScope, task: &TaskId) -> Resul
 }
 
 pub(super) fn require_inputs(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
-    for input in aggregate.pending_inputs() {
-        let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2)",
-            params![aggregate.task().0, input.as_str()],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Err(Error::MissingInput);
+    KnownInputs::default().require(connection, aggregate)
+}
+
+/// The inputs of one task a replay already found stored. Its inputs never change once written, so
+/// a replay looks each one up once however many events it stays pending for.
+#[derive(Default)]
+pub(super) struct KnownInputs(BTreeSet<InputId>);
+
+impl KnownInputs {
+    pub(super) fn require(&mut self, connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
+        for input in aggregate.pending_inputs() {
+            if self.0.contains(input) {
+                continue;
+            }
+            crate::measure::input_checked();
+            let exists: bool = connection
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2)")?
+                .query_row(params![aggregate.task().0, input.as_str()], |row| row.get(0))?;
+            if !exists {
+                return Err(Error::MissingInput);
+            }
+            self.0.insert(input.clone());
         }
+        Ok(())
     }
-    Ok(())
 }
 
 pub(super) fn save_relations(connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {

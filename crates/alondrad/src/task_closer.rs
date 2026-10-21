@@ -382,11 +382,17 @@ async fn close_sdk_node(
     if !owned && sdk_working(state, task) {
         // Its lifecycle still says it works, but no host of this daemon runs it: the facts of what
         // became of that host are in its journal, which the take-over commits.
+        if now < row.next_attempt {
+            return Ok(());
+        }
         return match take_over(domain, task) {
             Ok(()) => Ok(()),
             Err(why) => {
+                // Nothing runs the node to read a message, and one it cannot take would keep its
+                // lifecycle at work: the failure is only counted.
                 let why = format!("no host could take over its session: {why}");
-                failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup)
+                let row = retry_later(timing, now, task, row, &why);
+                count_failure(domain, task, row, CloseStop::Error, &why, cleanup)
             }
         };
     }
@@ -616,14 +622,10 @@ fn hold_while_working_after_merge(domain: &DomainRuntime, now: i64, mut row: Tas
 
 #[allow(clippy::too_many_arguments)]
 fn failure(
-    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, mut row: TaskClosing, reason: &str,
+    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, reason: &str,
     (stop, detail): (CloseStop, &str), cleanup: bool,
 ) -> Result<()> {
-    row.failures += 1;
-    row.last_error = Some(reason.to_owned());
-    row.next_attempt = now + millis(timing.retry);
-    row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
-    row.rm_started_at = None;
+    let row = retry_later(timing, now, task, row, reason);
     if cleanup {
         let text = close_failed_text(reason, &task.id, timing.retry.as_secs() / 60);
         if let Ok(state) = domain.state() {
@@ -633,18 +635,23 @@ fn failure(
     count_failure(domain, task, row, stop, detail, cleanup)
 }
 
+fn retry_later(timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, reason: &str) -> TaskClosing {
+    row.failures += 1;
+    row.last_error = Some(reason.to_owned());
+    row.next_attempt = now + millis(timing.retry);
+    row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
+    row.rm_started_at = None;
+    row
+}
+
 /// The task cannot close while one of its worktrees holds work no remote has: its node, which
 /// keeps running, is told which and how to settle each, and the close is tried again later.
 #[allow(clippy::too_many_arguments)]
 fn hold_for_worktrees(
-    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, mut row: TaskClosing, left: &[(String, String)], cleanup: bool,
+    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, left: &[(String, String)], cleanup: bool,
 ) -> Result<()> {
     let detail: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
-    row.failures += 1;
-    row.last_error = Some(format!("worktrees of the task hold work that is not saved: {}", detail.join("; ")));
-    row.next_attempt = now + millis(timing.retry);
-    row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
-    row.rm_started_at = None;
+    let row = retry_later(timing, now, task, row, &format!("worktrees of the task hold work that is not saved: {}", detail.join("; ")));
     let state = domain.state()?;
     tell_node(domain, &state, task, agent, &crate::task_worktrees::settle_text(&task.id, left));
     count_failure(domain, task, row, CloseStop::Unsaved, &detail.join("\n"), cleanup)

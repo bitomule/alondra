@@ -733,6 +733,39 @@ async fn accepting_a_task_whose_host_died_closes_it() {
     assert!(!slice.domain.owns_sdk_host(&agent), "and the host that took over is stopped");
 }
 
+// 21 October: the host of a closing task died and no host could take its session over. Each pass
+// told the node why, that message woke the closer again and kept the node's lifecycle at work: 1563
+// messages in two hours, and a daemon start that replayed them took seconds. A failed take-over waits
+// for the next attempt and tells nothing to a node nothing runs.
+#[tokio::test]
+async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is_told_nothing() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    kill_host_and_daemon(driver);
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    let journal = || slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].len();
+    let failures = || slice.domain.store.lock().unwrap().task_closings().unwrap().iter().map(|row| row.failures).sum::<u32>();
+    let told = journal();
+    let timing = crate::task_closer::Timing::new(Some(std::time::Duration::ZERO));
+    let now = alondra_core::now_millis();
+    for pass in 0..3 {
+        crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + pass).await.unwrap();
+    }
+    assert_eq!(failures(), 1, "one take-over until the retry is due");
+    assert_eq!(journal(), told, "the node nothing runs is told nothing");
+    let retry = i64::try_from(timing.retry.as_millis()).unwrap();
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + retry).await.unwrap();
+    assert_eq!(failures(), 2, "the take-over is tried again once the retry is due");
+    assert_eq!(journal(), told);
+    assert!(!slice.domain.owns_sdk_host(&agent));
+}
+
 // The node delivers inside its turn and the user accepts: Alondra's request to clean up, a message
 // of its outbox, is what the node's Claude is told next. A node of `claude --bg` takes it through its
 // mod; nothing took it for a node of the SDK.
