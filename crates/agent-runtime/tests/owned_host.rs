@@ -396,3 +396,69 @@ fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_fo
     let lock = OpenOptions::new().read(true).write(true).open(archive.join("host.lock")).unwrap();
     assert!(lock.try_lock().is_ok(), "retiring released the lock");
 }
+#[test]
+fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds() {
+    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    let directory = support::directory();
+    fs::write(
+        directory.join(".alondra-process-fixture"),
+        b"alondra-process-fixture:owned-host\n",
+    )
+    .unwrap();
+    let child = Command::new(support::fixture())
+        .env_clear()
+        .envs(support::environment(&directory))
+        .env("ALONDRA_FIXTURE_MODE", "daemon")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut daemon = Daemon {
+        child,
+        directory: &directory,
+    };
+    let mut line = String::new();
+    BufReader::new(daemon.child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    rustix::process::kill_process_group(
+        rustix::process::Pid::from_child(&daemon.child),
+        rustix::process::Signal::TERM,
+    )
+    .unwrap();
+    daemon.child.wait().unwrap();
+    let (leader, group) = identity(&directory);
+    let host = alondra_process_group::process(leader).unwrap().expect("the host outlived its daemon");
+    let mut running = Running {
+        host: None,
+        directory: &directory,
+        descendant: false,
+    };
+    running.descendant = true;
+    let pid = message(&directory.join("s"), b"descendant\n").unwrap().trim().parse::<i32>().unwrap();
+    let descendant = alondra_process_group::members(group)
+        .unwrap()
+        .into_iter()
+        .find(|member| member.pid == pid)
+        .expect("the descendant runs in the host's process group");
+    assert_eq!(group, leader, "the host leads its own group");
+    fs::remove_file(directory.join("s")).unwrap();
+    let (adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), artifact(), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
+    assert!(
+        adopted.connect(Instant::now() + Duration::from_secs(10)).is_err(),
+        "with its owner's socket gone no owner reaches the host"
+    );
+    assert!(matches!(EndedHost::claim(&directory).unwrap(), Retained::Held), "yet it still holds its lock");
+    let Retained::Ended(ended) = EndedHost::end_holders(&directory).unwrap() else {
+        panic!("ending the holders frees the lock")
+    };
+    assert_eq!(ended.bootstrap(), fs::read(directory.join("host.lock")).unwrap());
+    assert!(!alondra_process_group::alive(&host).unwrap(), "the host exited");
+    assert_ended(&mut running, &descendant);
+    assert!(
+        alondra_process_group::members(group).unwrap().iter().all(|member| member.zombie),
+        "nothing of its group is left"
+    );
+}

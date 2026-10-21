@@ -2970,9 +2970,10 @@ fn variant_index(c: &Command) -> usize {
         Command::WaitForMcp { .. } => 88,
         Command::ForceStopTurn { .. } => 89,
         Command::RecordInterruptAccepted { .. } => 90,
+        Command::RecordHostLost { .. } => 91,
     }
 }
-const COMMAND_KINDS: usize = 91;
+const COMMAND_KINDS: usize = 92;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3099,8 +3100,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None }, false),
         (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
-        (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1 }, false),
-        (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
+        (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false }, false),
+        (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false }, false),
+        (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::InterruptTurn { agent_id: ids.agent.into() }, false),
         (Command::ForceStopTurn { agent_id: ids.agent.into() }, false),

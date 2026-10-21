@@ -455,7 +455,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
         .await
         .map_err(|error| format!("the admission stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed(why)| format!("the SDK execution was not admitted: {why}"))?;
-    domain.sdk_owners.lock().expect("SDK owners poisoned").push(crate::sdk_owner::Owner::spawn(driver));
+    domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     domain.live.forget_closed_task(&handover.task.0);
     Ok(())
 }
@@ -479,7 +479,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         .await
         .map_err(|error| format!("starting the SDK node stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed(why)| format!("the SDK node did not start: {why}"))?;
-        domain.sdk_owners.lock().expect("SDK owners poisoned").push(crate::sdk_owner::Owner::spawn(driver));
+        domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     }
     let node = &handover.node;
     let mut store = domain.store.lock().expect("domain store poisoned");

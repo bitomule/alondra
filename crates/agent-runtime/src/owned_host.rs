@@ -505,6 +505,32 @@ fn sweep(leader: rustix::process::Pid) -> io::Result<()> {
         "owned host group {group} still holds {names} after {SWEEP_ROUNDS} rounds; the host stays unreaped"
     )))
 }
+/// Kills what is left of a group whose leader already exited, round after round, waiting for each
+/// process's exit, until no live process is left in it. While a member is left the group's number
+/// cannot name another group.
+fn end_group(group: i32) -> io::Result<()> {
+    let leader = rustix::process::Pid::from_raw(group).ok_or_else(|| refused("process group without a leader number"))?;
+    let live = || -> io::Result<Vec<alondra_process_group::Member>> {
+        Ok(alondra_process_group::members(group)?.into_iter().filter(|member| !member.zombie).collect())
+    };
+    for _ in 0..SWEEP_ROUNDS {
+        let left = live()?;
+        if left.is_empty() {
+            return Ok(());
+        }
+        let mut exits = alondra_process_group::Exits::new()?;
+        for member in &left {
+            exits.watch(member)?;
+        }
+        match rustix::process::kill_process_group(leader, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
+            Err(error) => return Err(error.into()),
+        }
+        exits.wait()?;
+    }
+    let names = live()?.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    Err(io::Error::other(format!("process group {group} still holds {names} after {SWEEP_ROUNDS} rounds")))
+}
 impl OwnedHost<OwnerGrant> {
     pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
         if owner.scope() != self.owner.scope()
@@ -700,6 +726,49 @@ impl EndedHost {
             return Ok(Retained::Absent);
         }
         Ok(Retained::Ended(Self { state_dir: state_dir.to_path_buf(), bootstrap, _lock: file }))
+    }
+    /// Ends the host that still holds the lock of `state_dir` though no owner can adopt it, then
+    /// claims its folder. Each process holding the lock is asked to stop and waited out until it
+    /// exits, and what is left of a group it led is killed and waited out too: the lock the kernel
+    /// then frees is the fact that the host ended. Nothing here waits for a clock.
+    pub fn end_holders(state_dir: &Path) -> io::Result<Retained> {
+        private_directory(state_dir)?;
+        let lock = fs::symlink_metadata(state_dir.join("host.lock"))?;
+        if !lock.is_file() || lock.uid() != rustix::process::geteuid().as_raw() {
+            return Err(refused("retained private host material refused"));
+        }
+        let me = i32::try_from(std::process::id()).map_err(|_| refused("this process has no PID"))?;
+        let holders: Vec<alondra_process_group::Member> = alondra_process_group::holders(lock.dev(), lock.ino())?
+            .into_iter()
+            .filter(|holder| holder.pid != me && !holder.zombie)
+            .collect();
+        let mut groups = Vec::new();
+        for holder in &holders {
+            if alondra_process_group::group(holder.pid)? == Some(holder.pid) {
+                groups.push(holder.pid);
+            }
+        }
+        let mut exits = alondra_process_group::Exits::new()?;
+        for holder in &holders {
+            exits.watch(holder)?;
+        }
+        for holder in &holders {
+            if alondra_process_group::alive(holder)? {
+                signal(rustix::process::Pid::from_raw(holder.pid).ok_or_else(|| refused("host lock holder without a process"))?, rustix::process::Signal::TERM)?;
+            }
+        }
+        exits.wait()?;
+        for group in groups {
+            end_group(group)?;
+        }
+        match Self::claim(state_dir)? {
+            Retained::Held => Err(io::Error::other(format!(
+                "the host lock of {} is still held after {} holder(s) ended",
+                state_dir.display(),
+                holders.len()
+            ))),
+            claimed => Ok(claimed),
+        }
     }
     pub fn state_dir(&self) -> &Path {
         &self.state_dir

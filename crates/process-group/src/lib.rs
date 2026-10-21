@@ -110,6 +110,109 @@ pub fn peer(stream: &impl AsFd) -> io::Result<Option<Member>> {
     Ok(inspect(pid)?.map(|(member, _)| member))
 }
 
+/// The group the process `pid` names belongs to right now; none once it is gone.
+pub fn group(pid: i32) -> io::Result<Option<i32>> {
+    Ok(inspect(pid)?.map(|(_, group)| group))
+}
+
+/// `struct proc_fileinfo` of `<sys/proc_info.h>`, which `libc` does not define.
+#[repr(C)]
+struct FileInfo {
+    _open_flags: u32,
+    _status: u32,
+    _offset: libc::off_t,
+    _kind: i32,
+    _guard_flags: u32,
+}
+
+/// `struct vnode_fdinfo`: what `PROC_PIDFDVNODEINFO` writes for a descriptor of a file.
+#[repr(C)]
+struct VnodeDescriptor {
+    _file: FileInfo,
+    vnode: libc::vnode_info,
+}
+
+const PROC_PIDFDVNODEINFO: c_int = 1;
+
+/// The processes that hold a descriptor of the file `(device, inode)` open right now, among those
+/// this user may inspect. A lock taken on a file lives as long as one of them keeps it open.
+pub fn holders(device: u64, inode: u64) -> io::Result<Vec<Member>> {
+    let mut found = Vec::new();
+    for pid in all_pids()? {
+        if descriptors(pid)?.into_iter().any(|fd| opens(pid, fd, device, inode))
+            && let Some(member) = process(pid)?
+        {
+            found.push(member);
+        }
+    }
+    Ok(found)
+}
+
+fn all_pids() -> io::Result<Vec<i32>> {
+    let mut capacity = 1024;
+    loop {
+        let mut pids = vec![0 as libc::pid_t; capacity];
+        let bytes = c_int::try_from(capacity * size_of::<libc::pid_t>()).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        // SAFETY: the buffer holds exactly `bytes` bytes of pid_t and outlives the call; the
+        // result is a count of PIDs.
+        let written = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast::<c_void>(), bytes) };
+        if written < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let count = usize::try_from(written).unwrap_or(0);
+        if count >= capacity {
+            capacity *= 2;
+            continue;
+        }
+        return Ok(pids.into_iter().take(count).filter(|pid| *pid > 0).collect());
+    }
+}
+
+/// The descriptors of `pid` that name a file; none for a process that is gone or not this user's.
+fn descriptors(pid: i32) -> io::Result<Vec<i32>> {
+    let entry = size_of::<libc::proc_fdinfo>();
+    let mut capacity = 64;
+    loop {
+        let mut entries = vec![libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 }; capacity];
+        let bytes = c_int::try_from(capacity * entry).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        clear_errno();
+        // SAFETY: the buffer holds exactly `bytes` bytes of proc_fdinfo and outlives the call; the
+        // result is the number of bytes written.
+        let written = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, entries.as_mut_ptr().cast::<c_void>(), bytes) };
+        if written <= 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(0) | Some(libc::ESRCH) | Some(libc::EPERM) | None => Ok(Vec::new()),
+                _ => Err(error),
+            };
+        }
+        let count = usize::try_from(written).unwrap_or(0) / entry;
+        if count >= capacity {
+            capacity *= 2;
+            continue;
+        }
+        return Ok(entries
+            .into_iter()
+            .take(count)
+            .filter(|entry| entry.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+            .map(|entry| entry.proc_fd)
+            .collect());
+    }
+}
+
+fn opens(pid: i32, fd: i32, device: u64, inode: u64) -> bool {
+    let mut info = MaybeUninit::<VnodeDescriptor>::zeroed();
+    let size = c_int::try_from(size_of::<VnodeDescriptor>()).expect("vnode_fdinfo fits in c_int");
+    // SAFETY: the buffer is a zeroed vnode_fdinfo of `size` bytes, the flavor's exact layout.
+    let written = unsafe { libc::proc_pidfdinfo(pid, fd, PROC_PIDFDVNODEINFO, info.as_mut_ptr().cast::<c_void>(), size) };
+    if written != size {
+        return false;
+    }
+    // SAFETY: the kernel filled all `size` bytes.
+    let info = unsafe { info.assume_init() };
+    u64::from(info.vnode.vi_stat.vst_dev) == device && info.vnode.vi_stat.vst_ino == inode
+}
+
 fn inspect(pid: i32) -> io::Result<Option<(Member, i32)>> {
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = c_int::try_from(size_of::<libc::proc_bsdinfo>()).expect("proc_bsdinfo fits in c_int");
@@ -244,6 +347,22 @@ mod tests {
         child.wait().unwrap();
         assert!(!alive(&named).unwrap(), "a reaped process is gone");
         assert!(process(pid).unwrap().is_none_or(|now| now.started != named.started), "a reused PID is another process");
+    }
+
+    #[test]
+    fn the_holders_of_a_file_are_the_processes_that_keep_it_open() {
+        use std::os::unix::fs::MetadataExt;
+        let file = std::fs::File::open("/etc/hosts").unwrap();
+        let (device, inode) = (file.metadata().unwrap().dev(), file.metadata().unwrap().ino());
+        let mut child = Command::new("/bin/sleep").arg("600").stdin(Stdio::from(file)).spawn().unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let held = holders(device, inode).unwrap();
+        assert!(held.iter().any(|member| member.pid == pid), "the child holds the file it reads: {held:?}");
+        assert!(held.iter().all(|member| member.pid != i32::try_from(std::process::id()).unwrap()), "this process gave its descriptor away");
+        assert_eq!(group(pid).unwrap(), group(i32::try_from(std::process::id()).unwrap()).unwrap(), "the child stays in this group");
+        kill_child(pid);
+        child.wait().unwrap();
+        assert!(holders(device, inode).unwrap().iter().all(|member| member.pid != pid), "a process that ended holds nothing");
     }
 
     fn kill_child(pid: i32) {

@@ -672,7 +672,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 });
             }
             let handoff = match &event {
-                Event::DoubtHandoff { input, .. } => Some((input, ["handed", "uncertain"])),
+                Event::DoubtHandoff { input, .. } | Event::ResendDoubtful { input, .. } => Some((input, ["handed", "uncertain"])),
                 Event::ResendUntaken { input, .. } => Some((input, ["rejected", "rejected"])),
                 _ => None,
             };

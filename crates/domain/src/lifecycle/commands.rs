@@ -123,22 +123,10 @@ impl TaskLifecycle {
                 self.doubts.insert(card, input);
             }
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
-            Event::ResendUntaken { input, resend } => {
-                if self.doubts.values().any(|held| held == &input) {
-                    return Err(Refusal::InvalidState);
-                }
-                if self.is_pending(&resend) || self.settled.contains(&resend) {
-                    return Err(Refusal::DuplicateObligation);
-                }
-                let execution = match &mut self.state {
-                    State::InProgress(Progress::Executing { execution, .. }) => &mut execution.0,
-                    State::InProgress(Progress::Waiting { session, .. } | Progress::Dependency { session, .. }) => {
-                        session.execution_mut().ok_or(Refusal::InvalidState)?
-                    }
-                    State::Delivered(delivered) => delivered.session.execution_mut().ok_or(Refusal::InvalidState)?,
-                    _ => return Err(Refusal::InvalidState),
-                };
-                replace_handoff(execution, &input, Some(resend))?;
+            Event::ResendUntaken { input, resend } => self.resend(&input, resend)?,
+            Event::ResendDoubtful { input, resend } => {
+                self.resend(&input, resend)?;
+                self.settled.insert(input);
             }
             Event::Tell { input } => {
                 if self.is_pending(&input) || self.settled.contains(&input) {
@@ -804,6 +792,25 @@ impl TaskLifecycle {
             };
         }
         Ok(())
+    }
+
+    /// `resend` takes the place of the pending `input`, which no card holds, for the next host.
+    fn resend(&mut self, input: &InputId, resend: InputId) -> Result<(), Refusal> {
+        if self.doubts.values().any(|held| held == input) {
+            return Err(Refusal::InvalidState);
+        }
+        if self.is_pending(&resend) || self.settled.contains(&resend) {
+            return Err(Refusal::DuplicateObligation);
+        }
+        let execution = match &mut self.state {
+            State::InProgress(Progress::Executing { execution, .. }) => &mut execution.0,
+            State::InProgress(Progress::Waiting { session, .. } | Progress::Dependency { session, .. }) => {
+                session.execution_mut().ok_or(Refusal::InvalidState)?
+            }
+            State::Delivered(delivered) => delivered.session.execution_mut().ok_or(Refusal::InvalidState)?,
+            _ => return Err(Refusal::InvalidState),
+        };
+        replace_handoff(execution, input, Some(resend))
     }
 
     fn settle_handoff(&mut self, id: InteractionId, resend: Option<InputId>, unheard: InteractionId) -> Result<(), Refusal> {

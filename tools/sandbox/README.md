@@ -93,7 +93,7 @@ as the user through views and actions, the way the iPhone does.
   - F1–F4: refusals Alondra owes. A final delivery with an uncommitted file (named), a draft PR,
     failing checks handed back to the node, a second PR for one task.
 - `session`:
-  - S1: a node whose native Claude crashed carries on, resumed, once the user says so, and finishes.
+  - S1: a node whose native Claude crashed carries on by itself in the resumed session, with no card, and finishes.
   - S2: «Interrupt» in Fleet ends the turn with one card, and the node's Claude is not restarted.
   - S3: a daemon restart keeps the card, the task and the node, whose host it adopts.
   - S4: a crashed session's bearer is refused once it resumes with a new one.

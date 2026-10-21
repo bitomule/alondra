@@ -252,9 +252,16 @@ pub enum LifecycleRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
-    /// The SDK execution's host ended, and its native Claude with it. `unheard_card` is the card
-    /// the aggregate requires when that leaves nothing to explain the task's next step.
-    HostEnded { unheard_card: InteractionId },
+    /// The SDK execution's host ended, and its native Claude with it. When that leaves nothing to
+    /// explain the task's next step, the session a new host resumes goes on with `resume`, told
+    /// `text`, or, without one, the aggregate requires `unheard_card`.
+    HostEnded {
+        unheard_card: InteractionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     /// Claude accepted the interrupt of the root `turn`, which is still open.
     InterruptAccepted { turn: String },
     /// `input` was handed to a host that ended before it showed the input was read: `card` asks
@@ -262,6 +269,14 @@ pub enum LifecycleRecord {
     HandoffDoubted { card: InteractionId, input: String },
     /// `input` provably never reached the ended host: `resent`, told the same `text`, takes its place.
     HandoffResent {
+        input: String,
+        resent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// `input` was handed to a host that ended before it showed the input was read, and the session
+    /// a new host resumes gets `resent`, told `text`, in its place, without asking anyone.
+    DoubtResent {
         input: String,
         resent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,12 +419,16 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             unheard_card: unheard_card.clone(),
         })?,
         LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
-        LifecycleRecord::HostEnded { unheard_card } => runtime(RuntimeFact::HostEnded { unheard_card: unheard_card.clone() })?,
+        LifecycleRecord::HostEnded { unheard_card, resume, .. } => runtime(RuntimeFact::HostEnded {
+            unheard_card: unheard_card.clone(),
+            resume: resume.as_deref().map(|input| input_id(task, input)).transpose()?,
+        })?,
         LifecycleRecord::InterruptAccepted { turn } => runtime(RuntimeFact::InterruptAccepted {
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
         })?,
         LifecycleRecord::HandoffDoubted { card, input } => Event::DoubtHandoff { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::HandoffResent { input, resent, .. } => Event::ResendUntaken { input: input_id(task, input)?, resend: input_id(task, resent)? },
+        LifecycleRecord::DoubtResent { input, resent, .. } => Event::ResendDoubtful { input: input_id(task, input)?, resend: input_id(task, resent)? },
         LifecycleRecord::HandoffSettled { card, resent, unheard_card, .. } => Event::SettleHandoff {
             card: card.clone(),
             resend: resent.as_deref().map(|input| input_id(task, input)).transpose()?,
@@ -575,9 +594,10 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         LifecycleRecord::Answered { input, text, .. }
         | LifecycleRecord::Resumed { input, text, .. }
         | LifecycleRecord::HandedBack { input, text, .. } => Some((input, text.as_deref())),
-        LifecycleRecord::HandoffSettled { resent: Some(input), text, .. } | LifecycleRecord::HandoffResent { resent: input, text, .. } => {
-            Some((input, text.as_deref()))
-        }
+        LifecycleRecord::HandoffSettled { resent: Some(input), text, .. }
+        | LifecycleRecord::HandoffResent { resent: input, text, .. }
+        | LifecycleRecord::DoubtResent { resent: input, text, .. }
+        | LifecycleRecord::HostEnded { resume: Some(input), text, .. } => Some((input, text.as_deref())),
         _ => None,
     }
 }
@@ -648,10 +668,19 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             text: texts.get(input).cloned(),
         },
         Event::Pause { card } => LifecycleRecord::Paused { card: card.clone() },
-        Event::Runtime { fact: RuntimeFact::HostEnded { unheard_card }, .. } => LifecycleRecord::HostEnded { unheard_card: unheard_card.clone() },
+        Event::Runtime { fact: RuntimeFact::HostEnded { unheard_card, resume }, .. } => LifecycleRecord::HostEnded {
+            unheard_card: unheard_card.clone(),
+            resume: resume.as_ref().map(|input| input.as_str().into()),
+            text: resume.as_ref().and_then(|input| texts.get(input).cloned()),
+        },
         Event::Runtime { fact: RuntimeFact::InterruptAccepted { turn }, .. } => LifecycleRecord::InterruptAccepted { turn: turn.as_str().into() },
         Event::DoubtHandoff { card, input } => LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.as_str().into() },
         Event::ResendUntaken { input, resend } => LifecycleRecord::HandoffResent {
+            input: input.as_str().into(),
+            resent: resend.as_str().into(),
+            text: texts.get(resend).cloned(),
+        },
+        Event::ResendDoubtful { input, resend } => LifecycleRecord::DoubtResent {
             input: input.as_str().into(),
             resent: resend.as_str().into(),
             text: texts.get(resend).cloned(),
@@ -1197,16 +1226,30 @@ impl DomainState {
     }
 
     /// The task's SDK host ended (no process holds its lock): its native Claude, and the turn, work
-    /// and questions it had open, ended with it. When that leaves nothing to explain the task's
-    /// next step, the card that asks the user how it goes on is created in this same step. The
-    /// questions that ended with the host no longer wait for an answer.
-    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// and questions it had open, ended with it. The questions that ended with the host no longer
+    /// wait for an answer. When that leaves nothing to explain the task's next step and a host that
+    /// resumes the same Claude session takes its place (`resumes`), Alondra tells that session to
+    /// go on, as a session reopens with `resume` on its next turn: a host's end is not the user's
+    /// decision. Only when it cannot (the launch never confirmed, or the session already ended
+    /// again before a turn of it ended) does a card ask the user, saying why; a turn the user
+    /// forced to stop ends as the interrupt they asked for.
+    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
         let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
-        self.decide(lifecycles, task, LifecycleRecord::HostEnded { unheard_card: card.clone() })?;
+        let available = lifecycle.resource() == Some(ResourceEvidence::Available);
+        let looped = resumes && resumed_without_progress(&self.lifecycle_journal[task]);
+        let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
+            unheard_card: card.clone(),
+            text: resume.as_ref().map(|_| HOST_RESUMED_INSTRUCTION.to_owned()),
+            resume,
+        };
+        let resumed = resumes && !forced && !looped && available && self.decide(lifecycles, task, ended(Some(self.next_input(task)))).is_ok();
+        if !resumed {
+            self.decide(lifecycles, task, ended(None))?;
+        }
         let now: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
         for gone in held.iter().filter(|card| !now.contains(card)) {
             self.retire(gone);
@@ -1216,7 +1259,7 @@ impl DomainState {
             let ended = if forced {
                 turn_ended_card(card.clone(), task, &title, TurnEnd::Interrupted, self.revision + 1)
             } else {
-                session_ended_card(card.clone(), task, &title, self.revision + 1)
+                session_ended_card(card.clone(), task, &title, if looped { SESSION_ENDED_AGAIN_WHY } else { SESSION_ENDED_WHY }, self.revision + 1)
             };
             self.interactions.insert(card.clone(), ended);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
@@ -1234,13 +1277,23 @@ impl DomainState {
         self.decide(lifecycles, task, LifecycleRecord::InterruptAccepted { turn: turn.into() })
     }
 
-    /// `input`, told `text`, was handed to a host that ended before it showed the input was read:
-    /// the task holds on a card that asks the user to send it again or take it as received.
-    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// `input`, told `text`, was handed to a host that ended before it showed the input was read.
+    /// When a host that resumes the same Claude session takes its place (`resumes`), the same text
+    /// goes to it with a note that its conversation may already have it: Claude reads its own
+    /// transcript, so it sees whether it did. Otherwise, or when the session already ended again
+    /// before a turn of it ended, the task holds on a card that asks the user to send it again or
+    /// take it as received.
+    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let card = handoff_doubt_card_id(task, generation, input);
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The doubtful input {input} of task {task} is already recorded")));
+        }
+        let journal = &self.lifecycle_journal[task];
+        let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
+        if resumes && !resumed_without_progress(&journal[..before_end]) {
+            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(format!("{RESENT_NOTE}\n\n{text}")) };
+            return self.decide(lifecycles, task, record);
         }
         let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
         self.decide(lifecycles, task, LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.into() })?;
@@ -1248,6 +1301,60 @@ impl DomainState {
         self.interactions.insert(card.clone(), handoff_doubt_card(card.clone(), task, &title, text, launch, self.revision + 1));
         effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         Ok(())
+    }
+
+    /// The task's SDK execution could not be taken over and has no host: the task holds on a card
+    /// that says why and offers to try again or to cancel it. Nothing runs it until the user says.
+    /// A card that only asked how the task goes on becomes this one, so the task has one card.
+    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let generation = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.generation())
+            .ok_or_else(|| DomainError::new("conflict", format!("Task {task} has no execution to lose")))?;
+        self.sdk_execution(task, generation, lifecycles)?;
+        let cards: Vec<(InteractionId, WaitReason)> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, reason)| (card.clone(), reason)).collect();
+        if cards.iter().any(|(card, _)| self.interactions.get(card).is_some_and(retakes)) {
+            return Ok(());
+        }
+        let title = self.tasks[task].title.clone();
+        let unheard = cards.into_iter().find(|(card, reason)| *reason == WaitReason::Unheard && self.interactions.get(card).is_some_and(|i| i.author == Author::System && self.open(i)));
+        if let Some((card, _)) = unheard {
+            let order = self.interactions[&card].order;
+            let mut lost = host_lost_card(card.clone(), task, &title, reason, self.revision + 1);
+            lost.order = order;
+            self.interactions.insert(card.clone(), lost);
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            return Ok(());
+        }
+        let card = InteractionId(format!("{HOST_LOST_PREFIX}{task}-{}", self.revision + 1));
+        self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone() })?;
+        self.interactions.insert(card.clone(), host_lost_card(card.clone(), task, &title, reason, self.revision + 1));
+        effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        Ok(())
+    }
+
+    /// The user answered the card of a task whose host was lost: «Try again» lets it go on, told to
+    /// carry on with what they wrote after it, and the daemon takes its execution over again. False
+    /// for any other card, or for «Cancel the task», which cancels it as any lifecycle card does.
+    pub(super) fn settle_host_lost(&mut self, card: &InteractionId, option: &str, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<bool> {
+        if option != RETAKE {
+            return Ok(false);
+        }
+        let Some(Scope::Task { task_id }) = self.interactions.get(card).map(|i| i.scope.clone()) else { return Ok(false) };
+        let Some(reason) = self.lifecycle(lifecycles, &task_id)?.cards().into_iter().find(|(held, _)| *held == card).map(|(_, reason)| reason) else {
+            return Ok(false);
+        };
+        let mut text = HOST_RESUMED_INSTRUCTION.to_owned();
+        if let Some(written) = written.map(str::trim).filter(|written| !written.is_empty()) {
+            text.push_str("\n\n");
+            text.push_str(written);
+        }
+        let input = self.next_input(&task_id);
+        let record = if reason == WaitReason::Pause {
+            LifecycleRecord::Resumed { card: card.clone(), input, text: Some(text) }
+        } else {
+            LifecycleRecord::Answered { card: card.clone(), input, text: Some(text) }
+        };
+        self.decide(lifecycles, &task_id, record)?;
+        Ok(true)
     }
 
     /// `input`, told `text`, provably never reached the ended host: the same text goes to the next
@@ -1284,7 +1391,7 @@ impl DomainState {
         self.decide(lifecycles, task, record)?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == unheard_card) {
             let title = self.tasks[task].title.clone();
-            self.interactions.insert(unheard_card.clone(), session_ended_card(unheard_card, task, &title, self.revision + 1));
+            self.interactions.insert(unheard_card.clone(), session_ended_card(unheard_card, task, &title, SESSION_ENDED_WHY, self.revision + 1));
         }
         Ok(())
     }
@@ -1733,6 +1840,13 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, 
 pub const SESSION_ENDED_PREFIX: &str = "session-ended-";
 /// The cards that ask the user about an input handed to a host that ended before reading it.
 pub const HANDOFF_DOUBT_PREFIX: &str = "handoff-doubt-";
+/// The cards of a task whose SDK execution could not be taken over: no host runs it.
+pub const HOST_LOST_PREFIX: &str = "host-lost-";
+pub const RETAKE: &str = "retake";
+pub const RETAKE_LABEL: &str = "Try again";
+const RETAKE_MEANS: &str = "Alondra starts its session again where it left off";
+const HOST_RESUMED_INSTRUCTION: &str = "Your session was cut off when its host stopped, and Alondra resumed it. Check where you were and go on with your task: deliver your result, or ask the user through a card when you need them.";
+const RESENT_NOTE: &str = "Your session was cut off when its host stopped, and Alondra resumed it. The message below was sent to you just before, and your conversation may already have it: if it does, do not act on it twice.";
 pub const RESEND: &str = "resend";
 pub const RESEND_LABEL: &str = "Send it again";
 const RESEND_MEANS: &str = "It gets the message again; if it had read it, it sees it twice";
@@ -1748,7 +1862,60 @@ fn handoff_doubt_card_id(task: &TaskId, generation: u64, input: &str) -> Interac
     InteractionId(format!("{HANDOFF_DOUBT_PREFIX}{task}-{generation}-{input}"))
 }
 
-fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+/// Whether Alondra already resumed the task's session by itself after its host ended, and no turn
+/// of it has ended since: resuming it once more would only end the same way. Read from the
+/// journal's facts.
+fn resumed_without_progress(journal: &[LifecycleRecord]) -> bool {
+    journal
+        .iter()
+        .rev()
+        .find_map(|record| match record {
+            LifecycleRecord::TurnEnded { .. } => Some(false),
+            LifecycleRecord::HostEnded { resume: Some(_), .. } | LifecycleRecord::DoubtResent { .. } => Some(true),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
+/// Whether answering `card` takes the task's execution over again.
+pub fn retakes(card: &Interaction) -> bool {
+    matches!(&card.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == RETAKE))
+}
+
+fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, revision: u64) -> Interaction {
+    let need = clip(&format!("“{title}” stopped: Alondra could not resume its session"), CardSpec::NEED_MAX);
+    let mut card = CardSpec::new(CardKind::Problem, need).why(HOST_LOST_WHY).content(ContentKind::Diagnosis, &capitalized(reason));
+    card.recommended = Some(RETAKE.into());
+    Interaction {
+        attachments: vec![],
+        id,
+        scope: Scope::Task { task_id: task.clone() },
+        author: Author::System,
+        recipient: Recipient::User,
+        body: capitalized(reason),
+        blocking: true,
+        subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![
+                QuestionOption { id: RETAKE.into(), label: RETAKE_LABEL.into(), description: Some(RETAKE_MEANS.into()) },
+                QuestionOption { id: CANCEL_TASK.into(), label: CANCEL_TASK_LABEL.into(), description: Some(CANCEL_TASK_MEANS.into()) },
+            ],
+            answer: None,
+        },
+        revision,
+        order: revision,
+        withdrawn: false,
+        card,
+        clarification: None,
+    }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.trim().chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, why: &str, revision: u64) -> Interaction {
     let need = clip(&format!("“{title}” was interrupted when its session closed: tell it how to go on"), CardSpec::NEED_MAX);
     Interaction {
         attachments: vec![],
@@ -1769,11 +1936,13 @@ fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, revision: u
         revision,
         order: revision,
         withdrawn: false,
-        card: CardSpec::new(CardKind::Decide, need).why(SESSION_ENDED_WHY),
+        card: CardSpec::new(CardKind::Decide, need).why(why),
         clarification: None,
     }
 }
 const SESSION_ENDED_WHY: &str = "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.";
+const HOST_LOST_WHY: &str = "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.";
+pub const SESSION_ENDED_AGAIN_WHY: &str = "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.";
 
 fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
     let need = clip(&format!("“{title}” may not have got your message: send it again?"), CardSpec::NEED_MAX);

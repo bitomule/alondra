@@ -447,7 +447,7 @@ fn take_over(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
     let plugin = crate::plugins::node_in(domain.home());
     let driver = blocking(|| crate::sdk_owner::adopt(Arc::clone(&runtime), &backend, task.id.clone(), plugin.as_deref()))
         .map_err(|crate::sdk_owner::Failed(why)| why)?;
-    domain.sdk_owners.lock().expect("SDK owners poisoned").push(crate::sdk_owner::Owner::spawn(driver));
+    domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     Ok(())
 }
 

@@ -210,7 +210,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     decisions::run(report, sandbox, fakes, &user);
     relay::run(report, sandbox, fakes);
     workers::run(report, sandbox, fakes, &user);
-    report.case("S11", "The Mac shuts down before Claude shows it read its mission: each task asks before sending it again", |report| {
+    report.case("S11", "The Mac shuts down before Claude shows it read its mission: each task sends it again by itself, flagged as maybe received", |report| {
         hold(sandbox, true)?;
         for (request_id, task, title) in DOUBTFUL {
             request(report, fakes, &user, &task_script(request_id, task, title), title)?;
@@ -221,36 +221,20 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         }
         report.step("the Mac shuts down: every SDK host, its native Claude and the daemon end", || super::session::power_cycle(sandbox, 1))?;
         hold(sandbox, false)?;
-        let mut doubts = vec![];
         for (_, task, title) in DOUBTFUL {
-            let card = wait(report, &format!("{task} asks whether to send its mission again"), || hold_card(&user, &format!("handoff-doubt-{task}-")))?;
-            let view = user.view(&format!("card:{card}"))?;
-            report.step(&format!("{task}'s card carries the whole message"), || {
-                anyhow::ensure!(view.to_string().contains(title), "{view}");
+            wait(report, &format!("{task}'s mission reaches a resumed native Claude once more, flagged as maybe received"), || {
+                let requests = model_requests(sandbox)?;
+                let told: Vec<&str> = requests.iter().filter_map(|request| request["user"].as_str()).filter(|text| text.contains(title)).collect();
+                let flagged = told.iter().any(|text| text.contains("your conversation may already have it"));
+                Ok(((told.len() >= 2 && flagged).then_some(()), format!("{} requests with the mission", told.len())))
+            })?;
+            wait(report, &format!("{task}'s turn ends with a card of its own"), || hold_card(&user, &format!("turn-ended-{task}-")))?;
+            report.step(&format!("{task} asked nobody whether to send it again"), || {
+                anyhow::ensure!(hold_card(&user, &format!("handoff-doubt-{task}-"))?.0.is_none(), "{task} asks about its mission");
+                anyhow::ensure!(hold_card(&user, &format!("session-ended-{task}-"))?.0.is_none(), "{task} asks how to go on");
                 Ok(())
             })?;
-            doubts.push(view);
         }
-        report.snapshot("card-doubtful-message", &doubts[0])?;
-        report.step("nothing is sent while the user decides", || {
-            let running = super::session::native_claudes(sandbox)?;
-            anyhow::ensure!(running.is_empty(), "{running:?}");
-            Ok(())
-        })?;
-        let (_, resent, mission) = DOUBTFUL[0];
-        let again = user.action_labeled(&doubts[0], "Send it again").context("the card offers no «Send it again»")?;
-        report.step(&format!("the user sends {resent}'s message again"), || user.press(again["id"].as_str().unwrap_or_default(), again["option_id"].as_str(), None))?;
-        wait(report, "the same mission reaches a native Claude once more", || {
-            let requests = model_requests(sandbox)?;
-            let told = requests.iter().filter(|request| request["user"].as_str().is_some_and(|text| text.contains(mission))).count();
-            Ok(((told == 2).then_some(()), format!("{told} requests with the mission")))
-        })?;
-        wait(report, &format!("{resent}'s turn ends with a card of its own"), || hold_card(&user, &format!("turn-ended-{resent}-")))?;
-        let (_, received, _) = DOUBTFUL[1];
-        let taken = user.action_labeled(&doubts[1], "Take it as received").context("the card offers no «Take it as received»")?;
-        report.step(&format!("the user takes {received}'s message as received"), || user.press(taken["id"].as_str().unwrap_or_default(), taken["option_id"].as_str(), None))?;
-        let ended = wait(report, &format!("{received} asks how to go on"), || hold_card(&user, &format!("session-ended-{received}-")))?;
-        report.snapshot("card-session-ended", &user.view(&format!("card:{ended}"))?)?;
         report.snapshot("fleet", &user.view("fleet")?)
     });
     report.case("S12", "Five messages, five batches: each is a new conversation of the orchestrator's native Claude, and what it sends the model does not grow", |report| {

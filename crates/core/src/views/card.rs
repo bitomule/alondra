@@ -817,7 +817,8 @@ fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lan
 /// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
 /// someone worded.
 pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    start_problem_text(interaction, domain, lang)
+    host_lost_text(interaction, domain, lang)
+        .or_else(|| start_problem_text(interaction, domain, lang))
         .or_else(|| pace_text(interaction, domain, lang))
         .or_else(|| unheard_text(interaction, domain, lang))
         .or_else(|| turn_ended_text(interaction, domain, lang))
@@ -1018,6 +1019,21 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
         "Su turno terminó sin nada que explique qué hace después. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
 }
 
+/// The card of a task whose SDK execution Alondra could not take over, with the reason, in the
+/// viewer's language: the card it waited on becomes this one, so the task has one.
+fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == crate::domain::RETAKE));
+    if interaction.author != Author::System || !retake {
+        return None;
+    }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    let need = tf!(lang, "“{title}” stopped: Alondra could not resume its session", "«{title}» se paró: Alondra no pudo retomar su sesión");
+    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+        "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.",
+        "Su sesión no pudo volver a arrancar; el detalle dice por qué. Reinténtalo cuando esté arreglado o cancela la tarea.").into()))
+}
+
 /// The card of a turn the user stopped, by interrupting it or forcing it to stop.
 fn interrupted_text(title: &str, lang: Lang) -> (String, String) {
     let need = tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir");
@@ -1040,9 +1056,14 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {
         let need = tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
             "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir");
-        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
-            "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.",
-            "Su sesión se cerró a medias, como al apagar el Mac. Retoma con todo su contexto; lo que corría en segundo plano se paró.").into()));
+        let why = if interaction.card.why == crate::domain::SESSION_ENDED_AGAIN_WHY {
+            t!(lang, "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.",
+                "Alondra retomó su sesión después de cerrarse, y se volvió a cerrar antes de terminar un turno. Retoma con todo su contexto si le dices que siga.")
+        } else {
+            t!(lang, "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.",
+                "Su sesión se cerró a medias, como al apagar el Mac. Retoma con todo su contexto; lo que corría en segundo plano se paró.")
+        };
+        return Some((clip(&need, CardSpec::NEED_MAX), why.into()));
     }
     if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
         return None;
@@ -1163,6 +1184,10 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             t!(lang, "Carry on", "Que siga"),
             Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
                 "Sigue con su tarea y te pregunta con una tarjeta cuando te necesite")),
+        ),
+        (crate::domain::RETAKE, crate::domain::RETAKE_LABEL) => (
+            t!(lang, "Try again", "Reintentar"),
+            Some(t!(lang, "Alondra starts its session again where it left off", "Alondra vuelve a arrancar su sesión donde se quedó")),
         ),
         (crate::domain::RESEND, crate::domain::RESEND_LABEL) => (
             t!(lang, "Send it again", "Reenviar"),

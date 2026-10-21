@@ -458,6 +458,8 @@ pub(super) enum FactRecord {
     Notification,
     HostEnded {
         unheard_card: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
     },
 }
 impl From<&RuntimeFact> for FactRecord {
@@ -529,8 +531,9 @@ impl From<&RuntimeFact> for FactRecord {
                 turn: turn.as_str().to_owned(),
             },
             RuntimeFact::Notification => Self::Notification,
-            RuntimeFact::HostEnded { unheard_card } => Self::HostEnded {
+            RuntimeFact::HostEnded { unheard_card, resume } => Self::HostEnded {
                 unheard_card: unheard_card.0.clone(),
+                resume: resume.as_ref().map(|input| input.as_str().to_owned()),
             },
         }
     }
@@ -606,8 +609,9 @@ impl FactRecord {
                 turn: TurnId::new(turn).map_err(Error::from)?,
             },
             FactRecord::Notification => RuntimeFact::Notification,
-            FactRecord::HostEnded { unheard_card } => RuntimeFact::HostEnded {
+            FactRecord::HostEnded { unheard_card, resume } => RuntimeFact::HostEnded {
                 unheard_card: InteractionId(unheard_card),
+                resume: resume.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
             },
         })
     }
@@ -728,6 +732,10 @@ pub(super) enum EventRecord {
         unheard_card: String,
     },
     ResendUntaken {
+        input: String,
+        resend: String,
+    },
+    ResendDoubtful {
         input: String,
         resend: String,
     },
@@ -876,6 +884,10 @@ impl From<&Event> for EventRecord {
                 unheard_card: unheard_card.0.clone(),
             },
             Event::ResendUntaken { input, resend } => Self::ResendUntaken {
+                input: input.as_str().to_owned(),
+                resend: resend.as_str().to_owned(),
+            },
+            Event::ResendDoubtful { input, resend } => Self::ResendDoubtful {
                 input: input.as_str().to_owned(),
                 resend: resend.as_str().to_owned(),
             },
@@ -1032,6 +1044,10 @@ impl EventRecord {
                 unheard_card: InteractionId(unheard_card),
             },
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
+                input: InputId::new(input).map_err(Error::from)?,
+                resend: InputId::new(resend).map_err(Error::from)?,
+            },
+            EventRecord::ResendDoubtful { input, resend } => Event::ResendDoubtful {
                 input: InputId::new(input).map_err(Error::from)?,
                 resend: InputId::new(resend).map_err(Error::from)?,
             },
@@ -1297,14 +1313,24 @@ mod tests {
         );
         roundtrip(
             &current,
-            Event::Runtime {
-                stamp: current.execution().unwrap().clone(),
-                cursor: 2,
-                fact: RuntimeFact::HostEnded {
-                    unheard_card: "session-ended".into(),
-                },
+            Event::ResendDoubtful {
+                input: InputId::new("input").unwrap(),
+                resend: InputId::new("again").unwrap(),
             },
         );
+        for resume in [None, Some(InputId::new("resume").unwrap())] {
+            roundtrip(
+                &current,
+                Event::Runtime {
+                    stamp: current.execution().unwrap().clone(),
+                    cursor: 2,
+                    fact: RuntimeFact::HostEnded {
+                        unheard_card: "session-ended".into(),
+                        resume,
+                    },
+                },
+            );
+        }
         for kind in [
             Control::Interrupt {
                 turn: Some(TurnId::new("turn").unwrap()),

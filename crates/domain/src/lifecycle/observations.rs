@@ -23,6 +23,7 @@ impl TaskLifecycle {
         let mut aborted_callback = None;
         let mut requested_card = None;
         let mut resting_card = None;
+        let mut resume_instead = None;
         let mut ended_callbacks = Vec::new();
         if execution.resource != ResourceEvidence::Available
             && matches!(
@@ -355,7 +356,7 @@ impl TaskLifecycle {
                 }
             }
             RuntimeFact::Notification => {}
-            RuntimeFact::HostEnded { unheard_card } => {
+            RuntimeFact::HostEnded { unheard_card, resume } => {
                 valid_id(&unheard_card.0)?;
                 if !matches!(execution.resource, ResourceEvidence::Reserved | ResourceEvidence::Available) {
                     return Err(Refusal::InvalidState);
@@ -371,6 +372,10 @@ impl TaskLifecycle {
                 if cut || !ended_callbacks.is_empty() {
                     resting_card = Some(unheard_card);
                 }
+                if resume.as_ref().is_some_and(|input| execution.resource != ResourceEvidence::Available || self.settled.contains(input)) {
+                    return Err(Refusal::InvalidState);
+                }
+                resume_instead = resume;
             }
         }
         let held = self
@@ -391,15 +396,19 @@ impl TaskLifecycle {
             && matches!(execution.activity, Activity::Resting)
             && matches!(self.state, State::InProgress(Progress::Executing { .. }))
         {
-            let id = resting_card
-                .clone()
-                .or_else(|| aborted_callback.as_ref().map(|(_, id)| id.clone()))
-                .ok_or(Refusal::InvalidState)?;
-            forced_card = Some(Card {
-                id,
-                reason: WaitReason::Unheard,
-                callback: None,
-            });
+            if let Some(input) = resume_instead.take() {
+                queue_input(&mut execution, input)?;
+            } else {
+                let id = resting_card
+                    .clone()
+                    .or_else(|| aborted_callback.as_ref().map(|(_, id)| id.clone()))
+                    .ok_or(Refusal::InvalidState)?;
+                forced_card = Some(Card {
+                    id,
+                    reason: WaitReason::Unheard,
+                    callback: None,
+                });
+            }
         }
         match &mut self.state {
             State::InProgress(Progress::Executing { stage, .. }) => {
@@ -441,7 +450,13 @@ impl TaskLifecycle {
                     updated.entry(card.id.clone()).or_insert(card);
                 }
                 if updated.is_empty() {
-                    if matches!(execution.activity, Activity::Resting) {
+                    if let Some(input) = resume_instead.take().filter(|_| matches!(execution.activity, Activity::Resting)) {
+                        queue_input(&mut execution, input)?;
+                        self.state = State::InProgress(Progress::Executing {
+                            stage: *stage,
+                            execution: ActiveExecution::new(execution)?,
+                        });
+                    } else if matches!(execution.activity, Activity::Resting) {
                         let id = aborted_callback.map(|(_, id)| id).or(resting_card).ok_or(Refusal::InvalidState)?;
                         updated.insert(
                             id.clone(),
@@ -518,6 +533,9 @@ impl TaskLifecycle {
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => return Err(Refusal::InvalidState),
+        }
+        if resume_instead.is_some() {
+            return Err(Refusal::InvalidState);
         }
         Ok(())
     }

@@ -1890,24 +1890,56 @@ fn waiting_for_the_next_input() -> TaskLifecycle {
 fn a_host_that_ends_mid_turn_ends_its_turn_and_work_and_the_task_asks_how_to_go_on() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("background") });
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert_eq!(task.activity(), ActivityView::Resting);
     assert!(!task.holds_slot(), "nothing of the ended host runs any more");
     assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)]);
 }
 
 #[test]
+fn a_host_that_ends_mid_turn_and_is_replaced_goes_on_with_its_resume_input_instead_of_a_card() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("background") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("go-on")) });
+    assert!(task.cards().is_empty(), "no card asks the user");
+    assert_eq!(task.pending_inputs(), [&input("go-on")]);
+    assert_eq!(task.activity(), ActivityView::Starting, "the resumed session is told to go on");
+}
+
+#[test]
+fn a_resume_input_with_nothing_to_explain_is_refused() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    let cursor = task.cursor().unwrap() + 1;
+    let stamp = task.execution().unwrap().clone();
+    assert_eq!(
+        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("go-on")) } }),
+        Err(Refusal::InvalidState),
+        "the task already waits on its card: nothing to go on with"
+    );
+}
+
+#[test]
+fn a_doubtful_input_the_resumed_session_gets_again_is_settled_without_a_card() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    apply(&mut task, Event::ResendDoubtful { input: input("next"), resend: input("again") });
+    assert_eq!(task.pending_inputs(), [&input("again")]);
+    assert!(task.settled(&input("next")) && task.doubts().is_empty() && task.cards().is_empty());
+}
+
+#[test]
 fn a_host_that_ends_while_its_task_waits_on_a_card_adds_no_second_card() {
     let mut task = running();
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert_eq!(task.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
 }
 
 #[test]
 fn a_doubtful_input_holds_the_task_until_the_user_sends_it_again_in_its_place() {
     let mut task = waiting_for_the_next_input();
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert!(task.cards().is_empty(), "the input still explains the next step");
     apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
     assert_eq!(task.cards(), [(&card("doubt"), WaitReason::Doubt)]);
@@ -1925,7 +1957,7 @@ fn a_doubtful_input_holds_the_task_until_the_user_sends_it_again_in_its_place() 
 #[test]
 fn a_doubtful_input_taken_as_received_leaves_the_queue_unconsumed_and_the_task_asks_how_to_go_on() {
     let mut task = waiting_for_the_next_input();
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
     apply(&mut task, Event::SettleHandoff { card: card("doubt"), resend: None, unheard_card: card("unheard") });
     assert!(task.pending_inputs().is_empty());
@@ -1936,7 +1968,7 @@ fn a_doubtful_input_taken_as_received_leaves_the_queue_unconsumed_and_the_task_a
 #[test]
 fn cancelling_settles_every_open_doubt() {
     let mut task = waiting_for_the_next_input();
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("next") });
     apply(&mut task, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
     assert!(task.settled(&input("next")) && task.doubts().is_empty());
@@ -1946,7 +1978,7 @@ fn cancelling_settles_every_open_doubt() {
 fn a_launch_input_can_be_sent_again_but_never_taken_as_received() {
     let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
     admit(&mut task, "instance");
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut task, Event::DoubtHandoff { card: card("doubt"), input: input("initial") });
     assert_eq!(
         task.apply(task.revision(), Event::SettleHandoff { card: card("doubt"), resend: None, unheard_card: card("unheard") }),
@@ -1959,7 +1991,7 @@ fn a_launch_input_can_be_sent_again_but_never_taken_as_received() {
 #[test]
 fn an_input_the_ended_host_never_took_is_sent_again_in_its_place_without_asking() {
     let mut task = waiting_for_the_next_input();
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut task, Event::ResendUntaken { input: input("next"), resend: input("again") });
     assert_eq!(task.pending_inputs(), [&input("again")]);
     assert!(task.cards().is_empty());
@@ -2029,7 +2061,7 @@ fn a_turn_is_forced_to_stop_only_after_claude_accepted_its_interrupt_and_only_on
     control(&mut task, "force", Control::ForceStop { turn: turn("root") }).unwrap();
     assert_eq!(task.turn_stop(), Some(TurnStop::ForceRequested));
     assert_eq!(control(&mut task, "again", Control::ForceStop { turn: turn("root") }), Err(Refusal::DuplicateObligation));
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: "stopped".into() });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: "stopped".into(), resume: None });
     assert_eq!(task.turn_stop(), None, "Claude's exit ends the turn");
     assert_eq!(task.cards().len(), 1);
 }
@@ -2280,7 +2312,7 @@ fn a_policy_decision_needs_an_available_execution() {
 #[test]
 fn a_replacement_settles_the_card_an_ended_host_left_but_never_an_open_question() {
     let mut task = running();
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut task, Event::ExecutionReleased { input: input("replace") });
     admit(&mut task, "replacement");
     assert!(task.cards().is_empty(), "the new execution is how the task goes on");
@@ -2290,7 +2322,7 @@ fn a_replacement_settles_the_card_an_ended_host_left_but_never_an_open_question(
     let mut asked = running();
     apply(&mut asked, Event::Ask { card: card("question") });
     fact(&mut asked, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
-    fact(&mut asked, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut asked, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut asked, Event::ExecutionReleased { input: input("replace") });
     let admitted = asked.apply(asked.revision(), Event::Admit {
         node: AgentId::from("node"),
@@ -2312,7 +2344,7 @@ fn what_someone_tells_the_node_joins_the_running_turn_or_waits_for_the_next_host
 
     let mut ended = running();
     fact(&mut ended, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
-    fact(&mut ended, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut ended, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut ended, Event::Tell { input: input("later") });
     assert_eq!(ended.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
 
@@ -2334,7 +2366,7 @@ fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_
 
     let mut gone = running();
     fact(&mut gone, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
-    fact(&mut gone, RuntimeFact::HostEnded { unheard_card: card("session-ended") });
+    fact(&mut gone, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut gone, Event::Tell { input: input("later") });
     assert!(gone.cards().is_empty());
     assert_eq!(gone.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
@@ -2356,7 +2388,7 @@ proptest! {
     /// What lets a replay look up only the inputs each event names: an input becomes pending only
     /// through an event that names it, and `is_pending` answers what `pending_inputs` lists.
     #[test]
-    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..26, 0u8..6), 1..200)) {
+    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..28, 0u8..6), 1..200)) {
         let pool: Vec<InputId> = ["initial", "a", "b", "c", "d", "e"].iter().map(|name| input(name)).collect();
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for (action, pick) in actions {
@@ -2371,7 +2403,7 @@ proptest! {
                 4 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() }),
                 5..=8 => Some(Event::Tell { input: named }),
                 9 => Some(Event::ExecutionReleased { input: named }),
-                10 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into() }),
+                10 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
                 11 => Some(Event::DoubtHandoff { card: "doubt".into(), input: named }),
                 12 => Some(Event::SettleHandoff { card: "doubt".into(), resend: Some(named), unheard_card: "settled".into() }),
                 13 => Some(Event::SettleHandoff { card: "doubt".into(), resend: None, unheard_card: "settled".into() }),
@@ -2386,6 +2418,8 @@ proptest! {
                 22 => Some(Event::HandBack { delivery: "result".into(), input: named }),
                 23 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
                 24 => Some(Event::Reopen { input: named }),
+                25 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(named) }),
+                26 => Some(Event::ResendDoubtful { input: first, resend: named }),
                 _ => Some(Event::Compact { input: named }),
             };
             let Some(event) = event else { continue };

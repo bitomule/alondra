@@ -24,7 +24,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
         return;
     };
-    report.case("S1", "A node whose native Claude crashes carries on, resumed, once the user says so, and finishes its task", |report| {
+    report.case("S1", "A node whose native Claude crashes carries on by itself in the resumed session, with no card, and finishes its task", |report| {
         request(report, fakes, &user, &task_script("req-s1", "t-s1", "Survive a crash"), "Survive a crash")?;
         let node = launched(report, fakes, "t-s1")?;
         state(report, &user, "t-s1", WORKING)?;
@@ -109,24 +109,25 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     });
 }
 
-/// The node's native Claude dies without a word; the task asks how to go on and «Carry on» starts
-/// a native Claude that resumes the same session, with its transcript, and gets the instruction.
+/// The node's native Claude dies without a word. A host's end is not the user's decision: no card
+/// asks how to go on, and a native Claude that resumes the same session, with its transcript, is
+/// told to go on by itself.
 fn crash_and_carry_on(report: &mut Report, fakes: &Fakes, user: &User, node: &Session, task: &str) -> Result<Session> {
     act(report, fakes, node, "the node's native Claude crashes", &[Step::Die])?;
-    let card = wait(report, "the task asks how to go on now that its session closed", || card_in_inbox(user, &format!("session-ended-{task}-")))?;
-    let view = user.view(&format!("card:{card}"))?;
-    report.snapshot("card-session-ended", &view)?;
-    report.snapshot("fleet-after-crash", &user.view("fleet")?)?;
-    let carry_on = user.action_labeled(&view, "Carry on").context("the card offers no «Carry on»")?;
-    report.step("the user presses «Carry on»", || user.press(carry_on["id"].as_str().unwrap_or_default(), carry_on["option_id"].as_str(), None))?;
-    wait(report, "a new native Claude resumes the same session, with its conversation, and is told to go on", || {
+    let resumed = wait(report, "a new native Claude resumes the same session, with its conversation, and is told to go on", || {
         let now = fakes.session(&node.short)?;
         let last = fakes.starts(&node.short)?.pop();
         let resumed = last.as_ref().is_some_and(|start| start.resume.as_deref() == Some(node.session_id.as_str()) && start.history > 0);
         let since = last.as_ref().map_or(u64::MAX, |start| start.at);
         let told = fakes.received(&node.short)?.iter().any(|input| input.at >= since);
         Ok(((now.running() && resumed && told).then_some(now.clone()), format!("{:?}, started {} times, last {last:?}", now.state, now.starts)))
-    })
+    })?;
+    report.snapshot("fleet-after-crash", &user.view("fleet")?)?;
+    report.step("no card asked the user how it goes on", || {
+        anyhow::ensure!(card_in_inbox(user, &format!("session-ended-{task}-"))?.0.is_none(), "a card asks how {task} goes on");
+        Ok(())
+    })?;
+    Ok(resumed)
 }
 
 

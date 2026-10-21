@@ -955,6 +955,66 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     assert!(left.is_empty(), "the adopted host's processes survived its stop: {left:?}");
 }
 
+/// The owner of the task's host goes without stopping it, as the owner of 0.3.0 did when a step
+/// failed, and the host's owner socket goes too: the host lives on, holds its lock, and no owner
+/// can ever reach it again.
+fn strand_host(slice: &Slice, driver: Driver) -> (String, Vec<alondra_process_group::Member>) {
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let folder = slice.backend.state_root.join(&driver.agent().0);
+    drop(driver);
+    std::fs::remove_file(folder.join("s")).unwrap();
+    assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "the host still runs");
+    (session, processes)
+}
+
+/// The stranded host is gone with its whole group, and a host that resumes the same Claude
+/// session took the execution: what the user says next reaches that session.
+fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str, stranded: &[alondra_process_group::Member]) {
+    let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the stranded host's processes survived: {left:?}");
+    carry_on(domain, "Add the tests first");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session), "the same session is resumed: {starts:?}");
+    assert!(slice.prompts()[1].ends_with("Add the tests first"), "{:?}", slice.prompts());
+    driver.stop().unwrap();
+}
+
+// Production, 0.3.1: at the daemon's start five SDK hosts still held their lock, so they were
+// found live, but their owner's socket was gone and each adoption failed as Disconnected; every
+// execution was left as it was, for good. A live host that refuses its adoption is now ended by
+// the lock it holds, waited out until it exits, and replaced like a host that ended.
+#[test]
+fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_that_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let agent = driver.agent().clone();
+    let (session, stranded) = strand_host(&slice, driver);
+    let restarted = slice.restart();
+    let mut taken = take_all(&restarted, &slice.backend);
+    let (task, driver) = taken.pop().expect("the daemon's start takes the execution");
+    assert_eq!(task, TaskId::from(TASK));
+    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    assert_eq!(driver.agent(), &agent, "the same node goes on");
+    assert_replaced(&slice, &restarted, driver, &session, &stranded);
+}
+
+// The same stranded host, met by a daemon that is running: taking the execution over, as the
+// move to the SDK or the closer of a task does, ends it and replaces it the same way.
+#[test]
+fn a_running_daemon_ends_a_live_host_that_refuses_its_adoption_and_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let (session, stranded) = strand_host(&slice, driver);
+    let replaced = slice.take_over(&slice.domain);
+    assert_replaced(&slice, &slice.domain, replaced, &session, &stranded);
+}
+
 // B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the
 // live host, which re-sends the unacknowledged event; the adopting owner sees the store already has
 // it (Duplicate), acknowledges it once and publishes exactly one card.
@@ -1079,7 +1139,8 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
 // The Mac goes down on a host whose journal was compacted: the launch turn wrote more than the
 // journal keeps once acknowledged, then the host offered a client's answer and everything died
 // before the daemon recorded the receipt. The next daemon reads the compacted journal from disk:
-// the answer was handed, so nothing sends it to Claude again.
+// the answer was handed, so it goes to the resumed session flagged as maybe received already, never
+// as an answer the host never got.
 #[test]
 fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let slice = Slice::new();
@@ -1090,7 +1151,9 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    assert_eq!(resumed.pending_permits(), 0, "the ended host's journal proves the answer was handed: it is not sent again");
+    let journal = restarted.read().state().lifecycle_journal[&TaskId::from(TASK)].clone();
+    assert!(journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { .. })),
+        "the ended host's journal proves the answer was handed: it goes again flagged as maybe received, never as one the host never got: {journal:?}");
     assert_eq!(slice.prompts().len(), 2);
     resumed.stop().unwrap();
 }
@@ -1452,10 +1515,11 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     resumed.stop().unwrap();
 }
 
-// R2: the Mac shuts down mid-turn. The ended host's turn ended with it: the task asks how to go
-// on instead of staying «working» forever, and the answer goes to the resumed session.
+// R2: the Mac shuts down mid-turn. The ended host's turn ended with it, and a host's end is not
+// the user's decision: the resumed session is told to go on by itself, with no card. Before, the
+// task held on «was interrupted when its session closed» until someone pressed «Carry on».
 #[test]
-fn a_turn_cut_by_the_end_of_its_host_asks_how_to_go_on_and_resumes_the_session() {
+fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("consume-and-hold");
     slice.until_working(&mut driver);
@@ -1463,22 +1527,27 @@ fn a_turn_cut_by_the_end_of_its_host_asks_how_to_go_on_and_resumes_the_session()
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    assert_eq!(lifecycle(&restarted).activity(), ActivityView::Resting, "nothing of the ended host runs");
-    let card = open_card(&restarted, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
-    answer(&restarted, &card.id, CARRY_ON);
-    resumed.step(&|| false).unwrap();
-    slice.settle(&mut resumed);
-    let starts = slice.starts();
-    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "{starts:?}");
-    assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
+    assert_goes_on_by_itself(&slice, &restarted, &mut resumed, &session);
     resumed.stop().unwrap();
+}
+
+/// No card asks how the cut task goes on: the session the new host resumed is told to go on, and
+/// it does.
+fn assert_goes_on_by_itself(slice: &Slice, domain: &DomainRuntime, resumed: &mut Driver, session: &str) {
+    assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+    assert_eq!(resumed.pending_permits(), 1, "the resumed session is told to go on");
+    resumed.step(&|| false).unwrap();
+    slice.settle(resumed);
+    let starts = slice.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session), "the same session is resumed: {starts:?}");
+    assert!(slice.prompts().last().unwrap().starts_with("Your session was cut off when its host stopped"), "{:?}", slice.prompts());
 }
 
 // A session whose event stream fails ends as `runtime_error`, and a new one opens on the
 // next command. Here the host dies while this daemon runs (its Node crashed mid-turn): its owner
-// puts a host that resumes the same Claude session in its place, the task asks how to go on
-// instead of staying «working», and what the user says reaches that session. A replacement that
-// ends before it was handed anything is not replaced again: it would only end again.
+// puts a host that resumes the same Claude session in its place, and the task goes on in it by
+// itself instead of staying «working». A replacement that ends before it was handed anything is not
+// replaced again: it would only end again.
 #[test]
 fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session() {
     let slice = Slice::new();
@@ -1496,23 +1565,16 @@ fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session
     assert!(driver.host_to_replace(), "the owner saw its host close");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
     assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended host runs");
-    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
     resumed.host_closed = true;
     assert!(!resumed.host_to_replace(), "a replacement handed nothing yet is not replaced again");
     resumed.host_closed = false;
-    answer(&slice.domain, &card.id, CARRY_ON);
-    resumed.step(&|| false).unwrap();
-    slice.settle(&mut resumed);
-    let starts = slice.starts();
-    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
-    assert!(slice.prompts()[1].starts_with("Go on with your task"), "{:?}", slice.prompts());
+    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
     resumed.stop().unwrap();
 }
 
 // The native Claude crashes alone mid-turn: its host lives on with nothing to run. Its owner ends
 // it as a host that ended with its Claude, and a host that resumes the same session takes its
-// place: the task asks how to go on, and «Carry on» reaches that session. Before, the owner refused
+// place, and the task goes on in that session by itself. Before, the owner refused
 // the Claude's exit from a live host and stopped, leaving the task «working».
 #[test]
 fn a_claude_that_crashes_under_its_live_host_is_resumed_by_a_new_host() {
@@ -1525,16 +1587,94 @@ fn a_claude_that_crashes_under_its_live_host_is_resumed_by_a_new_host() {
     assert!(!driver.worker.host_exited(), "the host outlived its Claude");
     assert!(driver.host_to_replace(), "the owner takes the Claude's exit as the end of its host");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended Claude runs");
-    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
-    answer(&slice.domain, &card.id, CARRY_ON);
-    resumed.step(&|| false).unwrap();
-    slice.settle(&mut resumed);
-    let starts = slice.starts();
-    assert_eq!(starts.len(), 2, "{starts:?}");
-    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
-    assert!(slice.prompts().last().unwrap().starts_with("Go on with your task"), "{:?}", slice.prompts());
+    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
+    assert_eq!(slice.starts().len(), 2, "{:?}", slice.starts());
     resumed.stop().unwrap();
+}
+
+// Production, 0.3.0: a step of the owner failed («provider observation refused») and the owner
+// went, leaving its host running with nobody to read it, for good. An owner whose step fails now
+// stops its host, waits for its group to end, and puts a host that resumes the same session in its
+// place, where the task goes on by itself.
+#[test]
+fn an_owner_whose_step_fails_stops_its_host_and_resumes_the_session_in_a_new_one() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    driver.fail_next_step = true;
+    assert!(driver.step(&|| false).is_err(), "the step failed");
+    assert!(driver.host_to_replace(), "a failed owner replaces its host");
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    let left: Vec<String> = processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the failed owner's host survived: {left:?}");
+    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
+    resumed.stop().unwrap();
+}
+
+// A replacement whose owner fails before it was handed anything is not replaced again: it would only
+// end again. Its owner still stops it, and the task gets a card that says what happened and offers
+// to try again or cancel; it is never left as it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replacement_whose_owner_fails_is_stopped_and_its_task_gets_a_card_to_try_again() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    let processes = alondra_process_group::members(resumed.worker.host_group().unwrap()).unwrap();
+    resumed.fail_next_step = true;
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(resumed);
+    let reader = Arc::clone(&restarted);
+    changed.wait_for(|_| open_card(&reader, HOST_LOST_PREFIX).is_some()).await.unwrap();
+    assert!(owner.ended(), "the owner owns nothing any more");
+    let agent = owner.agent().clone();
+    restarted.add_sdk_owner(owner);
+    assert!(!restarted.owns_sdk_host(&agent));
+    let left: Vec<String> = processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the replacement's host survived its owner: {left:?}");
+    let card = open_card(&restarted, HOST_LOST_PREFIX).unwrap();
+    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host stopped before it could take the task's next message"));
+}
+
+// The daemon's start could not take the execution over (here no new host can get its folder): the
+// task gets a card with that reason instead of being left as it is. Once that is fixed, «Try
+// again» takes it over and the same session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_resumes_it() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let (session_host, _) = strand_host(&slice, driver);
+    assert_eq!(session_host, session);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card");
+    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host could not start (Disconnected)"));
+    assert_eq!(restarted.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::NeedsYou);
+    refuse(false);
+    answer(&restarted, &card.id, RETAKE);
+    restarted.join_retakes();
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
+    let mut changed = restarted.subscribe();
+    let capture = slice.capture.clone();
+    changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    restarted.stop_sdk_owners();
+    let starts = slice.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+}
+
+fn prompts_at(capture: &Path) -> Vec<String> {
+    let path = PathBuf::from(format!("{}.prompts", capture.display()));
+    std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
 /// The descriptor of this process that is connected to the socket at `path`.
@@ -1571,36 +1711,35 @@ fn a_host_whose_connection_fails_before_its_exit_is_seen_is_replaced() {
     assert!(!driver.worker.host_exited(), "the read failed while the host's exit was not observable");
     assert!(driver.host_to_replace(), "the failed connection ends the host for its owner");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing of the ended host runs");
-    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the interrupted task asks the user");
-    answer(&slice.domain, &card.id, CARRY_ON);
-    resumed.step(&|| false).unwrap();
-    slice.settle(&mut resumed);
-    let starts = slice.starts();
-    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
     resumed.stop().unwrap();
 }
 
 // R3: a normal shutdown stops the host (5d) mid-turn: what the stopping host wrote after the last
 // acknowledgement (its Claude's exit, the end of its SDK iterator) is committed as evidence, and
-// the task asks how to go on.
+// the task goes on by itself in the session the next daemon resumes.
 #[test]
 fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_commits() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("consume-and-hold");
     slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let mut owner = Owner::spawn(driver);
     owner.stop().unwrap();
     drop(owner);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    assert!(open_card(&restarted, SESSION_ENDED_PREFIX).is_some(), "the interrupted task asks the user");
+    assert_goes_on_by_itself(&slice, &restarted, &mut resumed, &session);
     resumed.stop().unwrap();
 }
 
-/// The first turn ended, the user answered `note` and the host offered it to a Claude whose
-/// session then ended before it showed it read it; the Mac went down before the receipt was kept.
-fn doubtful(slice: &Slice) -> (Arc<DomainRuntime>, Driver, Interaction) {
+// R4: the first turn ended, the user answered and the host offered the answer to a Claude whose
+// session then ended before it showed it read it; the Mac went down before the receipt was kept.
+// Nobody is asked: the resumed session gets the same words once more, flagged as possibly received
+// already, and its transcript tells Claude whether it was.
+#[test]
+fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
+    let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     carry_on(&slice.domain, "Add the tests first unread");
@@ -1611,41 +1750,15 @@ fn doubtful(slice: &Slice) -> (Arc<DomainRuntime>, Driver, Interaction) {
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    let card = open_card(&restarted, HANDOFF_DOUBT_PREFIX).expect("the doubtful answer asks the user");
-    assert!(!resumed.waits_for_host(), "the replacement host runs no Claude yet: its owner waits for what the user decides, not on the host");
-    (restarted, resumed, card)
-}
-
-// R4a: the doubtful answer is shown whole and nothing is sent until the user decides; «Send it
-// again» gives the resumed session the same text once.
-#[test]
-fn a_doubtful_answer_is_sent_again_to_the_resumed_session_only_on_the_users_word() {
-    let slice = Slice::new();
-    let (restarted, mut resumed, card) = doubtful(&slice);
-    assert!(card.card.content.as_ref().is_some_and(|content| content.body.ends_with("Add the tests first unread")), "{:?}", card.card.content);
-    assert_eq!(resumed.pending_permits(), 0, "nothing is sent while the user decides");
-    assert_eq!(slice.prompts().len(), 2, "the ended session got it once");
-    answer(&restarted, &card.id, RESEND);
+    assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none() && open_card(&restarted, SESSION_ENDED_PREFIX).is_none(), "nobody is asked");
+    assert_eq!(resumed.pending_permits(), 1, "the answer goes again");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 3, "{prompts:?}");
-    assert_eq!(prompts[2], prompts[1], "the same words, once more");
+    assert!(prompts[2].starts_with("Your session was cut off when its host stopped") && prompts[2].ends_with(&prompts[1]), "{prompts:?}");
     assert!(slice.starts()[1]["resume"].is_string(), "to the resumed session");
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "its turn ended with its own card");
-    resumed.stop().unwrap();
-}
-
-// R4b: «Take it as received» sends nothing and records no consumption; the task asks how to go on.
-#[test]
-fn a_doubtful_answer_taken_as_received_is_not_sent_again() {
-    let slice = Slice::new();
-    let (restarted, mut resumed, card) = doubtful(&slice);
-    answer(&restarted, &card.id, TAKE_AS_RECEIVED);
-    assert_eq!(resumed.pending_permits(), 0, "nothing is sent");
-    assert_eq!(slice.prompts().len(), 2);
-    assert!(lifecycle(&restarted).pending_inputs().is_empty(), "the answer left the queue by the user's word");
-    assert!(open_card(&restarted, SESSION_ENDED_PREFIX).is_some(), "the task asks how to go on");
     resumed.stop().unwrap();
 }
 

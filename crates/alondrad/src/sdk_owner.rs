@@ -163,6 +163,10 @@ pub(crate) struct Driver {
     results: Vec<alondra_foundation::CommandId>,
     /// The host closed its end while this daemon ran: the fact that ends this driver.
     host_closed: bool,
+    /// A step of this owner failed: its host is stopped and replaced like one that closed.
+    owner_failed: bool,
+    #[cfg(test)]
+    pub(crate) fail_next_step: bool,
 }
 
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
@@ -281,7 +285,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<ser
         .map_err(|error| DomainError::new("launch_failed", format!("the SDK launch stopped: {error}")))?
         .map_err(|Failed(why)| DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")))?;
     let agent = driver.agent().clone();
-    domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
+    domain.add_sdk_owner(Owner::spawn(driver));
     domain.live.forget_closed_task(&task.0);
     Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
 }
@@ -351,6 +355,13 @@ pub(crate) fn end_stopped_host(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 }
 
 fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool) -> Result<Option<Driver>, Failed> {
+    take_host(domain, backend, task, plugin, relaunch, true)
+}
+
+/// A live host that refuses its adoption (its owner's socket is gone, it runs another release's
+/// artifact, its bootstrap no longer matches) can never be reached again: with `end_refused`, it is
+/// ended by the lock it holds and the execution is taken again, now with a host that ended.
+fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool) -> Result<Option<Driver>, Failed> {
     let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed("the task has no node to adopt".into()))?;
@@ -382,7 +393,16 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
         if !relaunch {
             return Err(Failed("the host still runs".into()));
         }
-        worker.adopt_owner(grant, adapter_state).map_err(adapter("adopting the SDK host"))?;
+        if let Err(error) = worker.adopt_owner(grant, adapter_state) {
+            if !end_refused {
+                return Err(adapter("adopting the SDK host")(error));
+            }
+            log!("the live SDK host of {task} refused its adoption ({error:?}): it is stopped and a host that resumes the same Claude session takes its place");
+            drop(worker);
+            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+                .map_err(|error| Failed(format!("its host refused to be taken over and did not stop: {error}")))?;
+            return take_host(domain, backend, task, plugin, relaunch, false);
+        }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
         driver.permits.extend(reserved.permits);
         for command in adoption.commands {
@@ -438,14 +458,14 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
             expected_revision: 0,
             command,
         };
-        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation }), Attached::None)?;
+        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch }), Attached::None)?;
         let doubted: Vec<InputId> = owner.lifecycle(&task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
         for (input, status) in owner.pending_handoffs(&task)? {
             let (id, text) = (input.id().as_str().to_owned(), input.text().to_owned());
             let command = match status.as_str() {
                 "rejected" => Command::ResendUntakenInput { task_id: task.clone(), generation, input: id.clone(), text },
                 _ if doubted.contains(input.id()) => continue,
-                _ => Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: id.clone(), text },
+                _ => Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: id.clone(), text, resumes: relaunch },
             };
             owner.stage_command(&Actor::System, &envelope(id, command), Attached::None)?;
         }
@@ -461,17 +481,80 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
         .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
-    worker.relaunch(grant, adapter_state, base, resume, environment).map_err(adapter("launching the host that resumes the session"))?;
+    worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed(format!("its new host could not start ({error:?})")))?;
     let mut driver = Driver::new(domain, worker, scope, task, agent);
     driver.replacement = true;
     driver.sealed();
     Ok(Some(driver))
 }
 
-/// At startup, adopts the live host of every task that was running through the SDK and is not
-/// terminal. A host that is gone leaves its execution as it is, with the reason in the log.
+/// At startup, takes over every task that was running through the SDK and is not terminal: a live
+/// host is adopted with the same session, and one that ended or refuses its adoption is replaced by
+/// a host that resumes it.
 pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
+    for (task, taken) in take_all(domain, backend) {
+        match taken {
+            Ok(driver) => {
+                domain.add_sdk_owner(Owner::spawn(driver));
+                domain.live.forget_closed_task(&task.0);
+                log!("the SDK execution of {task} was taken over: the same Claude session goes on");
+            }
+            Err(Failed(why)) => lost(domain, &task, &why),
+        }
+    }
+}
+
+/// The task's execution could not be taken over and no host runs it: its card tells the user why
+/// and offers to try again or cancel the task. It is never left as it is.
+pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
+    log!("the SDK execution of {task} was not taken over: {why}");
     let Ok(state) = domain.state() else { return };
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("host-lost-{task}-{}", crate::auth::random_hex(8)).into(),
+        expected_revision: 0,
+        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned() },
+    };
+    if let Err(error) = domain.execute_on_current(&envelope) {
+        log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
+    }
+}
+
+/// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
+/// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
+pub(crate) fn retake(domain: &DomainRuntime, task: TaskId) {
+    let Some((backend, runtime)) = domain.sdk() else {
+        return lost(domain, &task, NO_HOST);
+    };
+    let backend = backend.clone();
+    let mut retakes = domain.retakes.lock().expect("retakes poisoned");
+    retakes.retain(|retake| !retake.is_finished());
+    retakes.push(std::thread::spawn(move || {
+        if runtime.state().ok().and_then(|state| state.tasks.get(&task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
+            return;
+        }
+        let plugin = crate::plugins::node_in(runtime.home());
+        let taken = if host_started(&backend, &runtime, &task) {
+            adopt(Arc::clone(&runtime), &backend, task.clone(), plugin.as_deref())
+        } else {
+            plugin.as_deref().ok_or_else(|| Failed("Alondra's node plugin, which its host loads, was not found".into()))
+                .and_then(|plugin| launch_admitted(Arc::clone(&runtime), &backend, task.clone(), plugin))
+        };
+        match taken {
+            Ok(driver) => {
+                runtime.add_sdk_owner(Owner::spawn(driver));
+                log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
+            }
+            Err(Failed(why)) => lost(&runtime, &task, &why),
+        }
+    }));
+}
+
+/// Takes each execution on a thread of its own, so a host that is slow to stop holds back only
+/// its own task.
+fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskId, Result<Driver, Failed>)> {
+    let Ok(state) = domain.state() else { return Vec::new() };
     let tasks: Vec<TaskId> = state
         .tasks
         .values()
@@ -485,22 +568,25 @@ pub(crate) fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
         .map(|task| task.id.clone())
         .collect();
     let plugin = crate::plugins::node_in(domain.home());
-    for task in tasks {
-        let taken = if host_started(backend, domain, &task) {
-            adopt(Arc::clone(domain), backend, task.clone(), plugin.as_deref())
-        } else {
-            plugin.as_deref().ok_or_else(|| Failed("Alondra's node plugin, which its host loads, was not found".into()))
-                .and_then(|plugin| launch_admitted(Arc::clone(domain), backend, task.clone(), plugin))
-        };
-        match taken {
-            Ok(driver) => {
-                domain.sdk_owners.lock().expect("SDK owners poisoned").push(Owner::spawn(driver));
-                domain.live.forget_closed_task(&task.0);
-                log!("the SDK execution of {task} was taken over: the same Claude session goes on");
-            }
-            Err(Failed(why)) => log!("the SDK execution of {task} was not taken over and is left as it is: {why}"),
-        }
-    }
+    std::thread::scope(|scope| {
+        let taking: Vec<_> = tasks
+            .into_iter()
+            .map(|task| {
+                let plugin = plugin.as_deref();
+                let taking = task.clone();
+                let thread = scope.spawn(move || {
+                    if host_started(backend, domain, &taking) {
+                        adopt(Arc::clone(domain), backend, taking, plugin)
+                    } else {
+                        plugin.ok_or_else(|| Failed("Alondra's node plugin, which its host loads, was not found".into()))
+                            .and_then(|plugin| launch_admitted(Arc::clone(domain), backend, taking, plugin))
+                    }
+                });
+                (task, thread)
+            })
+            .collect();
+        taking.into_iter().map(|(task, thread)| (task, thread.join().unwrap_or_else(|_| Err(Failed("taking it over panicked".into()))))).collect()
+    })
 }
 
 /// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
@@ -585,7 +671,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: ClaudeWorker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false }
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, #[cfg(test)] fail_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -747,6 +833,18 @@ impl Driver {
     /// else read the host when the lifecycle waits for it and the host has something, else wait
     /// for what the store issues for this task.
     pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
+        let stepped = self.step_once(stopped);
+        if stepped.is_err() {
+            self.owner_failed = true;
+        }
+        stepped
+    }
+
+    fn step_once(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_step) {
+            return Err(Failed("a step of the owner failed".into()));
+        }
         self.sealed();
         if let Some(permit) = self.controls.pop_front() {
             return self.control(permit);
@@ -859,12 +957,13 @@ impl Driver {
     }
 
     /// Whether the owner should put a host that resumes the session in place of its own: its host
-    /// closed or its connection to it failed, which a host that is dying shows before its exit, and
-    /// it was not itself a replacement handed nothing yet, which would only end again. The
+    /// closed or its connection to it failed, which a host that is dying shows before its exit, or
+    /// a step of the owner itself failed, and it was not itself a replacement handed nothing yet,
+    /// which would only end again. The
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        self.host_closed && !self.replacement
+        (self.host_closed || self.owner_failed) && !self.replacement
     }
 }
 
@@ -889,6 +988,8 @@ fn stale(error: &anyhow::Error) -> bool {
 /// Runs the owner on a thread of its own until it is told to stop or the host goes.
 pub(crate) struct Owner {
     stopped: Arc<AtomicBool>,
+    /// The owner ended on its own, its host stopped: it owns nothing any more.
+    ended: Arc<AtomicBool>,
     /// The stop it was told is a close: Claude's running turn ends as an interrupted turn first.
     interrupt: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
@@ -907,10 +1008,14 @@ impl Owner {
         let current = Arc::clone(&host);
         let agent = driver.agent.clone();
         let flag = Arc::clone(&stopped);
+        let domain_of_owner = Arc::clone(&domain);
+        let ended = Arc::new(AtomicBool::new(false));
+        let ending = Arc::clone(&ended);
         let thread = std::thread::Builder::new()
             .name(format!("sdk-owner-{}", driver.task))
             .spawn(move || {
                 let told = || flag.load(Ordering::SeqCst);
+                let mut lost_because = None;
                 loop {
                     while !told() {
                         if let Err(error) = driver.step(&told) {
@@ -918,7 +1023,12 @@ impl Owner {
                             break;
                         }
                     }
-                    let Some(backend) = driver.domain.sdk().map(|(backend, _)| backend.clone()).filter(|_| !told() && driver.host_to_replace()) else {
+                    if told() {
+                        break;
+                    }
+                    let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
+                    let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
+                        lost_because = Some("its new host stopped before it could take the task's next message".to_owned());
                         break;
                     };
                     let task = driver.task.clone();
@@ -930,18 +1040,15 @@ impl Owner {
                             log!("the SDK host of {task} ended under this daemon: a host that resumes the same Claude session took its place");
                         }
                         Err(Failed(why)) => {
-                            log!("the SDK host of {task} ended and no host took its place: {why}");
+                            ending.store(true, Ordering::SeqCst);
+                            lost(&domain_of_owner, &task, &why);
                             return Ok(());
                         }
                     }
                 }
-                // Told to stop, the owner stops its host and waits for it. Ended otherwise, it
-                // detaches and leaves the host and its Claude running for a daemon that comes back
-                // to adopt, unless the host it launched has already exited: then it ends what is
-                // left of the host's group and reaps it.
-                if !told() && !driver.worker.host_exited() {
-                    return Ok(());
-                }
+                // Told to stop, or ended by its own failure, the owner stops its host and waits for
+                // it: no host is left running with no owner. Only a daemon that exits whole leaves
+                // its hosts running, for the daemon that comes back to adopt.
                 if interrupting.load(Ordering::SeqCst)
                     && let Some(host) = driver.worker.stopper()
                     && let Err(error) = host.request_after_interrupt()
@@ -952,14 +1059,22 @@ impl Owner {
                 if let Err(error) = &stopped {
                     log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
                 }
+                if let Some(why) = lost_because {
+                    ending.store(true, Ordering::SeqCst);
+                    lost(&driver.domain, &driver.task, &why);
+                }
                 stopped
             })
             .expect("spawning the SDK owner");
-        Self { stopped, interrupt, domain, host, agent, thread: Some(thread) }
+        Self { stopped, ended, interrupt, domain, host, agent, thread: Some(thread) }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
         &self.agent
+    }
+
+    pub(crate) fn ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
     }
 
     /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits

@@ -506,6 +506,13 @@ pub enum Event {
         input: InputId,
         resend: InputId,
     },
+    /// `input` was handed to a host that ended before it showed the input was read, and a host that
+    /// resumes the same session took its place: `resend` takes its place without asking anyone, and
+    /// `input` is settled.
+    ResendDoubtful {
+        input: InputId,
+        resend: InputId,
+    },
     /// The user settled the doubtful input of `card`: `resend` takes its place, or it is taken as
     /// received and leaves the queue without being consumed. When nothing is left to explain the
     /// task's next step, it waits on `unheard_card`.
@@ -541,10 +548,12 @@ impl Event {
             | Self::DoubtHandoff { input, .. }
             | Self::Compact { input }
             | Self::Runtime {
-                fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input },
+                fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. }
+                    | RuntimeFact::InputConsumed { input }
+                    | RuntimeFact::HostEnded { resume: Some(input), .. },
                 ..
             } => vec![input],
-            Self::ResendUntaken { input, resend } => vec![input, resend],
+            Self::ResendUntaken { input, resend } | Self::ResendDoubtful { input, resend } => vec![input, resend],
             Self::SettleHandoff { resend, .. } => resend.iter().collect(),
             Self::Admit { .. }
             | Self::Runtime { .. }
@@ -633,9 +642,11 @@ pub enum RuntimeFact {
     Notification,
     /// The execution's host ended (no process holds its lock any more), and its native Claude
     /// with it: the turn, the work and the questions it had open ended too. When that leaves
-    /// nothing to explain the task's next step, it waits on `unheard_card`.
+    /// nothing to explain the task's next step, a host that resumes the same session goes on with
+    /// `resume` when there is one, and the task waits on `unheard_card` otherwise.
     HostEnded {
         unheard_card: InteractionId,
+        resume: Option<InputId>,
     },
 }
 

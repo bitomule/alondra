@@ -2005,6 +2005,7 @@ impl DomainState {
             | Command::RecordHostEnded { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
+            | Command::RecordHostLost { task_id, .. }
             | Command::ResendUntakenInput { task_id, .. }
             | Command::SetModel { task_id, .. }
             | Command::SetPermissionMode { task_id, .. }
@@ -3250,8 +3251,11 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
-                if !self.settle_claude_card(interaction_id, lifecycles)? && !self.settle_mcp_card(interaction_id, lifecycles)?
-                    && !self.decide_sdk_card(interaction_id, lifecycles)? {
+                if !self.settle_claude_card(interaction_id, lifecycles)?
+                    && !self.settle_mcp_card(interaction_id, lifecycles)?
+                    && !self.decide_sdk_card(interaction_id, lifecycles)?
+                    && !self.settle_host_lost(interaction_id, option_id, written.as_deref(), lifecycles)?
+                {
                     self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
                 }
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
@@ -4127,17 +4131,23 @@ impl DomainState {
                 nonempty(turn)?;
                 self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), effects, lifecycles)?;
             }
-            Command::RecordHostEnded { task_id, generation } => {
+            Command::RecordHostEnded { task_id, generation, resumes } => {
                 system(actor)?;
                 self.task(task_id)?;
-                self.record_host_ended(task_id, *generation, effects, lifecycles)?;
+                self.record_host_ended(task_id, *generation, *resumes, effects, lifecycles)?;
             }
-            Command::RecordDoubtfulHandoff { task_id, generation, input, text } => {
+            Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(input)?;
                 nonempty(text)?;
-                self.record_doubtful_handoff(task_id, *generation, input, text, effects, lifecycles)?;
+                self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, effects, lifecycles)?;
+            }
+            Command::RecordHostLost { task_id, reason } => {
+                system(actor)?;
+                self.task(task_id)?;
+                nonempty(reason)?;
+                self.record_host_lost(task_id, reason, effects, lifecycles)?;
             }
             Command::ResendUntakenInput { task_id, generation, input, text } => {
                 system(actor)?;

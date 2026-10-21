@@ -495,18 +495,32 @@ pub enum Command {
         failure: Option<SdkApiFailure>,
     },
     /// The Task's SDK host of `generation` ended: no process holds its lock any more. What it had
-    /// running ended with it; when nothing explains the Task's next step, its card asks the user.
+    /// running ended with it. When a host that resumes the same Claude session takes its place
+    /// (`resumes`), what was cut goes on by itself; otherwise, when nothing explains the Task's next
+    /// step, its card asks the user.
     RecordHostEnded {
         task_id: TaskId,
         generation: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resumes: bool,
     },
     /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
-    /// it showed the input was read: a card asks the user to send it again or take it as received.
+    /// it showed the input was read. When a host that resumes the same Claude session takes its
+    /// place (`resumes`), the same text goes to it, flagged as possibly received already; otherwise
+    /// a card asks the user to send it again or take it as received.
     RecordDoubtfulHandoff {
         task_id: TaskId,
         generation: u64,
         input: String,
         text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resumes: bool,
+    },
+    /// The Task's SDK execution could not be taken over and has no host to run on: `reason` says
+    /// why. Its card offers to try again or to cancel the Task.
+    RecordHostLost {
+        task_id: TaskId,
+        reason: String,
     },
     /// `input`, told `text`, never reached the Task's ended SDK host of `generation`: the same
     /// text goes to its next host in its place.

@@ -62,7 +62,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         request(report, &fakes, &user, &task_script("req-stopped", "t-stopped", "Migrate the settings file"), "Migrate the settings file")?;
         let stopped = launched(report, &fakes, "t-stopped")?;
         state(report, &user, "t-stopped", WORKING)?;
-        act(report, &fakes, &stopped, "that node's native Claude crashes, so the task asks how to go on", &[Step::Die])?;
+        act(report, &fakes, &stopped, "that node's native Claude crashes, and its task goes on by itself in a resumed session", &[Step::Die])?;
 
         if sandbox.mac_count() >= 2 {
             let other = User::paired(sandbox, "seed", 2, false)?;

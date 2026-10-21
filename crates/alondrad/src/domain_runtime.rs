@@ -40,6 +40,8 @@ pub struct DomainRuntime {
     /// ever runs through the SDK.
     sdk: std::sync::OnceLock<(crate::sdk_owner::SdkBackend, std::sync::Weak<DomainRuntime>)>,
     pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
+    /// The executions the user asked to take over again, while that runs.
+    pub(crate) retakes: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// Each `claude --bg` node's move to the SDK, once this daemon has an SDK backend.
     pub(crate) handovers: crate::sdk_handover::Handovers,
     /// What each SDK task's conversation measured, to compact it while it rests.
@@ -98,6 +100,7 @@ impl DomainRuntime {
             seals: Default::default(),
             sdk: Default::default(),
             sdk_owners: Default::default(),
+            retakes: Default::default(),
             handovers: Default::default(),
             contexts: Default::default(),
             #[cfg(test)]
@@ -116,6 +119,7 @@ impl DomainRuntime {
     /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
     /// daemon that owns it.
     pub(crate) fn stop_sdk_owners(&self) {
+        self.join_retakes();
         let owners = std::mem::take(&mut *self.sdk_owners.lock().expect("SDK owners poisoned"));
         log!("stopping {} SDK host(s)", owners.len());
         for mut owner in owners {
@@ -125,9 +129,28 @@ impl DomainRuntime {
             }
         }
     }
-    /// Whether this daemon owns the SDK host of `agent`.
+    /// Waits until every execution being taken over again is taken, or has its card.
+    pub(crate) fn join_retakes(&self) {
+        let retakes = std::mem::take(&mut *self.retakes.lock().expect("retakes poisoned"));
+        for retake in retakes {
+            let _ = retake.join();
+        }
+    }
+    /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
     pub(crate) fn owns_sdk_host(&self, agent: &AgentId) -> bool {
-        self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent)
+        self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent && !owner.ended())
+    }
+    /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
+    /// its own. Those are joined once the list is released: their end may read it.
+    pub(crate) fn add_sdk_owner(&self, owner: crate::sdk_owner::Owner) {
+        let ended: Vec<crate::sdk_owner::Owner> = {
+            let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
+            let (ended, kept) = std::mem::take(&mut *owners).into_iter().partition(|held| held.agent() == owner.agent() && held.ended());
+            *owners = kept;
+            owners.push(owner);
+            ended
+        };
+        drop(ended);
     }
     /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
     /// with nothing to stop when this daemon owns no host for it.
@@ -141,7 +164,9 @@ impl DomainRuntime {
     }
     fn take_sdk_owner(&self, agent: &AgentId) -> Option<crate::sdk_owner::Owner> {
         let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
-        owners.iter().position(|owner| owner.agent() == agent).map(|at| owners.remove(at))
+        owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
+            .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
+            .map(|at| owners.remove(at))
     }
     pub(crate) fn sdk(&self) -> Option<(&crate::sdk_owner::SdkBackend, Arc<DomainRuntime>)> {
         let (backend, runtime) = self.sdk.get()?;
@@ -503,8 +528,20 @@ impl DomainRuntime {
         if !commit.replayed && commit.outcome.changed {
             crate::task_closer::settle_unattended(self, &commit.state);
             self.allowed_always(&prepared.envelope.command, &commit.state);
+            self.retake_lost(&prepared.envelope.command, &commit.state);
         }
         Ok(commit.outcome)
+    }
+
+    /// «Try again», chosen on the card of a task whose SDK execution could not be taken over and
+    /// committed as its answer: the daemon takes the execution over again.
+    fn retake_lost(&self, command: &Command, state: &DomainState) {
+        let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
+        if option_id != alondra_core::domain::RETAKE {
+            return;
+        }
+        let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };
+        crate::sdk_owner::retake(self, task_id.clone());
     }
 
     /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and
@@ -667,6 +704,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordHostEnded { task_id, .. }
         | Command::RecordInterruptAccepted { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
+        | Command::RecordHostLost { task_id, .. }
         | Command::ResendUntakenInput { task_id, .. }
         | Command::SetModel { task_id, .. }
         | Command::SetPermissionMode { task_id, .. }
