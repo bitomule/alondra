@@ -116,6 +116,7 @@ enum Normalizer {
     /// The resource is up, a turn takes `input` and ends, after starting work of its own if
     /// `work`.
     Turn { input: InputId, work: bool },
+    Facts(Vec<Observation>),
 }
 impl ObservationNormalizer for Normalizer {
     fn normalize(
@@ -137,6 +138,7 @@ impl ObservationNormalizer for Normalizer {
                 facts.push(Observation::TurnEnded { turn, failure: None });
                 facts
             }
+            Self::Facts(facts) => facts.clone(),
             _ => vec![Observation::Available],
         };
         Normalization::new(facts, b"normalized".to_vec())
@@ -861,4 +863,75 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
     }).unwrap()).unwrap();
     let observation = OrderedObservation { owner_generation: 1, execution, cursor: 1, evidence: b"sandbox observation".to_vec() };
     store.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &observation, &Normalizer::Turn { input, work: false }, no_home())).unwrap();
+}
+
+fn mcp_report(status: &str) -> Observation {
+    Observation::McpServers { servers: vec![alondra_provider_contract::McpServerReport {
+        name: "linear".into(), status: status.into(), error: None, source: Some("user".into()),
+        transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+    }] }
+}
+/// Every byte under `root`, for whether something was ever written there.
+fn written_anywhere(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
+    let mut found = vec![];
+    for entry in std::fs::read_dir(root).unwrap().map(Result::unwrap) {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(written_anywhere(&path, needle));
+        } else if std::fs::read(&path).unwrap().windows(needle.len()).any(|window| window == needle) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+// How a node's MCP servers are and the sign-in its Claude opened are facts of its observations; a
+// report init repeats changes nothing, and a failed MCP call reads the status only where the
+// binding can. The browser's return reaches Claude's listener once, and its code is kept nowhere.
+#[test]
+fn a_node_s_mcp_servers_and_sign_in_are_recorded_and_its_return_reaches_only_claude_s_listener() {
+    use crate::mcp_sign_in::{SignInError, complete};
+    use alondra_provider_contract::McpSignInReport;
+    use std::io::{BufRead, BufReader, Write};
+    const CODE: &str = "one-time-code-7f3a9c";
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let observe = |cursor: u64, facts: Vec<Observation>| {
+        let state = Arc::clone(runtime.read().state());
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home())).unwrap();
+    };
+    let agent = AgentId::from("agent-1");
+    observe(1, vec![Observation::Available, mcp_report("needs-auth")]);
+    assert_eq!(runtime.read().state().mcp[&agent].servers[0].status, McpStatus::NeedsAuth);
+    let revision = runtime.read().state().revision;
+    observe(2, vec![mcp_report("needs-auth")]);
+    assert_eq!(runtime.read().state().revision, revision, "init repeats the servers as each prompt starts: nothing changes");
+    observe(3, vec![Observation::McpToolFailed]);
+    let controls: i64 = Connection::open(fixture.path()).unwrap().query_row("SELECT count(*) FROM lifecycle_controls", [], |row| row.get(0)).unwrap();
+    assert_eq!(controls, 0, "a binding without MCP status reads none, and the observation still commits");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    observe(4, vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Browser {
+        url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: Some(port), state: Some("s1".into()),
+    } }]);
+    let back = |state: &str| format!("http://localhost:{port}/callback?code={CODE}&state={state}");
+    assert!(matches!(complete(&runtime, &task(), "linear", &back("another")), Err(SignInError::Refused(_))), "another sign-in's return");
+    assert!(matches!(complete(&runtime, &task(), "linear", &format!("http://localhost:{}/callback?code={CODE}&state=s1", port + 1)), Err(SignInError::Refused(_))), "another listener");
+    assert_eq!(complete(&runtime, &task(), "linear", "https://evil.example.com/callback?code=c&state=s1"), Err(SignInError::NotAReturn));
+    let (heard, received) = mpsc::channel();
+    let claude = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+        heard.send(line.trim_end().to_owned()).unwrap();
+    });
+    complete(&runtime, &task(), "linear", &back("s1")).unwrap();
+    claude.join().unwrap();
+    assert_eq!(received.recv().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
+    assert!(runtime.read().state().mcp[&agent].sign_ins.is_empty(), "the sign-in is no longer open");
+    assert!(matches!(complete(&runtime, &task(), "linear", &back("s1")), Err(SignInError::Refused(_))), "a return is taken once");
+    drop(runtime);
+    assert_eq!(written_anywhere(&fixture.0, CODE.as_bytes()), Vec::<PathBuf>::new(), "the one-time code is written nowhere");
 }

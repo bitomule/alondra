@@ -5,7 +5,7 @@ use super::*;
 use alondra_agent_application::{InputMetadata, ObservationNormalizer, ObservedFact};
 use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
 use alondra_foundation::ExecutionStamp;
-use alondra_provider_contract::{AdapterError, OrderedObservation, Placement, PreparedCommand, ProviderBinding};
+use alondra_provider_contract::{AdapterError, Capability, McpServerReport, McpSignInReport, OrderedObservation, Placement, PreparedCommand, ProviderBinding};
 use alondra_store::{
     AdapterState, AuthorityScope, CommandEvidence, Committed, CommittedCommand, CommittedControl, ControlAttempt,
     ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt, InputPayload, LifecycleTransaction,
@@ -182,6 +182,7 @@ impl<'connection> OwnerTransaction<'connection> {
         let execution = pending.execution().clone();
         let (task_id, generation) = (execution.task().clone(), execution.generation());
         let mut commands = vec![];
+        let mut read_status = false;
         let mut technical = vec![];
         let flush = |commands: &mut Vec<Command>, technical: &mut Vec<RuntimeObservation>| {
             if !technical.is_empty() {
@@ -252,9 +253,34 @@ impl<'connection> OwnerTransaction<'connection> {
                         Command::RecordDecisionAborted { task_id: task_id.clone(), generation, epoch: *epoch }
                     });
                 }
+                ObservedFact::McpServers { servers } => {
+                    flush(&mut commands, &mut technical);
+                    let servers: Vec<McpServerState> = servers.iter().map(mcp_server).collect();
+                    if self.mcp_changes(&task_id, generation, &servers) {
+                        commands.push(Command::RecordMcpServers { task_id: task_id.clone(), generation, servers });
+                    }
+                }
+                ObservedFact::McpSignIn { server, sign_in } => {
+                    flush(&mut commands, &mut technical);
+                    let sign_in = match sign_in {
+                        McpSignInReport::Browser { url, callback_port, state } => McpSignIn::Browser { url: url.clone(), callback_port: *callback_port, state: state.clone() },
+                        McpSignInReport::Connected => McpSignIn::Connected,
+                        McpSignInReport::Refused { error } => McpSignIn::Refused { error: error.clone() },
+                    };
+                    commands.push(Command::RecordMcpSignIn { task_id: task_id.clone(), generation, server: server.clone(), sign_in });
+                }
+                ObservedFact::McpToolFailed => {
+                    flush(&mut commands, &mut technical);
+                    if binding.permits(Capability::McpStatus) {
+                        read_status = true;
+                    }
+                }
             }
         }
         flush(&mut commands, &mut technical);
+        if read_status {
+            commands.push(Command::ReadMcpStatus { task_id: task_id.clone() });
+        }
         for (index, command) in commands.into_iter().enumerate() {
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
@@ -263,9 +289,23 @@ impl<'connection> OwnerTransaction<'connection> {
                 expected_revision: 0,
                 command,
             };
+            if matches!(envelope.command, Command::ReadMcpStatus { .. }) && self.draft.state.guard(&Actor::System, &envelope).is_err() {
+                continue;
+            }
             self.stage_command(&Actor::System, &envelope, Attached::None)?;
         }
         pending.settle(&mut self.journal).map_err(application_error)
+    }
+
+    /// Whether `servers` changes what the task's node holds of its MCP servers: init repeats them
+    /// as each prompt starts, and a repeat changes nothing.
+    fn mcp_changes(&self, task: &TaskId, generation: u64, servers: &[McpServerState]) -> bool {
+        let state = &self.draft.state;
+        let node = state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).and_then(|agent| state.mcp.get(agent));
+        match node {
+            Some(node) if node.generation == generation => node.merged(servers) != node.servers,
+            _ => !servers.is_empty(),
+        }
     }
 
     /// Runs `step` on this transaction's connection inside the journal's guard.
@@ -460,3 +500,14 @@ impl DomainStore {
 #[cfg(test)]
 #[path = "owner_tests.rs"]
 mod tests;
+
+fn mcp_server(report: &McpServerReport) -> McpServerState {
+    McpServerState {
+        name: report.name.clone(),
+        status: McpStatus::of(&report.status),
+        error: report.error.clone(),
+        source: report.source.clone(),
+        transport: report.transport.clone(),
+        url: report.url.clone(),
+    }
+}

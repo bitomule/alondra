@@ -3347,3 +3347,79 @@ fn a_claude_bg_execution_asks_for_no_decision() {
     drop(tx);
     assert!(fixture.connection.execute("INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,1,'r','toolu','permission',x'7b7d')", []).is_err());
 }
+
+/// Puts back the narrower checks the two control tables had before the MCP controls, with every
+/// row they hold, as a journal installed by an earlier release still has them.
+fn narrow_to_before_mcp(fixture: &mut Fixture) {
+    let previous = include_str!("../src/controls_before_mcp.sql");
+    let tx = fixture.connection.transaction().unwrap();
+    for name in ["provider_binding_controls", "lifecycle_controls"] {
+        let start = previous.find(&format!("CREATE TABLE IF NOT EXISTS {name}(")).unwrap();
+        let definition = &previous[start..start + previous[start..].find("\n);").unwrap() + 3];
+        tx.execute_batch(&format!(
+            "PRAGMA defer_foreign_keys=ON; CREATE TEMP TABLE kept AS SELECT * FROM main.{name}; DROP TABLE main.{name}; {definition} INSERT INTO main.{name} SELECT * FROM temp.kept; DROP TABLE temp.kept;"
+        )).unwrap();
+    }
+    tx.execute_batch(include_str!("../src/controls.sql")).unwrap();
+    tx.commit().unwrap();
+}
+fn controls_rows(fixture: &Fixture) -> Vec<String> {
+    let mut rows = vec![];
+    for sql in ["SELECT json_array(id,task_id,generation,control_id,kind,argument,epoch,status,claimed_revision) FROM lifecycle_controls ORDER BY id",
+        "SELECT json_array(binding_id,capabilities) FROM provider_binding_controls ORDER BY binding_id"] {
+        let mut statement = fixture.connection.prepare(sql).unwrap();
+        rows.extend(statement.query_map([], |row| row.get::<_, String>(0)).unwrap().map(|row| row.unwrap()));
+    }
+    rows
+}
+
+#[test]
+fn a_journal_from_before_the_mcp_controls_keeps_every_control_and_takes_the_new_ones() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap();
+    narrow_to_before_mcp(&mut fixture);
+    let raw = |kind: &str| format!("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'raw-{kind}','{kind}','linear','prepared')");
+    assert!(fixture.connection.execute(&raw("mcp_sign_in"), []).is_err(), "the narrower check refuses an MCP sign-in");
+    let before = controls_rows(&fixture);
+    assert_eq!(before.len(), 2, "{before:?}");
+    let tx = fixture.connection.transaction().unwrap();
+    assert!(matches!(LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()), Err(Error::UnsupportedJournalFormat)), "an old journal opens only once upgraded");
+    let mut tx = fixture.connection.transaction().unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(controls_rows(&fixture), before, "every row is kept");
+    fixture.transaction().commit().unwrap();
+    assert!(fixture.connection.execute("DELETE FROM lifecycle_controls", []).is_err(), "the retained-evidence trigger is back");
+    for kind in ["mcp_sign_in", "mcp_reconnect"] {
+        fixture.connection.execute(&raw(kind), []).unwrap();
+    }
+    let mut tx = fixture.connection.transaction().unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(controls_rows(&fixture).len(), 4, "upgrading again changes nothing");
+}
+
+#[test]
+fn a_binding_with_every_control_signs_in_and_reconnects_its_mcp_servers() {
+    for (name, kind) in [("reconnect", Control::ReconnectMcp { server: "linear".into() }), ("sign-in", Control::StartMcpSignIn { server: "linear".into() })] {
+        let mut fixture = Fixture::new();
+        let mut capabilities = every_control().to_vec();
+        capabilities.extend([Capability::Decisions, Capability::McpReconnect, Capability::McpSignIn]);
+        let binding = control_binding(capabilities);
+        running_sdk(&mut fixture, &binding);
+        let permit = request(&mut fixture, name, kind.clone()).unwrap().control_permits.pop().unwrap();
+        let mut tx = fixture.transaction();
+        assert!(tx.claim_control(permit).unwrap());
+        tx.commit().unwrap();
+        assert_eq!(control_status(&fixture, name), "claimed");
+        let stored: (String, String) = fixture.connection.query_row("SELECT kind,argument FROM lifecycle_controls WHERE control_id=?1", [name], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(stored.1, "linear", "{kind:?}");
+        let mut narrow = Fixture::new();
+        running_sdk(&mut narrow, &control_binding(every_control()));
+        let mut tx = narrow.transaction();
+        let revision = tx.load(&"task".into()).unwrap().revision();
+        tx.apply(&"task".into(), revision, name, Event::RequestControl { control: op(name), kind: kind.clone() }).unwrap();
+        assert!(matches!(tx.stage_control(&"task".into(), &op(name), &kind), Err(Error::UnsupportedCapability)), "a binding from before the MCP controls is never asked for them");
+    }
+}

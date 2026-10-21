@@ -40,6 +40,8 @@ fn capabilities() -> BTreeSet<Capability> {
         Capability::Compact,
         Capability::McpStatus,
         Capability::Decisions,
+        Capability::McpReconnect,
+        Capability::McpSignIn,
     ])
 }
 

@@ -30,6 +30,8 @@ pub enum Capability {
     Compact,
     McpStatus,
     Decisions,
+    McpReconnect,
+    McpSignIn,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBinding {
@@ -202,6 +204,43 @@ pub enum Observation {
         epoch: u64,
         answered: bool,
         continued: bool,
+    },
+    /// The MCP servers Claude listed and how each is: as each prompt starts, or as a control of
+    /// Alondra's answered.
+    McpServers {
+        servers: Vec<McpServerReport>,
+    },
+    /// How the sign-in Claude opened to `server` goes on.
+    McpSignIn {
+        server: String,
+        sign_in: McpSignInReport,
+    },
+    /// A call to an MCP server's tool failed: how its server is may have changed.
+    McpToolFailed,
+}
+/// An MCP server as Claude reported it; its status verbatim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServerReport {
+    pub name: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub source: Option<String>,
+    pub transport: Option<String>,
+    /// A remote server's address, without credentials, query or fragment.
+    pub url: Option<String>,
+}
+/// How a sign-in Claude opened goes on: where the user signs in, and the port and state of
+/// Claude's own listener the browser comes back to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpSignInReport {
+    Browser {
+        url: String,
+        callback_port: Option<u16>,
+        state: Option<String>,
+    },
+    Connected,
+    Refused {
+        error: String,
     },
 }
 /// What Claude asks a decision about.

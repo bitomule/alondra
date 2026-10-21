@@ -1,4 +1,4 @@
-use super::{Checklist, ChecklistMark, LifecycleRecord, ScheduleState, TaskEnding};
+use super::{Checklist, ChecklistMark, LifecycleRecord, NodeMcp, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1069,6 +1069,9 @@ pub struct DomainState {
     /// start are read from that replay.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lifecycle_journal: BTreeMap<TaskId, Vec<LifecycleRecord>>,
+    /// The MCP servers each node's current SDK execution reported, and the sign-ins it opened.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp: BTreeMap<AgentId, NodeMcp>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1095,6 +1098,7 @@ impl DomainState {
             request_plans: BTreeMap::new(),
             plan_reviews: BTreeMap::new(),
             lifecycle_journal: BTreeMap::new(),
+            mcp: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

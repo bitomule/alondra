@@ -6,6 +6,9 @@ pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_R
 mod guards;
 #[path = "decisions.rs"]
 mod decisions;
+#[path = "mcp.rs"]
+mod mcp;
+pub use mcp::{MAX_MCP_SERVERS, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
 pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNWRITTEN_PLAN, decision_policy};
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
@@ -1995,6 +1998,11 @@ impl DomainState {
             | Command::SetModel { task_id, .. }
             | Command::SetPermissionMode { task_id, .. }
             | Command::ReadMcpStatus { task_id }
+            | Command::ReconnectMcp { task_id, .. }
+            | Command::StartMcpSignIn { task_id, .. }
+            | Command::RecordMcpServers { task_id, .. }
+            | Command::RecordMcpSignIn { task_id, .. }
+            | Command::CompleteMcpSignIn { task_id, .. }
             | Command::CompactConversation { task_id }
             | Command::TellNode { task_id, .. }
             | Command::RecordDecisionRequest { task_id, .. }
@@ -4149,6 +4157,19 @@ impl DomainState {
                 let record = self.control_guard(actor, task_id, ControlRecord::ReadMcpStatus)?;
                 self.decide(lifecycles, task_id, record)?;
             }
+            Command::ReconnectMcp { task_id, server } => {
+                let record = self.mcp_reconnect_guard(actor, task_id, server)?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::StartMcpSignIn { task_id, server } => {
+                let record = self.mcp_sign_in_guard(actor, task_id, server)?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::RecordMcpServers { task_id, generation, servers } => self.record_mcp_servers(actor, task_id, *generation, servers)?,
+            Command::RecordMcpSignIn { task_id, generation, server, sign_in } => {
+                self.record_mcp_sign_in(actor, task_id, *generation, server, sign_in)?;
+            }
+            Command::CompleteMcpSignIn { task_id, server, state } => self.complete_mcp_sign_in(actor, task_id, server, state)?,
             Command::CompactConversation { task_id } => {
                 let record = self.compact_guard(actor, task_id)?;
                 self.decide(lifecycles, task_id, record)?;

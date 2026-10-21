@@ -955,3 +955,83 @@ fn compacting_a_resting_conversation_keeps_the_card_it_waits_on() {
     assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "its compaction is already pending");
     assert_aggregate_rules(&s);
 }
+
+fn mcp_server(name: &str, status: McpStatus) -> McpServerState {
+    McpServerState { name: name.into(), status, error: None, source: None, transport: None, url: None }
+}
+
+#[test]
+fn a_node_keeps_how_its_mcp_servers_are_as_its_claude_reports_them() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let report = |servers: Vec<McpServerState>| Command::RecordMcpServers { task_id: "t".into(), generation: 1, servers };
+    assert_eq!(refused_unchanged(&mut s, user(), report(vec![])), "forbidden", "only what Claude reported");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordMcpServers { task_id: "t".into(), generation: 2, servers: vec![] }), "stale_execution");
+    let mut leaky = mcp_server("linear", McpStatus::Connected);
+    leaky.url = Some("https://mcp.example.com/mcp?key=secret".into());
+    assert_eq!(refused_unchanged(&mut s, Actor::System, report(vec![leaky])), "invalid_input", "an address with credentials is never kept");
+    let mut remote = mcp_server("linear", McpStatus::Failed);
+    (remote.transport, remote.url, remote.error) = (Some("http".into()), Some("https://mcp.linear.app/mcp".into()), Some("unreachable".into()));
+    must(&mut s, Actor::System, report(vec![remote.clone(), mcp_server("files", McpStatus::Connected)]));
+    must(&mut s, Actor::System, report(vec![mcp_server("linear", McpStatus::Failed), mcp_server("files", McpStatus::Connected)]));
+    assert_eq!(s.mcp[&AgentId::from("a")].servers[0], remote, "init's report keeps how the server is reached and its unchanged error");
+    must(&mut s, Actor::System, report(vec![mcp_server("linear", McpStatus::NeedsAuth)]));
+    let linear = &s.mcp[&AgentId::from("a")].servers;
+    assert_eq!((linear.len(), linear[0].status, linear[0].error.clone(), linear[0].url.clone()), (1, McpStatus::NeedsAuth, None, remote.url.clone()), "a changed status drops the old error");
+    assert_eq!(McpStatus::of("a-status-from-a-later-claude"), McpStatus::Unknown);
+}
+
+#[test]
+fn only_a_server_that_needs_it_is_signed_in_to_and_its_return_closes_the_sign_in_once() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let sign_in = |server: &str| Command::StartMcpSignIn { task_id: "t".into(), server: server.into() };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_in("linear")), "not_found", "a server Claude never reported");
+    must(&mut s, Actor::System, Command::RecordMcpServers { task_id: "t".into(), generation: 1, servers: vec![
+        mcp_server("linear", McpStatus::NeedsAuth), mcp_server("files", McpStatus::Connected), mcp_server("off", McpStatus::Disabled),
+    ] });
+    assert_eq!(refused_unchanged(&mut s, user(), sign_in("linear")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_in("files")), "conflict", "already connected");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_in("off")), "conflict", "turned off");
+    must(&mut s, Actor::System, sign_in("linear"));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::StartMcpSignIn { server }, .. } if server == "linear"));
+    must(&mut s, Actor::System, Command::ReconnectMcp { task_id: "t".into(), server: "files".into() });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::ReconnectMcp { server }, .. } if server == "files"));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::ReconnectMcp { task_id: "t".into(), server: "missing".into() }), "not_found");
+
+    let complete = |state: &str| Command::CompleteMcpSignIn { task_id: "t".into(), server: "linear".into(), state: state.into() };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, complete("s1")), "not_found", "no sign-in open yet");
+    let browser = McpSignIn::Browser { url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: Some(49200), state: Some("s1".into()) };
+    let opened = |sign_in: McpSignIn| Command::RecordMcpSignIn { task_id: "t".into(), generation: 1, server: "linear".into(), sign_in };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, opened(McpSignIn::Browser { url: "http://auth.example.com/authorize".into(), callback_port: None, state: None })), "invalid_input", "the user signs in only on an https page");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, opened(McpSignIn::Browser { url: "https://linear.app/a".into(), callback_port: Some(49200), state: None })), "invalid_input");
+    must(&mut s, Actor::System, opened(browser));
+    assert_eq!(s.mcp[&AgentId::from("a")].sign_ins["linear"].callback_port, Some(49200));
+    assert_eq!(refused_unchanged(&mut s, user(), complete("s1")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, complete("another")), "conflict", "another sign-in's return");
+    must(&mut s, Actor::System, complete("s1"));
+    assert!(s.mcp[&AgentId::from("a")].sign_ins.is_empty());
+    assert_eq!(refused_unchanged(&mut s, Actor::System, complete("s1")), "not_found", "a return is taken once");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_sign_in_ends_when_its_server_connects_or_claude_refuses_or_needs_no_browser() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let servers = |status: McpStatus| Command::RecordMcpServers { task_id: "t".into(), generation: 1, servers: vec![mcp_server("linear", status)] };
+    let opened = |sign_in: McpSignIn| Command::RecordMcpSignIn { task_id: "t".into(), generation: 1, server: "linear".into(), sign_in };
+    let browser = || McpSignIn::Browser { url: "https://linear.app/oauth/authorize".into(), callback_port: Some(49200), state: Some("s".into()) };
+    must(&mut s, Actor::System, servers(McpStatus::NeedsAuth));
+    must(&mut s, Actor::System, opened(browser()));
+    must(&mut s, Actor::System, servers(McpStatus::NeedsAuth));
+    assert!(s.mcp[&AgentId::from("a")].sign_ins.contains_key("linear"), "still waiting for the user");
+    must(&mut s, Actor::System, servers(McpStatus::Connected));
+    assert!(s.mcp[&AgentId::from("a")].sign_ins.is_empty(), "Claude connected it: nothing left to finish");
+    must(&mut s, Actor::System, opened(browser()));
+    must(&mut s, Actor::System, opened(McpSignIn::Refused { error: "Server is disabled".into() }));
+    assert!(s.mcp[&AgentId::from("a")].sign_ins.is_empty());
+    must(&mut s, Actor::System, opened(browser()));
+    must(&mut s, Actor::System, opened(McpSignIn::Connected));
+    assert!(s.mcp[&AgentId::from("a")].sign_ins.is_empty());
+}

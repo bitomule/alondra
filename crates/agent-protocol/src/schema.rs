@@ -224,6 +224,15 @@ pub enum Action {
         mode: PermissionMode,
     },
     McpStatus,
+    /// Claude connects the MCP server again, reading its stored sign-in anew.
+    McpReconnect {
+        server: String,
+    },
+    /// Claude opens a sign-in to the MCP server and answers with where the user signs in. Claude
+    /// itself exchanges and stores what the sign-in returns; no credential reaches Alondra.
+    McpAuthenticate {
+        server: String,
+    },
 }
 
 /// The only permission modes Alondra can ask for: none of them grants a permission by itself.
@@ -237,6 +246,8 @@ pub enum PermissionMode {
 
 pub const MAX_MODEL_BYTES: usize = 128;
 pub const MAX_MCP_SERVERS: usize = 64;
+pub const MAX_MCP_URL_BYTES: usize = 2048;
+pub const MAX_SIGN_IN_URL_BYTES: usize = 8192;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "behavior", rename_all = "snake_case", deny_unknown_fields)]
@@ -359,13 +370,31 @@ pub enum SdkEventKind {
     Unsupported,
 }
 
-/// The payload of a `control_result` observation: what a read-only control answered.
+/// The payload of a `control_result` observation: what a control that answers with data answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "control", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlResult {
     McpStatus {
         command_id: CommandId,
         servers: Vec<McpServer>,
+    },
+    /// The servers as Claude lists them after connecting `server` again, with why the
+    /// reconnection failed when it did.
+    McpReconnect {
+        command_id: CommandId,
+        server: String,
+        #[serde(
+            default,
+            deserialize_with = "present_string",
+            skip_serializing_if = "Option::is_none"
+        )]
+        error: Option<String>,
+        servers: Vec<McpServer>,
+    },
+    McpAuthenticate {
+        command_id: CommandId,
+        server: String,
+        sign_in: SignIn,
     },
 }
 
@@ -381,25 +410,132 @@ pub struct McpServer {
         skip_serializing_if = "Option::is_none"
     )]
     pub error: Option<String>,
+    /// Where it is configured (user, project, local, plugin, claudeai…), verbatim.
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source: Option<String>,
+    /// How Claude reaches it (stdio, http, sse, sdk, claudeai-proxy…), verbatim.
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transport: Option<String>,
+    /// A remote server's address, without credentials, query or fragment.
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub url: Option<String>,
+}
+
+/// How a sign-in to an MCP server Claude opened goes on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SignIn {
+    /// The user signs in at `url`. With `callback_port` the browser comes back to Claude's own
+    /// listener at `http://localhost:<callback_port>/callback`, carrying `state`; without it the
+    /// sign-in ends elsewhere (claude.ai) and Claude is told to connect again afterwards.
+    Browser {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback_port: Option<u16>,
+        #[serde(
+            default,
+            deserialize_with = "present_string",
+            skip_serializing_if = "Option::is_none"
+        )]
+        state: Option<String>,
+    },
+    /// Claude needed nothing from the user: its stored sign-in still works.
+    Connected {},
+    Refused {
+        error: String,
+    },
+}
+
+impl McpServer {
+    fn validate(&self) -> Result<(), Error> {
+        text(&self.name, 256)?;
+        text(&self.status, 256)?;
+        for field in [&self.error, &self.source, &self.transport]
+            .into_iter()
+            .flatten()
+        {
+            text(field, 256)?;
+        }
+        if let Some(url) = &self.url {
+            text(url, MAX_MCP_URL_BYTES)?;
+            if url.contains(['?', '#', '@']) {
+                return Err(Error::Invalid("MCP server address with credentials"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn servers(servers: &[McpServer]) -> Result<(), Error> {
+    if servers.len() > MAX_MCP_SERVERS {
+        return Err(Error::Invalid("too many MCP servers"));
+    }
+    servers.iter().try_for_each(McpServer::validate)
 }
 
 impl ControlResult {
-    pub fn validate(&self) -> Result<(), Error> {
+    pub fn command_id(&self) -> &CommandId {
         match self {
-            Self::McpStatus {
-                command_id,
-                servers,
+            Self::McpStatus { command_id, .. }
+            | Self::McpReconnect { command_id, .. }
+            | Self::McpAuthenticate { command_id, .. } => command_id,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), Error> {
+        text(&self.command_id().0, 256)?;
+        match self {
+            Self::McpStatus { servers: listed, .. } => servers(listed)?,
+            Self::McpReconnect {
+                server,
+                error,
+                servers: listed,
+                ..
             } => {
-                text(&command_id.0, 256)?;
-                if servers.len() > MAX_MCP_SERVERS {
-                    return Err(Error::Invalid("too many MCP servers"));
+                text(server, 256)?;
+                if let Some(error) = error {
+                    text(error, 256)?;
                 }
-                for server in servers {
-                    text(&server.name, 256)?;
-                    text(&server.status, 256)?;
-                    if let Some(error) = &server.error {
-                        text(error, 256)?;
+                servers(listed)?;
+            }
+            Self::McpAuthenticate {
+                server, sign_in, ..
+            } => {
+                text(server, 256)?;
+                match sign_in {
+                    SignIn::Browser {
+                        url,
+                        callback_port,
+                        state,
+                    } => {
+                        text(url, MAX_SIGN_IN_URL_BYTES)?;
+                        if !url.starts_with("https://")
+                            && !url.starts_with("http://localhost")
+                            && !url.starts_with("http://127.0.0.1")
+                        {
+                            return Err(Error::Invalid("sign-in address"));
+                        }
+                        if *callback_port == Some(0) || callback_port.is_some() != state.is_some() {
+                            return Err(Error::Invalid("sign-in callback"));
+                        }
+                        if let Some(state) = state {
+                            text(state, 256)?;
+                        }
                     }
+                    SignIn::Connected {} => {}
+                    SignIn::Refused { error } => text(error, 256)?,
                 }
             }
         }
@@ -750,6 +886,9 @@ impl Command {
                 if model.chars().any(char::is_control) || model.trim().is_empty() {
                     return Err(Error::Invalid("model"));
                 }
+            }
+            Action::McpReconnect { server } | Action::McpAuthenticate { server } => {
+                text(server, 256)?;
             }
             Action::Interrupt
             | Action::Close

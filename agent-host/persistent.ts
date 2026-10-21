@@ -2,18 +2,19 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
-import { commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, PROTOCOL_VERSION, type Action, type ControlResult, type Frame } from './frame.js';
+import { commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, MAX_MCP_URL_BYTES, MAX_SIGN_IN_URL_BYTES, PROTOCOL_VERSION, type Action, type ControlResult, type Frame, type McpServer, type SignIn } from './frame.js';
 import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status'] as const;
+export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in'] as const;
 export type Capability = typeof HOST_CAPABILITIES[number];
 type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
 const REQUIRED: Record<Action['type'], Capability | undefined> = {
   start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', close: undefined,
   set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
+  mcp_reconnect: 'mcp_reconnect', mcp_authenticate: 'mcp_sign_in',
 };
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
@@ -25,6 +26,40 @@ function bounded(value: unknown): string | undefined {
     clipped += character;
   }
   return clipped || undefined;
+}
+function failure(error: unknown): string {
+  return bounded((error as { message?: unknown })?.message) ?? bounded(String(error)) ?? 'Claude gave no reason';
+}
+/** A remote server's address as Alondra may keep it: scheme, host and path, never credentials or a query. */
+function address(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    const kept = `${url.protocol}//${url.host}${url.pathname}`;
+    return Buffer.byteLength(kept) <= MAX_MCP_URL_BYTES && !/[?#@]/.test(kept) ? kept : undefined;
+  } catch { return undefined; }
+}
+type NativeServer = { name?: unknown; status?: unknown; error?: unknown; source?: unknown; config?: { type?: unknown; command?: unknown; url?: unknown } };
+function listed(servers: readonly NativeServer[]): McpServer[] {
+  return servers.flatMap((server) => {
+    const name = bounded(server.name); const status = bounded(server.status);
+    if (!name || !status) return [];
+    const error = bounded(server.error); const source = bounded(server.source);
+    const transport = bounded(server.config?.type) ?? (typeof server.config?.command === 'string' ? 'stdio' : undefined);
+    const url = address(server.config?.url);
+    return [{ name, status, ...(error ? { error } : {}), ...(source ? { source } : {}), ...(transport ? { transport } : {}), ...(url ? { url } : {}) }];
+  }).slice(0, MAX_MCP_SERVERS);
+}
+/** How the sign-in Claude opened goes on. Claude keeps the flow and what it returns. */
+function signIn(response: unknown): SignIn {
+  const native = (response ?? {}) as { authUrl?: unknown; requiresUserAction?: unknown; callbackPort?: unknown; state?: unknown };
+  if (native.requiresUserAction === false) return { outcome: 'connected' };
+  const url = typeof native.authUrl === 'string' && Buffer.byteLength(native.authUrl) <= MAX_SIGN_IN_URL_BYTES ? native.authUrl : undefined;
+  if (!url || !/^(https:\/\/|http:\/\/localhost|http:\/\/127\.0\.0\.1)/.test(url)) return { outcome: 'refused', error: 'Claude gave no sign-in address Alondra can open' };
+  const port = native.callbackPort; const state = bounded(native.state);
+  const callback = typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535 && state ? { callback_port: port, state } : {};
+  return { outcome: 'browser', url, ...callback };
 }
 const MAX_CONNECTIONS = 8;
 const MAX_COMMANDS = 256;
@@ -205,15 +240,27 @@ export class PersistentHost {
         case 'mcp_status': {
           const session = this.controlled(record); if (!session) break;
           this.current(lane);
-          const servers = (await session.mcpServerStatus()).flatMap((server) => {
-            const name = bounded(server.name); const status = bounded(server.status); const error = bounded(server.error);
-            return name && status ? [{ name, status, ...(error ? { error } : {}) }] : [];
-          }).slice(0, MAX_MCP_SERVERS);
+          const servers = listed(await session.mcpServerStatus());
           this.current(lane);
-          const result: ControlResult = { control: 'mcp_status', command_id: command.command_id, servers };
-          this.observe({ type: 'sdk', kind: 'control_result', native: {}, payload: result, failures: [] });
-          if (this.unavailable) throw new Error('Control result not durable');
-          this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+          this.answer(record, { control: 'mcp_status', command_id: command.command_id, servers }); break;
+        }
+        case 'mcp_reconnect': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane);
+          const server = command.action.server;
+          const error = await session.reconnectMcpServer(server).then(() => undefined, failure);
+          this.current(lane);
+          const servers = listed(await session.mcpServerStatus());
+          this.current(lane);
+          this.answer(record, { control: 'mcp_reconnect', command_id: command.command_id, server, ...(error ? { error } : {}), servers }); break;
+        }
+        case 'mcp_authenticate': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane);
+          const server = command.action.server;
+          const sign_in = await session.mcpAuthenticate(server).then(signIn, (error): SignIn => ({ outcome: 'refused', error: failure(error) }));
+          this.current(lane);
+          this.answer(record, { control: 'mcp_authenticate', command_id: command.command_id, server, sign_in }); break;
         }
       }
     } catch (error) {
@@ -229,6 +276,12 @@ export class PersistentHost {
     });
     void session.finished.catch(() => this.storageUncertain());
     return session;
+  }
+  /** The control's result is evidence before the receipt that closes the command. */
+  private answer(record: CommandRecord, result: ControlResult): void {
+    this.observe({ type: 'sdk', kind: 'control_result', native: {}, payload: result, failures: [] });
+    if (this.unavailable) throw new Error('Control result not durable');
+    this.receipt(record, { status: 'accepted', phase: 'applied' });
   }
   private controlled(record: CommandRecord): Session | undefined {
     if (!this.session) this.receipt(record, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' });

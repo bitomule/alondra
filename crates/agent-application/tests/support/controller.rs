@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, alondra_agent_application::Error>;
 /// What the domain does with an accepted observation's facts, for fixtures that run the store
 /// without it: each technical fact becomes the next runtime event of the execution, then the
 /// observation is settled. The end of a turn and a decision need the domain's, so they are refused; that
-/// the model answered moves no task, so nothing records it.
+/// the model answered, or how the MCP servers are, moves no task, so nothing records it.
 pub fn record_facts(
     transaction: &mut LifecycleTransaction<'_>,
     pending: PendingObservation,
@@ -26,7 +26,12 @@ pub fn record_facts(
     for (index, fact) in pending.facts().iter().enumerate() {
         let fact = match fact {
             ObservedFact::Runtime(fact) => fact,
-            ObservedFact::ModelAnswered | ObservedFact::Worktree { .. } | ObservedFact::SubagentWorktree { .. } => continue,
+            ObservedFact::ModelAnswered
+            | ObservedFact::Worktree { .. }
+            | ObservedFact::SubagentWorktree { .. }
+            | ObservedFact::McpServers { .. }
+            | ObservedFact::McpSignIn { .. }
+            | ObservedFact::McpToolFailed => continue,
             ObservedFact::TurnEnded { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
                 return Err(Error::RequiresDomainCommand);
             }

@@ -168,5 +168,100 @@
     "name": "control_result_not_a_result",
     "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"type\":\"result\",\"subtype\":\"success\"},\"failures\":[]}}}",
     "accepted": false
+  },
+  {
+    "name": "mcp_reconnect",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_reconnect\",\"server\":\"linear\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "mcp_reconnect_without_server",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_reconnect\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "mcp_reconnect_empty_server",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_reconnect\",\"server\":\"\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "mcp_authenticate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_authenticate\",\"server\":\"linear\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "mcp_authenticate_with_redirect",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_authenticate\",\"server\":\"linear\",\"redirect_uri\":\"com.example:/cb\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_with_origin",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"linear\",\"status\":\"needs-auth\",\"source\":\"user\",\"transport\":\"http\",\"url\":\"https://mcp.linear.app/mcp\"},{\"name\":\"files\",\"status\":\"connected\",\"source\":\"project\",\"transport\":\"stdio\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_url_with_query",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"linear\",\"status\":\"connected\",\"url\":\"https://mcp.example.com/mcp?key=secret\"}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_url_with_credentials",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"linear\",\"status\":\"connected\",\"url\":\"https://user:secret@mcp.example.com/mcp\"}]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_reconnect",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_reconnect\",\"command_id\":\"command-test\",\"server\":\"linear\",\"servers\":[{\"name\":\"linear\",\"status\":\"connected\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_reconnect_failed",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_reconnect\",\"command_id\":\"command-test\",\"server\":\"linear\",\"error\":\"Server not found\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_reconnect_without_server",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_reconnect\",\"command_id\":\"command-test\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_sign_in_browser",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"browser\",\"url\":\"https://linear.app/oauth/authorize?client_id=c&state=s\",\"callback_port\":49200,\"state\":\"s\"}},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_sign_in_elsewhere",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"claude.ai Gmail\",\"sign_in\":{\"outcome\":\"browser\",\"url\":\"https://claude.ai/api/organizations/o/mcp/start-auth/g\"}},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_sign_in_connected",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"connected\"}},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_sign_in_refused",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"refused\",\"error\":\"Server is disabled\"}},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_sign_in_plain_http",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"browser\",\"url\":\"http://auth.example.com/authorize\",\"callback_port\":49200,\"state\":\"s\"}},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_sign_in_port_without_state",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"browser\",\"url\":\"https://linear.app/oauth/authorize\",\"callback_port\":49200}},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_sign_in_port_zero",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"browser\",\"url\":\"https://linear.app/oauth/authorize\",\"callback_port\":0,\"state\":\"s\"}},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_sign_in_unknown_outcome",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_authenticate\",\"command_id\":\"command-test\",\"server\":\"linear\",\"sign_in\":{\"outcome\":\"token\",\"token\":\"x\"}},\"failures\":[]}}}",
+    "accepted": false
   }
 ]

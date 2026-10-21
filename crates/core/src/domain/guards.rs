@@ -38,6 +38,9 @@ impl DomainState {
                 self.control_guard(actor, task_id, ControlRecord::SetPermissionMode { mode: *mode }).map(drop)
             }
             Command::ReadMcpStatus { task_id } => self.control_guard(actor, task_id, ControlRecord::ReadMcpStatus).map(drop),
+            Command::ReconnectMcp { task_id, server } => self.mcp_reconnect_guard(actor, task_id, server).map(drop),
+            Command::StartMcpSignIn { task_id, server } => self.mcp_sign_in_guard(actor, task_id, server).map(drop),
+            Command::CompleteMcpSignIn { task_id, server, state } => self.mcp_complete_guard(actor, task_id, server, state).map(drop),
             Command::CompactConversation { task_id } => self.compact_guard(actor, task_id).map(drop),
             Command::RecordDecisionSettled { task_id, generation, epoch } => {
                 self.decision_end_guard(actor, task_id, *generation, *epoch, true).map(drop)

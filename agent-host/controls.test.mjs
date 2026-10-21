@@ -15,7 +15,7 @@ try {
     const host = startHost('full');
     const owner = await own(host);
     assert.deepEqual(owner.hello.capabilities, [...HOST_CAPABILITIES]);
-    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status']);
+    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in']);
 
     assert.deepEqual((await owner.command({ type: 'mcp_status' })).outcome, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' }, 'a control before the launch is refused');
     assert.deepEqual(controls(host), [], 'and never reaches Claude');
@@ -40,6 +40,30 @@ try {
     assert.deepEqual(result.body.observation, { type: 'sdk', kind: 'control_result', native: {}, payload: { control: 'mcp_status', command_id: status.id, servers: [{ name: 'fixture', status: 'connected' }] }, failures: [] });
     assert(owner.frames.indexOf(result) < status.at, 'the result is evidence before the receipt that closes the command');
     assert.deepEqual(controls(host).at(-1), { subtype: 'mcp_status' });
+
+    const answered = async (action) => {
+      const command = await owner.command(action);
+      assert.deepEqual(command.outcome, applied, action.type);
+      const result = await sdk(owner, 'control_result', (payload) => payload.command_id === command.id);
+      assert(owner.frames.indexOf(result) < command.at, 'the result is evidence before the receipt that closes the command');
+      assert.equal(result.body.observation.payload.control, action.type);
+      return result.body.observation.payload;
+    };
+    const fixture = [{ name: 'fixture', status: 'connected' }];
+    const { command_id: _, ...reconnected } = await answered({ type: 'mcp_reconnect', server: 'fixture' });
+    assert.deepEqual(reconnected, { control: 'mcp_reconnect', server: 'fixture', servers: fixture });
+    assert.deepEqual(controls(host).slice(-2), [{ subtype: 'mcp_reconnect', serverName: 'fixture' }, { subtype: 'mcp_status' }], 'the servers are read after the reconnection');
+    const unknown = await answered({ type: 'mcp_reconnect', server: 'missing' });
+    assert.equal(unknown.error, 'Server not found: missing', 'a refused reconnection is a result, never an uncertain control');
+    assert.deepEqual(unknown.servers, fixture);
+
+    const signIn = async (server) => (await answered({ type: 'mcp_authenticate', server })).sign_in;
+    assert.deepEqual(await signIn('linear'), { outcome: 'browser', url: 'https://auth.example.com/authorize?client_id=fixture&state=fixture-state', callback_port: 49200, state: 'fixture-state' });
+    assert.deepEqual(controls(host).at(-1), { subtype: 'mcp_authenticate', serverName: 'linear' }, 'no redirect of Alondra\'s own: the sign-in comes back to Claude\'s listener');
+    assert.deepEqual(await signIn('claude.ai Gmail'), { outcome: 'browser', url: 'https://claude.ai/api/organizations/o/mcp/start-auth/g' }, 'a claude.ai connector is signed in to on claude.ai');
+    assert.deepEqual(await signIn('fixture'), { outcome: 'connected' });
+    assert.deepEqual(await signIn('plain'), { outcome: 'refused', error: 'Claude gave no sign-in address Alondra can open' }, 'a plain-http sign-in page is never handed to the user');
+    assert.deepEqual(await signIn('missing'), { outcome: 'refused', error: 'Server not found: missing' });
 
     const held = await owner.command({ type: 'offer', input_id: input(2), prompt: 'consume-and-hold' });
     assert.deepEqual(held.outcome, { status: 'accepted', phase: 'offered' });

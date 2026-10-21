@@ -1461,6 +1461,14 @@ fn control_actions_have_one_wire_spelling() {
         serde_json::to_value(Action::McpStatus).unwrap(),
         json!({"type":"mcp_status"})
     );
+    assert_eq!(
+        serde_json::to_value(Action::McpReconnect { server: "linear".into() }).unwrap(),
+        json!({"type":"mcp_reconnect","server":"linear"})
+    );
+    assert_eq!(
+        serde_json::to_value(Action::McpAuthenticate { server: "linear".into() }).unwrap(),
+        json!({"type":"mcp_authenticate","server":"linear"})
+    );
     set_model.validate().unwrap();
     for model in ["", " \t", "fixture\u{7}", &"m".repeat(MAX_MODEL_BYTES + 1)] {
         set_model.action = Action::SetModel {
@@ -1501,6 +1509,9 @@ fn control_result_is_typed_bounded_and_applicable() {
             name: "fixture".into(),
             status: "failed".into(),
             error: Some("unreachable".into()),
+            source: None,
+            transport: None,
+            url: None,
         }],
     };
     let mut observed = event();

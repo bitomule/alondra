@@ -47,6 +47,13 @@ def control(message, response):
         os.fsync(stream.fileno())
     send(dict(type='control_response', response=dict(subtype='success', request_id=message['request_id'], response=response)))
 
+def control_error(message, error):
+    with open(capture + '.controls', 'a') as stream:
+        stream.write(json.dumps(message['request']) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    send(dict(type='control_response', response=dict(subtype='error', request_id=message['request_id'], error=error)))
+
 def lifecycle(message, state):
     global serial
     serial += 1
@@ -237,6 +244,23 @@ for raw in sys.stdin:
             control(message, {})
         elif subtype == 'mcp_status':
             control(message, dict(mcpServers=[dict(name='fixture', status='connected')]))
+        elif subtype == 'mcp_reconnect':
+            if message['request'].get('serverName') == 'fixture':
+                control(message, {})
+            else:
+                control_error(message, 'Server not found: ' + str(message['request'].get('serverName')))
+        elif subtype == 'mcp_authenticate':
+            server = message['request'].get('serverName')
+            if server == 'fixture':
+                control(message, dict(requiresUserAction=False, callbackExpected=False))
+            elif server == 'linear':
+                control(message, dict(authUrl='https://auth.example.com/authorize?client_id=fixture&state=fixture-state', requiresUserAction=True, callbackExpected=True, redirectScheme='localhost', state='fixture-state', callbackPort=49200))
+            elif server == 'claude.ai Gmail':
+                control(message, dict(authUrl='https://claude.ai/api/organizations/o/mcp/start-auth/g', requiresUserAction=True, callbackExpected=False))
+            elif server == 'plain':
+                control(message, dict(authUrl='http://auth.example.com/authorize', requiresUserAction=True, callbackExpected=True, redirectScheme='localhost', state='s', callbackPort=49201))
+            else:
+                control_error(message, 'Server not found: ' + str(server))
         else:
             raise RuntimeError('Unexpected fixture control request')
     elif message['type'] == 'user':

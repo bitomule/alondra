@@ -50,3 +50,36 @@ sh_test(
     target_compatible_with = ["@platforms//os:macos"],
     timeout = "moderate",
 )
+
+js_run_binary(
+    name = "mcp_client_bundle",
+    tool = "//agent-host:bundle_tool",
+    srcs = [
+        "mcp-client.mjs",
+        "//agent-host:node_modules/@anthropic-ai/claude-agent-sdk",
+        "//agent-host:node_modules/@anthropic-ai/sdk",
+        "//agent-host:node_modules/@modelcontextprotocol/sdk",
+        "//agent-host:node_modules/zod",
+    ],
+    outs = ["mcp-client.cjs", "mcp-client.meta.json"],
+    args = ["$(location mcp-client.mjs)", "$(location mcp-client.cjs)", "$(location mcp-client.meta.json)"],
+    tags = ["manual"],
+    testonly = True,
+)
+
+# The native Claude signs in to a loopback MCP server through the Agent SDK's control channel.
+sh_test(
+    name = "mcp_sign_in_test",
+    srcs = ["run.sh"],
+    args = [
+        "$(rootpath :mcp_sign_in.py)",
+        "$(rootpath //agent-host:pinned_node)",
+        "$(rootpath @claude_native_test//:archive)",
+        "$(rootpath :mcp-client.cjs)",
+        "$(rootpath :mcp-client.meta.json)",
+    ],
+    data = ["mcp_sign_in.py", "run.py", "//agent-host:pinned_node", "@claude_native_test//:archive", ":mcp-client.cjs", ":mcp-client.meta.json"],
+    tags = ["manual", "local", "no-remote", "requires-darwin", "requires-network"],
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    timeout = "long",
+)

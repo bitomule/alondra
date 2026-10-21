@@ -218,6 +218,8 @@ pub(super) enum ControlRecord {
     SetModel { model: String },
     SetPermissionMode { mode: PermissionModeRecord },
     ReadMcpStatus,
+    ReconnectMcp { server: String },
+    StartMcpSignIn { server: String },
 }
 impl From<&Control> for ControlRecord {
     fn from(control: &Control) -> Self {
@@ -236,6 +238,8 @@ impl From<&Control> for ControlRecord {
                 },
             },
             Control::ReadMcpStatus => Self::ReadMcpStatus,
+            Control::ReconnectMcp { server } => Self::ReconnectMcp { server: server.clone() },
+            Control::StartMcpSignIn { server } => Self::StartMcpSignIn { server: server.clone() },
         }
     }
 }
@@ -256,6 +260,8 @@ impl ControlRecord {
                 },
             },
             ControlRecord::ReadMcpStatus => Control::ReadMcpStatus,
+            ControlRecord::ReconnectMcp { server } => Control::ReconnectMcp { server },
+            ControlRecord::StartMcpSignIn { server } => Control::StartMcpSignIn { server },
         })
     }
 }

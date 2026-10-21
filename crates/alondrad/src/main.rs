@@ -52,6 +52,7 @@ mod local_network;
 mod local_network_card;
 mod reachability;
 mod machine;
+mod mcp_sign_in;
 mod machine_state;
 mod machine_watch;
 mod fleet_gate;

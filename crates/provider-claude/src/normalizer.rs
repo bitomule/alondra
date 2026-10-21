@@ -1,11 +1,11 @@
 use crate::records::{InputRecord, SessionRecord};
 use alondra_agent_application::{Normalization, ObservationMetadata, ObservationNormalizer};
 use alondra_agent_protocol::{
-    Body, DecisionKind, DecisionOutcome, Event, Fence, FramedReader, NativeCorrelation,
-    Observation as WireObservation, SdkEventKind,
+    Body, ControlResult, DecisionKind, DecisionOutcome, Event, Fence, FramedReader, McpServer, NativeCorrelation,
+    Observation as WireObservation, SdkEventKind, SignIn,
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{AdapterError, ApiFailure, Observation, OrderedObservation};
+use alondra_provider_contract::{AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +14,8 @@ use std::io::Cursor;
 const CHECKPOINT_FORMAT: u16 = 1;
 /// More decisions open at once than the host ever holds pending.
 const MAX_ASKED: usize = 64;
+/// Most MCP tool calls whose result is still to come that a failure is traced back to.
+const MAX_MCP_CALLS: usize = 64;
 
 pub(super) struct Normalizer {
     pub session: Option<SessionRecord>,
@@ -44,6 +46,9 @@ struct Checkpoint {
     /// Claude's own, whose result names the run it took up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     woken: Vec<Woken>,
+    /// The calls to an MCP server's tool whose result is still to come, by tool use id.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    mcp_calls: BTreeSet<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,11 +279,24 @@ fn fold(
         return Ok(Vec::new());
     }
     if *kind == SdkEventKind::ControlResult {
-        // What a read-only control answered, validated by the protocol: evidence, no fact.
+        // What a control answered, validated by the protocol: evidence, and how the MCP servers are.
         if native != &NativeCorrelation::default() || !failures.is_empty() {
             return Err(AdapterError::InvalidObservation);
         }
-        return Ok(Vec::new());
+        let result = ControlResult::deserialize(payload).map_err(|_| AdapterError::InvalidObservation)?;
+        return Ok(vec![match result {
+            ControlResult::McpStatus { servers, .. } | ControlResult::McpReconnect { servers, .. } => Observation::McpServers {
+                servers: servers.into_iter().map(report).collect(),
+            },
+            ControlResult::McpAuthenticate { server, sign_in, .. } => Observation::McpSignIn {
+                server,
+                sign_in: match sign_in {
+                    SignIn::Browser { url, callback_port, state } => McpSignInReport::Browser { url, callback_port, state },
+                    SignIn::Connected {} => McpSignInReport::Connected,
+                    SignIn::Refused { error } => McpSignInReport::Refused { error },
+                },
+            },
+        }]);
     }
     if *kind == SdkEventKind::Diagnostic && payload.get("session_id").is_none() {
         // The host's own report, such as a request too large to ask: evidence, no fact.
@@ -300,10 +318,11 @@ fn fold(
             if state.turn.is_some() {
                 return Err(AdapterError::InvalidObservation);
             }
-            return Ok(facts);
+        } else {
+            state.initialized = true;
+            facts.push(Observation::Available);
         }
-        state.initialized = true;
-        facts.push(Observation::Available);
+        facts.extend(listed_servers(payload));
         return Ok(facts);
     }
     if kind == "system"
@@ -391,9 +410,15 @@ fn fold(
     }
     if kind == "assistant" {
         note_isolated_agents(payload, state)?;
+        note_mcp_calls(payload, state);
     }
     if kind == "user" {
-        return worktree_facts(payload, state);
+        let failed = mcp_call_failed(payload, state);
+        let mut facts = worktree_facts(payload, state)?;
+        if failed {
+            facts.push(Observation::McpToolFailed);
+        }
+        return Ok(facts);
     }
     if kind != "assistant" && kind != "result" && kind != "stream_event" {
         return Ok(facts);
@@ -537,6 +562,67 @@ fn fold(
         state.turn = None;
     }
     Ok(facts)
+}
+fn report(server: McpServer) -> McpServerReport {
+    McpServerReport {
+        name: server.name,
+        status: server.status,
+        error: server.error,
+        source: server.source,
+        transport: server.transport,
+        url: server.url,
+    }
+}
+fn bounded(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).filter(|text| !text.is_empty() && text.len() <= 256 && !text.contains('\0')).map(str::to_owned)
+}
+/// The MCP servers init lists, by name, status and source. A server init describes in a way this
+/// release cannot keep is left out: what Claude says of its servers never refuses the observation.
+fn listed_servers(payload: &Value) -> Option<Observation> {
+    let listed = payload.get("mcp_servers")?.as_array()?;
+    let servers = listed
+        .iter()
+        .filter_map(|server| {
+            Some(McpServerReport {
+                name: bounded(server.get("name"))?,
+                status: bounded(server.get("status"))?,
+                error: None,
+                source: bounded(server.get("source")),
+                transport: None,
+                url: None,
+            })
+        })
+        .take(MAX_MCP_SERVERS)
+        .collect();
+    Some(Observation::McpServers { servers })
+}
+const MAX_MCP_SERVERS: usize = alondra_agent_protocol::MAX_MCP_SERVERS;
+/// Remembers each call to an MCP server's tool, of the node or of a subagent, until its result.
+fn note_mcp_calls(payload: &Value, state: &mut Checkpoint) {
+    let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return };
+    for block in content {
+        let is_mcp = block.get("type").and_then(Value::as_str) == Some("tool_use")
+            && block.get("name").and_then(Value::as_str).is_some_and(|name| name.starts_with("mcp__"));
+        if let Some(id) = block.get("id").and_then(Value::as_str).filter(|_| is_mcp) {
+            if state.mcp_calls.len() < MAX_MCP_CALLS && id.len() <= 256 {
+                state.mcp_calls.insert(id.to_owned());
+            }
+        }
+    }
+}
+/// Whether a result this message carries is the failure of a remembered MCP call.
+fn mcp_call_failed(payload: &Value, state: &mut Checkpoint) -> bool {
+    let mut failed = false;
+    for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
+        if state.mcp_calls.remove(id) && block.get("is_error").and_then(Value::as_bool) == Some(true) {
+            failed = true;
+        }
+    }
+    failed
 }
 /// Most Agent calls with an isolated worktree that can wait on their result at once.
 const MAX_ISOLATED: usize = 64;
@@ -952,17 +1038,73 @@ mod tests {
         assert!(state.turn.is_none() && state.woken.is_empty());
     }
     #[test]
-    fn a_control_result_is_evidence_without_facts_and_carries_no_failure() {
+    fn a_control_result_is_how_the_mcp_servers_are_and_carries_no_failure() {
         let mut result = event(json!({"control":"mcp_status","command_id":"lifecycle-control-1","servers":[{"name":"fixture","status":"connected"}]}));
         let WireObservation::Sdk { kind, payload, .. } = &mut result.observation else { unreachable!() };
         *kind = SdkEventKind::ControlResult;
         payload.as_object_mut().unwrap().remove("session_id");
         result.validate_for_application().unwrap();
         let mut state = state();
-        assert_eq!(fold(&result, &session(), &mut state, |_| panic!("a control result consumes no input")).unwrap(), vec![]);
+        let fixture = McpServerReport { name: "fixture".into(), status: "connected".into(), error: None, source: None, transport: None, url: None };
+        assert_eq!(fold(&result, &session(), &mut state, |_| panic!("a control result consumes no input")).unwrap(), vec![Observation::McpServers { servers: vec![fixture] }]);
         let WireObservation::Sdk { failures, .. } = &mut result.observation else { unreachable!() };
         failures.push(alondra_agent_protocol::SdkFailure { surface: alondra_agent_protocol::FailureSurface::Result, code: "error_during_execution".into(), details: json!({}) });
         assert!(matches!(fold(&result, &session(), &mut state, input), Err(AdapterError::InvalidObservation)), "a failed control result is not evidence");
+    }
+    // How Claude's MCP servers are reaches Alondra as each prompt starts, with nothing Alondra cannot
+    // keep; what a reconnection or a sign-in answered is a fact too, and so is the failure of a
+    // call to an MCP server's tool, never of another tool.
+    #[test]
+    fn mcp_servers_sign_ins_and_failed_mcp_calls_are_facts() {
+        let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        let init = event(json!({"type":"system","subtype":"init","uuid":REPLY,"mcp_servers":[
+            {"name":"linear","status":"needs-auth","source":"user"},
+            {"name":"","status":"connected"},
+            {"name":"files","status":"connected"},
+            {"status":"connected"},
+        ]}));
+        let listed = |status: &str| vec![
+            McpServerReport { name: "linear".into(), status: status.into(), error: None, source: Some("user".into()), transport: None, url: None },
+            McpServerReport { name: "files".into(), status: "connected".into(), error: None, source: None, transport: None, url: None },
+        ];
+        assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available, Observation::McpServers { servers: listed("needs-auth") }]);
+        let again = event(json!({"type":"system","subtype":"init","uuid":REPLY,"mcp_servers":[{"name":"linear","status":"connected","source":"user"},{"name":"files","status":"connected"}]}));
+        assert_eq!(fold(&again, &session(), &mut state, input).unwrap(), vec![Observation::McpServers { servers: listed("connected") }], "init repeated as a prompt starts");
+
+        let control = |payload: Value| {
+            let mut result = event(payload);
+            let WireObservation::Sdk { kind, payload, .. } = &mut result.observation else { unreachable!() };
+            *kind = SdkEventKind::ControlResult;
+            payload.as_object_mut().unwrap().remove("session_id");
+            result.validate_for_application().unwrap();
+            result
+        };
+        let reconnected = control(json!({"control":"mcp_reconnect","command_id":"c","server":"linear","error":"Server not found","servers":[{"name":"linear","status":"failed","transport":"http","url":"https://mcp.linear.app/mcp"}]}));
+        assert_eq!(fold(&reconnected, &session(), &mut state, input).unwrap(), vec![Observation::McpServers { servers: vec![McpServerReport {
+            name: "linear".into(), status: "failed".into(), error: None, source: None, transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+        }] }]);
+        let browser = control(json!({"control":"mcp_authenticate","command_id":"c","server":"linear","sign_in":{"outcome":"browser","url":"https://linear.app/oauth/authorize?state=s","callback_port":49200,"state":"s"}}));
+        assert_eq!(fold(&browser, &session(), &mut state, input).unwrap(), vec![Observation::McpSignIn {
+            server: "linear".into(),
+            sign_in: McpSignInReport::Browser { url: "https://linear.app/oauth/authorize?state=s".into(), callback_port: Some(49200), state: Some("s".into()) },
+        }]);
+        let connected = control(json!({"control":"mcp_authenticate","command_id":"c","server":"linear","sign_in":{"outcome":"connected"}}));
+        assert_eq!(fold(&connected, &session(), &mut state, input).unwrap(), vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Connected }]);
+
+        let calls = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_mcp","name":"mcp__linear__list_issues","input":{}},
+            {"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"false"}},
+            {"type":"tool_use","id":"toolu_mcp_ok","name":"mcp__files__read","input":{}},
+        ]}}));
+        fold(&calls, &session(), &mut state, input).ok();
+        assert_eq!(state.mcp_calls, BTreeSet::from(["toolu_mcp".to_owned(), "toolu_mcp_ok".to_owned()]));
+        let results = |id: &str, failed: bool| event(json!({"type":"user","uuid":NOTIFIED,"parent_tool_use_id":null,
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"is_error":failed,"content":"x"}]}}));
+        assert_eq!(fold(&results("toolu_bash", true), &session(), &mut state, input).unwrap(), vec![], "another tool's failure says nothing of MCP");
+        assert_eq!(fold(&results("toolu_mcp_ok", false), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&results("toolu_mcp", true), &session(), &mut state, input).unwrap(), vec![Observation::McpToolFailed]);
+        assert_eq!(fold(&results("toolu_mcp", true), &session(), &mut state, input).unwrap(), vec![], "a call is traced back once");
+        assert!(state.mcp_calls.is_empty());
     }
     // What a `/compact` input produces: the boundary records nothing, and its result ends the
     // turn it consumed like any other input.

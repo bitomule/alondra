@@ -1980,6 +1980,8 @@ fn a_control_is_recorded_on_the_running_execution_and_changes_nothing_else() {
         ("model", Control::SetModel { model: "claude-opus-4-1".into() }),
         ("mode", Control::SetPermissionMode { mode: PermissionMode::Plan }),
         ("mcp", Control::ReadMcpStatus),
+        ("reconnect", Control::ReconnectMcp { server: "linear".into() }),
+        ("sign-in", Control::StartMcpSignIn { server: "claude.ai Gmail".into() }),
     ] {
         let revision = task.revision();
         control(&mut task, id, kind).unwrap();
@@ -1990,7 +1992,7 @@ fn a_control_is_recorded_on_the_running_execution_and_changes_nothing_else() {
 }
 
 #[test]
-fn an_interrupt_names_exactly_what_runs_and_a_model_must_be_a_name() {
+fn an_interrupt_names_exactly_what_runs_and_a_model_or_mcp_server_must_be_a_name() {
     let mut task = running();
     assert_eq!(control(&mut task, "other", Control::Interrupt { turn: Some(turn("other")) }), Err(Refusal::CorrelationMismatch));
     assert_eq!(control(&mut task, "none", Control::Interrupt { turn: None }), Err(Refusal::CorrelationMismatch));
@@ -1998,6 +2000,10 @@ fn an_interrupt_names_exactly_what_runs_and_a_model_must_be_a_name() {
         assert_eq!(control(&mut task, "model", Control::SetModel { model: model.into() }), Err(Refusal::InvalidModel), "{model:?}");
     }
     control(&mut task, "longest", Control::SetModel { model: "m".repeat(128) }).unwrap();
+    for server in ["", "   ", "line\nbreak", &"s".repeat(257)] {
+        assert_eq!(control(&mut task, "reconnect", Control::ReconnectMcp { server: server.into() }), Err(Refusal::InvalidMcpServer), "{server:?}");
+        assert_eq!(control(&mut task, "sign-in", Control::StartMcpSignIn { server: server.into() }), Err(Refusal::InvalidMcpServer), "{server:?}");
+    }
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into() });
     assert_eq!(task.activity(), ActivityView::OwnWork);

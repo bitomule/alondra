@@ -49,10 +49,28 @@ const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('set_model'), model: text(MAX_MODEL_BYTES).refine((s) => !/\p{Cc}/u.test(s) && s.trim().length > 0) }),
   z.strictObject({ type: z.literal('set_permission_mode'), mode: z.enum(PERMISSION_MODES) }),
   z.strictObject({ type: z.literal('mcp_status') }),
+  z.strictObject({ type: z.literal('mcp_reconnect'), server: text() }),
+  z.strictObject({ type: z.literal('mcp_authenticate'), server: text() }),
 ]);
 export type Action = z.infer<typeof action>;
+export const MAX_MCP_URL_BYTES = 2048;
+export const MAX_SIGN_IN_URL_BYTES = 8192;
+const mcpServers = z.array(z.strictObject({
+  name: text(), status: text(), error: text().optional(), source: text().optional(), transport: text().optional(),
+  url: text(MAX_MCP_URL_BYTES).refine((s) => !/[?#@]/.test(s)).optional(),
+})).max(MAX_MCP_SERVERS);
+export type McpServer = z.infer<typeof mcpServers>[number];
+const signIn = z.discriminatedUnion('outcome', [
+  z.strictObject({ outcome: z.literal('browser'), url: text(MAX_SIGN_IN_URL_BYTES).refine((s) => /^(https:\/\/|http:\/\/localhost|http:\/\/127\.0\.0\.1)/.test(s)), callback_port: z.number().int().min(1).max(65535).optional(), state: text().optional() })
+    .refine((browser) => (browser.callback_port === undefined) === (browser.state === undefined)),
+  z.strictObject({ outcome: z.literal('connected') }),
+  z.strictObject({ outcome: z.literal('refused'), error: text() }),
+]);
+export type SignIn = z.infer<typeof signIn>;
 const controlResult = z.discriminatedUnion('control', [
-  z.strictObject({ control: z.literal('mcp_status'), command_id: text(), servers: z.array(z.strictObject({ name: text(), status: text(), error: text().optional() })).max(MAX_MCP_SERVERS) }),
+  z.strictObject({ control: z.literal('mcp_status'), command_id: text(), servers: mcpServers }),
+  z.strictObject({ control: z.literal('mcp_reconnect'), command_id: text(), server: text(), error: text().optional(), servers: mcpServers }),
+  z.strictObject({ control: z.literal('mcp_authenticate'), command_id: text(), server: text(), sign_in: signIn }),
 ]);
 export type ControlResult = z.infer<typeof controlResult>;
 const native = z.strictObject({ message_id: text().optional(), turn_id: text().optional(), tool_use_id: text().optional(), parent_tool_use_id: text().optional(), task_id: text().optional(), run_id: text().optional() });

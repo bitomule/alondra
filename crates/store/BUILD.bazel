@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 rust_library(
     name = "store",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/controls.sql", "src/schema.sql"],
+    compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "src/schema.sql"],
     crate_name = "alondra_store",
     edition = "2024",
     version = "0.1.0",
@@ -16,7 +16,7 @@ rust_test(
     name = "store_test",
     crate_root = "tests/lifecycle.rs",
     srcs = ["tests/lifecycle.rs", "//crates:test_support.rs"],
-    compile_data = ["//crates/alondrad:src/domain_store/schema.sql", "//crates/alondrad:src/domain_store/schedule_launch_transition.sql"],
+    compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "//crates/alondrad:src/domain_store/schema.sql", "//crates/alondrad:src/domain_store/schedule_launch_transition.sql"],
     edition = "2024",
     env = {"HOME": "."},
     deps = [":store", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract"] + all_crate_deps(normal = True, normal_dev = True),

@@ -537,6 +537,36 @@ pub enum Command {
     ReadMcpStatus {
         task_id: TaskId,
     },
+    /// Claude connects the Task's MCP server again, reading its stored sign-in anew.
+    ReconnectMcp {
+        task_id: TaskId,
+        server: String,
+    },
+    /// Claude opens a sign-in to the Task's MCP server; the user finishes it in a browser.
+    StartMcpSignIn {
+        task_id: TaskId,
+        server: String,
+    },
+    /// The MCP servers the Task's SDK execution of `generation` reported, and how they are.
+    RecordMcpServers {
+        task_id: TaskId,
+        generation: u64,
+        servers: Vec<McpServerState>,
+    },
+    /// How the sign-in to `server` the Task's SDK execution of `generation` opened goes on.
+    RecordMcpSignIn {
+        task_id: TaskId,
+        generation: u64,
+        server: String,
+        sign_in: McpSignIn,
+    },
+    /// The browser's return from the open sign-in to `server`, under `state`, reached Claude's
+    /// listener. The return itself is never recorded.
+    CompleteMcpSignIn {
+        task_id: TaskId,
+        server: String,
+        state: String,
+    },
     /// The Task's resting SDK execution compacts its conversation; the cards it waits on stay.
     CompactConversation {
         task_id: TaskId,

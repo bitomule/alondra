@@ -191,7 +191,7 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
     let DomainState {
         data_epoch: _, revision, orchestrator_generation: _, orchestrator_session: _, requests, agents, tasks, documents,
         document_revisions, document_reviews, pull_requests, mut interactions, merge_authorizations, stack_readiness, schedule,
-        holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal,
+        holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp,
     } = copy;
     let next = into.interactions.values().map(|i| i.order).max().unwrap_or(0);
     for interaction in interactions.values_mut() {
@@ -217,6 +217,7 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
     into.request_plans.extend(request_plans);
     into.plan_reviews.extend(plan_reviews);
     into.lifecycle_journal.extend(lifecycle_journal);
+    into.mcp.extend(mcp);
 }
 
 fn real_size() -> DomainState {

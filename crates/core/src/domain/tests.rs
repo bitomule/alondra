@@ -2962,9 +2962,14 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordTaskWorktree { .. } => 80,
         Command::ReleaseTaskWorktree { .. } => 81,
         Command::TellNode { .. } => 82,
+        Command::ReconnectMcp { .. } => 83,
+        Command::StartMcpSignIn { .. } => 84,
+        Command::RecordMcpServers { .. } => 85,
+        Command::RecordMcpSignIn { .. } => 86,
+        Command::CompleteMcpSignIn { .. } => 87,
     }
 }
-const COMMAND_KINDS: usize = 83;
+const COMMAND_KINDS: usize = 88;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3098,6 +3103,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetModel { task_id: ids.task.into(), model: "claude-opus".into() }, false),
         (Command::SetPermissionMode { task_id: ids.task.into(), mode: PermissionModeRecord::Plan }, false),
         (Command::ReadMcpStatus { task_id: ids.task.into() }, false),
+        (Command::ReconnectMcp { task_id: ids.task.into(), server: "linear".into() }, false),
+        (Command::StartMcpSignIn { task_id: ids.task.into(), server: "linear".into() }, false),
+        (Command::RecordMcpServers { task_id: ids.task.into(), generation: 1, servers: vec![] }, false),
+        (Command::RecordMcpSignIn { task_id: ids.task.into(), generation: 1, server: "linear".into(), sign_in: McpSignIn::Connected }, false),
+        (Command::CompleteMcpSignIn { task_id: ids.task.into(), server: "linear".into(), state: "s".into() }, false),
         (Command::CompactConversation { task_id: ids.task.into() }, false),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,

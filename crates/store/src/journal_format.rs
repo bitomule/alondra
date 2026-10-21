@@ -7,6 +7,9 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// Tables a journal of this format gained after it was first installed: a journal that has none of
 /// them gets them all, and one that has only some is refused like any other changed schema.
 const ADDITIONS: &str = include_str!("controls.sql");
+/// The definitions of the addition tables whose checks the MCP controls widened, as journals
+/// installed before them still hold them.
+const BEFORE_MCP: &str = include_str!("controls_before_mcp.sql");
 
 pub(super) fn install(connection: &Connection) -> Result<()> {
     let existing: bool = connection.query_row(
@@ -48,11 +51,41 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
     for (_, name, _) in objects(ADDITIONS)? {
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get(0))?;
         if present {
+            widen(connection)?;
             return Ok(true);
         }
     }
     connection.execute_batch(ADDITIONS)?;
     Ok(true)
+}
+/// Rebuilds, with every row, each addition table that still has the definition it had before the
+/// MCP controls, and brings back the triggers dropped with it. Its rows already satisfy the wider
+/// checks; the references to it are checked when the caller commits.
+fn widen(connection: &Connection) -> Result<()> {
+    let current = objects(ADDITIONS)?;
+    let mut rebuilt = false;
+    for (_, name, previous) in objects(BEFORE_MCP)? {
+        let held: Option<String> = connection
+            .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1", [name], |row| row.get(0))
+            .optional()?;
+        if held.as_deref() != Some(previous.as_str()) {
+            continue;
+        }
+        let (_, _, definition) = current.iter().find(|(_, current, _)| *current == name).ok_or(Error::UnsupportedJournalFormat)?;
+        connection.execute_batch(&format!(
+            "PRAGMA defer_foreign_keys=ON;
+             CREATE TEMP TABLE widening AS SELECT * FROM main.{name};
+             DROP TABLE main.{name};
+             {definition};
+             INSERT INTO main.{name} SELECT * FROM temp.widening;
+             DROP TABLE temp.widening;"
+        ))?;
+        rebuilt = true;
+    }
+    if rebuilt {
+        connection.execute_batch(ADDITIONS)?;
+    }
+    Ok(())
 }
 fn verify_schema(connection: &Connection) -> Result<()> {
     require_object(

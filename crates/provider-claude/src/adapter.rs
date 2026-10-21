@@ -123,6 +123,8 @@ fn control_action(operation: &ControlOperation) -> Result<Action, AdapterError> 
             },
         },
         Control::ReadMcpStatus => Action::McpStatus,
+        Control::ReconnectMcp { server } => Action::McpReconnect { server: server.clone() },
+        Control::StartMcpSignIn { server } => Action::McpAuthenticate { server: server.clone() },
     })
 }
 /// The answer Claude gets for the request the host persisted at the response's epoch, built from
@@ -178,10 +180,11 @@ fn decoded(bytes: &[u8]) -> Option<alondra_agent_protocol::Frame> {
     reader.read().ok()?.is_none().then_some(frame)
 }
 /// The command id of a recorded control the host answers with an event of its own: a read of the
-/// MCP servers' status. The owner reads the host until that event is staged.
+/// MCP servers' status, a reconnection or a sign-in. The owner reads the host until that event is
+/// staged.
 pub fn answered_by_event(command: &[u8]) -> Option<CommandId> {
     match decoded(command)?.body {
-        Body::Command(Command { command_id, action: Action::McpStatus, .. }) => Some(command_id),
+        Body::Command(Command { command_id, action: Action::McpStatus | Action::McpReconnect { .. } | Action::McpAuthenticate { .. }, .. }) => Some(command_id),
         _ => None,
     }
 }
@@ -194,8 +197,8 @@ pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
     };
     match event.observation {
         WireObservation::Sdk { kind: SdkEventKind::ControlResult, payload, .. } => {
-            let ControlResult::McpStatus { command_id, .. } = serde_json::from_value(payload).ok()?;
-            Some(command_id)
+            let result: ControlResult = serde_json::from_value(payload).ok()?;
+            Some(result.command_id().clone())
         }
         _ => None,
     }

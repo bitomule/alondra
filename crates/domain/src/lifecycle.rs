@@ -124,6 +124,8 @@ pub enum Refusal {
     /// A decision that answers nothing: no answers, a denial without its message, or one that
     /// does not answer what its card asks.
     InvalidDecision,
+    /// An MCP server name that is empty, blank, longer than 256 bytes or carries control characters.
+    InvalidMcpServer,
 }
 
 impl From<IdentityError> for Refusal {
@@ -192,6 +194,10 @@ pub enum Control {
     SetModel { model: String },
     SetPermissionMode { mode: PermissionMode },
     ReadMcpStatus,
+    /// Claude connects the MCP server again, reading its stored sign-in anew.
+    ReconnectMcp { server: String },
+    /// Claude opens a sign-in to the MCP server; the user finishes it in a browser.
+    StartMcpSignIn { server: String },
 }
 
 /// What an SDK decision of the execution is answered with. Nothing is granted by default: a
@@ -245,6 +251,14 @@ pub fn decision_epoch(generation: u64, callback: &CallbackId) -> Option<u64> {
 pub enum CallbackView {
     AwaitingAnswer,
     Answered,
+}
+
+fn valid_mcp_server(server: &str) -> Result<(), Refusal> {
+    if server.trim().is_empty() || server.len() > 256 || server.chars().any(char::is_control) {
+        Err(Refusal::InvalidMcpServer)
+    } else {
+        Ok(())
+    }
 }
 
 fn valid_model(model: &str) -> Result<(), Refusal> {

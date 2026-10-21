@@ -11,12 +11,14 @@ const CAPABILITIES: [Capability; 4] = [
     Capability::DurableResume,
 ];
 /// Capabilities the snapshot's own column has no bits for: kept beside it, only when one is held.
-const CONTROLS: [Capability; 5] = [
+const CONTROLS: [Capability; 7] = [
     Capability::SetModel,
     Capability::SetPermissionMode,
     Capability::Compact,
     Capability::McpStatus,
     Capability::Decisions,
+    Capability::McpReconnect,
+    Capability::McpSignIn,
 ];
 fn mask(binding: &ProviderBinding, capabilities: &[Capability]) -> i64 {
     capabilities
@@ -81,7 +83,7 @@ pub(super) fn require_active(connection: &Connection, binding: &ProviderBinding)
 fn load(connection: &Connection, id: &str) -> Result<ProviderBinding> {
     let row=connection.query_row("SELECT driver,instance,configuration,configuration_revision,capability_revision,capabilities,credential,credential_generation FROM provider_bindings WHERE id=?1",[id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,read_number(row,3)?,read_number(row,4)?,row.get::<_,i64>(5)?,row.get::<_,String>(6)?,read_number(row,7)?))).optional()?.ok_or(Error::MissingBinding)?;
     let controls: i64 = connection.query_row("SELECT capabilities FROM provider_binding_controls WHERE binding_id=?1", [id], |row| row.get(0)).optional()?.unwrap_or(0);
-    if !(0..=15).contains(&row.5) || !(0..=31).contains(&controls) {
+    if !(0..=15).contains(&row.5) || !(0..1_i64 << CONTROLS.len()).contains(&controls) {
         return Err(Error::BindingConflict);
     }
     let held = |capabilities: &'static [Capability], mask: i64| {

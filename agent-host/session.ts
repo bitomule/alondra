@@ -289,6 +289,13 @@ export class Session {
   setModel(model: string): Promise<void> { return this.query.setModel(model); }
   setPermissionMode(mode: 'default' | 'plan' | 'dontAsk'): Promise<void> { return this.query.setPermissionMode(mode); }
   mcpServerStatus(): ReturnType<Query['mcpServerStatus']> { return this.query.mcpServerStatus(); }
+  reconnectMcpServer(server: string): Promise<void> { return this.query.reconnectMcpServer(server); }
+  /** The SDK sends `mcp_authenticate` through this method, which its published types leave out. */
+  mcpAuthenticate(server: string): Promise<unknown> {
+    const authenticate = (this.query as unknown as { mcpAuthenticate?: (server: string) => Promise<unknown> }).mcpAuthenticate;
+    if (typeof authenticate !== 'function') return Promise.reject(new Error('This Agent SDK cannot sign in to MCP servers'));
+    return authenticate.call(this.query, server);
+  }
   close(): void {
     this.closing = true;
     this.input.close();

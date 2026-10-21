@@ -247,12 +247,26 @@ pub enum ObservedFact {
         answered: bool,
         continued: bool,
     },
+    /// How Claude's MCP servers are: evidence about the node, its runtime does not move.
+    McpServers {
+        servers: Vec<alondra_provider_contract::McpServerReport>,
+    },
+    McpSignIn {
+        server: String,
+        sign_in: alondra_provider_contract::McpSignInReport,
+    },
+    McpToolFailed,
 }
 impl ObservedFact {
     /// How far the task's runtime moves when the domain records this fact.
     fn runtime_moves(&self) -> usize {
         match self {
-            Self::ModelAnswered | Self::Worktree { .. } | Self::SubagentWorktree { .. } => 0,
+            Self::ModelAnswered
+            | Self::Worktree { .. }
+            | Self::SubagentWorktree { .. }
+            | Self::McpServers { .. }
+            | Self::McpSignIn { .. }
+            | Self::McpToolFailed => 0,
             Self::Settled { answered: true, continued: true, .. } => 2,
             _ => 1,
         }
@@ -307,6 +321,11 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
         Observation::DecisionSettled { epoch, answered, continued } => {
             return Ok(ObservedFact::Settled { epoch: *epoch, answered: *answered, continued: *continued });
         }
+        Observation::McpServers { servers } => return Ok(ObservedFact::McpServers { servers: servers.clone() }),
+        Observation::McpSignIn { server, sign_in } => {
+            return Ok(ObservedFact::McpSignIn { server: server.clone(), sign_in: sign_in.clone() });
+        }
+        Observation::McpToolFailed => return Ok(ObservedFact::McpToolFailed),
         Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
     }))
 }
