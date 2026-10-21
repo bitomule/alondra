@@ -216,7 +216,12 @@ pub enum ObservedFact {
     Runtime(RuntimeFact),
     TurnEnded {
         turn: TurnId,
-        failure: Option<alondra_provider_contract::ApiFailure>,
+        outcome: alondra_provider_contract::TurnOutcome,
+    },
+    /// Claude will never read `input`: the domain takes it out of what the task waits on and asks
+    /// the user whether to send it again.
+    InputDropped {
+        input: InputId,
     },
     /// Evidence about Claude itself, not about the task: its runtime does not move.
     ModelAnswered,
@@ -298,10 +303,11 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
         Observation::ContinuationConsumed { continuation } => RuntimeFact::ContinuationConsumed {
             continuation: continuation.clone(),
         },
-        Observation::TurnEnded { turn, failure } => {
+        Observation::InputDropped { input } => return Ok(ObservedFact::InputDropped { input: input.clone() }),
+        Observation::TurnEnded { turn, outcome } => {
             return Ok(ObservedFact::TurnEnded {
                 turn: turn.clone(),
-                failure: failure.clone(),
+                outcome: outcome.clone(),
             });
         }
         Observation::ModelAnswered => return Ok(ObservedFact::ModelAnswered),
@@ -415,6 +421,11 @@ pub fn stage_observation<N: ObservationNormalizer>(
             Ok::<_, Error>((previous, facts, normalized.checkpoint))
         })?;
         facts = normalized;
+        if facts.iter().any(|fact| matches!(fact, ObservedFact::InputDropped { .. })) {
+            // A drop of an input the task no longer waits on, already read or settled, is evidence.
+            let lifecycle = transaction.load(batch.execution.task())?;
+            facts.retain(|fact| !matches!(fact, ObservedFact::InputDropped { input } if !lifecycle.is_pending(input)));
+        }
         transaction.put_normalization_checkpoint(
             &batch.execution,
             batch.cursor,

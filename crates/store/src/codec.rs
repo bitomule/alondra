@@ -60,6 +60,7 @@ pub(super) enum WaitRecord {
     Recovery,
     Unheard,
     Doubt,
+    Dropped,
 }
 impl From<&WaitReason> for WaitRecord {
     fn from(event: &WaitReason) -> Self {
@@ -70,6 +71,7 @@ impl From<&WaitReason> for WaitRecord {
             WaitReason::Recovery => Self::Recovery,
             WaitReason::Unheard => Self::Unheard,
             WaitReason::Doubt => Self::Doubt,
+            WaitReason::Dropped => Self::Dropped,
         }
     }
 }
@@ -82,6 +84,7 @@ impl From<WaitRecord> for WaitReason {
             WaitRecord::Recovery => Self::Recovery,
             WaitRecord::Unheard => Self::Unheard,
             WaitRecord::Doubt => Self::Doubt,
+            WaitRecord::Dropped => Self::Dropped,
         }
     }
 }
@@ -413,6 +416,10 @@ pub(super) enum FactRecord {
     InputConsumed {
         input: String,
     },
+    InputDropped {
+        input: String,
+        card: String,
+    },
     WorkStarted {
         turn: String,
         work: String,
@@ -481,6 +488,10 @@ impl From<&RuntimeFact> for FactRecord {
             },
             RuntimeFact::InputConsumed { input } => Self::InputConsumed {
                 input: input.as_str().to_owned(),
+            },
+            RuntimeFact::InputDropped { input, card } => Self::InputDropped {
+                input: input.as_str().to_owned(),
+                card: card.0.clone(),
             },
             RuntimeFact::WorkStarted { turn, work } => Self::WorkStarted {
                 turn: turn.as_str().to_owned(),
@@ -557,6 +568,10 @@ impl FactRecord {
             },
             FactRecord::InputConsumed { input } => RuntimeFact::InputConsumed {
                 input: InputId::new(input).map_err(Error::from)?,
+            },
+            FactRecord::InputDropped { input, card } => RuntimeFact::InputDropped {
+                input: InputId::new(input).map_err(Error::from)?,
+                card: InteractionId(card),
             },
             FactRecord::WorkStarted { turn, work } => RuntimeFact::WorkStarted {
                 turn: TurnId::new(turn).map_err(Error::from)?,
@@ -739,6 +754,10 @@ pub(super) enum EventRecord {
         input: String,
         resend: String,
     },
+    Discard {
+        card: String,
+        unheard_card: String,
+    },
     RequestControl {
         control: String,
         kind: ControlRecord,
@@ -881,6 +900,10 @@ impl From<&Event> for EventRecord {
             } => Self::SettleHandoff {
                 card: card.0.clone(),
                 resend: resend.as_ref().map(|value| value.as_str().to_owned()),
+                unheard_card: unheard_card.0.clone(),
+            },
+            Event::Discard { card, unheard_card } => Self::Discard {
+                card: card.0.clone(),
                 unheard_card: unheard_card.0.clone(),
             },
             Event::ResendUntaken { input, resend } => Self::ResendUntaken {
@@ -1041,6 +1064,10 @@ impl EventRecord {
                 resend: resend
                     .map(|value| InputId::new(value).map_err(Error::from))
                     .transpose()?,
+                unheard_card: InteractionId(unheard_card),
+            },
+            EventRecord::Discard { card, unheard_card } => Event::Discard {
+                card: InteractionId(card),
                 unheard_card: InteractionId(unheard_card),
             },
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {

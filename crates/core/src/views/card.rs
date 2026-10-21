@@ -823,6 +823,7 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| unheard_text(interaction, domain, lang))
         .or_else(|| turn_ended_text(interaction, domain, lang))
         .or_else(|| session_ended_text(interaction, domain, lang))
+        .or_else(|| dropped_text(interaction, lang))
         .or_else(|| decision_cancelled_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
         .or_else(|| mcp_wait_text(interaction, domain, lang))
@@ -1013,6 +1014,14 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     if interaction.card.why == crate::domain::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
     }
+    if interaction.card.why == crate::domain::FAILED_WHY {
+        let code = interaction.card.need.split('`').nth(1)?;
+        let need = tf!(lang, "Claude's turn ended with an error (`{code}`): tell it how to go on",
+            "El turno de Claude terminó con un error (`{code}`): dile cómo seguir");
+        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+            "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.",
+            "Claude Code terminó su turno como fallido. Dile cómo seguir, escríbele qué hacer o cancela la tarea.").into()));
+    }
     let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
@@ -1032,6 +1041,16 @@ fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.",
         "Su sesión no pudo volver a arrancar; el detalle dice por qué. Reinténtalo cuando esté arreglado o cancela la tarea.").into()))
+}
+
+/// The card about a message Claude will never read, in the viewer's language.
+fn dropped_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DROPPED_PREFIX) {
+        return None;
+    }
+    Some((t!(lang, "Claude didn't get to read your message", "Claude no llegó a leer tu mensaje").into(), t!(lang,
+        "Claude Code finished or cancelled your message without reading it, so it will not act on it. Nothing is sent until you decide.",
+        "Claude Code terminó o canceló tu mensaje sin leerlo, así que no hará nada con él. No se envía nada hasta que decidas.").into()))
 }
 
 /// The card of a turn the user stopped, by interrupting it or forcing it to stop.
@@ -1193,6 +1212,14 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             t!(lang, "Send it again", "Reenviar"),
             Some(t!(lang, "It gets the message again; if it had read it, it sees it twice",
                 "Lo recibe otra vez; si ya lo había leído, lo verá dos veces")),
+        ),
+        (crate::domain::SEND_AGAIN, crate::domain::SEND_AGAIN_LABEL) => (
+            t!(lang, "Send it again", "Enviar otra vez"),
+            Some(t!(lang, "It gets the same message again", "Le llega el mismo mensaje otra vez")),
+        ),
+        (crate::domain::DISCARD, crate::domain::DISCARD_LABEL) => (
+            t!(lang, "Discard", "Descartar"),
+            Some(t!(lang, "The message is not sent and the task goes on", "No se envía y la tarea sigue")),
         ),
         (crate::domain::TAKE_AS_RECEIVED, crate::domain::TAKE_AS_RECEIVED_LABEL) => (
             t!(lang, "Take it as received", "Darlo por recibido"),

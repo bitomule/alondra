@@ -2971,9 +2971,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ForceStopTurn { .. } => 89,
         Command::RecordInterruptAccepted { .. } => 90,
         Command::RecordHostLost { .. } => 91,
+        Command::RecordDroppedInput { .. } => 92,
     }
 }
-const COMMAND_KINDS: usize = 92;
+const COMMAND_KINDS: usize = 93;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3098,12 +3099,13 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
             instance: "instance".into(), host: "sdk-host".into(), model: None }, false),
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
-        (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None }, false),
+        (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
         (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
+        (Command::RecordDroppedInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::InterruptTurn { agent_id: ids.agent.into() }, false),
         (Command::ForceStopTurn { agent_id: ids.agent.into() }, false),
         (Command::RecordInterruptAccepted { task_id: ids.task.into(), generation: 1, turn: "turn".into() }, false),
@@ -4364,7 +4366,7 @@ fn guards_refuse_what_the_commands_refuse() {
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
     ] }).unwrap();
     let mut resting = sdk.clone();
-    exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None }).unwrap();
+    exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
     let mut accepted = sdk.clone();
     exec(&mut accepted, user(), Command::InterruptTurn { agent_id: "s".into() }).unwrap();
     exec(&mut accepted, Actor::System, Command::RecordInterruptAccepted { task_id: "sdk".into(), generation: 1, turn: "turn".into() }).unwrap();
@@ -4375,7 +4377,7 @@ fn guards_refuse_what_the_commands_refuse() {
         tool: Some("Bash".into()), input: serde_json::json!({"command": "make"}), mcp_server: None,
         prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }).unwrap();
     let mut asked_resting = asking.clone();
-    exec(&mut asked_resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None }).unwrap();
+    exec(&mut asked_resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
     let mut decided = asking.clone();
     exec(&mut decided, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"sdk".into(), 1, 1),
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();

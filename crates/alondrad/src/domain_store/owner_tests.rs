@@ -138,7 +138,7 @@ impl ObservationNormalizer for Normalizer {
                 if *work {
                     facts.push(Observation::WorkStarted { turn: turn.clone(), work: WorkId::new("subagent").unwrap() });
                 }
-                facts.push(Observation::TurnEnded { turn, failure: None });
+                facts.push(Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed });
                 facts
             }
             Self::Facts(facts) => facts.clone(),

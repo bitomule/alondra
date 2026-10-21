@@ -419,6 +419,11 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
 /// While this file exists in `fakes/`, the native Claude accepts an interrupt and its turn goes on,
 /// as one that only a force stop ends.
 pub const HOLD_INTERRUPT: &str = "hold-interrupt";
+/// While this file exists in `fakes/`, each turn ends as Claude Code ends one at its turn limit.
+pub const FAIL_TURN: &str = "fail-turn";
+/// While this file exists in `fakes/`, the native Claude completes each input after the mission
+/// without starting it, as one its transcript already holds: no turn ever answers it.
+pub const DROP_INPUT: &str = "drop-input";
 
 struct Native<'a> {
     fakes: &'a Fakes,
@@ -510,6 +515,9 @@ impl Native<'_> {
             };
         }
         self.lifecycle(input, "queued")?;
+        if !mission && self.fakes.dir.join(DROP_INPUT).exists() {
+            return self.lifecycle(input, "completed");
+        }
         self.lifecycle(input, "started")?;
         if self.turn.is_none() {
             self.send(json!({
@@ -561,11 +569,18 @@ impl Native<'_> {
     fn end_turn(&mut self, said: &str) -> Result<()> {
         let (input, inputs) = self.answering();
         let Some(open) = self.turn.take() else { return Ok(()) };
-        self.send(json!({
+        let mut result = json!({
             "type": "result", "subtype": "success", "is_error": false, "session_id": self.session.session_id, "uuid": uuid()?,
             "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
             "result": said, "terminal_reason": "completed", "user_message_uuid": input, "user_message_uuids": inputs,
-        }))?;
+        });
+        if self.fakes.dir.join(FAIL_TURN).exists() {
+            result["subtype"] = json!("error_max_turns");
+            result["is_error"] = json!(true);
+            result["terminal_reason"] = json!("max_turns");
+            result["errors"] = json!(["Reached maximum number of turns (1)"]);
+        }
+        self.send(result)?;
         for input in &open {
             self.lifecycle(input, "completed")?;
         }

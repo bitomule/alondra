@@ -97,6 +97,30 @@ impl TaskLifecycle {
                 }
                 execution.inbox.pop_front();
             }
+            RuntimeFact::InputDropped { input, card } => {
+                valid_id(&card.0)?;
+                if execution.resource != ResourceEvidence::Available {
+                    return Err(Refusal::InvalidState);
+                }
+                match &execution.activity {
+                    Activity::InputPending(held) if *held == input => {
+                        execution.activity = match execution.inbox.pop_front() {
+                            Some(next) => Activity::InputPending(next),
+                            None => Activity::Resting,
+                        };
+                    }
+                    _ => {
+                        if !execution.inbox.replace(&input, None) {
+                            return Err(Refusal::UnknownObligation);
+                        }
+                    }
+                }
+                requested_card = Some(Card {
+                    id: card,
+                    reason: WaitReason::Dropped,
+                    callback: None,
+                });
+            }
             RuntimeFact::TurnStarted { turn, trigger } => {
                 if execution.resource != ResourceEvidence::Available {
                     return Err(Refusal::InvalidState);

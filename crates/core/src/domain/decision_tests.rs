@@ -252,7 +252,7 @@ fn a_request_aborted_after_its_turn_ended_asks_how_the_task_goes_on() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, bash(6, "make deploy"));
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(held(&s), vec![card_of(6)], "the request explains the next step");
     let outcome = must(&mut s, Actor::System, Command::RecordDecisionAborted { task_id: "t".into(), generation: 1, epoch: 6 });
     let cancelled = decision_cancelled_card_id(&"t".into(), 1, 6);
@@ -329,7 +329,7 @@ fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wake
         RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:agent".into() },
     ] });
     must(&mut s, Actor::System, bash(7, "echo draft > parser-draft.txt"));
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), answer(&card_of(7), Hold::ALLOW, None));
     must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
     assert_eq!(kinds(&s, "t").iter().rev().take(2).cloned().collect::<Vec<_>>(), ["decision_continued", "decision_settled"],
@@ -338,7 +338,7 @@ fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wake
         RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
         RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:agent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
         [format!("{TURN_ENDED_PREFIX}t-1-turn-2")]);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "the task waits on the user, not on a turn that never comes");

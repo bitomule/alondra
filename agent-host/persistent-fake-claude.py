@@ -104,16 +104,18 @@ def refuse(message, status):
         lifecycle(entry, 'completed')
     pending.clear()
 
-def result(message, failed=False):
+def result(message, failed=False, subtype=None):
     global serial
     serial += 1
-    value = dict(type='result', subtype='error_during_execution' if failed else 'success', is_error=failed,
+    value = dict(type='result', subtype=subtype or ('error_during_execution' if failed else 'success'), is_error=failed or subtype is not None,
                  session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
                  duration_ms=0, duration_api_ms=0, num_turns=0 if failed else 1,
                  total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
                  user_message_uuid=message['uuid'])
     if failed:
         value['errors'] = ['Fixture delivery failed before consumption']
+    elif subtype:
+        value['errors'] = ['Fixture turn reached its limit']
     else:
         value.update(result='Fixture result', terminal_reason='completed', user_message_uuids=[entry['uuid'] for entry in pending])
     send(value)
@@ -285,6 +287,14 @@ for raw in sys.stdin:
             stream.write(json.dumps(message['message']['content']) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
+        text = message['message']['content']
+        if text.endswith('complete-unstarted'):
+            # Like the native Claude finishing a prompt whose uuid its transcript already holds: it
+            # completes it without starting it, and no turn ever answers it.
+            pending.remove(message)
+            for state in ('queued', 'completed'):
+                lifecycle(message, state)
+            continue
         # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
         for state in ('queued', 'started'):
             lifecycle(message, state)
@@ -295,7 +305,6 @@ for raw in sys.stdin:
             # Like the native Claude 2.1.291: system messages no SDK release declares yet.
             send(dict(type='system', subtype='dev_intent', session_id=session_id, uuid='00000000-0000-4000-8000-000000000104'))
             send(dict(type='system', subtype='future_subtype', session_id=session_id, uuid='00000000-0000-4000-8000-000000000105'))
-        text = message['message']['content']
         if text.endswith('signed-out'):
             refused = 401
         elif text.endswith('overloaded'):
@@ -320,6 +329,9 @@ for raw in sys.stdin:
             sys.exit(7)
         elif text == 'failed-delivery':
             result(message, failed=True)
+        elif text == 'max-turns':
+            consume(message)
+            result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
             consume(message)
         elif text == 'ignore-interrupt':

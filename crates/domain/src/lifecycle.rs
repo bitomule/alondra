@@ -161,6 +161,8 @@ pub enum WaitReason {
     /// An input was handed to a host that ended before it showed the input was read: only the
     /// user settles it, by sending it again or taking it as received.
     Doubt,
+    /// Claude will never read an input it was handed: the user sends it again or lets it go.
+    Dropped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -521,6 +523,12 @@ pub enum Event {
         resend: Option<InputId>,
         unheard_card: InteractionId,
     },
+    /// The user let go of the input the `Dropped` card asked about. When nothing is left to explain
+    /// the task's next step, it waits on `unheard_card`.
+    Discard {
+        card: InteractionId,
+        unheard_card: InteractionId,
+    },
     /// The intent to run `kind` on the current execution, recorded before anything reaches it.
     RequestControl {
         control: OperationId,
@@ -550,6 +558,7 @@ impl Event {
             | Self::Runtime {
                 fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. }
                     | RuntimeFact::InputConsumed { input }
+                    | RuntimeFact::InputDropped { input, .. }
                     | RuntimeFact::HostEnded { resume: Some(input), .. },
                 ..
             } => vec![input],
@@ -574,6 +583,7 @@ impl Event {
             | Self::PostMergeEnded { .. }
             | Self::HoldForPlanReview { .. }
             | Self::PlanReviewSettled { .. }
+            | Self::Discard { .. }
             | Self::RequestControl { .. } => vec![],
         }
     }
@@ -593,6 +603,12 @@ pub enum RuntimeFact {
     },
     InputConsumed {
         input: InputId,
+    },
+    /// Claude will never read `input`, still pending: it leaves the queue and `card` asks the user
+    /// whether to send it again.
+    InputDropped {
+        input: InputId,
+        card: InteractionId,
     },
     WorkStarted {
         turn: TurnId,

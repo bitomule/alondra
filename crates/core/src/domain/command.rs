@@ -493,6 +493,9 @@ pub enum Command {
         /// The Claude API error that ended the turn, past Claude Code's own retries.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<SdkApiFailure>,
+        /// The code Claude Code ended the turn as failed with, such as `error_max_turns`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failed: Option<String>,
     },
     /// The Task's SDK host of `generation` ended: no process holds its lock any more. What it had
     /// running ended with it. When a host that resumes the same Claude session takes its place
@@ -521,6 +524,14 @@ pub enum Command {
     RecordHostLost {
         task_id: TaskId,
         reason: String,
+    },
+    /// Claude will never read `input`, told `text`, handed to the Task's SDK host of `generation`:
+    /// it leaves what the Task waits on and a card asks the user whether to send it again.
+    RecordDroppedInput {
+        task_id: TaskId,
+        generation: u64,
+        input: String,
+        text: String,
     },
     /// `input`, told `text`, never reached the Task's ended SDK host of `generation`: the same
     /// text goes to its next host in its place.

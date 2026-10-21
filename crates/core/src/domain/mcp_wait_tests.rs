@@ -63,7 +63,7 @@ fn only_a_task_s_own_node_waits_for_a_server_its_claude_reported_and_not_connect
     let first = must(&mut s, node("a"), wait("t", "linear"));
     assert_eq!(notices(&first), 1, "the user hears of the server once");
     assert!(matches!(last(&s, "t"), LifecycleRecord::Paused { card } if card.0.starts_with(MCP_WAIT_PREFIX)), "the task is paused on its card");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     let generic = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-1").as_str());
     assert!(!s.interactions.contains_key(&generic), "the wait explains why its turn ended");
     assert_eq!(refused_unchanged(&mut s, node("a"), wait("t", "linear")), "conflict", "one wait at a time");

@@ -123,6 +123,7 @@ impl TaskLifecycle {
                 self.doubts.insert(card, input);
             }
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
+            Event::Discard { card, unheard_card } => self.discard(card, unheard_card)?,
             Event::ResendUntaken { input, resend } => self.resend(&input, resend)?,
             Event::ResendDoubtful { input, resend } => {
                 self.resend(&input, resend)?;
@@ -838,6 +839,26 @@ impl TaskLifecycle {
         }
         self.doubts.remove(&id);
         self.settled.insert(input);
+        self.leave_card(stage, cards, session, unheard)
+    }
+
+    fn discard(&mut self, id: InteractionId, unheard: InteractionId) -> Result<(), Refusal> {
+        valid_id(&unheard.0)?;
+        let (stage, mut cards, session) = match &self.state {
+            State::InProgress(Progress::Waiting { stage, cards, session }) => (*stage, cards.map(), session.clone()),
+            State::InProgress(Progress::Dependency { stage, decisions, session, .. }) => (*stage, decisions.clone(), session.clone()),
+            State::Delivered(delivered) => (WorkStage::Implement, delivered.decisions.clone(), delivered.session.clone()),
+            _ => return Err(Refusal::InvalidState),
+        };
+        if cards.remove(&id).is_none_or(|card| card.reason != WaitReason::Dropped) {
+            return Err(Refusal::CorrelationMismatch);
+        }
+        self.leave_card(stage, cards, session, unheard)
+    }
+
+    /// The task without the card it no longer waits on: the cards left, else what it goes on with,
+    /// else `unheard`, the card that asks how it goes on.
+    fn leave_card(&mut self, stage: WorkStage, cards: BTreeMap<InteractionId, Card>, session: Session, unheard: InteractionId) -> Result<(), Refusal> {
         if let State::Delivered(delivered) = &mut self.state {
             delivered.decisions = cards;
             delivered.session = session;

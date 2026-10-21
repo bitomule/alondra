@@ -5,7 +5,7 @@ use super::*;
 use alondra_agent_application::{InputMetadata, ObservationNormalizer, ObservedFact};
 use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
 use alondra_foundation::ExecutionStamp;
-use alondra_provider_contract::{AdapterError, Capability, McpServerReport, McpSignInReport, OrderedObservation, Placement, PreparedCommand, ProviderBinding};
+use alondra_provider_contract::{AdapterError, Capability, McpServerReport, McpSignInReport, OrderedObservation, Placement, PreparedCommand, ProviderBinding, TurnOutcome};
 use alondra_store::{
     AdapterState, AuthorityScope, CommandEvidence, Committed, CommittedCommand, CommittedControl, ControlAttempt,
     ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt, InputPayload, LifecycleTransaction,
@@ -193,10 +193,27 @@ impl<'connection> OwnerTransaction<'connection> {
             match fact {
                 ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
                 ObservedFact::ModelAnswered => technical.push(RuntimeObservation::ModelAnswered),
-                ObservedFact::TurnEnded { turn, failure } => {
+                ObservedFact::TurnEnded { turn, outcome } => {
                     flush(&mut commands, &mut technical);
-                    let failure = failure.as_ref().map(|failure| SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at });
-                    commands.push(Command::RecordTurnBoundary { task_id: task_id.clone(), generation, turn: turn.as_str().into(), failure });
+                    let (failure, failed) = match outcome {
+                        TurnOutcome::Completed => (None, None),
+                        TurnOutcome::ApiFailed(failure) => {
+                            (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at }), None)
+                        }
+                        TurnOutcome::Failed { code } => (None, Some(code.clone())),
+                    };
+                    commands.push(Command::RecordTurnBoundary { task_id: task_id.clone(), generation, turn: turn.as_str().into(), failure, failed });
+                }
+                ObservedFact::InputDropped { input } => {
+                    flush(&mut commands, &mut technical);
+                    let conn = self.conn;
+                    let text = self.journal.inspect(|| {
+                        conn.query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2", rusqlite::params![task_id.0, input.as_str()], |row| row.get::<_, Option<String>>(0))
+                            .optional()
+                            .map_err(|error| StoreError::Storage(error.into()))
+                    })?;
+                    let text = text.flatten().ok_or_else(|| StoreError::Storage(anyhow::anyhow!("task {task_id} has no text for its dropped input {}", input.as_str())))?;
+                    commands.push(Command::RecordDroppedInput { task_id: task_id.clone(), generation, input: input.as_str().into(), text });
                 }
                 ObservedFact::Asked { request, epoch, kind, tool_use, payload } => {
                     flush(&mut commands, &mut technical);

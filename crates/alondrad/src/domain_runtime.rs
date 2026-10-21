@@ -706,6 +706,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::RecordHostLost { task_id, .. }
         | Command::ResendUntakenInput { task_id, .. }
+        | Command::RecordDroppedInput { task_id, .. }
         | Command::SetModel { task_id, .. }
         | Command::SetPermissionMode { task_id, .. }
         | Command::ReadMcpStatus { task_id }

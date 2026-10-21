@@ -292,6 +292,12 @@ pub enum LifecycleRecord {
         text: Option<String>,
         unheard_card: InteractionId,
     },
+    /// Claude will never read the pending `input`: it leaves the queue and `card` asks the user
+    /// whether to send it again.
+    InputDropped { input: String, card: InteractionId },
+    /// The user let go of the input `card` asked about. `unheard_card` is required when nothing
+    /// else explains what follows.
+    DroppedDiscarded { card: InteractionId, unheard_card: InteractionId },
     /// The intent to run `operation` on the task's SDK execution, recorded before it reaches it.
     ControlRequested { control: String, operation: ControlRecord },
     /// The resting SDK execution is asked to compact its conversation with `input`.
@@ -463,6 +469,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             })?
         }
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
+        LifecycleRecord::InputDropped { input, card } => runtime(RuntimeFact::InputDropped { input: input_id(task, input)?, card: card.clone() })?,
+        LifecycleRecord::DroppedDiscarded { card, unheard_card } => Event::Discard { card: card.clone(), unheard_card: unheard_card.clone() },
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
         LifecycleRecord::Told { input, .. } => Event::Tell { input: input_id(task, input)? },
         LifecycleRecord::Presented { delivery } => Event::Present { delivery: delivery.clone() },
@@ -707,6 +715,10 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             LifecycleRecord::TurnResumed { turn: turn.as_str().into(), continuation: continuation.as_str().into() }
         }
         Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
+        Event::Runtime { fact: RuntimeFact::InputDropped { input, card }, .. } => {
+            LifecycleRecord::InputDropped { input: input.as_str().into(), card: card.clone() }
+        }
+        Event::Discard { card, unheard_card } => LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone() },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
         Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
         Event::HandBack { delivery, input } => LifecycleRecord::HandedBack {
@@ -1112,8 +1124,10 @@ impl DomainState {
     /// the card that asks the user how it goes on, and it is created in this same step.
     ///
     /// A turn a Claude API error ended is held instead when waiting helps: on the one card that
-    /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on.
-    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on. A
+    /// turn Claude Code ended as `failed` waits for no one: its card names the error.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let card = turn_ended_card_id(task, generation, turn);
         if self.interactions.contains_key(&card) {
@@ -1130,7 +1144,10 @@ impl DomainState {
             let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
                 Some(failure) => TurnEnd::Refused(failure),
                 None if interrupted => TurnEnd::Interrupted,
-                None => TurnEnd::Unexplained,
+                None => match failed.filter(|_| failure.is_none()) {
+                    Some(code) => TurnEnd::Failed(code),
+                    None => TurnEnd::Unexplained,
+                },
             };
             self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
             if !self.covered_by_recorded_wait(&self.interactions[&card]) {
@@ -1208,6 +1225,10 @@ impl DomainState {
         }
         if self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, reason)| *held == card && *reason == alondra_domain::WaitReason::Doubt) {
             self.settle_handoff(&task_id, card, option, written, lifecycles)?;
+            return Ok(true);
+        }
+        if self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, reason)| *held == card && *reason == alondra_domain::WaitReason::Dropped) {
+            self.settle_dropped(&task_id, card, option, written, lifecycles)?;
             return Ok(true);
         }
         let mut text = if option == CARRY_ON { CARRY_ON_INSTRUCTION.to_owned() } else { String::new() };
@@ -1331,6 +1352,20 @@ impl DomainState {
         Ok(())
     }
 
+    /// Claude will never read `input`, told `text`: it leaves what the task waits on, and a card
+    /// asks the user whether to send it again.
+    pub(super) fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        let card = dropped_card_id(task, generation, input);
+        if self.interactions.contains_key(&card) {
+            return Err(DomainError::new("conflict", format!("The dropped input {input} of task {task} is already recorded")));
+        }
+        self.decide(lifecycles, task, LifecycleRecord::InputDropped { input: input.into(), card: card.clone() })?;
+        self.interactions.insert(card.clone(), dropped_card(card.clone(), task, text, self.revision + 1));
+        effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        Ok(())
+    }
+
     /// The user answered the card of a task whose host was lost: «Try again» lets it go on, told to
     /// carry on with what they wrote after it, and the daemon takes its execution over again. False
     /// for any other card, or for «Cancel the task», which cancels it as any lifecycle card does.
@@ -1355,6 +1390,37 @@ impl DomainState {
         };
         self.decide(lifecycles, &task_id, record)?;
         Ok(true)
+    }
+
+    /// The user's answer to the card of an input Claude never read: send the same text again (with
+    /// what they wrote after it), send what they wrote instead, or let it go.
+    fn settle_dropped(&mut self, task: &TaskId, card: &InteractionId, option: &str, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let written = written.map(str::trim).filter(|written| !written.is_empty());
+        let text = match (option, written) {
+            (SEND_AGAIN, written) => {
+                let mut text = self.interactions.get(card).and_then(|i| i.card.content.as_ref()).map(|content| content.body.clone())
+                    .ok_or_else(|| DomainError::new("not_found", "The card holds no text to send again"))?;
+                if let Some(written) = written {
+                    text.push_str("\n\n");
+                    text.push_str(written);
+                }
+                Some(text)
+            }
+            (_, Some(written)) => Some(written.to_owned()),
+            (DISCARD, None) => None,
+            _ => return Err(DomainError::new("invalid_input", "Send the message again, discard it, or write what to send instead")),
+        };
+        if let Some(text) = text {
+            let record = LifecycleRecord::Answered { card: card.clone(), input: self.next_input(task), text: Some(text) };
+            return self.decide(lifecycles, task, record);
+        }
+        let unheard_card = InteractionId(format!("{TURN_ENDED_PREFIX}{}", card.0.trim_start_matches(DROPPED_PREFIX)));
+        self.decide(lifecycles, task, LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone() })?;
+        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == unheard_card) {
+            let title = self.tasks[task].title.clone();
+            self.interactions.insert(unheard_card.clone(), turn_ended_card(unheard_card, task, &title, TurnEnd::Unexplained, self.revision + 1));
+        }
+        Ok(())
     }
 
     /// `input`, told `text`, provably never reached the ended host: the same text goes to the next
@@ -1790,12 +1856,17 @@ const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";
+pub const FAILED_WHY: &str = "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.";
+/// The longest error code a card names.
+pub const FAILED_CODE_MAX: usize = 40;
 
 /// Why a root turn ended with nothing that explains the task's next step.
 enum TurnEnd<'a> {
     Unexplained,
     Interrupted,
     Refused(&'a SdkApiFailure),
+    /// Claude Code ended it as failed with this code.
+    Failed(&'a str),
 }
 
 /// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
@@ -1810,6 +1881,7 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, 
         TurnEnd::Refused(failure) => (format!("“{title}” stopped: {}", api_refusal(&failure.error)), REFUSED_WHY),
         TurnEnd::Interrupted => (format!("You interrupted “{title}”: tell it how to go on"), INTERRUPTED_WHY),
         TurnEnd::Unexplained => (format!("“{title}” stopped without delivering or asking: tell it how to go on"), TURN_ENDED_WHY),
+        TurnEnd::Failed(code) => (format!("Claude's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), FAILED_WHY),
     };
     let need = clip(&need, CardSpec::NEED_MAX);
     Interaction {
@@ -1969,6 +2041,47 @@ fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str,
         clarification: None,
     }
 }
+/// The cards that ask the user about an input Claude will never read.
+pub const DROPPED_PREFIX: &str = "dropped-";
+pub const SEND_AGAIN: &str = "send_again";
+pub const SEND_AGAIN_LABEL: &str = "Send it again";
+const SEND_AGAIN_MEANS: &str = "It gets the same message again";
+pub const DISCARD: &str = "discard";
+pub const DISCARD_LABEL: &str = "Discard";
+const DISCARD_MEANS: &str = "The message is not sent and the task goes on";
+pub const DROPPED_WHY: &str = "Claude Code finished or cancelled your message without reading it, so it will not act on it. Nothing is sent until you decide.";
+
+fn dropped_card_id(task: &TaskId, generation: u64, input: &str) -> InteractionId {
+    let input: String = input.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).collect();
+    InteractionId(format!("{DROPPED_PREFIX}{task}-{generation}-{input}"))
+}
+
+fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> Interaction {
+    let need = "Claude didn't get to read your message".to_owned();
+    Interaction {
+        attachments: vec![],
+        id,
+        scope: Scope::Task { task_id: task.clone() },
+        author: Author::System,
+        recipient: Recipient::User,
+        body: need.clone(),
+        blocking: true,
+        subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![
+                QuestionOption { id: SEND_AGAIN.into(), label: SEND_AGAIN_LABEL.into(), description: Some(SEND_AGAIN_MEANS.into()) },
+                QuestionOption { id: DISCARD.into(), label: DISCARD_LABEL.into(), description: Some(DISCARD_MEANS.into()) },
+            ],
+            answer: None,
+        },
+        revision,
+        order: revision,
+        withdrawn: false,
+        card: CardSpec::new(CardKind::Decide, need).why(DROPPED_WHY).content(ContentKind::Document, text),
+        clarification: None,
+    }
+}
+
 const HANDOFF_DOUBT_WHY: &str = "Its session closed right after the message was handed over and before it showed it had read it. Nothing is sent until you decide.";
 const HANDOFF_DOUBT_LAUNCH_WHY: &str = "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.";
 

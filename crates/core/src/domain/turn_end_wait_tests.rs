@@ -15,7 +15,7 @@ fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
 fn end_turn(s: &mut DomainState, turn: &str) -> CommandOutcome {
-    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None })
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None, failed: None })
 }
 fn notified(outcome: &CommandOutcome, card: &InteractionId) -> bool {
     outcome.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id == card))

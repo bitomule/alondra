@@ -2007,6 +2007,7 @@ impl DomainState {
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
             | Command::ResendUntakenInput { task_id, .. }
+            | Command::RecordDroppedInput { task_id, .. }
             | Command::SetModel { task_id, .. }
             | Command::SetPermissionMode { task_id, .. }
             | Command::ReadMcpStatus { task_id }
@@ -4125,11 +4126,21 @@ impl DomainState {
                 self.task(task_id)?;
                 self.record_runtime_facts(task_id, *generation, facts, lifecycles)?;
             }
-            Command::RecordTurnBoundary { task_id, generation, turn, failure } => {
+            Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(turn)?;
-                self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), effects, lifecycles)?;
+                if let Some(code) = failed {
+                    nonempty(code)?;
+                }
+                self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), failed.as_deref(), effects, lifecycles)?;
+            }
+            Command::RecordDroppedInput { task_id, generation, input, text } => {
+                system(actor)?;
+                self.task(task_id)?;
+                nonempty(input)?;
+                nonempty(text)?;
+                self.record_dropped_input(task_id, *generation, input, text, effects, lifecycles)?;
             }
             Command::RecordHostEnded { task_id, generation, resumes } => {
                 system(actor)?;

@@ -1868,6 +1868,68 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
 
 // The daemon dies and the host's state folder goes with it, as when a sandbox or a test fixture is
 // removed: no owner can adopt that host any more, so it ends its whole group, Claude included.
+// A turn whose result is not a success ends as failed, with its code. Claude ended this one
+// at its turn limit: the task waits for no one, neither the API nor the host, and its card names
+// the error.
+#[test]
+fn a_turn_claude_ends_as_failed_asks_how_to_go_on_and_names_its_error() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("max-turns");
+    slice.settle(&mut driver);
+    assert_eq!(Slice::turn_end_need(&slice.domain), "Claude's turn ended with an error (`error_max_turns`): tell it how to go on");
+    assert!(slice.domain.read().state().claude_held().is_empty(), "nothing waits for the API");
+    assert!(!driver.waits_for_host());
+    driver.stop().unwrap();
+}
+
+// Claude answered the prompt with a result that never delivered it. The owner stops waiting for
+// it, the user sees the whole message, and «Send it again» gives Claude the same words.
+#[test]
+fn a_prompt_claude_never_delivers_asks_whether_to_send_it_again_and_goes_again_on_the_users_word() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("failed-delivery");
+    slice.settle(&mut driver);
+    let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped prompt asks the user");
+    assert_eq!(card.card.need, "Claude didn't get to read your message");
+    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("failed-delivery"));
+    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing waits for Claude to read it");
+    assert!(!driver.waits_for_host(), "the owner no longer waits for it");
+    assert_eq!(Slice::read_cards(&slice.domain), [], "no other card");
+
+    let state = slice.domain.state().unwrap();
+    let again = Command::AnswerQuestion { interaction_id: card.id.clone(), option_id: SEND_AGAIN.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Write the release notes".into()))]), attachments: vec![] };
+    slice.domain.execute_with(&user(), &envelope(&state, "client-send-again", again), None, None, || Ok(())).unwrap();
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert_eq!(prompts, ["failed-delivery", "failed-delivery\n\nWrite the release notes"]);
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its own card");
+    driver.stop().unwrap();
+}
+
+// The turn of a prompt Claude completes without starting fails, as Claude does with one its
+// transcript already holds. Here the message leaves the queue and «Discard» lets it go: the task
+// asks how to go on and Claude gets nothing more.
+#[test]
+fn a_message_claude_completes_without_starting_it_can_be_discarded() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "complete-unstarted");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped message asks the user");
+    assert!(card.card.content.as_ref().is_some_and(|content| content.body.ends_with("complete-unstarted")), "{:?}", card.card.content);
+    assert!(!driver.waits_for_host(), "the owner no longer waits for it");
+    answer(&slice.domain, &card.id, DISCARD);
+    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert_eq!(driver.pending_permits(), 0, "nothing is sent");
+    assert!(Slice::read_cards(&slice.domain).iter().any(|(_, answered)| !answered), "the task asks how to go on");
+    assert_eq!(slice.prompts().len(), 2);
+    driver.stop().unwrap();
+}
+
 #[test]
 fn a_host_whose_state_folder_is_removed_ends_its_group() {
     let slice = Slice::new();

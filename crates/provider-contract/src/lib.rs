@@ -155,6 +155,11 @@ pub enum Observation {
     InputConsumed {
         input: InputId,
     },
+    /// Claude finished or cancelled an input of Alondra's without taking it in, or answered it
+    /// with a result that never delivered it: it will not read it.
+    InputDropped {
+        input: InputId,
+    },
     WorkStarted {
         turn: TurnId,
         work: WorkId,
@@ -168,10 +173,10 @@ pub enum Observation {
     ContinuationConsumed {
         continuation: ContinuationId,
     },
-    /// The root turn ended; `failure` when a Claude API error ended it.
+    /// The root turn ended, and how.
     TurnEnded {
         turn: TurnId,
-        failure: Option<ApiFailure>,
+        outcome: TurnOutcome,
     },
     /// The model answered the root turn: the API and the account Claude Code uses work.
     ModelAnswered,
@@ -252,6 +257,15 @@ pub enum DecisionKind {
     Question,
     Plan,
     Elicitation,
+}
+/// How a root turn ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Completed,
+    /// A Claude API error ended it, past Claude Code's own retries.
+    ApiFailed(ApiFailure),
+    /// Claude Code ended it as failed with `code`, such as `error_max_turns`, known or not.
+    Failed { code: String },
 }
 /// The Claude API error a root turn ended with, as Claude Code reports it after its own retries.
 #[derive(Clone, Debug, PartialEq, Eq)]

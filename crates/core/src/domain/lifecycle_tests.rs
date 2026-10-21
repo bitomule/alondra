@@ -356,7 +356,7 @@ fn holds_slot(s: &DomainState, id: &str) -> bool {
 fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
-    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     let created = &s.interactions[&InteractionId::from(card.as_str())];
     assert_eq!(created.card.need, "“Task t” stopped without delivering or asking: tell it how to go on");
     assert!(matches!(&created.payload, InteractionPayload::Question { options, answer: None }
@@ -365,7 +365,7 @@ fn a_turn_that_ends_with_nothing_to_explain_the_next_step_asks_the_user_once() {
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
     assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, None, "a native result is not a delivery");
     assert!(!s.tasks[&TaskId::from("t")].over(), "nor the end of the task");
-    assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None }).unwrap_err().code,
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None }).unwrap_err().code,
         "conflict", "the same turn end does not ask twice");
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).count(), 1);
     assert_aggregate_rules(&s);
@@ -386,7 +386,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question() {
     let inbox = |s: &DomainState| super::read_index::inbox_items(s).into_iter().filter(|item| item.pending)
         .filter_map(|item| item.id.strip_prefix("interaction:").map(str::to_owned)).collect::<Vec<_>>();
     ask(&mut s, "q");
-    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(s.interactions.contains_key(&unheard), "the lifecycle still requires its card");
     assert!(!ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == unheard)), "nobody hears of it");
     assert!(inbox(&s).contains(&"q".to_owned()) && !inbox(&s).contains(&unheard.0), "{:?}", inbox(&s));
@@ -402,7 +402,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question() {
     let mut withdrawn = world();
     let unheard = InteractionId::from(sdk_turn(&mut withdrawn, "t", "a").as_str());
     ask(&mut withdrawn, "q");
-    must(&mut withdrawn, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut withdrawn, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut withdrawn, node("a"), Command::Withdraw { interaction_id: "q".into() });
     assert!(inbox(&withdrawn).contains(&unheard.0), "with its question withdrawn nothing explains its next step: {:?}", inbox(&withdrawn));
     assert_aggregate_rules(&withdrawn);
@@ -417,7 +417,7 @@ fn a_node_of_the_sdk_takes_a_slot_only_while_its_task_runs() {
     let takes_slot = |s: &DomainState| s.slots().iter().any(|agent| agent.id.0 == "a");
     assert!(takes_slot(&s), "its turn runs");
     deliver(&mut s, "t", "a", "result");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!takes_slot(&s), "its turn ended with its delivery: {:?}", s.agents[&AgentId::from("a")].phase);
     assert_aggregate_rules(&s);
 }
@@ -438,7 +438,7 @@ fn a_turn_the_user_interrupted_ends_on_a_card_that_says_so() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
     must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     let asked = &s.interactions[&InteractionId::from(card.as_str())];
     assert_eq!(asked.card.need, "You interrupted “Task t”: tell it how to go on");
     assert_eq!(asked.card.why, INTERRUPTED_WHY);
@@ -460,7 +460,7 @@ fn a_turn_that_ends_on_its_own_says_it_stopped_without_delivering_or_asking() {
     use crate::views::text::Lang;
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     let en = turn_end_shown(&s, "t", Lang::En);
     assert!(en.contains("“Task t” stopped without delivering or asking: tell it how to go on"), "{en}");
     assert!(en.contains("Its turn ended with nothing that explains its next step."), "{en}");
@@ -476,13 +476,13 @@ fn interrupting_a_turn_does_not_change_how_a_later_turn_ends() {
     let mut s = world();
     let first = sdk_turn(&mut s, "t", "a");
     must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: first.as_str().into(), option_id: CARRY_ON.into(), inputs: BTreeMap::new() });
     let Some(LifecycleRecord::Answered { input, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
     let later = &s.interactions[&turn_ended_card_id(&"t".into(), 1, "turn-2")];
     assert_eq!(later.card.need, "“Task t” stopped without delivering or asking: tell it how to go on");
     assert_ne!(later.card.why, INTERRUPTED_WHY);
@@ -496,7 +496,7 @@ fn a_native_turn_ends_with_a_card_clients_can_name() {
     let mut s = world();
     let turn = "claude-message:3272f577-e432-452d-9331-2bb86fc8686c";
     sdk_turn_named(&mut s, "t", "a", turn);
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None, failed: None });
     let card = s.interactions.keys().find(|id| id.0.starts_with(TURN_ENDED_PREFIX)).unwrap().clone();
     assert_eq!(card.0, "turn-ended-t-1-claude-message-3272f577-e432-452d-9331-2bb86fc8686c");
     assert!(crate::views::id::valid(&card.0), "{card:?} is a valid view id");
@@ -510,7 +510,7 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "subagent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(TURN_ENDED_PREFIX)), "its own work explains the next step");
     assert!(holds_slot(&s, "t"), "the work still running keeps the slot");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
@@ -529,7 +529,7 @@ fn work_that_ends_inside_its_turn_is_continued_by_it_and_the_turn_ends_on_one_ca
         RuntimeObservation::WorkEnded { work: "claude-task:bash".into(), continuation: "claude-notification:bash".into() },
         RuntimeObservation::WorkContinued { continuation: "claude-notification:bash".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(s.interactions.contains_key(&InteractionId::from(card.as_str())), "the turn asks how to go on");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
     assert_eq!(kinds(&s, "t")[4..], ["work_started", "work_ended", "work_continued", "turn_ended"]);
@@ -548,7 +548,7 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:agent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
     ] });
@@ -563,7 +563,7 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
         RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:agent".into() },
     ] });
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
         [format!("{TURN_ENDED_PREFIX}t-1-turn-2")], "one card, from the turn that rested");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
@@ -579,7 +579,7 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
 fn telling_a_resting_node_how_to_go_on_retires_the_card_that_asked_it() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Deliver the parser split".into() });
     assert!(s.interactions[&InteractionId::from(card.as_str())].withdrawn, "the card no longer waits on the user");
@@ -591,7 +591,7 @@ fn telling_a_resting_node_how_to_go_on_retires_the_card_that_asked_it() {
 fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]) });
     let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
@@ -601,7 +601,7 @@ fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
 
     let mut s = world();
     let card = sdk_turn(&mut s, "u", "b");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "u".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "u".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CANCEL_TASK.into(), inputs: BTreeMap::new() });
     assert_eq!(lifecycle(&s, "u").0, TaskState::Closing);
     assert_eq!(lifecycle(&s, "u").3, Some(TaskEnding::Cancelling));
@@ -611,8 +611,7 @@ fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
 fn fail_turn(s: &mut DomainState, id: &str, turn: &str, error: &str, status: Option<u16>) -> CommandOutcome {
     must(s, Actor::System, Command::RecordTurnBoundary {
         task_id: id.into(), generation: 1, turn: turn.into(),
-        failure: Some(SdkApiFailure { error: error.into(), status, resets_at: None }),
-    })
+        failure: Some(SdkApiFailure { error: error.into(), status, resets_at: None }), failed: None })
 }
 fn sign_in_cards(s: &DomainState) -> Vec<&Interaction> {
     s.interactions.values().filter(|i| i.id.0.starts_with(SIGNED_OUT_PREFIX) && s.open(i)).collect()
@@ -706,7 +705,7 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     let outage = fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
     fail_turn(&mut s, "u", "turn-1", "server_error", Some(500));
     let usage = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "v".into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }) });
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
     assert_eq!((notices(&outage), notices(&usage)), (0, 0), "never announced");
     assert_eq!(listed_holds(&s).len(), 2, "one card for the outage, one for the limit: {:?}", listed_holds(&s));
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
@@ -833,7 +832,7 @@ fn an_interrupt_accepted_after_its_turn_ended_records_nothing() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordInterruptAccepted { task_id: "t".into(), generation: 1, turn: "turn-1".into() }), "conflict");
     assert_eq!(refused_unchanged(&mut s, user(), Command::ForceStopTurn { agent_id: "a".into() }), "conflict", "nothing runs to stop");
 }
@@ -842,7 +841,7 @@ fn an_interrupt_accepted_after_its_turn_ended_records_nothing() {
 fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "its turn card already asks");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("host_ended"));
@@ -852,7 +851,7 @@ fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
 /// A task whose host ended while the user's answer to its turn card was handed and not yet read.
 fn doubtful(s: &mut DomainState, written: &str) -> (InteractionId, String) {
     let turn = sdk_turn(s, "t", "a");
-    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: turn.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(written.into()))]) });
     let Some(LifecycleRecord::Answered { input, text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
@@ -936,7 +935,7 @@ fn the_user_interrupts_exactly_what_the_nodes_sdk_task_runs() {
     assert_eq!(s.tasks[&TaskId::from("t")].state, state, "the request alone stops nothing");
     must(&mut s, Actor::System, interrupt("a"));
     assert_aggregate_rules(&s);
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(refused_unchanged(&mut s, user(), interrupt("a")), "conflict", "nothing runs to interrupt");
 
     let mut s = world();
@@ -952,7 +951,7 @@ fn interrupting_the_work_a_task_runs_on_its_own_names_no_turn() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "subagent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
     assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: None }, .. }));
     assert_aggregate_rules(&s);
@@ -991,7 +990,7 @@ fn compacting_a_resting_conversation_keeps_the_card_it_waits_on() {
     let card = sdk_turn(&mut s, "t", "a");
     let compact = || Command::CompactConversation { task_id: "t".into() };
     assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "a turn runs");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(refused_unchanged(&mut s, user(), compact()), "forbidden");
     must(&mut s, Actor::System, compact());
     let LifecycleRecord::Compacted { input } = last(&s, "t") else { panic!("compacted") };
@@ -1141,7 +1140,7 @@ fn a_resumed_session_that_finished_a_turn_is_resumed_again_without_a_card() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
     let card = s.interactions.keys().find(|id| id.0.starts_with(TURN_ENDED_PREFIX)).expect("the turn ended with its card").clone();
     answer(&mut s, &card, CARRY_ON);
     let Some(LifecycleRecord::Answered { input, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
@@ -1161,7 +1160,7 @@ fn a_resumed_session_that_finished_a_turn_is_resumed_again_without_a_card() {
 fn a_message_the_ended_host_may_not_have_read_goes_again_to_the_resumed_session_flagged() {
     let mut s = world();
     let turn = sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: turn.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]) });
     let Some(LifecycleRecord::Answered { input, text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
@@ -1218,5 +1217,114 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).unwrap().clone();
     answer(&mut s, &card, CANCEL_TASK);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Closing, "it ends, closing its execution first");
+    assert_aggregate_rules(&s);
+}
+
+// A turn whose result is not a success ends as failed, with its code. Here such a turn
+// waits for no one: its card names the error, and an interrupt the user asked for still comes first.
+#[test]
+fn a_turn_claude_ended_as_failed_asks_how_to_go_on_and_names_its_error() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: Some("error_max_turns".into()) });
+    let failed = &s.interactions[&InteractionId::from(card.as_str())];
+    assert_eq!(failed.card.need, "Claude's turn ended with an error (`error_max_turns`): tell it how to go on");
+    assert_eq!(options(&s, &card.as_str().into()), [CARRY_ON, CANCEL_TASK]);
+    assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == card)));
+    assert!(held(&s).is_empty(), "nothing waits for the API");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    let en = turn_end_shown(&s, "t", Lang::En);
+    assert!(en.contains("Claude's turn ended with an error (`error_max_turns`): tell it how to go on"), "{en}");
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("El turno de Claude terminó con un error (`error_max_turns`): dile cómo seguir"), "{es}");
+    assert!(es.contains("Dile cómo seguir, escríbele qué hacer o cancela la tarea."), "{es}");
+    assert_aggregate_rules(&s);
+
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: Some("error_during_execution".into()) });
+    assert_eq!(s.interactions[&InteractionId::from(card.as_str())].card.why, INTERRUPTED_WHY, "the interrupt explains the end");
+
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
+        failure: Some(SdkApiFailure { error: "billing_error".into(), status: Some(400), resets_at: None }), failed: Some("success_is_error".into()) });
+    assert_eq!(s.interactions[&InteractionId::from(card.as_str())].card.why, REFUSED_WHY, "the API's failure comes first");
+}
+
+/// A task whose node rests on its turn card, told `text` and waiting for Claude to read it.
+fn told(s: &mut DomainState, text: &str) -> String {
+    let card = sdk_turn(s, "t", "a");
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.as_str().into(), option_id: CARRY_ON.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) });
+    let Some(LifecycleRecord::Answered { input, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    input
+}
+fn dropped(s: &mut DomainState) -> (InteractionId, String) {
+    let input = told(s, "Add the tests first");
+    let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    let outcome = must(s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input, text: text.clone() });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(DROPPED_PREFIX)).expect("the drop asks the user").clone();
+    assert!(outcome.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
+    (card, text)
+}
+
+#[test]
+fn a_message_claude_never_reads_leaves_the_queue_and_asks_whether_to_send_it_again() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    let (card, text) = dropped(&mut s);
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(replayed.pending_inputs().is_empty(), "nothing waits for Claude to read it");
+    let asked = &s.interactions[&card];
+    assert_eq!(asked.card.need, "Claude didn't get to read your message");
+    assert_eq!(asked.card.content.as_ref().map(|content| content.body.as_str()), Some(text.as_str()), "the card carries the whole message");
+    assert_eq!(options(&s, &card), [SEND_AGAIN, DISCARD]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("Claude no llegó a leer tu mensaje"), "{es}");
+    let shown = {
+        use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
+        let index = ReadIndex::build(&s);
+        let live = LiveSnapshot::default();
+        let view = build(&format!("card:{}", card.0), RenderContext { domain: &s, index: &index, live: &live, client: Client::Tui, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+        serde_json::to_string(&view).unwrap()
+    };
+    assert!(shown.contains("Enviar otra vez") && shown.contains("Descartar") && shown.contains("Add the tests first"), "{shown}");
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input: "other".into(), text: "other".into() })
+        .unwrap_err().code, "conflict", "an input that is not pending is never dropped");
+    assert_aggregate_rules(&s);
+
+    answer(&mut s, &card, SEND_AGAIN);
+    let Some(LifecycleRecord::Answered { input: again, text: Some(sent), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("sent again") };
+    assert_eq!(sent, text, "the same words go again");
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(again).unwrap()]);
+    assert!(!s.open(&s.interactions[&card]), "the card is answered");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_message_claude_never_reads_can_be_let_go_and_the_task_asks_how_to_go_on() {
+    let mut s = world();
+    let (card, _) = dropped(&mut s);
+    answer(&mut s, &card, DISCARD);
+    assert!(matches!(last(&s, "t"), LifecycleRecord::DroppedDiscarded { .. }));
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(replayed.pending_inputs().is_empty());
+    let next = s.interactions.keys().find(|id| id.0.starts_with(TURN_ENDED_PREFIX) && s.open(&s.interactions[*id])).expect("the task asks how to go on").clone();
+    assert_eq!(options(&s, &next), [CARRY_ON, CANCEL_TASK]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_aggregate_rules(&s);
+
+    let mut s = world();
+    let (card, _) = dropped(&mut s);
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: DISCARD.into(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Write the docs instead".into()))]) });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Answered { text: Some(text), .. } if text == "Write the docs instead"), "what they wrote goes in its place");
     assert_aggregate_rules(&s);
 }

@@ -5,7 +5,7 @@ use alondra_agent_protocol::{
     Observation as WireObservation, SdkEventKind, SignIn,
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation};
+use alondra_provider_contract::{AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +16,10 @@ const CHECKPOINT_FORMAT: u16 = 1;
 const MAX_ASKED: usize = 64;
 /// Most MCP tool calls whose result is still to come that a failure is traced back to.
 const MAX_MCP_CALLS: usize = 64;
+/// Most inputs of ours Claude took in and has not finished yet.
+const MAX_TAKEN: usize = 64;
+/// How a turn still open ends when Claude starts another prompt.
+const TURN_SUPERSEDED: &str = "turn_superseded";
 
 pub(super) struct Normalizer {
     pub session: Option<SessionRecord>,
@@ -50,6 +54,9 @@ struct Checkpoint {
     /// The calls to an MCP server's tool whose result is still to come, by tool use id.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     mcp_calls: BTreeSet<String>,
+    /// The inputs of ours Claude started or consumed and has not finished yet, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    taken: Vec<MessageUuid>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,7 +319,26 @@ fn fold(
     let kind = string(payload, "type")?;
     let mut facts = Vec::new();
     if kind == "command_lifecycle" {
-        // The native Claude's trace of an input, ours or its own, even before init: evidence, no fact.
+        // The native Claude's trace of an input. One of ours it finishes or cancels without having
+        // taken it in is one it never reads; the rest, and another's command, is evidence.
+        let Some(command) = payload.get("command_uuid").and_then(Value::as_str).and_then(|id| MessageUuid::new(id).ok()) else {
+            return Ok(facts);
+        };
+        match payload.get("state").and_then(Value::as_str) {
+            Some("started") => {
+                lookup(std::slice::from_ref(&command))?;
+                take(state, command);
+            }
+            Some("completed" | "cancelled") => {
+                if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
+                    state.taken.remove(index);
+                } else if state.initialized {
+                    let input = lookup(std::slice::from_ref(&command))?.remove(0);
+                    facts.push(Observation::InputDropped { input });
+                }
+            }
+            _ => {}
+        }
         return Ok(facts);
     }
     if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("init") {
@@ -322,7 +348,10 @@ fn fold(
             if let Some(turn) = state.turn.take() {
                 facts.push(Observation::TurnEnded {
                     turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
-                    failure: turn.error.map(|error| ApiFailure { error, status: None, resets_at: turn.resets_at }),
+                    outcome: match turn.error {
+                        Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at }),
+                        None => TurnOutcome::Failed { code: TURN_SUPERSEDED.into() },
+                    },
                 });
             }
         } else {
@@ -467,6 +496,12 @@ fn fold(
             woken_by: Some(woken.run),
         });
     }
+    if kind == "result" && state.initialized && let Some(input) = undelivered(payload, failures, state) {
+        // A failed result that echoes only an input of ours no turn took in: Claude never reads it.
+        let input = lookup(std::slice::from_ref(&input))?.remove(0);
+        facts.push(Observation::InputDropped { input });
+        return Ok(facts);
+    }
     let mut consumed = Vec::new();
     if let Some(list) = payload.get("user_message_uuids") {
         let list = list.as_array().ok_or(AdapterError::InvalidObservation)?;
@@ -487,6 +522,9 @@ fn fold(
             return Err(AdapterError::InvalidObservation);
         }
         let inputs = lookup(&consumed)?;
+        for id in &consumed {
+            take(state, id.clone());
+        }
         if state.turn.is_none() {
             let basis = native_uuid(payload, "uuid")?;
             let logical = format!("claude-message:{}", basis.as_str());
@@ -548,8 +586,8 @@ fn fold(
                 }
             }
         }
-        let failure = match &turn.error {
-            Some(error) => Some(ApiFailure {
+        let outcome = match &turn.error {
+            Some(error) => TurnOutcome::ApiFailed(ApiFailure {
                 error: error.clone(),
                 status: payload
                     .get("api_error_status")
@@ -557,15 +595,44 @@ fn fold(
                     .and_then(|status| u16::try_from(status).ok()),
                 resets_at: turn.resets_at,
             }),
-            None => None,
+            None => match failures.iter().find(|failure| ends_turn(failure)) {
+                Some(failure) => TurnOutcome::Failed { code: failure.code.clone() },
+                None => TurnOutcome::Completed,
+            },
         };
         facts.push(Observation::TurnEnded {
             turn: TurnId::new(turn.id.clone()).map_err(|_| AdapterError::InvalidObservation)?,
-            failure,
+            outcome,
         });
         state.turn = None;
     }
     Ok(facts)
+}
+/// Whether the host read `failure` off a result as the end of a failed turn: its startup, its
+/// subtype or its terminal reason.
+fn ends_turn(failure: &alondra_agent_protocol::SdkFailure) -> bool {
+    use alondra_agent_protocol::FailureSurface;
+    matches!(failure.surface, FailureSurface::Startup | FailureSurface::Result | FailureSurface::Terminal)
+}
+/// The input of a failed result that names only it, in its singular echo, when the open turn did
+/// not consume it: Claude started it, perhaps, and never delivered it.
+fn undelivered(payload: &Value, failures: &[alondra_agent_protocol::SdkFailure], state: &Checkpoint) -> Option<MessageUuid> {
+    if payload.get("user_message_uuids").is_some() || !failures.iter().any(ends_turn) {
+        return None;
+    }
+    let input = native_uuid(payload, "user_message_uuid").ok()?;
+    let answers_turn = state.turn.as_ref().is_some_and(|turn| turn.woken_by.is_some() || turn.consumed.contains(&input));
+    (!answers_turn).then_some(input)
+}
+/// Claude took `input` in: its end, later, is no drop.
+fn take(state: &mut Checkpoint, input: MessageUuid) {
+    if state.taken.contains(&input) {
+        return;
+    }
+    if state.taken.len() >= MAX_TAKEN {
+        state.taken.remove(0);
+    }
+    state.taken.push(input);
 }
 fn report(server: McpServer) -> McpServerReport {
     McpServerReport {
@@ -796,7 +863,7 @@ mod tests {
         fold(&assistant, &session(), &mut state, input).unwrap();
         let init = event(json!({"type":"system","subtype":"init","uuid":SECOND,"mcp_servers":[]}));
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![
-            Observation::TurnEnded { turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(), failure: None },
+            Observation::TurnEnded { turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(), outcome: TurnOutcome::Failed { code: TURN_SUPERSEDED.into() } },
             Observation::McpServers { servers: vec![] },
         ]);
         assert!(state.turn.is_none());
@@ -808,7 +875,7 @@ mod tests {
         fold(&failed, &session(), &mut state, input).unwrap();
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap()[0], Observation::TurnEnded {
             turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-            failure: Some(ApiFailure { error: "server_error".into(), status: None, resets_at: None }),
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "server_error".into(), status: None, resets_at: None }),
         });
     }
     // Before init only the consumption of an input of ours proves Claude is up; every other
@@ -944,7 +1011,7 @@ mod tests {
                 },
                 Observation::TurnEnded {
                     turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-                    failure: None,
+                    outcome: TurnOutcome::Completed,
                 }
             ]
         );
@@ -952,17 +1019,25 @@ mod tests {
     }
     #[test]
     fn failed_delivery_singular_does_not_establish_consumption_or_turn() {
-        let result = event(
+        let result = || event(
             json!({"type":"result","uuid":REPLY,"subtype":"error_during_execution","is_error":true,"num_turns":0,"user_message_uuid":FIRST}),
         );
         let mut state = state();
         assert!(matches!(
-            fold(&result, &session(), &mut state, |_| panic!(
+            fold(&result(), &session(), &mut state, |_| panic!(
                 "singular echo must not query consumption"
             )),
             Err(AdapterError::Unsupported)
         ));
         assert!(state.turn.is_none());
+        let started = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":SECOND}));
+        fold(&started, &session(), &mut state, input).unwrap();
+        let failed = failing(result(), &[(alondra_agent_protocol::FailureSurface::Result, "error_during_execution")]);
+        assert_eq!(fold(&failed, &session(), &mut state, input).unwrap(), vec![Observation::InputDropped { input: InputId::new(FIRST).unwrap() }],
+            "a failed result that only echoes an input no turn consumed never delivered it");
+        assert!(state.turn.is_none());
+        let completed = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"completed","uuid":SECOND}));
+        assert_eq!(fold(&completed, &session(), &mut state, input).unwrap(), vec![], "it is dropped once");
     }
     #[test]
     fn error_result_plural_still_proves_actual_consumption() {
@@ -1002,7 +1077,7 @@ mod tests {
             fold(&result, &session(), &mut state, input).unwrap(),
             vec![Observation::TurnEnded {
                 turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-                failure: None,
+                outcome: TurnOutcome::Completed,
             }]
         );
     }
@@ -1069,7 +1144,7 @@ mod tests {
             Observation::ContinuationConsumed { continuation },
         ], "the turn that waited for the command goes on with it");
         let result = event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST}));
-        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, outcome: TurnOutcome::Completed }]);
     }
     // Work the turn leaves running ends after the turn's result: its continuation stays, to wake
     // the turn that takes it.
@@ -1101,7 +1176,7 @@ mod tests {
         let work = WorkId::new(format!("claude-task:{SECOND}")).unwrap();
         assert_eq!(fold(&started, &session(), &mut state, input).unwrap(), vec![Observation::WorkStarted { turn: turn.clone(), work: work.clone() }]);
         let result = event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST}));
-        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, outcome: TurnOutcome::Completed }]);
         let ended = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"monitor-1","tool_use_id":"toolu_monitor","status":"completed"}));
         assert_eq!(fold(&ended, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
             work, continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
@@ -1133,7 +1208,7 @@ mod tests {
         let unnamed = event(json!({"type":"result","uuid":FOURTH}));
         assert!(matches!(fold(&unnamed, &session(), &mut other, input), Err(AdapterError::Unsupported)), "nor one that names none");
         let result = event(json!({"type":"result","uuid":FOURTH,"subtype":"success","origin":{"kind":"task-notification","producer":"session-task","runId":"run-1"}}));
-        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, outcome: TurnOutcome::Completed }]);
         assert!(state.turn.is_none() && state.woken.is_empty());
     }
     #[test]
@@ -1218,7 +1293,7 @@ mod tests {
         let turn = TurnId::new(format!("claude-message:{REPLY}")).unwrap();
         assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![
             Observation::TurnStarted { input: InputId::new(FIRST).unwrap(), turn: turn.clone() },
-            Observation::TurnEnded { turn, failure: None },
+            Observation::TurnEnded { turn, outcome: TurnOutcome::Completed },
         ]);
     }
     fn decision(cursor: u64, observation: WireObservation) -> Event {
@@ -1298,7 +1373,8 @@ mod tests {
     }
     fn failure(facts: &[Observation]) -> Option<ApiFailure> {
         match facts.last() {
-            Some(Observation::TurnEnded { failure, .. }) => failure.clone(),
+            Some(Observation::TurnEnded { outcome: TurnOutcome::ApiFailed(failure), .. }) => Some(failure.clone()),
+            Some(Observation::TurnEnded { .. }) => None,
             other => panic!("the turn did not end: {other:?}"),
         }
     }
@@ -1391,6 +1467,73 @@ mod tests {
         let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
         let unmapped = |_: &[MessageUuid]| Err(AdapterError::InvalidObservation);
         assert!(matches!(fold(&assistant, &session(), &mut state(), unmapped), Err(AdapterError::InvalidObservation)));
+    }
+    fn failing(mut event: Event, failures: &[(alondra_agent_protocol::FailureSurface, &str)]) -> Event {
+        if let WireObservation::Sdk { failures: carried, .. } = &mut event.observation {
+            *carried = failures.iter().map(|(surface, code)| alondra_agent_protocol::SdkFailure { surface: *surface, code: (*code).into(), details: json!({}) }).collect();
+        }
+        event
+    }
+    fn ended(state: &mut Checkpoint, result: Event) -> TurnOutcome {
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), state, input).unwrap();
+        match fold(&result, &session(), state, input).unwrap().last() {
+            Some(Observation::TurnEnded { outcome, .. }) => outcome.clone(),
+            other => panic!("the turn did not end: {other:?}"),
+        }
+    }
+    // A turn whose result is not a success ends as failed, with the result's code, known or not.
+    #[test]
+    fn a_result_claude_ended_as_failed_ends_its_turn_failed_with_its_code() {
+        use alondra_agent_protocol::FailureSurface::{Result as Subtype, Startup, Terminal};
+        let result = || event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST,"subtype":"error_max_turns","is_error":true}));
+        assert_eq!(ended(&mut state(), failing(result(), &[(Subtype, "error_max_turns")])), TurnOutcome::Failed { code: "error_max_turns".into() });
+        assert_eq!(ended(&mut state(), failing(result(), &[(Subtype, "error_from_a_later_claude")])), TurnOutcome::Failed { code: "error_from_a_later_claude".into() });
+        assert_eq!(ended(&mut state(), failing(result(), &[(Startup, "cwd_unavailable"), (Subtype, "error_during_execution")])), TurnOutcome::Failed { code: "cwd_unavailable".into() });
+        assert_eq!(ended(&mut state(), failing(result(), &[(Terminal, "prompt_too_long")])), TurnOutcome::Failed { code: "prompt_too_long".into() });
+        assert_eq!(ended(&mut state(), event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST,"subtype":"success","is_error":false}))), TurnOutcome::Completed);
+
+        let mut state = state();
+        let refused = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"billing_error"}));
+        fold(&refused, &session(), &mut state, input).unwrap();
+        let facts = fold(&failing(result(), &[(Subtype, "success_is_error")]), &session(), &mut state, input).unwrap();
+        assert_eq!(facts, vec![Observation::TurnEnded {
+            turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "billing_error".into(), status: None, resets_at: None }),
+        }], "the API's failure comes first");
+    }
+    // The turn of a prompt Claude completes without starting fails: Claude never reads it. Here
+    // the input of ours leaves what the task waits on.
+    #[test]
+    fn an_input_claude_finishes_or_cancels_without_taking_it_in_is_dropped() {
+        let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":REPLY}));
+        let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
+        let mut state = state();
+        assert_eq!(fold(&lifecycle(FIRST, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut state, input).unwrap(), dropped(FIRST));
+        assert_eq!(fold(&lifecycle(SECOND, "cancelled"), &session(), &mut state, input).unwrap(), dropped(SECOND));
+
+        assert_eq!(fold(&lifecycle(THIRD, "started"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(THIRD, "cancelled"), &session(), &mut state, input).unwrap(), vec![], "an interrupt cancels what it started");
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FOURTH,"user_message_uuids":[FOURTH]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&lifecycle(FOURTH, "completed"), &session(), &mut state, input).unwrap(), vec![], "a consumed input ends as it should");
+        assert!(state.taken.is_empty(), "what ended is forgotten");
+
+        let foreign = |_: &[MessageUuid]| -> Result<Vec<InputId>, AdapterError> { Err(AdapterError::InvalidObservation) };
+        assert!(fold(&lifecycle(NOTIFIED, "completed"), &session(), &mut state, foreign).is_err(), "another's command is evidence");
+        let mut early = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut early, |_| panic!("before init nothing is dropped")).unwrap(), vec![]);
+    }
+    #[test]
+    fn the_inputs_claude_took_in_are_bounded_and_the_oldest_is_forgotten() {
+        let mut state = state();
+        for n in 0..=MAX_TAKEN {
+            let started = event(json!({"type":"command_lifecycle","command_uuid":format!("20000000-0000-4000-8000-{n:012}"),"state":"started","uuid":REPLY}));
+            fold(&started, &session(), &mut state, input).unwrap();
+        }
+        assert_eq!(state.taken.len(), MAX_TAKEN);
+        assert_eq!(state.taken[0].as_str(), "20000000-0000-4000-8000-000000000001");
     }
 }
 #[cfg(test)]
