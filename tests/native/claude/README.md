@@ -11,7 +11,17 @@ After source review and reservation of the shared heavy slot:
 bazelisk test //tests/native/claude:text_roundtrip_test --test_output=all --nocache_test_results
 ```
 
-The target is `manual`, local and macOS arm64 only. It is outside ordinary test,
+`//tests/native/claude:accounts_test` runs the same pinned SDK and native Claude with two
+`CLAUDE_CONFIG_DIR` folders that link one fixture `~/.claude`, as Alondra prepares a provider
+account's folder: it checks that the linked skills, agents, commands, rules, instructions and
+settings load, that a session created with one folder resumes with the other under the same id,
+and that every link survives a turn. Its result is in `docs/agent-sdk-migration/accounts.md`.
+
+```sh
+bazelisk test //tests/native/claude:accounts_test --test_output=all --nocache_test_results
+```
+
+The targets are `manual`, local and macOS arm64 only. It is outside ordinary test,
 hook and release runs. Its separate lazy repository downloads the official
 platform npm archive using the existing lock's exact SHA-512 integrity; it leaves
 `no_optional=True` and the SDK lock untouched. The test reads only the unique

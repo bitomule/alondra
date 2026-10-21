@@ -542,6 +542,11 @@ pub enum Command {
         text: String,
     },
     /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
+    /// The provider accounts as the daemon sees them now, in the user's order: each one's sign-in,
+    /// email and plan. It replaces what was recorded before.
+    RecordAccounts {
+        accounts: Vec<crate::accounts::AccountStatus>,
+    },
     ProbeClaudeAccess {
         hold: ClaudeHold,
     },

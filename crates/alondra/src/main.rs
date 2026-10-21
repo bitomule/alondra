@@ -18,6 +18,7 @@ mod delivery;
 mod help;
 mod mcp;
 mod models;
+mod provider_accounts;
 mod ops;
 mod pty;
 mod service_setup;
@@ -149,6 +150,12 @@ enum Cmd {
     Account {
         #[command(subcommand)]
         command: AccountCmd,
+    },
+    #[command(about = tr!("The Claude accounts nodes may run on", "Las cuentas de Claude con las que pueden trabajar los nodos"),
+        after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts login Work", "alondra accounts remove Work"]))]
+    Accounts {
+        #[command(subcommand)]
+        command: AccountsCmd,
     },
     #[command(about = tr!("Notifications and access away from home", "Notificaciones y acceso fuera de casa"),
         after_help = examples(&["alondra relay status", "alondra relay on"]))]
@@ -283,6 +290,37 @@ enum AccountCmd {
 }
 
 #[derive(Subcommand)]
+enum AccountsCmd {
+    #[command(about = tr!("Every Claude account, with its email, plan and state", "Todas las cuentas de Claude, con su email, plan y estado"))]
+    List,
+    #[command(about = tr!("Add a Claude account by name and sign it in", "Añade una cuenta de Claude por su nombre e inicia su sesión"))]
+    Add {
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+    #[command(about = tr!("Sign a Claude account in again", "Vuelve a iniciar la sesión de una cuenta de Claude"))]
+    Login {
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+    #[command(about = tr!("Let new work start on an account again", "Deja que el trabajo nuevo vuelva a empezar en una cuenta"))]
+    Enable {
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+    #[command(about = tr!("Stop new work from starting on an account", "Evita que el trabajo nuevo empiece en una cuenta"))]
+    Disable {
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+    #[command(about = tr!("Sign an account out and remove it", "Cierra la sesión de una cuenta y la quita"))]
+    Remove {
+        #[arg(required = true)]
+        name: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum RelayCmd {
     #[command(about = tr!("Whether it is on, and with which account", "Si está activado y con qué cuenta"))]
     Status,
@@ -363,6 +401,7 @@ fn takes_json(command: Option<&Cmd>) -> bool {
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
         | Cmd::Account { command: AccountCmd::Status }
+        | Cmd::Accounts { command: AccountsCmd::List }
         | Cmd::Relay { command: RelayCmd::Status }
     ))
 }
@@ -408,6 +447,14 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             AccountCmd::Status => commands::account_status(json),
             AccountCmd::Login => commands::account_login(no_input),
             AccountCmd::Logout => account::logout(),
+        },
+        Some(Cmd::Accounts { command }) => match command {
+            AccountsCmd::List => provider_accounts::list(json),
+            AccountsCmd::Add { name } => provider_accounts::add(&name.join(" "), no_input),
+            AccountsCmd::Login { name } => provider_accounts::login(&name.join(" "), no_input),
+            AccountsCmd::Enable { name } => provider_accounts::set_enabled(&name.join(" "), true),
+            AccountsCmd::Disable { name } => provider_accounts::set_enabled(&name.join(" "), false),
+            AccountsCmd::Remove { name } => provider_accounts::remove(&name.join(" ")),
         },
         Some(Cmd::Relay { command }) => match command {
             RelayCmd::Status => commands::relay_status(json),

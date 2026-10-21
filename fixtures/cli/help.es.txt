@@ -18,6 +18,7 @@ Dispositivos y Macs
   device       Dispositivos que usan un Mac  (list · approve · deny · remove · invite)
   mac          Los Macs que usa este terminal  (list · connect · forget · ping · reset-identity)
   account      Tu cuenta de Alondra  (status · login · logout)
+  accounts     Las cuentas de Claude con las que pueden trabajar los nodos  (list · add · login · enable · disable · remove)
   relay        Notificaciones y acceso fuera de casa  (status · on · off)
 
 Más

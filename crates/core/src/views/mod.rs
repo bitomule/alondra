@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod action_id;
 pub mod allow_always;
 mod card;
@@ -140,7 +141,7 @@ macro_rules! families {
     };
 }
 families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine);
+    IssuePicker, Search, Machine, Accounts);
 
 impl Family {
     /// The family a key belongs to, or none for a key no view answers.
@@ -180,6 +181,8 @@ impl Family {
             Family::Search
         } else if key == "machine" {
             Family::Machine
+        } else if key == "accounts" {
+            Family::Accounts
         } else {
             return None;
         })
@@ -206,6 +209,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::IssuePicker => misc::issue_picker(key, &context)?,
         Family::Search => misc::search(key, &context)?,
         Family::Machine => misc::machine(&context),
+        Family::Accounts => accounts::list(&context),
     };
     view.version = version(&view);
     Ok(view)

@@ -152,6 +152,11 @@ impl ContextEnv {
 
     fn login(&self) -> Result<()> {
         println!("Claude Code needs its own login. Opening `claude auth login`…");
+        self.sign_in()
+    }
+
+    /// `claude auth login` in this terminal, for this context's profile.
+    pub(crate) fn sign_in(&self) -> Result<()> {
         let mut child = self
             .command()?
             .args(["auth", "login"])
@@ -162,6 +167,15 @@ impl ContextEnv {
                 "Claude login did not finish; run `claude auth login`, then run `alondra doctor --fix`",
                 "el inicio de sesión de Claude no terminó; ejecuta `claude auth login` y ejecuta `alondra doctor --fix`"
             ));
+        }
+        Ok(())
+    }
+
+    /// `claude auth logout` for this context's profile, which removes its sign-in from the Keychain.
+    pub(crate) fn sign_out(&self) -> Result<()> {
+        let status = self.command()?.args(["auth", "logout"]).stdin(Stdio::null()).status().context("could not start Claude logout")?;
+        if !status.success() {
+            bail!(tr!("Claude could not sign the account out", "Claude no pudo cerrar la sesión de la cuenta"));
         }
         Ok(())
     }

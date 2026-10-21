@@ -2,6 +2,7 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
+pub mod accounts;
 pub mod bonjour;
 pub mod home_lock;
 pub mod service_config;
@@ -22,6 +23,7 @@ pub mod machine_incident;
 pub mod model;
 pub mod model_label;
 pub mod model_report;
+pub mod claude_account;
 pub mod claude_code;
 pub mod node_guard;
 pub mod options;

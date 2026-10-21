@@ -153,6 +153,8 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route(crate::settings::PATH, get(settings_read).put(settings_write))
         .route(crate::settings::FOLDERS, get(settings_folders))
         .route(crate::settings::CONFIG, axum::routing::put(settings_config))
+        .route(crate::accounts::PATH, get(accounts_read).put(accounts_write))
+        .route(crate::accounts::CHECK, post(accounts_check))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .merge(crate::notices::router())
@@ -340,6 +342,62 @@ async fn settings_write(
     };
     let relay = relay_on(&state);
     match tokio::task::spawn_blocking(move || crate::settings::write(&state.home, &crate::options::user_home(), relay, &body, lang)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+async fn accounts_read(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+) -> Response {
+    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
+        return refused;
+    }
+    let (domain, home) = (state.domain(), state.home.clone());
+    match tokio::task::spawn_blocking(move || crate::accounts::read(&domain, &home)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+async fn accounts_write(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let lang = match settings_caller(&state, &peer, &headers, &signed) {
+        Ok(lang) => lang,
+        Err(refused) => return refused,
+    };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid accounts"));
+    };
+    let (domain, home) = (state.domain(), state.home.clone());
+    match tokio::task::spawn_blocking(move || crate::accounts::write(&domain, &home, &body, lang)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+async fn accounts_check(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+) -> Response {
+    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
+        return refused;
+    }
+    let (domain, home) = (state.domain(), state.home.clone());
+    match tokio::task::spawn_blocking(move || {
+        crate::accounts::check(&domain, &home);
+        crate::accounts::read(&domain, &home)
+    }).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }

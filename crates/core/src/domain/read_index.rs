@@ -83,6 +83,7 @@ pub struct ReadIndex {
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
     mcp_waiting: Vec<McpWaiting>,
+    accounts: Vec<crate::accounts::AccountStatus>,
 }
 
 impl ReadIndex {
@@ -218,6 +219,10 @@ impl ReadIndex {
     pub fn mcp_wait_of_task(&self, task: &TaskId) -> Option<&McpWaiting> {
         self.mcp_waiting.iter().find(|waiting| waiting.task == *task)
     }
+    /// The provider accounts in the user's order, each with its state and plan.
+    pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
+        &self.accounts
+    }
     /// A scheduled run created the task.
     pub fn scheduled(&self, task: &TaskId) -> bool {
         self.scheduled.contains(task)
@@ -324,6 +329,7 @@ impl<'a> Builder<'a> {
         }
         Self::schedules(state, &mut index);
         index.mcp_waiting = state.mcp_waiting();
+        index.accounts = state.accounts.clone();
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -674,6 +680,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
+    assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {

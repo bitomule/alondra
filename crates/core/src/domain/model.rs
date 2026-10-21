@@ -1074,6 +1074,9 @@ pub struct DomainState {
     /// The MCP servers each node's current SDK execution reported, and the sign-ins it opened.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<AgentId, NodeMcp>,
+    /// The provider accounts nodes may run on, in the user's order, as the daemon last saw them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<crate::accounts::AccountStatus>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1102,6 +1105,7 @@ impl DomainState {
             lifecycle_journal: BTreeMap::new(),
             lifecycles: LifecycleCache::default(),
             mcp: BTreeMap::new(),
+            accounts: Vec::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

@@ -83,3 +83,36 @@ sh_test(
     target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
     timeout = "long",
 )
+
+js_run_binary(
+    name = "accounts_client_bundle",
+    tool = "//agent-host:bundle_tool",
+    srcs = [
+        "accounts-client.mjs",
+        "//agent-host:node_modules/@anthropic-ai/claude-agent-sdk",
+        "//agent-host:node_modules/@anthropic-ai/sdk",
+        "//agent-host:node_modules/@modelcontextprotocol/sdk",
+        "//agent-host:node_modules/zod",
+    ],
+    outs = ["accounts-client.cjs", "accounts-client.meta.json"],
+    args = ["$(location accounts-client.mjs)", "$(location accounts-client.cjs)", "$(location accounts-client.meta.json)"],
+    tags = ["manual"],
+    testonly = True,
+)
+
+# Two accounts' CLAUDE_CONFIG_DIR folders linked to one ~/.claude, as Alondra prepares them.
+sh_test(
+    name = "accounts_test",
+    srcs = ["run.sh"],
+    args = [
+        "$(rootpath :accounts.py)",
+        "$(rootpath //agent-host:pinned_node)",
+        "$(rootpath @claude_native_test//:archive)",
+        "$(rootpath :accounts-client.cjs)",
+        "$(rootpath :accounts-client.meta.json)",
+    ],
+    data = ["accounts.py", "run.py", "//agent-host:pinned_node", "@claude_native_test//:archive", ":accounts-client.cjs", ":accounts-client.meta.json"],
+    tags = ["manual", "local", "no-remote", "requires-darwin", "requires-network"],
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    timeout = "long",
+)

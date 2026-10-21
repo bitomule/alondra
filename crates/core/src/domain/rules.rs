@@ -2430,6 +2430,14 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
+            Command::RecordAccounts { accounts } => {
+                system(actor)?;
+                let mut seen = BTreeSet::new();
+                if let Some(twice) = accounts.iter().find(|a| !seen.insert((a.provider, a.id.clone()))) {
+                    return fail("invalid_input", &format!("Account {} is recorded twice", twice.id));
+                }
+                self.accounts = accounts.clone();
+            }
             Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;

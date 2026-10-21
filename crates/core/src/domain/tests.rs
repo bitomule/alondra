@@ -2972,9 +2972,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordInterruptAccepted { .. } => 90,
         Command::RecordHostLost { .. } => 91,
         Command::RecordDroppedInput { .. } => 92,
+        Command::RecordAccounts { .. } => 93,
     }
 }
-const COMMAND_KINDS: usize = 93;
+const COMMAND_KINDS: usize = 94;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3101,6 +3102,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
         (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
+        (Command::RecordAccounts { accounts: vec![] }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
@@ -4466,4 +4468,41 @@ fn cards_about_a_pr_named_by_its_repository_get_an_id_the_apps_can_open() {
     let mut s = fixture();
     register(&mut s);
     assert_eq!(s.pull_requests[&"pr".into()].slug(), "pr", "cards already open about an older PR keep their id");
+}
+
+#[test]
+fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    let account = |id: &str, state| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), state,
+        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(),
+    };
+    let mut s = DomainState::new("epoch");
+    let accounts = vec![account("default", AccountState::SignedIn), account("work", AccountState::SignedOut)];
+    assert_eq!(exec(&mut s, user(), Command::RecordAccounts { accounts: accounts.clone() }).unwrap_err().code, "forbidden");
+    let twice = vec![account("work", AccountState::SignedIn), account("work", AccountState::SignedOut)];
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordAccounts { accounts: twice }).unwrap_err().code, "invalid_input");
+    assert!(s.accounts.is_empty());
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: accounts.clone() }).unwrap();
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.accounts(), accounts.as_slice());
+    let restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(restored.accounts, accounts, "the accounts survive a restart");
+    let live = crate::views::LiveSnapshot::default();
+    let context = crate::views::RenderContext {
+        domain: &s, index: &index, live: &live, client: crate::views::Client::Tui, lang: crate::views::Lang::Es,
+        transport: crate::views::Transport::Loopback, cursor: "", rendered_at: "",
+    };
+    let view = crate::views::build("accounts", context).unwrap();
+    let rows: Vec<(String, Option<String>)> = view.sections.iter().flat_map(|s| &s.items).filter_map(|item| match item {
+        crate::views::Item::Row(row) => Some((row.title.clone(), row.subtitle.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(rows, [
+        ("DEFAULT".to_owned(), Some("default@example.org · max · con sesión".to_owned())),
+        ("WORK".to_owned(), Some("work@example.org · max · sin sesión".to_owned())),
+    ]);
+    assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a view never shows a folder");
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![] }).unwrap();
+    assert!(ReadIndex::build(&s).accounts().is_empty());
 }

@@ -19,7 +19,7 @@ pub(crate) const FOLDERS: &str = "/settings/folders";
 /// The `config.toml` keys `alondra config set` changes; only this Mac's own CLI reaches it.
 pub(crate) const CONFIG: &str = "/settings/config";
 
-static WRITER: Mutex<()> = Mutex::new(());
+pub(crate) static WRITER: Mutex<()> = Mutex::new(());
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,7 +157,7 @@ fn store(home: &Path, user_home: &Path, value: &str) -> Result<(), Refused> {
     replace(&file, text.as_bytes()).map_err(|e| Refused::CannotCreate(format!("{}: {e}", file.display())))
 }
 
-fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let next = path.with_extension(format!("toml.{}", std::process::id()));
     let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&next)?;
     file.write_all(bytes)?;

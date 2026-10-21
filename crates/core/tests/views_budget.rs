@@ -6,6 +6,7 @@ use alondra_core::domain::{
     McpServerState, McpStatus, MergeMethod, NodeEvent, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient,
     RuntimeObservation, Schedule, ScheduleFrequency, Scope,
 };
+use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use alondra_core::views::{Client, Family, Lang, LiveNode, LivePullRequest, LiveSnapshot, RenderContext, Transport, build};
@@ -260,6 +261,10 @@ fn real_size() -> DomainState {
         };
         state.schedule.schedules.insert(schedule.id.clone(), schedule);
     }
+    state.accounts = ["default", "work", "team"].into_iter().map(|id| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: format!("Synthetic {id}"), state: AccountState::SignedIn,
+        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(),
+    }).collect();
     state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
     state.validate().expect("the synthetic domain is valid");
     loaded(state)
@@ -348,6 +353,7 @@ fn keys() -> Vec<(String, Client)> {
         ("issue_picker".to_owned(), Client::Ios),
         ("search?q=node".to_owned(), Client::Ios),
         ("machine".to_owned(), Client::Mac),
+        ("accounts".to_owned(), Client::Tui),
     ]
     .into_iter()
     .collect()

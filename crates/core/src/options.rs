@@ -91,6 +91,8 @@ pub struct OptionsFile {
     /// How many nodes may work at once on this Mac: `"auto"` (the default) derives it from its
     /// cores and memory.
     pub max_working_nodes: NodeLimit,
+    /// The provider accounts nodes may run on; without it, each provider's default sign-in.
+    pub accounts: crate::accounts::AccountsConfig,
 }
 
 /// `max_working_nodes`: a number from 1 to `MAX_WORKING_NODES`, or `"auto"`.
@@ -373,6 +375,7 @@ impl OptionsFile {
     }
 
     fn check(&self) -> Result<(), String> {
+        self.accounts.check()?;
         for (level, flags) in &self.effort {
             if !MAPPED.contains(&level.as_str()) {
                 return Err(format!("effort {level}: the levels with a mapping are light, normal and hard; auto leaves the choice to the orchestrator"));
