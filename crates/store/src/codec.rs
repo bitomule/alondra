@@ -215,6 +215,7 @@ impl From<DecisionRecord> for Decision {
 )]
 pub(super) enum ControlRecord {
     Interrupt { turn: Option<String> },
+    ForceStop { turn: String },
     SetModel { model: String },
     SetPermissionMode { mode: PermissionModeRecord },
     ReadMcpStatus,
@@ -226,6 +227,9 @@ impl From<&Control> for ControlRecord {
         match control {
             Control::Interrupt { turn } => Self::Interrupt {
                 turn: turn.as_ref().map(|turn| turn.as_str().to_owned()),
+            },
+            Control::ForceStop { turn } => Self::ForceStop {
+                turn: turn.as_str().to_owned(),
             },
             Control::SetModel { model } => Self::SetModel {
                 model: model.clone(),
@@ -250,6 +254,9 @@ impl ControlRecord {
                 turn: turn
                     .map(|turn| TurnId::new(turn).map_err(Error::from))
                     .transpose()?,
+            },
+            ControlRecord::ForceStop { turn } => Control::ForceStop {
+                turn: TurnId::new(turn).map_err(Error::from)?,
             },
             ControlRecord::SetModel { model } => Control::SetModel { model },
             ControlRecord::SetPermissionMode { mode } => Control::SetPermissionMode {
@@ -445,6 +452,9 @@ pub(super) enum FactRecord {
     EffectObserved {
         operation: String,
     },
+    InterruptAccepted {
+        turn: String,
+    },
     Notification,
     HostEnded {
         unheard_card: String,
@@ -514,6 +524,9 @@ impl From<&RuntimeFact> for FactRecord {
             },
             RuntimeFact::EffectObserved { operation } => Self::EffectObserved {
                 operation: operation.as_str().to_owned(),
+            },
+            RuntimeFact::InterruptAccepted { turn } => Self::InterruptAccepted {
+                turn: turn.as_str().to_owned(),
             },
             RuntimeFact::Notification => Self::Notification,
             RuntimeFact::HostEnded { unheard_card } => Self::HostEnded {
@@ -588,6 +601,9 @@ impl FactRecord {
             },
             FactRecord::EffectObserved { operation } => RuntimeFact::EffectObserved {
                 operation: OperationId::new(operation).map_err(Error::from)?,
+            },
+            FactRecord::InterruptAccepted { turn } => RuntimeFact::InterruptAccepted {
+                turn: TurnId::new(turn).map_err(Error::from)?,
             },
             FactRecord::Notification => RuntimeFact::Notification,
             FactRecord::HostEnded { unheard_card } => RuntimeFact::HostEnded {

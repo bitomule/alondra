@@ -7,9 +7,9 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// Tables a journal of this format gained after it was first installed: a journal that has none of
 /// them gets them all, and one that has only some is refused like any other changed schema.
 const ADDITIONS: &str = include_str!("controls.sql");
-/// The definitions of the addition tables whose checks the MCP controls widened, as journals
-/// installed before them still hold them.
-const BEFORE_MCP: &str = include_str!("controls_before_mcp.sql");
+/// The definitions of the addition tables whose checks later controls widened, as journals
+/// installed before each of them still hold them: before the MCP controls, and before force stop.
+const EARLIER: [&str; 2] = [include_str!("controls_before_mcp.sql"), include_str!("controls_before_force_stop.sql")];
 /// The observation triggers journals installed before the retention of normalized evidence hold:
 /// they refused every update and delete.
 const BEFORE_RETENTION: &str = include_str!("observations_before_retention.sql");
@@ -62,13 +62,13 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
     connection.execute_batch(ADDITIONS)?;
     Ok(true)
 }
-/// Rebuilds, with every row, each addition table that still has the definition it had before the
-/// MCP controls, and brings back the triggers dropped with it. Its rows already satisfy the wider
-/// checks; the references to it are checked when the caller commits.
+/// Rebuilds, with every row, each addition table that still has an earlier definition, and brings
+/// back the triggers dropped with it. Its rows already satisfy the wider checks; the references to
+/// it are checked when the caller commits.
 fn widen(connection: &Connection) -> Result<()> {
     let current = objects(ADDITIONS)?;
     let mut rebuilt = false;
-    for (_, name, previous) in objects(BEFORE_MCP)? {
+    for (_, name, previous) in EARLIER.iter().map(|earlier| objects(earlier)).collect::<Result<Vec<_>>>()?.into_iter().flatten() {
         let held: Option<String> = connection
             .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1", [name], |row| row.get(0))
             .optional()?;

@@ -791,6 +791,54 @@ fn a_host_that_ends_mid_turn_asks_once_how_the_task_goes_on() {
 }
 
 #[test]
+fn a_turn_that_stays_open_after_claude_accepted_its_interrupt_can_be_forced_to_stop_once() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let force = || Command::ForceStopTurn { agent_id: "a".into() };
+    let accepted = || Command::RecordInterruptAccepted { task_id: "t".into(), generation: 1, turn: "turn-1".into() };
+    assert_eq!(refused_unchanged(&mut s, user(), force()), "conflict", "an interrupt comes first");
+    assert_eq!(exec(&mut s.clone(), user(), force()).unwrap_err().refusal, Some(Refusal::InterruptNotAccepted));
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    assert_eq!(refused_unchanged(&mut s, user(), force()), "conflict", "until Claude accepts the interrupt");
+    assert_eq!(refused_unchanged(&mut s, user(), accepted()), "forbidden", "only Alondra records what Claude did");
+    must(&mut s, Actor::System, accepted());
+    assert_eq!(last(&s, "t"), LifecycleRecord::InterruptAccepted { turn: "turn-1".into() });
+    assert_eq!(refused_unchanged(&mut s, node("a"), force()), "forbidden");
+    let revision = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().revision();
+    must(&mut s, user(), force());
+    assert_eq!(last(&s, "t"), LifecycleRecord::ControlRequested {
+        control: format!("control-t-{}", revision + 1),
+        operation: ControlRecord::ForceStop { turn: "turn-1".into() },
+    });
+    assert_eq!(exec(&mut s.clone(), user(), force()).unwrap_err().refusal, Some(Refusal::AlreadyStopping), "once");
+    assert_aggregate_rules(&s);
+
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1 });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the stopped task asks").clone();
+    assert_eq!(s.interactions[&card].card.need, "You interrupted “Task t”: tell it how to go on", "Claude exiting ends the turn as the user's interrupt");
+    assert_eq!(s.interactions[&card].card.why, INTERRUPTED_WHY);
+    assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
+    let en = turn_end_shown(&s, "t", Lang::En);
+    assert!(en.contains("You interrupted “Task t”: tell it how to go on") && !en.contains("when its session closed"), "{en}");
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("Lo interrumpiste: dile a «Task t» cómo seguir") && !es.contains("al cerrarse su sesión"), "{es}");
+    answer(&mut s, &card, CARRY_ON);
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::Answered { .. })), "the next message goes to the resumed session");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn an_interrupt_accepted_after_its_turn_ended_records_nothing() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None });
+    assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordInterruptAccepted { task_id: "t".into(), generation: 1, turn: "turn-1".into() }), "conflict");
+    assert_eq!(refused_unchanged(&mut s, user(), Command::ForceStopTurn { agent_id: "a".into() }), "conflict", "nothing runs to stop");
+}
+
+#[test]
 fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");

@@ -89,7 +89,7 @@ public struct FleetView: View {
             }
             .contextMenu {
                 if let interrupt = node.interrupt {
-                    Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
+                    Button(role: interrupt.style == .destructive ? .destructive : nil) { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
                 }
                 if let pause = node.pause {
                     Button { store.send(.perform(pause)) } label: { Label(pause.label, systemImage: "pause.circle") }

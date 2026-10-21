@@ -1996,6 +1996,7 @@ impl DomainState {
             | Command::RecordRuntimeFacts { task_id, .. }
             | Command::RecordTurnBoundary { task_id, .. }
             | Command::RecordHostEnded { task_id, .. }
+            | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::ResendUntakenInput { task_id, .. }
             | Command::SetModel { task_id, .. }
@@ -4150,6 +4151,16 @@ impl DomainState {
             Command::InterruptTurn { agent_id } => {
                 let (task, record) = self.interrupt_guard(actor, agent_id)?;
                 self.decide(lifecycles, &task, record)?;
+            }
+            Command::ForceStopTurn { agent_id } => {
+                let (task, record) = self.force_stop_guard(actor, agent_id)?;
+                self.decide(lifecycles, &task, record)?;
+            }
+            Command::RecordInterruptAccepted { task_id, generation, turn } => {
+                system(actor)?;
+                self.task(task_id)?;
+                nonempty(turn)?;
+                self.record_interrupt_accepted(task_id, *generation, turn, lifecycles)?;
             }
             Command::SetModel { task_id, model } => {
                 let record = self.control_guard(actor, task_id, ControlRecord::SetModel { model: model.clone() })?;

@@ -2,7 +2,9 @@
 import hashlib
 import json
 import os
+import signal
 import sys
+import time
 
 capture = os.environ['FIXTURE_CAPTURE']
 
@@ -35,6 +37,9 @@ serial = (os.getpid() % 100000) * 1000000
 # The API refuses every prompt, with a 401 for an expired sign-in or a 529 when it is overloaded,
 # until the test marks it recovered with a file next to the capture.
 refused = None
+# Like a Claude whose turn never stops: it accepts the interrupt and keeps going, and only SIGKILL
+# ends it.
+stubborn = False
 
 def send(value):
     sys.stdout.write(json.dumps(value, ensure_ascii=False) + '\n')
@@ -241,6 +246,8 @@ for raw in sys.stdin:
                 if not entry['cancelled']:
                     entry['cancelled'] = True
                     send(dict(type='control_cancel_request', request_id=request_id))
+            if stubborn:
+                continue
             if foreground:
                 foreground_ended('stopped')
             if pending:
@@ -315,6 +322,10 @@ for raw in sys.stdin:
             result(message, failed=True)
         elif text == 'consume-and-hold':
             consume(message)
+        elif text == 'ignore-interrupt':
+            stubborn = True
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            consume(message)
         elif text == 'large-context':
             assistant(message, usage=LARGE_USAGE)
             result(message)
@@ -358,3 +369,5 @@ for raw in sys.stdin:
         pass
     else:
         raise RuntimeError('Unexpected fixture message')
+while stubborn:
+    time.sleep(3600)

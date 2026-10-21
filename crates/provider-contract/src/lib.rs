@@ -32,6 +32,8 @@ pub enum Capability {
     Decisions,
     McpReconnect,
     McpSignIn,
+    /// Ends Claude's process when a turn stays open after it accepted the interrupt.
+    ForceStop,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBinding {

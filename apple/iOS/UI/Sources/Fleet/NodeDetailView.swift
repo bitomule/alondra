@@ -34,7 +34,7 @@ public struct NodeDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let interrupt = store.detail?.interrupt {
-                            Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
+                            Button(role: interrupt.style == .destructive ? .destructive : nil) { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
                         }
                         if let pause = store.detail?.pause {
                             Button { store.send(.perform(pause)) } label: { Label(pause.label, systemImage: "pause.circle") }

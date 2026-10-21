@@ -17,6 +17,7 @@ public struct FleetOverview: Equatable, Sendable {
         public var link: AlondraContract.Link?
         public var activity: String?
         public var activityAt: String?
+        /// Interrupt, or Force stop once Claude accepted the interrupt and its turn still runs.
         public var interrupt: WireAction?
         public var close: WireAction?
         public var pause: WireAction?
@@ -35,7 +36,7 @@ public struct FleetOverview: Equatable, Sendable {
             let activity = row.children.first { $0.id == "activity" }
             self.activity = activity?.title
             if case .time(let at, _)? = activity?.trailing { activityAt = at }
-            interrupt = row.actions.first { $0.id?.hasPrefix("interrupt:") == true }
+            interrupt = row.actions.first { $0.id?.hasPrefix("interrupt:") == true || $0.id?.hasPrefix("force_stop:") == true }
             close = row.actions.first { $0.id?.hasPrefix("close:") == true }
             pause = row.actions.first { $0.command == "pause" }
             resume = row.actions.first { $0.command == "resume" }
@@ -77,7 +78,10 @@ public struct FleetOverview: Equatable, Sendable {
         guard !optimistic.isEmpty else { return self }
         func shown(_ node: Node) -> Node {
             var node = node
-            if optimistic.hides(node.interrupt?.id) { node.interrupt = nil }
+            if let interrupt = node.interrupt, optimistic.hides(interrupt.id) {
+                node.interrupt = nil
+                node.stamp = interrupt.stamp ?? node.stamp
+            }
             for action in [node.pause, node.resume].compactMap({ $0 }) where optimistic.hides(action.id) {
                 (node.pause, node.resume, node.interrupt) = (nil, nil, nil)
                 node.stamp = action.stamp

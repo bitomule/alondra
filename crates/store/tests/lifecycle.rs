@@ -3393,10 +3393,9 @@ fn a_claude_bg_execution_asks_for_no_decision() {
     assert!(fixture.connection.execute("INSERT INTO lifecycle_decision_requests(task_id,generation,epoch,request_id,tool_use_id,kind,payload) VALUES('task',1,1,'r','toolu','permission',x'7b7d')", []).is_err());
 }
 
-/// Puts back the narrower checks the two control tables had before the MCP controls, with every
-/// row they hold, as a journal installed by an earlier release still has them.
-fn narrow_to_before_mcp(fixture: &mut Fixture) {
-    let previous = include_str!("../src/controls_before_mcp.sql");
+/// Puts back the narrower checks the two control tables had in `previous`, with every row they
+/// hold, as a journal installed by an earlier release still has them.
+fn narrow_to(fixture: &mut Fixture, previous: &str) {
     let tx = fixture.connection.transaction().unwrap();
     for name in ["provider_binding_controls", "lifecycle_controls"] {
         let start = previous.find(&format!("CREATE TABLE IF NOT EXISTS {name}(")).unwrap();
@@ -3423,7 +3422,7 @@ fn a_journal_from_before_the_mcp_controls_keeps_every_control_and_takes_the_new_
     let mut fixture = Fixture::new();
     running_sdk(&mut fixture, &control_binding(every_control()));
     request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap();
-    narrow_to_before_mcp(&mut fixture);
+    narrow_to(&mut fixture, include_str!("../src/controls_before_mcp.sql"));
     let raw = |kind: &str| format!("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'raw-{kind}','{kind}','linear','prepared')");
     assert!(fixture.connection.execute(&raw("mcp_sign_in"), []).is_err(), "the narrower check refuses an MCP sign-in");
     let before = controls_rows(&fixture);
@@ -3443,6 +3442,25 @@ fn a_journal_from_before_the_mcp_controls_keeps_every_control_and_takes_the_new_
     LifecycleTransaction::upgrade(&mut tx).unwrap();
     tx.commit().unwrap();
     assert_eq!(controls_rows(&fixture).len(), 4, "upgrading again changes nothing");
+}
+
+#[test]
+fn a_journal_from_before_force_stop_keeps_every_control_and_takes_force_stops() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap();
+    narrow_to(&mut fixture, include_str!("../src/controls_before_force_stop.sql"));
+    let force_stop = |id: &str| format!("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'{id}','force_stop','turn-1','prepared')");
+    assert!(fixture.connection.execute(&force_stop("raw-before"), []).is_err(), "the narrower check refuses a force stop");
+    let before = controls_rows(&fixture);
+    let mut tx = fixture.connection.transaction().unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(controls_rows(&fixture), before, "every row is kept");
+    fixture.transaction().commit().unwrap();
+    fixture.connection.execute(&force_stop("raw-after"), []).unwrap();
+    assert!(fixture.connection.execute("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,status) VALUES('task',1,'raw-turnless','force_stop','prepared')", []).is_err(),
+        "a force stop always names its turn");
 }
 
 #[test]

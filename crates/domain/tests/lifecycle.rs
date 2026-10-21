@@ -861,7 +861,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..34, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..36, 1..160)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for action in actions {
             let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -899,6 +899,8 @@ proptest! {
                 30 => Some(Event::Decide { card: "second".into(), decision: Decision::Deny { message: "No".into() } }),
                 31 => Some(Event::MoveCard { from: "first".into(), to: "moved".into() }),
                 32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
+                34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
+                35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
                 _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
             };
             let Some(event) = event else { continue };
@@ -919,6 +921,7 @@ proptest! {
             if task.activity() == ActivityView::OwnWork { prop_assert!(task.holds_slot()); }
             if task.phase() == TaskPhase::InProgress && task.activity() == ActivityView::Resting { prop_assert!(!task.cards().is_empty() || !task.dependencies().is_empty()); }
             if let Some(stamp) = task.execution() { prop_assert_eq!(stamp.task(), task.task()); }
+            prop_assert_eq!(task.turn_stop().is_some(), task.turn().is_some());
         }
     }
 }
@@ -2010,6 +2013,25 @@ fn an_interrupt_names_exactly_what_runs_and_a_model_or_mcp_server_must_be_a_name
     assert_eq!(task.turn(), None);
     assert_eq!(control(&mut task, "ended", Control::Interrupt { turn: Some(turn("root")) }), Err(Refusal::CorrelationMismatch));
     control(&mut task, "own-work", Control::Interrupt { turn: None }).unwrap();
+}
+
+#[test]
+fn a_turn_is_forced_to_stop_only_after_claude_accepted_its_interrupt_and_only_once() {
+    let mut task = running();
+    assert_eq!(task.turn_stop(), Some(TurnStop::Running));
+    assert_eq!(control(&mut task, "early", Control::ForceStop { turn: turn("root") }), Err(Refusal::InvalidState), "an interrupt comes first");
+    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp: task.execution().cloned().unwrap(), cursor: task.cursor().unwrap() + 1, fact: RuntimeFact::InterruptAccepted { turn: turn("other") } }),
+        Err(Refusal::CorrelationMismatch));
+    fact(&mut task, RuntimeFact::InterruptAccepted { turn: turn("root") });
+    assert_eq!(task.turn_stop(), Some(TurnStop::InterruptAccepted));
+    assert_eq!(task.activity(), ActivityView::Working, "the turn goes on");
+    assert_eq!(control(&mut task, "other", Control::ForceStop { turn: turn("other") }), Err(Refusal::CorrelationMismatch));
+    control(&mut task, "force", Control::ForceStop { turn: turn("root") }).unwrap();
+    assert_eq!(task.turn_stop(), Some(TurnStop::ForceRequested));
+    assert_eq!(control(&mut task, "again", Control::ForceStop { turn: turn("root") }), Err(Refusal::DuplicateObligation));
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: "stopped".into() });
+    assert_eq!(task.turn_stop(), None, "Claude's exit ends the turn");
+    assert_eq!(task.cards().len(), 1);
 }
 
 #[test]

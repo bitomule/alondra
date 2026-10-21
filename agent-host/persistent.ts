@@ -8,11 +8,11 @@ import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in'] as const;
+export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in'] as const;
 export type Capability = typeof HOST_CAPABILITIES[number];
 type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
 const REQUIRED: Record<Action['type'], Capability | undefined> = {
-  start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', close: undefined,
+  start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', force_stop: 'force_stop', close: undefined,
   set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
   mcp_reconnect: 'mcp_reconnect', mcp_authenticate: 'mcp_sign_in',
 };
@@ -217,6 +217,11 @@ export class PersistentHost {
           if (!this.session) throw new Error('Session absent');
           this.current(lane); await this.session.interrupt();
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        case 'force_stop': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane); await session.forceStop();
+          this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
+        }
         case 'close':
           if (!this.session) throw new Error('Session absent');
           this.current(lane); this.session.close(); await this.session.finished;

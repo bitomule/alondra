@@ -47,6 +47,10 @@ pub enum Refusal {
     NodeUnreachable { node: String },
     /// The node runs no turn and no work of its own that an interrupt could stop.
     NothingToInterrupt,
+    /// Claude has not accepted an interrupt of the turn: it is interrupted before it is forced.
+    InterruptNotAccepted,
+    /// Alondra is already ending Claude's process for this turn.
+    AlreadyStopping,
     DeviceNotApproved,
     StorageUnavailable,
     /// GitHub did not answer, so nothing was done there.

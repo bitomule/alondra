@@ -203,6 +203,9 @@ pub enum Action {
         prompt: String,
     },
     Interrupt,
+    /// The host closes the query and, while Claude's process has not exited, ends it with
+    /// SIGTERM and then SIGKILL; its receipt comes once the process exited.
+    ForceStop,
     Close,
     /// The answer to the request the host holds pending under this epoch, kind and tool use.
     Respond {
@@ -891,6 +894,7 @@ impl Command {
                 text(server, 256)?;
             }
             Action::Interrupt
+            | Action::ForceStop
             | Action::Close
             | Action::SetPermissionMode { .. }
             | Action::McpStatus => {}

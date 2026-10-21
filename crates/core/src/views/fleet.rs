@@ -19,9 +19,17 @@ fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action
 }
 
 /// Stopping a node's current turn, offered only while it works: for a node that runs through the
-/// SDK, while its execution runs a turn or work of its own.
+/// SDK, while its execution runs a turn or work of its own. Once Claude accepted the interrupt and
+/// the turn still runs, stopping it means ending Claude's process; once that was asked, nothing
+/// more is offered until the process exits.
 pub(super) fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
-    let working = match context.index.node(&AgentId(id.into())) {
+    let node = context.index.node(&AgentId(id.into()));
+    match node.filter(|node| node.through_sdk).and_then(|node| node.sdk_turn_stop) {
+        Some(alondra_domain::TurnStop::InterruptAccepted) => return force_stop_action(id, context),
+        Some(alondra_domain::TurnStop::ForceRequested) => return None,
+        Some(alondra_domain::TurnStop::Running) | None => {}
+    }
+    let working = match node {
         Some(node) if node.through_sdk => node.sdk_running,
         _ => common::working(id, context),
     };
@@ -33,6 +41,20 @@ pub(super) fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<
         title: action.label.clone(),
         message: t!(context.lang, "Stop what this node is doing now? It keeps its task and waits for you.",
             "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.").into(),
+        button: action.label.clone(),
+    });
+    Some(action)
+}
+
+fn force_stop_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    let mut action = common::action(Verb::ForceStop, id, context.domain.revision,
+        t!(context.lang, "Force stop", "Forzar parada"), Style::Destructive)?;
+    action.key = (context.client == super::Client::Tui).then(|| "i".into());
+    action.stamp = Some(t!(context.lang, "Stopping…", "Parando…").into());
+    action.confirm = Some(Confirm {
+        title: action.label.clone(),
+        message: t!(context.lang, "Claude accepted the interrupt but keeps going. End its process now? The task keeps its conversation; your next message resumes it.",
+            "Claude aceptó la interrupción pero sigue. ¿Terminar su proceso ahora? La tarea conserva su conversación; tu próximo mensaje la retoma.").into(),
         button: action.label.clone(),
     });
     Some(action)

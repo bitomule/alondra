@@ -102,6 +102,8 @@ function safeDiagnostic(text: string): string {
 }
 
 const MAX_PENDING_DECISIONS = 32;
+/** How long a force stop gives Claude's process to exit after each step before it takes the next. */
+const STOP_GRACE_MS = 2_000;
 const DECISION_TOO_LARGE = 'The request is too large for Alondra to show; split it into smaller steps';
 const defined = (fields: Record<string, unknown>) => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 const decisionKind = (tool: string): DecisionKind => tool === 'AskUserQuestion' ? 'question' : tool === 'ExitPlanMode' ? 'plan' : 'permission';
@@ -197,6 +199,7 @@ export class Session {
   private seenResult = false;
   private turnOpen = false;
   private closing = false;
+  private child?: SpawnedProcess;
   private childEnded: Promise<void> = Promise.resolve();
   private releaseNativeReadEnds?: () => Promise<void>;
   readonly finished: Promise<void>;
@@ -251,6 +254,7 @@ export class Session {
         let stderr = Buffer.alloc(0);
         native?.stderr.on('data', (chunk: Buffer) => { stderr = Buffer.concat([stderr, chunk]).subarray(-16_384); });
         const child = native ?? config.spawn!(options);
+        this.child = child;
         this.childEnded = new Promise<void>((resolve) => { child.once('exit', () => resolve()); child.once('error', () => { if (child.pid === undefined) resolve(); }); });
         if (native) {
           const closed = new Promise<void>((resolve) => native.once('close', () => {
@@ -291,6 +295,17 @@ export class Session {
   async interruptTurn(): Promise<void> {
     if (!this.turnOpen || this.closing) return;
     await Promise.race([this.query.interrupt(), this.finished]);
+  }
+  /** Ends Claude's process: the query closes, and each step after it comes only while the process
+   * has not exited: SIGTERM, then SIGKILL. Resolves once the session finished. */
+  async forceStop(): Promise<void> {
+    this.close();
+    for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+      const exited = await Promise.race([this.childEnded.then(() => true), new Promise<false>((resolve) => setTimeout(resolve, STOP_GRACE_MS, false).unref())]);
+      if (exited) break;
+      this.child?.kill(signal);
+    }
+    await this.finished;
   }
   supportedModels(): ReturnType<Query['supportedModels']> { return this.query.supportedModels(); }
   setModel(model: string): Promise<void> { return this.query.setModel(model); }

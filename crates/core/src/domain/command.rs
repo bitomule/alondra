@@ -524,6 +524,18 @@ pub enum Command {
     InterruptTurn {
         agent_id: AgentId,
     },
+    /// Ends Claude's process for the node's SDK task, whose root turn stayed open after Claude
+    /// accepted its interrupt. The turn ends as interrupted when the process exits.
+    ForceStopTurn {
+        agent_id: AgentId,
+    },
+    /// Claude accepted the interrupt of the root `turn` of the Task's SDK execution of
+    /// `generation`, and the turn is still open.
+    RecordInterruptAccepted {
+        task_id: TaskId,
+        generation: u64,
+        turn: String,
+    },
     /// The model the Task's SDK execution answers with from its next turn on.
     SetModel {
         task_id: TaskId,

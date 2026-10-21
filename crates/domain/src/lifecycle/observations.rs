@@ -146,6 +146,7 @@ impl TaskLifecycle {
                     id: turn,
                     work,
                     continuations,
+                    stop: TurnStop::Running,
                 };
             }
             RuntimeFact::WorkStarted {
@@ -171,7 +172,8 @@ impl TaskLifecycle {
                         id,
                         work,
                         continuations,
-                    } => (work.clone(), continuations.clone(), Some(id.clone())),
+                        stop,
+                    } => (work.clone(), continuations.clone(), Some((id.clone(), *stop))),
                     Activity::OwnWork {
                         work,
                         continuations,
@@ -184,11 +186,12 @@ impl TaskLifecycle {
                 if !continuations.insert(Wake::Owned(continuation)) {
                     return Err(Refusal::DuplicateObligation);
                 }
-                execution.activity = if let Some(id) = root {
+                execution.activity = if let Some((id, stop)) = root {
                     Activity::Turn {
                         id,
                         work,
                         continuations,
+                        stop,
                     }
                 } else if !work.is_empty() {
                     Activity::OwnWork {
@@ -212,6 +215,7 @@ impl TaskLifecycle {
                     id,
                     work,
                     continuations,
+                    ..
                 } = &execution.activity
                 else {
                     return Err(Refusal::InvalidState);
@@ -269,6 +273,7 @@ impl TaskLifecycle {
                         id,
                         work,
                         continuations,
+                        stop,
                     } => {
                         let mut continuations = continuations.clone();
                         if !continuations.insert(Wake::Owned(continuation)) {
@@ -278,6 +283,7 @@ impl TaskLifecycle {
                             id: id.clone(),
                             work: work.clone(),
                             continuations,
+                            stop: *stop,
                         }
                     }
                     Activity::OwnWork {
@@ -327,6 +333,21 @@ impl TaskLifecycle {
                 if !execution.effects.insert(operation) {
                     return Err(Refusal::DuplicateObligation);
                 }
+            }
+            RuntimeFact::InterruptAccepted { turn } => {
+                if execution.resource != ResourceEvidence::Available {
+                    return Err(Refusal::InvalidState);
+                }
+                let Activity::Turn { id, stop, .. } = &mut execution.activity else {
+                    return Err(Refusal::InvalidState);
+                };
+                if id != &turn {
+                    return Err(Refusal::CorrelationMismatch);
+                }
+                if *stop != TurnStop::Running {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                *stop = TurnStop::InterruptAccepted;
             }
             RuntimeFact::EffectObserved { operation } => {
                 if !execution.effects.remove(&operation) {

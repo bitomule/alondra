@@ -416,6 +416,10 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
     ended.map(|()| 0)
 }
 
+/// While this file exists in `fakes/`, the native Claude accepts an interrupt and its turn goes on,
+/// as one that only a force stop ends.
+pub const HOLD_INTERRUPT: &str = "hold-interrupt";
+
 struct Native<'a> {
     fakes: &'a Fakes,
     out: Out,
@@ -537,6 +541,9 @@ impl Native<'_> {
     }
 
     fn interrupted(&mut self) -> Result<()> {
+        if self.fakes.dir.join(HOLD_INTERRUPT).exists() {
+            return Ok(());
+        }
         let Some(inputs) = self.turn.take() else { return Ok(()) };
         let last = inputs.last().cloned().unwrap_or_default();
         self.send(json!({

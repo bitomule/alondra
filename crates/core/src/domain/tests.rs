@@ -2968,9 +2968,11 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordMcpSignIn { .. } => 86,
         Command::CompleteMcpSignIn { .. } => 87,
         Command::WaitForMcp { .. } => 88,
+        Command::ForceStopTurn { .. } => 89,
+        Command::RecordInterruptAccepted { .. } => 90,
     }
 }
-const COMMAND_KINDS: usize = 89;
+const COMMAND_KINDS: usize = 91;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3101,6 +3103,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::InterruptTurn { agent_id: ids.agent.into() }, false),
+        (Command::ForceStopTurn { agent_id: ids.agent.into() }, false),
+        (Command::RecordInterruptAccepted { task_id: ids.task.into(), generation: 1, turn: "turn".into() }, false),
         (Command::SetModel { task_id: ids.task.into(), model: "claude-opus".into() }, false),
         (Command::SetPermissionMode { task_id: ids.task.into(), mode: PermissionModeRecord::Plan }, false),
         (Command::ReadMcpStatus { task_id: ids.task.into() }, false),
@@ -4330,6 +4334,9 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::InterruptTurn { agent_id: "a".into() },
         Command::InterruptTurn { agent_id: "s".into() },
         Command::InterruptTurn { agent_id: "missing".into() },
+        Command::ForceStopTurn { agent_id: "a".into() },
+        Command::ForceStopTurn { agent_id: "s".into() },
+        Command::ForceStopTurn { agent_id: "missing".into() },
         Command::SetModel { task_id: "sdk".into(), model: "claude-opus".into() },
         Command::SetModel { task_id: "sdk".into(), model: " ".into() },
         Command::SetModel { task_id: "t".into(), model: "claude-opus".into() },
@@ -4356,6 +4363,11 @@ fn guards_refuse_what_the_commands_refuse() {
     ] }).unwrap();
     let mut resting = sdk.clone();
     exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None }).unwrap();
+    let mut accepted = sdk.clone();
+    exec(&mut accepted, user(), Command::InterruptTurn { agent_id: "s".into() }).unwrap();
+    exec(&mut accepted, Actor::System, Command::RecordInterruptAccepted { task_id: "sdk".into(), generation: 1, turn: "turn".into() }).unwrap();
+    let mut forcing = accepted.clone();
+    exec(&mut forcing, user(), Command::ForceStopTurn { agent_id: "s".into() }).unwrap();
     let mut asking = sdk.clone();
     exec(&mut asking, Actor::System, Command::RecordDecisionRequest { task_id: "sdk".into(), generation: 1, epoch: 1, hold: Hold::Permission,
         tool: Some("Bash".into()), input: serde_json::json!({"command": "make"}), mcp_server: None,
@@ -4379,7 +4391,7 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::WaitForMcp { task_id: "t".into(), server: "linear".into() },
     ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &asking, &asked_resting, &decided, &mcp, &waiting_mcp] {
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &mcp, &waiting_mcp] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
                 for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),

@@ -114,6 +114,7 @@ fn control_action(operation: &ControlOperation) -> Result<Action, AdapterError> 
     };
     Ok(match kind {
         Control::Interrupt { .. } => Action::Interrupt,
+        Control::ForceStop { .. } => Action::ForceStop,
         Control::SetModel { model } => Action::SetModel { model: model.clone() },
         Control::SetPermissionMode { mode } => Action::SetPermissionMode {
             mode: match mode {

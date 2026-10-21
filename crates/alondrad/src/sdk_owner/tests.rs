@@ -1707,11 +1707,17 @@ fn subtypes(controls: &[serde_json::Value]) -> Vec<&str> {
 
 /// The user presses «Interrupt» on `agent` in Fleet, through the action path the clients use.
 fn press_interrupt(slice: &Slice, agent: &AgentId) -> serde_json::Value {
+    press(slice, alondra_core::views::action_id::Verb::Interrupt, agent)
+}
+
+/// The user presses the node's `verb` button on `agent` in Fleet, through the action path the
+/// clients use.
+fn press(slice: &Slice, verb: alondra_core::views::action_id::Verb, agent: &AgentId) -> serde_json::Value {
     let state = slice.domain.state().unwrap();
-    let action = alondra_core::views::action_id::ActionId::new(alondra_core::views::action_id::Verb::Interrupt, &agent.0, state.revision, None).unwrap();
+    let action = alondra_core::views::action_id::ActionId::new(verb, &agent.0, state.revision, None).unwrap();
     let request = crate::views::actions::ActionRequest {
         protocol: alondra_core::views::VIEWS_PROTOCOL,
-        command_id: "0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f".into(),
+        command_id: format!("0b6f9a52-3c1e-4d7a-9f20-{:012x}", state.revision),
         data_epoch: state.data_epoch.0.clone(),
         client: "ios".into(),
         lang: "en".into(),
@@ -1756,6 +1762,55 @@ fn interrupting_a_working_sdk_node_from_fleet_reaches_claude_and_its_turn_ends_w
     let StoreError::Domain(refusal) = again else { panic!("{again:?}") };
     assert_eq!(alondra_core::views::refusal_text(&refusal.why(), alondra_core::views::text::Lang::En), "This node isn't running anything to interrupt.");
     driver.stop().unwrap();
+}
+
+// Claude accepts the interrupt but its turn goes on, and it ignores SIGTERM. Once the interrupt is
+// accepted, Fleet offers «Force stop» instead of «Interrupt»; pressing it ends Claude's process,
+// which ends the turn as the user's interrupt, and «Carry on» reaches the same session in a new
+// host. Before, the node stayed «working» with nothing that could stop it.
+#[test]
+fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed() {
+    use alondra_core::views::action_id::Verb;
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("ignore-interrupt");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let refused = slice.try_run(&user(), "force-too-soon", Command::ForceStopTurn { agent_id: driver.agent().clone() }).unwrap_err();
+    let StoreError::Domain(refused) = refused else { panic!("{refused:?}") };
+    assert_eq!(refused.refusal, Some(alondra_core::domain::Refusal::InterruptNotAccepted), "a turn is interrupted before it is forced");
+    assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
+    driver.step(&|| false).unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
+    assert_eq!(Slice::lifecycle(&slice.domain).turn_stop(), Some(alondra_domain::TurnStop::InterruptAccepted), "its receipt is the fact that Claude accepted it");
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Working, "and the turn goes on");
+    let offered = node_offers(&slice.domain, driver.agent());
+    assert!(offered.iter().any(|offer| offer.starts_with("force_stop:")), "the stop button is now Force stop: {offered:?}");
+    assert!(!offered.iter().any(|offer| offer.starts_with("interrupt:")), "in place of Interrupt: {offered:?}");
+
+    assert_eq!(press(&slice, Verb::ForceStop, driver.agent())["outcome"], "applied");
+    let turn = Slice::lifecycle(&slice.domain).turn().unwrap().as_str().to_owned();
+    assert_eq!(slice.control_rows().last().unwrap(), &("force_stop".to_owned(), Some(turn), "prepared".to_owned()));
+    let offered = node_offers(&slice.domain, driver.agent());
+    assert!(!offered.iter().any(|offer| offer.starts_with("force_stop:") || offer.starts_with("interrupt:")), "it is forced once, and nothing else offers to stop it: {offered:?}");
+    let native = slice.starts()[0]["pid"].as_i64().unwrap();
+    driver.step(&|| false).unwrap();
+    assert_eq!(slice.control_rows().last().unwrap().2, "handed", "the host answered once Claude exited");
+    // SAFETY: signal 0 only asks whether the process exists.
+    assert_eq!(unsafe { libc::kill(native as libc::pid_t, 0) }, -1, "Claude's process is gone");
+    while driver.observe().is_ok() {}
+    assert!(driver.host_to_replace(), "Claude's exit ends its host for the owner");
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the forced turn ended");
+    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the stopped task asks the user");
+    let title = slice.domain.read().state().tasks[&TaskId::from(TASK)].title.clone();
+    assert_eq!(card.card.need, format!("You interrupted “{title}”: tell it how to go on"), "it ended as the user's interrupt");
+    answer(&slice.domain, &card.id, CARRY_ON);
+    resumed.step(&|| false).unwrap();
+    slice.settle(&mut resumed);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    resumed.stop().unwrap();
 }
 
 // Claude Code tracks a foreground command that runs for seconds as its own work, which ends

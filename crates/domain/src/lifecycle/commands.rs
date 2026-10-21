@@ -566,6 +566,18 @@ impl TaskLifecycle {
                     (Control::SetModel { model }, _) => valid_model(model)?,
                     (Control::SetPermissionMode { .. } | Control::ReadMcpStatus, _) => {}
                     (Control::ReconnectMcp { server } | Control::StartMcpSignIn { server }, _) => valid_mcp_server(server)?,
+                    (Control::ForceStop { turn }, Activity::Turn { id, stop, .. }) if turn == id => match stop {
+                        TurnStop::InterruptAccepted => {}
+                        TurnStop::Running => return Err(Refusal::InvalidState),
+                        TurnStop::ForceRequested => return Err(Refusal::DuplicateObligation),
+                    },
+                    (Control::ForceStop { .. }, Activity::Turn { .. }) => return Err(Refusal::CorrelationMismatch),
+                    (Control::ForceStop { .. }, _) => return Err(Refusal::InvalidState),
+                }
+                if let Control::ForceStop { .. } = kind
+                    && let Some(Activity::Turn { stop, .. }) = self.session_mut().map(|execution| &mut execution.activity)
+                {
+                    *stop = TurnStop::ForceRequested;
                 }
             }
             Event::Compact { input } => {
@@ -862,6 +874,7 @@ impl TaskLifecycle {
                             id,
                             work,
                             continuations,
+                            stop,
                         } => {
                             let mut work = work.clone();
                             work.remove(ended);
@@ -869,6 +882,7 @@ impl TaskLifecycle {
                                 id: id.clone(),
                                 work,
                                 continuations: continuations.clone(),
+                                stop: *stop,
                             }
                         }
                         Activity::OwnWork {

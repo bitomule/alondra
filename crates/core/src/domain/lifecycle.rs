@@ -103,6 +103,8 @@ pub enum ControlRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn: Option<String>,
     },
+    /// Claude's process is ended, after it accepted the interrupt of `turn` and kept it open.
+    ForceStop { turn: String },
     SetModel { model: String },
     SetPermissionMode { mode: PermissionModeRecord },
     ReadMcpStatus,
@@ -253,6 +255,8 @@ pub enum LifecycleRecord {
     /// The SDK execution's host ended, and its native Claude with it. `unheard_card` is the card
     /// the aggregate requires when that leaves nothing to explain the task's next step.
     HostEnded { unheard_card: InteractionId },
+    /// Claude accepted the interrupt of the root `turn`, which is still open.
+    InterruptAccepted { turn: String },
     /// `input` was handed to a host that ended before it showed the input was read: `card` asks
     /// the user whether to send it again.
     HandoffDoubted { card: InteractionId, input: String },
@@ -333,6 +337,7 @@ fn control_of(task: &TaskId, record: &ControlRecord) -> Result<Control> {
         ControlRecord::Interrupt { turn } => Control::Interrupt {
             turn: turn.as_deref().map(|turn| TurnId::new(turn).map_err(|e| corrupt(task, format!("{e:?}")))).transpose()?,
         },
+        ControlRecord::ForceStop { turn } => Control::ForceStop { turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))? },
         ControlRecord::SetModel { model } => Control::SetModel { model: model.clone() },
         ControlRecord::SetPermissionMode { mode } => Control::SetPermissionMode {
             mode: match mode {
@@ -349,6 +354,7 @@ fn control_of(task: &TaskId, record: &ControlRecord) -> Result<Control> {
 fn record_of_control(control: &Control) -> ControlRecord {
     match control {
         Control::Interrupt { turn } => ControlRecord::Interrupt { turn: turn.as_ref().map(|turn| turn.as_str().into()) },
+        Control::ForceStop { turn } => ControlRecord::ForceStop { turn: turn.as_str().into() },
         Control::SetModel { model } => ControlRecord::SetModel { model: model.clone() },
         Control::SetPermissionMode { mode } => ControlRecord::SetPermissionMode {
             mode: match mode {
@@ -399,6 +405,9 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         })?,
         LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::HostEnded { unheard_card } => runtime(RuntimeFact::HostEnded { unheard_card: unheard_card.clone() })?,
+        LifecycleRecord::InterruptAccepted { turn } => runtime(RuntimeFact::InterruptAccepted {
+            turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
+        })?,
         LifecycleRecord::HandoffDoubted { card, input } => Event::DoubtHandoff { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::HandoffResent { input, resent, .. } => Event::ResendUntaken { input: input_id(task, input)?, resend: input_id(task, resent)? },
         LifecycleRecord::HandoffSettled { card, resent, unheard_card, .. } => Event::SettleHandoff {
@@ -640,6 +649,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         },
         Event::Pause { card } => LifecycleRecord::Paused { card: card.clone() },
         Event::Runtime { fact: RuntimeFact::HostEnded { unheard_card }, .. } => LifecycleRecord::HostEnded { unheard_card: unheard_card.clone() },
+        Event::Runtime { fact: RuntimeFact::InterruptAccepted { turn }, .. } => LifecycleRecord::InterruptAccepted { turn: turn.as_str().into() },
         Event::DoubtHandoff { card, input } => LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.as_str().into() },
         Event::ResendUntaken { input, resend } => LifecycleRecord::HandoffResent {
             input: input.as_str().into(),
@@ -1163,6 +1173,7 @@ impl DomainState {
         self.sdk_execution(task, generation, lifecycles)?;
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
+        let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
         self.decide(lifecycles, task, LifecycleRecord::HostEnded { unheard_card: card.clone() })?;
         let now: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
@@ -1171,10 +1182,25 @@ impl DomainState {
         }
         if now.contains(&card) {
             let title = self.tasks[task].title.clone();
-            self.interactions.insert(card.clone(), session_ended_card(card.clone(), task, &title, self.revision + 1));
+            let ended = if forced {
+                turn_ended_card(card.clone(), task, &title, TurnEnd::Interrupted, self.revision + 1)
+            } else {
+                session_ended_card(card.clone(), task, &title, self.revision + 1)
+            };
+            self.interactions.insert(card.clone(), ended);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
         Ok(())
+    }
+
+    /// Claude accepted the interrupt of `turn`, which is still open: from now on the user can force
+    /// it to stop.
+    pub(super) fn record_interrupt_accepted(&mut self, task: &TaskId, generation: u64, turn: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        if self.lifecycle(lifecycles, task)?.turn().map(|open| open.as_str()) != Some(turn) {
+            return Err(DomainError::new("conflict", format!("Turn {turn} of task {task} is no longer open")));
+        }
+        self.decide(lifecycles, task, LifecycleRecord::InterruptAccepted { turn: turn.into() })
     }
 
     /// `input`, told `text`, was handed to a host that ended before it showed the input was read:

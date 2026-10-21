@@ -253,6 +253,7 @@ pub struct UnresolvedControl {
 fn required_by(kind: &Control) -> Capability {
     match kind {
         Control::Interrupt { .. } => Capability::Interrupt,
+        Control::ForceStop { .. } => Capability::ForceStop,
         Control::SetModel { .. } => Capability::SetModel,
         Control::SetPermissionMode { .. } => Capability::SetPermissionMode,
         Control::ReadMcpStatus => Capability::McpStatus,
@@ -269,6 +270,7 @@ fn required(operation: &ControlOperation) -> Capability {
 fn columns(kind: &Control) -> (&'static str, Option<&str>) {
     match kind {
         Control::Interrupt { turn } => ("interrupt", turn.as_ref().map(TurnId::as_str)),
+        Control::ForceStop { turn } => ("force_stop", Some(turn.as_str())),
         Control::SetModel { model } => ("set_model", Some(model.as_str())),
         Control::SetPermissionMode { mode } => ("set_permission_mode", Some(match mode {
             PermissionMode::Default => "default",
@@ -283,6 +285,7 @@ fn columns(kind: &Control) -> (&'static str, Option<&str>) {
 fn control_of(kind: &str, argument: Option<String>) -> Result<Control> {
     Ok(match (kind, argument) {
         ("interrupt", turn) => Control::Interrupt { turn: turn.map(TurnId::new).transpose()? },
+        ("force_stop", Some(turn)) => Control::ForceStop { turn: TurnId::new(turn)? },
         ("set_model", Some(model)) => Control::SetModel { model },
         ("set_permission_mode", Some(mode)) => Control::SetPermissionMode {
             mode: match mode.as_str() {
@@ -313,11 +316,12 @@ fn still_running(aggregate: &TaskLifecycle, turn: Option<&TurnId>) -> bool {
         _ => false,
     }
 }
-/// Whether the operation still has something to act on: an interrupt the turn or work it names,
-/// a response the decided callback, which neither settled nor was aborted since.
+/// Whether the operation still has something to act on: an interrupt or a force stop the turn or
+/// work it names, a response the decided callback, which neither settled nor was aborted since.
 fn still_wanted(aggregate: &TaskLifecycle, generation: u64, operation: &ControlOperation) -> bool {
     match operation {
         ControlOperation::Control(Control::Interrupt { turn }) => still_running(aggregate, turn.as_ref()),
+        ControlOperation::Control(Control::ForceStop { turn }) => still_running(aggregate, Some(turn)),
         ControlOperation::Control(_) => true,
         ControlOperation::Respond(response) => {
             aggregate.callback(&decision_callback(generation, response.epoch)) == Some(CallbackView::Answered)

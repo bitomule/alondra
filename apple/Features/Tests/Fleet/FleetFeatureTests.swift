@@ -269,6 +269,32 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(requests.value.map(\.actionId), [action.id])
     }
 
+    func testAForceStopTakesTheStopSlotAndLeavesItAtOnceWhenSent() async throws {
+        let store = store()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(Fixtures.document("fleet-ios"))) as? [String: Any])
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+        let forceStop: [String: Any] = [
+            "id": "force_stop:d887a34b-249e-4487-a89b-57de38c26372@0", "label": "Force stop", "style": "destructive",
+            "presentation": "button", "input": ["kind": "none"], "attachments": false,
+            "confirm": ["title": "Force stop", "message": "End its process now?", "button": "Force stop"], "enabled": true, "stamp": "Stopping…",
+        ]
+        items[0]["actions"] = [forceStop] + (items[0]["actions"] as? [[String: Any]] ?? [])
+        sections[0]["items"] = items
+        object["sections"] = sections
+        let document = try JSONDecoder().decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+        await store.send(.screen(.loaded(document)))
+        let action = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.interrupt)
+        XCTAssertEqual(action.label, "Force stop")
+        let request = ActionRequest(commandId: "c-1", dataEpoch: document.dataEpoch, client: .ios, lang: "en", actionId: try XCTUnwrap(action.id))
+
+        await store.send(.handedOff(request))
+        XCTAssertNil(store.state.overview?.groups.first?.nodes.first?.interrupt, "it stops offering to stop as soon as it is sent")
+        XCTAssertEqual(store.state.overview?.groups.first?.nodes.first?.stamp, "Stopping…", "and says it is stopping at once")
+        await store.send(.handOffSettled(request, applied: false))
+        XCTAssertEqual(store.state.overview?.groups.first?.nodes.first?.interrupt?.id, action.id)
+    }
+
     func testANodeThatIsNotWorkingOffersNoInterrupt() throws {
         let node = try XCTUnwrap(FleetOverview(document: try Fixtures.document("fleet-ios")).groups.first?.nodes.first)
         XCTAssertNil(node.interrupt)

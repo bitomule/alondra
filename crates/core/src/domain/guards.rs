@@ -31,6 +31,7 @@ impl DomainState {
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
+            Command::ForceStopTurn { agent_id } => self.force_stop_guard(actor, agent_id).map(drop),
             Command::SetModel { task_id, model } => {
                 self.control_guard(actor, task_id, ControlRecord::SetModel { model: model.clone() }).map(drop)
             }
@@ -300,6 +301,44 @@ impl DomainState {
         let record = LifecycleRecord::ControlRequested {
             control: format!("control-{task}-{}", lifecycle.revision() + 1),
             operation: ControlRecord::Interrupt { turn },
+        };
+        let record = self.judged(&task, lifecycle, record)?;
+        Ok((task, record))
+    }
+
+    /// The user, or Alondra, ends Claude's process when the turn the node's SDK task runs stayed
+    /// open after Claude accepted its interrupt: never before, and only once.
+    pub(super) fn force_stop_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
+        if !matches!(actor, Actor::User { .. } | Actor::System) {
+            return fail("forbidden", "Only the user or Alondra force-stops a node");
+        }
+        if !self.agents.contains_key(agent_id) {
+            return fail("not_found", "Agent missing");
+        }
+        let (task, lifecycle) = self.sdk_task_of(agent_id)?;
+        let (Some(turn), Some(stop)) = (lifecycle.turn().filter(|_| lifecycle.activity() == alondra_domain::ActivityView::Working), lifecycle.turn_stop()) else {
+            return Err(DomainError::new("conflict", format!("No turn is running on node {agent_id} to force-stop"))
+                .because(Refusal::NothingToInterrupt));
+        };
+        if lifecycle.resource() != Some(alondra_domain::ResourceEvidence::Available) {
+            let node = self.tasks.get(&task).map_or_else(|| agent_id.0.clone(), |task| task.title.clone());
+            return Err(DomainError::new("conflict", format!("Node {agent_id} is not connected, so it cannot be stopped now"))
+                .because(Refusal::NodeUnreachable { node }));
+        }
+        match stop {
+            alondra_domain::TurnStop::Running => {
+                return Err(DomainError::new("conflict", format!("Claude has not accepted an interrupt of the turn node {agent_id} runs"))
+                    .because(Refusal::InterruptNotAccepted));
+            }
+            alondra_domain::TurnStop::ForceRequested => {
+                return Err(DomainError::new("conflict", format!("Node {agent_id} is already being stopped"))
+                    .because(Refusal::AlreadyStopping));
+            }
+            alondra_domain::TurnStop::InterruptAccepted => {}
+        }
+        let record = LifecycleRecord::ControlRequested {
+            control: format!("control-{task}-{}", lifecycle.revision() + 1),
+            operation: ControlRecord::ForceStop { turn: turn.as_str().into() },
         };
         let record = self.judged(&task, lifecycle, record)?;
         Ok((task, record))

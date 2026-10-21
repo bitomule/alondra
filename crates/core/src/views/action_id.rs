@@ -44,9 +44,11 @@ pub enum Verb {
     SetPriority,
     /// Remove a rule «allow always» added to a repo's local settings on this Mac.
     RemoveRule,
+    /// End Claude's process for a node whose turn stayed open after Claude accepted its interrupt.
+    ForceStop,
 }
 impl Verb {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -82,6 +84,7 @@ impl Verb {
         Self::SetLimit,
         Self::SetPriority,
         Self::RemoveRule,
+        Self::ForceStop,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -120,6 +123,7 @@ impl Verb {
             Self::SetLimit => "set_limit",
             Self::SetPriority => "set_priority",
             Self::RemoveRule => "remove_rule",
+            Self::ForceStop => "force_stop",
         }
     }
     fn parse(value: &str) -> Option<Self> {

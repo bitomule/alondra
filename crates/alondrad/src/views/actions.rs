@@ -347,7 +347,7 @@ pub(crate) fn external_request(body: &Value) -> bool {
 }
 
 fn is_external(verb: Verb) -> bool {
-    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
+    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule)
 }
@@ -451,6 +451,7 @@ async fn execute_external(
         Verb::Relaunch => "Relaunched",
         Verb::Close => "Closed",
         Verb::Interrupt => "Interrupted",
+        Verb::ForceStop => "Stopping",
         Verb::OrchRetry => "Retried",
         Verb::OrchAck => "Acknowledged",
         Verb::OrchStop => "Stopped",
@@ -469,7 +470,7 @@ async fn execute_external(
     let stamp = if lang == Lang::Es { match action.verb {
         Verb::Reply => "Respuesta enviada",
         Verb::AskPr => "Pregunta enviada", Verb::Conflicts => "Conflictos comunicados",
-        Verb::Msg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido",
+        Verb::Msg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido", Verb::ForceStop => "Parando",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
@@ -631,6 +632,23 @@ async fn execute_external(
             match domain.live.pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
                 Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
+            }
+        }
+        Verb::ForceStop => {
+            let agent = AgentId(action.subject.clone());
+            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
+            let envelope = CommandEnvelope {
+                protocol_version: 2,
+                data_epoch: state.data_epoch.clone(),
+                command_id: CommandId(request.command_id.clone()),
+                expected_revision: state.revision,
+                command: Command::ForceStopTurn { agent_id: agent },
+            };
+            match domain.execute(&Actor::User { user_id }, &envelope, transport,
+                || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
+                Ok(outcome) => Ok(applied(action.verb, lang, stamp, outcome.revision, 200, json!({"force_stopped": action.subject}))),
+                Err(crate::domain_store::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
             }
         }
         Verb::Pause => {

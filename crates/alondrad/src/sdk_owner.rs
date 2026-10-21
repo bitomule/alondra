@@ -42,6 +42,7 @@ fn capabilities() -> BTreeSet<Capability> {
         Capability::Decisions,
         Capability::McpReconnect,
         Capability::McpSignIn,
+        Capability::ForceStop,
     ])
 }
 
@@ -618,8 +619,30 @@ impl Driver {
         let control = self.sealed().control_commands.pop().ok_or_else(|| Failed("the control left no seal".into()))?;
         let handoff = self.worker.submit_control(&control).unwrap_or(Handoff::Uncertain);
         let awaited = (handoff == Handoff::Offered).then(|| answered_by_event(control.bytes())).flatten();
+        let accepted = match (handoff, control.attempt().operation()) {
+            (Handoff::Offered, alondra_store::ControlOperation::Control(alondra_domain::Control::Interrupt { turn: Some(turn) })) => {
+                Some((control.attempt().execution().clone(), control.attempt().control().clone(), turn.clone()))
+            }
+            _ => None,
+        };
+        let epoch = self.scope.epoch().clone();
         self.domain
-            .own(self.scope.clone(), |owner| owner.record_control_receipt(control, receipt(handoff)))
+            .own(self.scope.clone(), |owner| {
+                owner.record_control_receipt(control, receipt(handoff))?;
+                let Some((stamp, id, turn)) = accepted else { return Ok(()) };
+                let lifecycle = owner.lifecycle(stamp.task())?;
+                if lifecycle.turn() != Some(&turn) || lifecycle.turn_stop() != Some(alondra_domain::TurnStop::Running) {
+                    return Ok(());
+                }
+                let envelope = CommandEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    data_epoch: epoch,
+                    command_id: format!("interrupt-accepted:{}", id.as_str()).as_str().into(),
+                    expected_revision: 0,
+                    command: Command::RecordInterruptAccepted { task_id: stamp.task().clone(), generation: stamp.generation(), turn: turn.as_str().into() },
+                };
+                owner.stage_command(&Actor::System, &envelope, Attached::None).map(drop)
+            })
             .map_err(failed("recording the control's handoff"))?;
         self.sealed();
         self.results.extend(awaited);

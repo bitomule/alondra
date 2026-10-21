@@ -1462,6 +1462,10 @@ fn control_actions_have_one_wire_spelling() {
         json!({"type":"mcp_status"})
     );
     assert_eq!(
+        serde_json::to_value(Action::ForceStop).unwrap(),
+        json!({"type":"force_stop"})
+    );
+    assert_eq!(
         serde_json::to_value(Action::McpReconnect { server: "linear".into() }).unwrap(),
         json!({"type":"mcp_reconnect","server":"linear"})
     );

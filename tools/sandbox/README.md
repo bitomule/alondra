@@ -67,6 +67,8 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
   node event|connect|ack`), the classic hooks (`alondra hook`) and the real `alondra mcp-node` with
   the settings file Alondra wrote; `claude stop|respawn|rm|agents` act on it. While
   `fakes/hold-stop` exists, `claude stop` fails and the session goes on.
+  While `fakes/hold-interrupt` exists, the native Claude accepts an interrupt and its turn goes
+  on, so only «Force stop» ends it.
 - **GitHub** (`gh`): PRs whose head is their branch's tip in `remote.git`; checks, drafts and merge
   failures are set per PR.
 

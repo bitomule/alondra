@@ -665,6 +665,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordRuntimeFacts { task_id, .. }
         | Command::RecordTurnBoundary { task_id, .. }
         | Command::RecordHostEnded { task_id, .. }
+        | Command::RecordInterruptAccepted { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::ResendUntakenInput { task_id, .. }
         | Command::SetModel { task_id, .. }
@@ -747,7 +748,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::HoldHook { .. }
         | Command::HoldQuestions { .. }
         | Command::ProbeClaudeAccess { .. }
-        | Command::InterruptTurn { .. } => None,
+        | Command::InterruptTurn { .. }
+        | Command::ForceStopTurn { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

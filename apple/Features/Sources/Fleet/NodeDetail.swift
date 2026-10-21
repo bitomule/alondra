@@ -27,6 +27,7 @@ public struct NodeDetail: Equatable, Sendable {
     public var now: [Activity] = []
     public var background: [Activity] = []
     public var message: WireAction?
+    /// Interrupt, or Force stop once Claude accepted the interrupt and its turn still runs.
     public var interrupt: WireAction?
     public var pause: WireAction?
     public var resume: WireAction?
@@ -66,10 +67,15 @@ public struct NodeDetail: Equatable, Sendable {
         }
     }
 
-    /// The node as it is after what was just sent: a paused or resumed node says so at once.
+    /// The node as it is after what was just sent: an interrupted or force-stopped node no longer
+    /// offers to stop, and a paused or resumed one says so at once.
     public func hiding(_ optimistic: Optimistic) -> NodeDetail {
-        guard let sent = [pause, resume].compactMap({ $0 }).first(where: { optimistic.hides($0.id) }) else { return self }
         var detail = self
+        if let interrupt, optimistic.hides(interrupt.id) {
+            detail.interrupt = nil
+            detail.state = interrupt.stamp ?? detail.state
+        }
+        guard let sent = [pause, resume].compactMap({ $0 }).first(where: { optimistic.hides($0.id) }) else { return detail }
         (detail.pause, detail.resume, detail.interrupt) = (nil, nil, nil)
         detail.state = sent.stamp ?? detail.state
         return detail
@@ -79,7 +85,7 @@ public struct NodeDetail: Equatable, Sendable {
         for action in actions {
             switch action.id?.prefix(while: { $0 != ":" }) {
             case "msg": message = action
-            case "interrupt": interrupt = action
+            case "interrupt", "force_stop": interrupt = action
             case "pause": pause = action
             case "resume": resume = action
             case "close": close = action

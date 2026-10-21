@@ -15,7 +15,7 @@ try {
     const host = startHost('full');
     const owner = await own(host);
     assert.deepEqual(owner.hello.capabilities, [...HOST_CAPABILITIES]);
-    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in']);
+    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in']);
 
     assert.deepEqual((await owner.command({ type: 'mcp_status' })).outcome, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' }, 'a control before the launch is refused');
     assert.deepEqual(controls(host), [], 'and never reaches Claude');
@@ -78,6 +78,23 @@ try {
     assert.equal(lines(host.capture + '.prompts').at(-1), '/compact', 'compaction is an ordinary input');
   }
   {
+    const host = startHost('stubborn');
+    const owner = await own(host);
+    assert.deepEqual((await owner.command({ type: 'force_stop' })).outcome, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' }, 'nothing to force before the launch');
+    assert.deepEqual((await owner.command({ type: 'start', cwd: host.config.native.cwd, input_id: input(1), prompt: 'ignore-interrupt' })).outcome, { status: 'accepted', phase: 'offered' }, host.stderr());
+    await sdk(owner, 'message', (payload) => payload.type === 'assistant');
+    const pid = lines(host.capture + '.starts')[0].pid;
+    assert.deepEqual((await owner.command({ type: 'interrupt' })).outcome, applied, 'Claude accepts the interrupt');
+    assert.deepEqual(controls(host), [{ subtype: 'interrupt' }]);
+    const stopped = await owner.command({ type: 'force_stop' });
+    assert.deepEqual(stopped.outcome, applied, host.stderr());
+    const exited = await owner.event('process_exited');
+    assert.deepEqual(exited.body.observation, { type: 'process_exited', exit_code: null, signal: 'SIGKILL' }, 'a Claude that ignores SIGTERM is ended by SIGKILL');
+    assert(owner.frames.indexOf(exited) < stopped.at, 'the receipt comes once Claude exited');
+    assert(!owner.frames.some((frame) => frame.body.type === 'event' && frame.body.observation.kind === 'result'), 'the turn never ended on its own');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'no Claude process is left');
+  }
+  {
     const declared = HOST_CAPABILITIES.filter((capability) => capability !== 'set_model' && capability !== 'set_permission_mode');
     const host = startHost('narrow', { capabilities: declared });
     const owner = await own(host);
@@ -98,7 +115,7 @@ try {
     }
     assert.deepEqual(controls(host), []);
   }
-  console.log('Host controls: each declared control reaches Claude with its receipt; refusals have no effect');
+  console.log('Host controls: each declared control reaches Claude with its receipt; refusals have no effect; a force stop ends a Claude that ignores its interrupt');
 } catch (error) {
   console.error(error, stderr());
   process.exitCode = 1;

@@ -1010,15 +1010,20 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));
     }
     if interaction.card.why == crate::domain::INTERRUPTED_WHY {
-        let need = tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir");
-        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
-            "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.",
-            "Paraste su turno. Dile que siga, escríbele qué hacer o cancela la tarea.").into()));
+        return Some(interrupted_text(title, lang));
     }
     let need = tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir");
     Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",
         "Su turno terminó sin nada que explique qué hace después. Dile que siga, escríbele qué hacer o cancela la tarea.").into()))
+}
+
+/// The card of a turn the user stopped, by interrupting it or forcing it to stop.
+fn interrupted_text(title: &str, lang: Lang) -> (String, String) {
+    let need = tf!(lang, "You interrupted “{title}”: tell it how to go on", "Lo interrumpiste: dile a «{title}» cómo seguir");
+    (clip(&need, CardSpec::NEED_MAX), t!(lang,
+        "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.",
+        "Paraste su turno. Dile que siga, escríbele qué hacer o cancela la tarea.").into())
 }
 
 /// The cards about a task whose SDK session closed mid-way: how it goes on, and whether a message
@@ -1029,6 +1034,9 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
+    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::INTERRUPTED_WHY {
+        return Some(interrupted_text(title, lang));
+    }
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {
         let need = tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
             "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir");

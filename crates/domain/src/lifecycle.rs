@@ -189,6 +189,15 @@ pub enum ActivityView {
     Resting,
 }
 
+/// How far stopping the root turn went. Only a turn that stays open after Claude accepted its
+/// interrupt can be force-stopped, once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnStop {
+    Running,
+    InterruptAccepted,
+    ForceRequested,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceEvidence {
     Reserved,
@@ -288,6 +297,9 @@ pub enum PermissionMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
     Interrupt { turn: Option<TurnId> },
+    /// Claude's process is ended: only for a root turn that stayed open after Claude accepted its
+    /// interrupt.
+    ForceStop { turn: TurnId },
     SetModel { model: String },
     SetPermissionMode { mode: PermissionMode },
     ReadMcpStatus,
@@ -611,6 +623,10 @@ pub enum RuntimeFact {
     EffectAccepted {
         operation: OperationId,
     },
+    /// Claude accepted the interrupt of the root `turn`, which is still open.
+    InterruptAccepted {
+        turn: TurnId,
+    },
     EffectObserved {
         operation: OperationId,
     },
@@ -679,6 +695,7 @@ enum Activity {
         id: TurnId,
         work: BTreeSet<WorkId>,
         continuations: BTreeSet<Wake>,
+        stop: TurnStop,
     },
     OwnWork {
         work: NonEmpty<WorkId>,
@@ -917,6 +934,20 @@ impl TaskLifecycle {
             | State::Cancelled => None,
         }
     }
+    fn session_mut(&mut self) -> Option<&mut Execution> {
+        match &mut self.state {
+            State::InProgress(Progress::Executing { execution, .. }) => Some(&mut execution.0),
+            State::InProgress(
+                Progress::Waiting { session, .. } | Progress::Dependency { session, .. },
+            ) => session.execution_mut(),
+            State::Delivered(delivered) => delivered.session.execution_mut(),
+            State::Finishing(finishing) => finishing.session.execution_mut(),
+            State::Unstarted(_)
+            | State::InProgress(Progress::Queued { .. })
+            | State::Completed
+            | State::Cancelled => None,
+        }
+    }
     pub fn execution(&self) -> Option<&ExecutionStamp> {
         self.session().map(|execution| &execution.stamp)
     }
@@ -937,6 +968,13 @@ impl TaskLifecycle {
     pub fn turn(&self) -> Option<&TurnId> {
         match &self.session()?.activity {
             Activity::Turn { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+    /// How far stopping the root turn the execution runs went, if it is in one.
+    pub fn turn_stop(&self) -> Option<TurnStop> {
+        match &self.session()?.activity {
+            Activity::Turn { stop, .. } => Some(*stop),
             _ => None,
         }
     }
