@@ -445,6 +445,13 @@ def fresh_previous(rehearsal, home, old):
 
 
 SDK_CASE = 'sdk-handover'
+FIRST_SDK_RELEASE = (0, 3, 0)
+
+
+def has_sdk_backend(version):
+    """From 0.3.0 a release runs every node through the Agent SDK: it leaves no claude --bg node
+    for the next one to move."""
+    return tuple(int(part) for part in version.split('.')[:3]) >= FIRST_SDK_RELEASE
 HANDOVER_STEPS = ('planned', 'bg_stopped', 'sdk_admitted', 'done')
 STUBBED_FOR_FAKES = tuple(name for name in STUBBED_COMMANDS if name not in ('claude', 'gh', 'git', 'brew'))
 PATIENCE = 300
@@ -1120,7 +1127,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         result['cases'][case] = timings
         print(f'{case}: {old_version} → {new["version"]} restarted {timings["exited_after_swap_ms"]} ms after '
               f'the swap and answered in {timings["answered_ms"]} ms')
-    if sdk:
+    if sdk and not has_sdk_backend(old['version']):
         keg = work / SDK_CASE / 'Cellar/alondra' / new['version']
         try:
             result['cases'][SDK_CASE] = sdk_handover(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
@@ -1129,6 +1136,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         moved = result['cases'][SDK_CASE]
         print(f'{SDK_CASE}: {len(moved["moved"])} claude --bg nodes moved to the Agent SDK with their sessions, '
               f'the daemon killed after {", ".join(moved["crashed_after"])}')
+    if sdk:
         keg = work / FRESH_SDK_CASE / 'Cellar/alondra' / new['version']
         try:
             result['cases'][FRESH_SDK_CASE] = fresh_sdk(rehearsal, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)

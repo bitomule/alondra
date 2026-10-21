@@ -194,6 +194,14 @@ class HandoverWorldTests(Fixture):
                          'other builds keep the Mac busy: the gate must not hold the case\'s nodes')
 
 
+class HandoverCaseTests(unittest.TestCase):
+    def test_only_a_release_before_the_agent_sdk_leaves_claude_bg_nodes_to_move(self):
+        self.assertFalse(u.has_sdk_backend('0.2.91'))
+        self.assertTrue(u.has_sdk_backend('0.3.0'), '0.3.0 launches no claude --bg node: the handover case cannot run from it')
+        self.assertTrue(u.has_sdk_backend('0.3.1'))
+        self.assertTrue(u.has_sdk_backend('1.0.0'))
+
+
 class SandboxTests(Fixture):
     def sandboxed(self, code):
         return subprocess.run(u.sandboxed([sys.executable, '-I', '-c', code], self.protected, self.work),

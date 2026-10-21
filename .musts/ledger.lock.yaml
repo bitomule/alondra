@@ -2218,6 +2218,7 @@ satisfied:
 - {check: "root/bazel-test", scope_hash: "db5f367ecf3e1ecb64f12c42bbc9f3eeb6e30fc4408c321be2fb7cf385617dcf"}
 - {check: "root/bazel-test", scope_hash: "dbb8a2c9295665c680fa54560cc893720d4a2a9d48011c13c1d6150548d6d95c"}
 - {check: "root/bazel-test", scope_hash: "dbe731a83abdc0249305fd7e19c2909444e0789cc24be5a014ad3c71bc3aeb85"}
+- {check: "root/bazel-test", scope_hash: "dd645b6ace1952842a2ef2f5b17bf1a15b1ab60f9de49df0caba320baf918447"}
 - {check: "root/bazel-test", scope_hash: "ddac51d183b50ea9bbbc9b0d0a6e6313b8d4ae83b96e98a2feee6f2975664c79"}
 - {check: "root/bazel-test", scope_hash: "df0db0212bf8ea3b8917fc13f01b68abcd1c0acfb5b2c60b98ed98b5d15668e6"}
 - {check: "root/bazel-test", scope_hash: "df260cec38e5a9b95e3bc6dcd641aefc06a128eb997ed63c7cc5299950797d9f"}
