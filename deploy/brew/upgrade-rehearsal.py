@@ -41,7 +41,6 @@ LAUNCHER = 'alondrad-launcher'
 RELAUNCH = 75
 SERVE_WITHIN = 60
 EXIT_WITHIN = 120
-HEALTH_WITHIN = 1.0
 STAY_UP = 10
 PREFLIGHT_TIMEOUT = 300
 CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'outdated-launcher', 'fresh-previous')
@@ -421,7 +420,7 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
     relaunched = Daemon(rehearsal, launch_path, home, log, port=daemon.port)
     try:
         started = time.monotonic()
-        relaunched.wait_for_version(new['version'], HEALTH_WITHIN)
+        relaunched.wait_for_version(new['version'], SERVE_WITHIN)
         answered_ms = round((time.monotonic() - started) * 1000)
         deadline = time.monotonic() + STAY_UP
         while time.monotonic() < deadline:

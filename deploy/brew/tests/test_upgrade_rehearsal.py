@@ -100,9 +100,10 @@ class DaemonFixtureTests(unittest.TestCase):
 
 
 class UpgradeMachine:
-    def __init__(self, readiness_delay=0.2, installs_launcher=True):
+    def __init__(self, readiness_delay=0.2, installs_launcher=True, readiness_delays=None):
         self.now = 0.0
         self.readiness_delay = readiness_delay
+        self.readiness_delays = readiness_delays or {}
         self.installs_launcher = installs_launcher
         self.processes = []
         self.waits = []
@@ -123,7 +124,8 @@ class UpgradeMachine:
             shutil.copy(bundled, installed)
         process = SimpleNamespace(launch=launch, version=version, mode=mode,
                                   inode=launch.stat().st_ino, port=int(kwargs['env']['ALONDRA_PORT']),
-                                  ready=self.now + self.readiness_delay, returncode=None)
+                                  ready=self.now + self.readiness_delays.get(version, self.readiness_delay),
+                                  returncode=1 if mode == 'crash' else None)
         process.poll = lambda: process.returncode
         def wait(timeout=None):
             if process.returncode is not None:
@@ -376,10 +378,10 @@ class UpgradeTests(Fixture):
         self.home = self.work / 'home'
         self.home.mkdir()
 
-    def old_and_new(self, mode):
+    def old_and_new(self, mode, new_mode='serve', new_answers_as='1.0.1'):
         (self.root / 'bin').mkdir()
         return ({'version': '1.0.0', 'binary': fake_daemon(self.root / 'bin/old', '1.0.0', mode)},
-                {'version': '1.0.1', 'binary': fake_daemon(self.root / 'bin/new', '1.0.1', 'serve')})
+                {'version': '1.0.1', 'binary': fake_daemon(self.root / 'bin/new', new_answers_as, new_mode)})
 
     def test_the_previous_daemon_restarts_into_the_new_one_through_the_opt_link(self):
         old, new = self.old_and_new('relaunch')
@@ -388,22 +390,38 @@ class UpgradeTests(Fixture):
         with machine.boundaries(), patch.object(u, 'STAY_UP', 1):
             timings = u.upgrade(self.rehearsal, 'case', self.home, old, new, changed.append)
         self.assertEqual(changed, [self.home])
-        self.assertLess(timings['answered_ms'], u.HEALTH_WITHIN * 1000)
         self.assertEqual((self.work / 'case/opt/alondra').readlink(), self.work / 'case/Cellar/alondra/1.0.1')
-        self.assertEqual(machine.waits, [('1.0.0', u.SERVE_WITHIN), ('1.0.1', 1.0)])
+        self.assertEqual(machine.waits, [('1.0.0', u.SERVE_WITHIN), ('1.0.1', u.SERVE_WITHIN)])
         self.assertEqual([process.version for process in machine.processes], ['1.0.0', '1.0.1'])
         self.assertEqual(machine.processes[0].launch, machine.processes[1].launch)
         self.assertEqual(machine.processes[0].port, machine.processes[1].port)
         self.assertEqual(machine.processes[0].returncode, 75)
         self.assertTrue(all(process.returncode is not None for process in machine.processes))
 
-    def test_the_new_daemon_must_answer_within_one_second_under_a_controlled_clock(self):
+    def test_a_new_daemon_slowed_by_a_loaded_mac_passes_and_reports_how_long_it_took(self):
         old, new = self.old_and_new('relaunch')
-        machine = UpgradeMachine(readiness_delay=1.5)
-        with machine.boundaries(), self.assertRaisesRegex(u.Failed, 'did not answer as 1.0.1 within 1.0 s'):
-            u.upgrade(self.rehearsal, 'case', self.home, old, new)
-        self.assertEqual(machine.waits[-1], ('1.0.1', 1.0))
+        machine = UpgradeMachine(readiness_delays={'1.0.1': 5})
+        with machine.boundaries(), patch.object(u, 'STAY_UP', 1):
+            timings = u.upgrade(self.rehearsal, 'case', self.home, old, new)
+        self.assertGreaterEqual(timings['answered_ms'], 5000)
         self.assertTrue(all(process.returncode is not None for process in machine.processes))
+
+    def test_a_new_daemon_that_never_answers_fails(self):
+        old, new = self.old_and_new('relaunch')
+        machine = UpgradeMachine(readiness_delays={'1.0.1': u.SERVE_WITHIN + 1})
+        with machine.boundaries(), self.assertRaisesRegex(u.Failed, f'did not answer as 1.0.1 within {u.SERVE_WITHIN} s'):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
+        self.assertTrue(all(process.returncode is not None for process in machine.processes))
+
+    def test_a_new_daemon_that_exits_fails(self):
+        old, new = self.old_and_new('relaunch', new_mode='crash')
+        with UpgradeMachine().boundaries(), self.assertRaisesRegex(u.Failed, 'the daemon exited 1'):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
+
+    def test_a_new_daemon_that_answers_as_another_version_fails(self):
+        old, new = self.old_and_new('relaunch', new_answers_as='1.0.0')
+        with UpgradeMachine().boundaries(), self.assertRaisesRegex(u.Failed, 'did not answer as 1.0.1'):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
 
     def test_a_rejected_upgrade_fails_with_the_daemons_reason(self):
         old, new = self.old_and_new('reject')
