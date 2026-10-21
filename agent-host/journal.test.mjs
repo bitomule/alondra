@@ -37,8 +37,9 @@ try {
   journal.close(); journal = undefined; journal = new Journal(root, validate);
   assert.equal(journal.recovering, true, 'previous commands cannot be replayed into SDK after host restart');
   assert.equal(journal.cursor, 1); assert.equal(journal.acknowledged, 1); assert.equal(journal.ownerGeneration, 1);
-  assert.equal(journal.commands.get(start.body.command_id).raw.toString(), original.toString());
-  assert.deepEqual(journal.commands.get(start.body.command_id).receipt.body.outcome, { status: 'accepted', phase: 'offered' });
+  assert.equal(journal.commands.size, 0, 'the ACK after its final receipt settles the command');
+  assert.equal(journal.settled.get(start.body.command_id).digest, commandDigest(original));
+  assert.deepEqual(journal.settled.get(start.body.command_id).receipt.body.outcome, { status: 'accepted', phase: 'offered' });
   assert.equal(journal.events.size, 0);
   const before = statSync(journal.path).size;
   assert.throws(() => journal.append(frame({ type: 'attached', ...identity, owner_generation: 1, proof: '0'.repeat(64) })), /generation/);

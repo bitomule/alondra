@@ -282,6 +282,11 @@ for raw in sys.stdin:
             result(message, failed=True)
         elif text == 'consume-and-hold':
             consume(message)
+        elif text.startswith('bulky:'):
+            # A long turn whose answers are close to the largest event the host keeps.
+            for _ in range(int(text[len('bulky:'):])):
+                consume(message, dict(type='text', text='x' * 900_000))
+            result(message)
         elif text.startswith('[From ') and len(pending) > 1:
             # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is
             # taken into that same turn, which then ends.

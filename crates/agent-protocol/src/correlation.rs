@@ -4,7 +4,7 @@ use crate::{
     command_digest,
 };
 use alondra_foundation::CommandId;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandStatus {
@@ -16,14 +16,25 @@ struct TrackedCommand {
     digest: String,
     receipt: Option<ReceiptOutcome>,
 }
+impl TrackedCommand {
+    /// Offered, applied or refused: nothing more can come of it.
+    fn resolved(&self) -> bool {
+        matches!(
+            self.receipt,
+            Some(ReceiptOutcome::Rejected { .. } | ReceiptOutcome::Accepted { phase: crate::ReceiptPhase::Offered | crate::ReceiptPhase::Applied })
+        )
+    }
+}
 
 /// Bounded outgoing command correlation. Commands must be sent with encode(), then
 /// retried using identical bytes. This is not a durable command journal or a peer
 /// command admission service; a receiver hashes the original read_with_digest bytes.
+/// The bound is on commands still in flight: the oldest resolved one makes room for a new one.
 pub struct CommandRegistry {
     fence: Fence,
     execution: Execution,
     commands: HashMap<CommandId, TrackedCommand>,
+    order: VecDeque<CommandId>,
 }
 impl CommandRegistry {
     pub fn new(fence: Fence, execution: Execution) -> Result<Self, Error> {
@@ -33,6 +44,7 @@ impl CommandRegistry {
             fence,
             execution,
             commands: HashMap::new(),
+            order: VecDeque::new(),
         })
     }
     pub fn record(&mut self, command: &Command) -> Result<CommandStatus, Error> {
@@ -52,8 +64,15 @@ impl CommandRegistry {
             };
         }
         if self.commands.len() == MAX_TRACKED_COMMANDS {
-            return Err(Error::CommandCapacity);
+            let oldest = self
+                .order
+                .iter()
+                .position(|id| self.commands[id].resolved())
+                .ok_or(Error::CommandCapacity)?;
+            let id = self.order.remove(oldest).ok_or(Error::CommandCapacity)?;
+            self.commands.remove(&id);
         }
+        self.order.push_back(command.command_id.clone());
         self.commands.insert(
             command.command_id.clone(),
             TrackedCommand {

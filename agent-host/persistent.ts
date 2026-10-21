@@ -126,7 +126,7 @@ export class PersistentHost {
   }
   private async command(lane: Lane, command: Command, raw: Buffer): Promise<void> {
     this.current(lane); this.binding(command);
-    const digest = commandDigest(raw); const previous = this.journal.commands.get(command.command_id);
+    const digest = commandDigest(raw); const previous = this.journal.commands.get(command.command_id) ?? this.journal.settled.get(command.command_id);
     if (previous) {
       if (previous.digest !== digest) throw new Error('Command identity conflict');
       // A re-sent command is the owner reconciling after a crash. Return its definitive retained
@@ -263,6 +263,7 @@ export class PersistentHost {
         for (;;) {
           this.current(lane);
           let sent = false;
+          for (const id of lane.receipts.keys()) if (!this.journal.commands.has(id)) lane.receipts.delete(id);
           for (const record of this.journal.commands.values()) {
             const frame = record.receipt;
             if (!frame) continue;

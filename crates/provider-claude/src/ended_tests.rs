@@ -152,3 +152,26 @@ fn a_host_that_never_wrote_its_journal_took_nothing() {
     assert_eq!(journal.retained(&command("any", "a")).unwrap(), Retained::Absent);
     assert_eq!(journal.last_cursor(), 4);
 }
+
+/// What a host journal compacted after its ACK at cursor 5 holds: the owner grant and that ACK,
+/// the commands still unresolved and the events after it.
+#[test]
+fn a_compacted_journal_starts_after_the_acknowledged_events_and_keeps_the_unresolved_commands() {
+    let directory = directory();
+    let attached = encode(&Frame::new(Body::Attached(alondra_agent_protocol::Attached {
+        fence: fence(), execution: execution(1), host_instance_id: "host-instance".into(), owner_generation: 1, proof: "0".repeat(64),
+    })))
+    .unwrap();
+    let acknowledged = encode(&Frame::new(Body::Acknowledge(alondra_agent_protocol::Acknowledge {
+        fence: fence(), execution: execution(1), host_instance_id: "host-instance".into(), owner_generation: 1, cursor: 5,
+    })))
+    .unwrap();
+    let held = command("held", "a");
+    outbox(&directory, &[&attached, &acknowledged, &held, &receipt(&held, admitted()), &event(6, 1), &event(7, 1)]);
+    let journal = read(&directory, 5).unwrap();
+    assert_eq!(journal.events().iter().map(|event| event.cursor).collect::<Vec<_>>(), [6, 7]);
+    assert_eq!(journal.last_cursor(), 7);
+    assert_eq!(journal.retained(&held).unwrap(), Retained::AdmittedOnly);
+    let ahead = read(&directory, 6).unwrap();
+    assert_eq!(ahead.events().iter().map(|event| event.cursor).collect::<Vec<_>>(), [7], "what the store already has is left out");
+}

@@ -386,6 +386,37 @@ fn all_authority_fences_reject_commands_receipts_and_events_atomically() {
     }
 }
 
+// A node sends more commands over its life than the registry holds at once: only the ones still
+// in flight count, and a resolved one makes room.
+#[test]
+fn the_command_bound_counts_only_commands_still_in_flight() {
+    let original = command();
+    let mut registry =
+        CommandRegistry::new(original.fence.clone(), original.execution.clone()).unwrap();
+    let resolved = |id: String, outcome: ReceiptOutcome| {
+        let mut sent = original.clone();
+        sent.command_id = CommandId(id);
+        let mut answered = receipt();
+        answered.command_id = sent.command_id.clone();
+        answered.command_sha256 = alondra_agent_protocol::command_digest(&sent).unwrap();
+        answered.outcome = outcome;
+        (sent, answered)
+    };
+    for index in 0..300 {
+        let (sent, answered) = resolved(format!("resolved-{index}"), ReceiptOutcome::Accepted { phase: ReceiptPhase::Offered });
+        assert_eq!(registry.record(&sent).unwrap(), CommandStatus::New, "command {index}");
+        registry.receipt(&answered).unwrap();
+    }
+    assert_eq!(registry.len(), MAX_TRACKED_COMMANDS);
+    for index in 0..MAX_TRACKED_COMMANDS {
+        let (sent, answered) = resolved(format!("admitted-{index}"), ReceiptOutcome::Accepted { phase: ReceiptPhase::Admitted });
+        registry.record(&sent).unwrap();
+        registry.receipt(&answered).unwrap();
+    }
+    let (extra, _) = resolved("one-too-many".into(), ReceiptOutcome::Accepted { phase: ReceiptPhase::Admitted });
+    assert!(matches!(registry.record(&extra), Err(Error::CommandCapacity)), "commands whose outcome is unknown stay bounded");
+}
+
 #[test]
 fn duplicate_command_conflict_capacity_and_receipt_phases_are_explicit() {
     let original = command();
@@ -445,16 +476,18 @@ fn duplicate_command_conflict_capacity_and_receipt_phases_are_explicit() {
         registry.record(&next).unwrap();
     }
     assert_eq!(registry.len(), MAX_TRACKED_COMMANDS);
+    assert_eq!(
+        registry.record(&original).unwrap(),
+        CommandStatus::Duplicate
+    );
     let mut next = original.clone();
+    next.command_id = "room-of-the-resolved".into();
+    assert_eq!(registry.record(&next).unwrap(), CommandStatus::New, "the applied original makes room");
     next.command_id = "one-too-many".into();
     assert!(matches!(
         registry.record(&next),
         Err(Error::CommandCapacity)
     ));
-    assert_eq!(
-        registry.record(&original).unwrap(),
-        CommandStatus::Duplicate
-    );
 }
 
 #[test]

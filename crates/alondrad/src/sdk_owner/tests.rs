@@ -825,7 +825,7 @@ fn carry_on(domain: &DomainRuntime, note: &str) {
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.into()))]),
         attachments: vec![],
     };
-    assert!(domain.execute_with(&user(), &envelope(&state, "client-carry-on", answer), None, None, || Ok(())).unwrap().changed);
+    assert!(domain.execute_with(&user(), &envelope(&state, &format!("client-carry-on-{}", card.as_str()), answer), None, None, || Ok(())).unwrap().changed);
 }
 
 // B1: the daemon crashes with the host still running. A fresh daemon on the same database adopts
@@ -954,6 +954,47 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "the reconciled turn ended with its own card");
     adopted.stop().unwrap();
+}
+
+// 21 Oct: an SDK node stopped within hours. Its host's journal had a 16 MiB lifetime limit and
+// took 256 commands at most, and each daemon connection tracked 256 commands for good: a long node
+// crossed them and its host stopped serving. Now a turn writes over 20 MiB and the node then takes
+// more than 256 inputs, through the same host.
+#[test]
+fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("bulky:24");
+    slice.settle(&mut driver);
+    assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
+    for turn in 1..=260 {
+        carry_on(&slice.domain, &format!("Next step {turn}"));
+        driver.step(&|| false).unwrap();
+        slice.settle(&mut driver);
+    }
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 261, "every input reached the same Claude");
+    assert!(prompts[260].ends_with("Next step 260"), "{}", prompts[260]);
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 261, "every turn ended with its own card");
+    driver.stop().unwrap();
+}
+
+// The Mac goes down on a host whose journal was compacted: the launch turn wrote more than the
+// journal keeps once acknowledged, then the host offered a client's answer and everything died
+// before the daemon recorded the receipt. The next daemon reads the compacted journal from disk:
+// the answer was handed, so nothing sends it to Claude again.
+#[test]
+fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("bulky:6");
+    slice.settle(&mut driver);
+    carry_on(&slice.domain, "Add the tests first");
+    assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert_eq!(resumed.pending_permits(), 0, "the ended host's journal proves the answer was handed: it is not sent again");
+    assert_eq!(slice.prompts().len(), 2);
+    resumed.stop().unwrap();
 }
 
 // 19 Oct: Claude's sign-in expired and nothing told the user. Through the SDK, the native

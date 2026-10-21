@@ -119,6 +119,12 @@ js_test(
     data = [":host_lib", "//crates/agent-protocol:fixtures/start.json", "//crates/agent-protocol:fixtures/event.json"],
 )
 js_test(
+    name = "journal_compaction_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "journal-compaction.test.mjs",
+    data = [":host_lib", "//crates/agent-protocol:fixtures/start.json", "//crates/agent-protocol:fixtures/event.json"],
+)
+js_test(
     name = "channel_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "channel.test.mjs",
