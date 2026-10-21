@@ -251,8 +251,11 @@ async fn a_node_waiting_for_a_permission_is_never_closed_and_counts_no_failure()
     assert!(rig.told().iter().all(|text| !text.contains("could not close")));
 }
 
+// 21 October: a close that kept failing for the same reason told the node so on every attempt, and
+// each message was one more turn of its Claude. The node is told once per reason, and again only
+// after it confirms its cleanup anew.
 #[tokio::test]
-async fn a_refused_close_tells_the_node_why_and_tries_again_after_the_pause_or_its_confirmation() {
+async fn a_refused_close_tells_the_node_why_once_and_again_only_after_its_new_confirmation() {
     let rig = Rig::new(thirty_minutes());
     *rig.sessions.leftovers.lock().unwrap() = Some("a.txt is not committed".into());
     rig.confirm();
@@ -267,12 +270,13 @@ async fn a_refused_close_tells_the_node_why_and_tries_again_after_the_pause_or_i
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.told().len(), 1, "no new attempt before the pause is over");
     rig.pass(T0 + 5 * MINUTE).await;
-    assert_eq!(rig.told().len(), 2, "tried again after the pause");
+    assert_eq!(rig.closing().unwrap().failures, 2, "tried again after the pause");
+    assert_eq!(rig.told().len(), 1, "the same reason is not told again");
 
     rig.confirm();
     rig.pass(T0 + 6 * MINUTE).await;
-    assert_eq!(rig.told().len(), 3, "a new confirmation tries at once");
-    assert_eq!(rig.closing().unwrap().failures, 3);
+    assert_eq!(rig.closing().unwrap().failures, 3, "a new confirmation tries at once");
+    assert_eq!(rig.told().len(), 2, "and is answered with why it still does not close");
 }
 
 #[tokio::test]

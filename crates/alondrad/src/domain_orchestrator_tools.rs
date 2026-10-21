@@ -401,7 +401,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
                 let backend = backend.clone();
                 crate::task_closer::blocking(|| {
                     domain.stop_sdk_host(old)?;
-                    crate::sdk_owner::end_stopped_host(runtime, &backend, task.id.clone())
+                    crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
                 })
                 .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
             }

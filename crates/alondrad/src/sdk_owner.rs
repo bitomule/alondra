@@ -346,11 +346,12 @@ pub(crate) fn host_started(backend: &SdkBackend, domain: &DomainRuntime, task: &
     instance.is_none_or(|instance| backend.state_root.join(instance).join("host.lock").exists())
 }
 
-/// Commits what became of the task's host, which its owner stopped: the evidence its journal kept,
-/// each dispatch resolved from it, and the host's end, which closes its open requests and their
-/// cards. No host takes its place: the task's next execution is a new one, as when its node is
-/// replaced.
-pub(crate) fn end_stopped_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<(), Failed> {
+/// Ends the task's host, which no owner of this daemon holds (its owner stopped it, or the daemon
+/// that owned it is gone), and commits what became of it: the evidence its journal kept, each
+/// dispatch resolved from it, and the host's end, which closes its open requests and their cards.
+/// A host that still runs is ended by the lock it holds. No host takes its place and no Claude
+/// session is resumed: the task's next execution, if any, is a new one.
+pub(crate) fn end_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<(), Failed> {
     take(domain, backend, task, None, false).map(drop)
 }
 
@@ -391,7 +392,14 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     };
     let Some(journal) = journal else {
         if !relaunch {
-            return Err(Failed("the host still runs".into()));
+            if !end_refused {
+                return Err(Failed("the host still runs".into()));
+            }
+            log!("the SDK host of {task} still runs with no owner: it is stopped without resuming its Claude session");
+            drop(worker);
+            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+                .map_err(|error| Failed(format!("its host did not stop: {error}")))?;
+            return take_host(domain, backend, task, plugin, relaunch, false);
         }
         if let Err(error) = worker.adopt_owner(grant, adapter_state) {
             if !end_refused {

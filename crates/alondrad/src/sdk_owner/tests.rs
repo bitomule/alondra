@@ -788,6 +788,88 @@ async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is
     assert!(!slice.domain.owns_sdk_host(&agent));
 }
 
+// 21 October: the host of a closing task was left with no owner. Its node confirmed its cleanup and
+// gave its worktree up, and still the closer took the execution over: a new host resumed the Claude
+// session in the worktree being deleted, and every notice queued for it became one more turn. A task
+// that owes nothing more ends its host where it is and its session is never resumed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming_its_session() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let node = Actor::Agent { agent_id: agent.clone() };
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    for notice in 0..3 {
+        slice.run(&Actor::System, &format!("notice-{notice}"), Command::TellNode {
+            task_id: TASK.into(), text: format!("[From Alondra · 03:5{notice}] Alondra could not close this session yet"),
+        });
+    }
+    let (_, stranded) = strand_host(&slice, driver);
+    std::fs::remove_dir_all(&slice.worktree).unwrap();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let prompts = slice.prompts();
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    assert_eq!(slice.starts().len(), 1, "no host resumed the session: {:?}", slice.starts());
+    assert_eq!(slice.prompts(), prompts, "no notice reached Claude");
+    let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the stranded host's processes survived the close: {left:?}");
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Gone)));
+    assert!(!slice.domain.owns_sdk_host(&agent));
+    assert!(slice.domain.store.lock().unwrap().task_closings().unwrap().is_empty(), "the close finished with no failure");
+    let cards: Vec<&str> = state.interactions.keys().map(|id| id.0.as_str()).filter(|id| id.starts_with("problem-close-")).collect();
+    assert!(cards.is_empty(), "the user is never asked: {cards:?}");
+}
+
+// A worktree of the task holds work that is not saved: its node is told once which, not again on
+// every retry while nothing changes, and the node's new confirmation closes it at once instead of
+// after the retry's pause.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmation_closes_it_at_once() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    let node = Actor::Agent { agent_id: agent.clone() };
+    let root = Directory::new();
+    let dirty = crate::worktree::testing::task_worktree(&root, "sdk-slice");
+    slice.run(&Actor::System, "worktree", Command::RecordTaskWorktree {
+        task_id: TASK.into(), path: dirty.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Subagent, branch: None,
+    });
+    std::fs::write(dirty.join("draft.txt"), "x").unwrap();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    let told = || slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter()
+        .filter(|record| matches!(record, LifecycleRecord::Told { text, .. } if text.contains(dirty.to_str().unwrap()))).count();
+    let timing = crate::task_closer::Timing::new(None);
+    let retry = i64::try_from(timing.retry.as_millis()).unwrap();
+    let now = alondra_core::now_millis();
+    for attempt in 0..2 {
+        crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + attempt * retry).await.unwrap();
+    }
+    let failures = slice.domain.store.lock().unwrap().task_closing(&TASK.into()).unwrap().unwrap().failures;
+    assert_eq!((failures, told()), (2, 1), "tried after each pause, told once");
+    std::fs::remove_file(dirty.join("draft.txt")).unwrap();
+    slice.run(&node, "cleaned-again", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + retry + 1).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the confirmation closes it before the pause is over");
+    assert!(!slice.domain.owns_sdk_host(&agent));
+}
+
 // The node delivers inside its turn and the user accepts: Alondra's request to clean up, a message
 // of its outbox, is what the node's Claude is told next. A node of `claude --bg` takes it through its
 // mod; nothing took it for a node of the SDK.
@@ -1317,7 +1399,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     let old = driver.agent().clone();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     slice.domain.stop_sdk_host(&old).unwrap();
-    end_stopped_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
+    end_unowned_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
     assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
     let mut replacement = start(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
