@@ -22,6 +22,7 @@ TEAM = '658YBSK6MG'
 LOW_FREE = 8 * 1024**3
 REHEARSAL = 'upgrade-rehearsal.json'
 SDK_HANDOVER = 'sdk-handover'
+FIRST_SDK_RELEASE = (0, 3, 0)
 FRESH_SDK = 'fresh-sdk'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
@@ -152,7 +153,8 @@ def verify_rehearsal(ver, output):
     if saved.get('to') != ver or rehearsed.get('name') != archive or rehearsed.get('sha256') != release.sha(output / archive):
         raise RuntimeError('The upgrade rehearsal ran on other bytes than the prepared archive; prepare them again')
     handover = saved.get('cases', {}).get(SDK_HANDOVER) or {}
-    if handover.get('crashed_after') != list(HANDOVER_CRASHES):
+    leaves_claude_bg = tuple(int(part) for part in str(saved.get('from', '0')).split('.')[:3]) < FIRST_SDK_RELEASE
+    if leaves_claude_bg and handover.get('crashed_after') != list(HANDOVER_CRASHES):
         raise RuntimeError('The upgrade rehearsal did not move claude --bg nodes to the Agent SDK with a crash after each step; prepare them again')
     if not (saved.get('cases', {}).get(FRESH_SDK) or {}).get('session'):
         raise RuntimeError('The upgrade rehearsal did not run a task of a fresh install through its own Agent SDK host; prepare them again')

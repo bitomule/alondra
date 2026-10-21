@@ -403,6 +403,12 @@ class LocalReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'fresh install'):
             l.verify_prepared('0.1.2', 'source', output)
         rehearsed(output)
+        record = json.loads((output / l.REHEARSAL).read_text())
+        record['from'] = '0.3.0'
+        del record['cases'][l.SDK_HANDOVER]
+        (output / l.REHEARSAL).write_text(json.dumps(record))
+        l.verify_prepared('0.1.2', 'source', output)  # 0.3.0 leaves no claude --bg node to move
+        rehearsed(output)
         l.verify_prepared('0.1.2', 'source', output)
         self.assertTrue(archive.exists())
 
