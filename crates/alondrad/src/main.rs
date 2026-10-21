@@ -69,7 +69,7 @@ mod node_reconcile;
 mod revoked_devices;
 mod device_expiry;
 mod device_usage;
-mod evidence_retention;
+mod retention;
 mod node_push;
 mod node_reports;
 mod node_work;
@@ -574,7 +574,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
-    tokio::spawn(evidence_retention::run(domain.clone()));
+    tokio::spawn(retention::run(domain.clone()));
     tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     tokio::spawn(claude_check::run(plugins::node()));

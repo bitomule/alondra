@@ -207,11 +207,34 @@ observation below it with one byte (`X'00'`) and keeps the digest, which still t
 host sends again (`Duplicate`) from a different one (`ObservationConflict`). The checkpoint's own
 observation and those not normalized yet keep their bytes; the schema's triggers refuse anything
 else. Once an execution is no longer its task's current one, its released rows are removed and
-only the checkpoint's observation stays. `evidence_retention` runs the bounded pass
+only the checkpoint's observation stays. `retention` runs the bounded pass
 (`LifecycleTransaction::retain_evidence`) a minute after start and every hour, and gives the disk
 the space back with `PRAGMA incremental_vacuum`; a database still without incremental vacuum is
 rebuilt once with `VACUUM`. Nothing in Alondra shows these bytes; to see what a native Claude
 said, read its host's `sdk/<instance>/outbox`.
+
+### How long command bodies and receipts are kept
+
+Every commit writes a `command_audit` row (its revision, time, actor, command id and the command's
+kind), the whole command in `command_bodies`, and a `semantic_receipts` row (the command's digest
+and outcome, so the same command arriving again returns that outcome instead of running twice).
+The audit row stays for as long as the domain: the time of a revision is what task history,
+`task_state_times`, message and inbox times and `alondra models` read, and `write_mark` reads the
+newest revision. The audit row keeps all of an `assign_task`: `launched_by_alondra` reads it for
+nodes launched before launches were recorded in `model_decisions`. Nothing reads a body after the
+commit. A receipt is read only while the same command can arrive again: app retries are cut before
+the domain by one-use ids and an envelope that expires in 120 s, the TUI retries in memory with a
+new id per action, the relay queues nothing, and a node retries a card with the same
+`interaction_id` right after a failure.
+
+`domain_store/retention.rs` keeps bodies and receipts a week (`WINDOW_MS`) with a list of
+per-table policies, each one bounded pass the `retention` loop repeats under the writer lock:
+commands older than a week lose their body and their receipt, walking revisions from
+`retention_marks`; receipts older than a week go, and those written before receipts carried a time
+are dated by the first pass. Bodies live in their own table so that letting them go removes whole
+rows: shrinking a row in place leaves its page mostly empty for good. Audit rows written before
+that, with the command inside, move their body out once and the store is rebuilt once after. A new
+table policy is one more entry in `POLICIES`.
 
 21 October, copy of the real HOME (64 MB `domain.db`, 4974 journal events; one closing task held
 1568 pending inputs, 1563 of them the same closer message): preflight 5.15 s → 0.48 s. Before, each

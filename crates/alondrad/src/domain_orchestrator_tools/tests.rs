@@ -897,7 +897,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
 fn release_reasons(f: &Fixture) -> Vec<String> {
     let store = f.domain.store.lock().unwrap();
     let mut query = store.conn_for_test().prepare(
-        "SELECT json_extract(command,'$.reason') FROM command_audit WHERE json_extract(command,'$.kind')='release_task' ORDER BY revision").unwrap();
+        "SELECT json_extract(command,'$.reason') FROM command_bodies WHERE json_extract(command,'$.kind')='release_task' ORDER BY revision").unwrap();
     query.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
 }
 

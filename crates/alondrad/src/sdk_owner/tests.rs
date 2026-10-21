@@ -640,7 +640,7 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
         .query_row("SELECT count(*) FROM lifecycle_events WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap();
     assert!(turn_end.event_decodes <= (turn_end.transactions + turn_end.index_builds) * journal as u64,
         "the turn end decodes the task's {journal} journal events at most once per transaction and once per publication: {turn_end:?}");
-    assert!(turn_end.writes <= 14, "the turn end's writes grew past what this slice measured first: {turn_end:?}");
+    assert!(turn_end.writes <= 16, "the turn end's writes grew past what this slice measured, with each of its two commits writing its command's body beside its audit row: {turn_end:?}");
     let state = slice.domain.state().unwrap();
     let retitle = envelope(&state, "retitle", Command::TitleRequest { request_id: "sdk-slice-request".into(), title: "Notes for the release".into() });
     let (_, first) = measured(&slice.domain, || slice.domain.execute_with(&user(), &retitle, None, None, || Ok(())).unwrap());

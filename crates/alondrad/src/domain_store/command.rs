@@ -174,19 +174,13 @@ pub(super) fn stage(
             }
         }
         let at = alondra_core::now_millis();
+        let command = String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?;
         repository::exec(
             conn,
-            "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![
-                outcome.revision as i64,
-                actor_key,
-                envelope.command_id.0,
-                envelope.data_epoch.0,
-                String::from_utf8(canonical::bytes(&envelope.command)?)
-                    .context("command encoding")?,
-                at
-            ],
+            &format!("INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,?2,?3,?4,{},?6)", super::retention::summary("?5")),
+            params![outcome.revision as i64, actor_key, envelope.command_id.0, envelope.data_epoch.0, command, at],
         )?;
+        repository::exec(conn, "INSERT INTO command_bodies(revision,command) VALUES(?1,?2)", params![outcome.revision as i64, command])?;
         for request in next
             .requests
             .keys()
@@ -335,13 +329,14 @@ pub(super) fn stage(
     let result = serde_json::to_string(&outcome)?;
     repository::exec(
         conn,
-        "INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result) VALUES(?1,?2,?3,?4,?5)",
+        "INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result,at) VALUES(?1,?2,?3,?4,?5,?6)",
         params![
             actor_key,
             envelope.command_id.0,
             envelope.data_epoch.0,
             digest.as_slice(),
-            result
+            result,
+            alondra_core::now_millis()
         ],
     )?;
     if let Some((sender, id, ciphertext_digest)) = transport {

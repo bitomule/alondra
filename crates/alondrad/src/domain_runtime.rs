@@ -54,6 +54,13 @@ pub struct DomainRuntime {
     #[cfg(test)]
     pub(crate) index_builds: std::sync::atomic::AtomicU64,
 }
+/// What one retention run released: the provider evidence, and the rows each policy changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Retained {
+    pub(crate) evidence: alondra_store::EvidenceRetention,
+    pub(crate) tables: Vec<(&'static str, usize)>,
+}
+
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
         &self,
@@ -182,21 +189,33 @@ impl DomainRuntime {
     pub fn read(&self) -> Arc<ReadSnapshot> {
         Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned"))
     }
-    /// Releases the raw provider evidence no reader needs any more, one bounded pass at a time
-    /// under the writer lock so other writers run between passes, then gives the disk the space.
-    pub(crate) fn retain_evidence(&self) -> Result<alondra_store::EvidenceRetention, StoreError> {
+    /// Releases the raw provider evidence and the rows of each retention policy no reader needs
+    /// any more as of `now`, one bounded pass at a time under the writer lock so other writers run
+    /// between passes, then gives the disk the space.
+    pub(crate) fn retain(&self, now: i64) -> Result<Retained, StoreError> {
         const PASS: usize = 256;
-        let mut total = alondra_store::EvidenceRetention::default();
+        let mut retained = Retained::default();
         loop {
             let pass = self.store.lock().expect("domain store poisoned").retain_evidence(PASS)?;
-            total.released += pass.released;
-            total.removed += pass.removed;
+            retained.evidence.released += pass.released;
+            retained.evidence.removed += pass.removed;
             if pass.released < PASS && pass.removed < PASS {
                 break;
             }
         }
+        for policy in &crate::domain_store::retention::POLICIES {
+            let mut changed = 0;
+            loop {
+                let pass = self.store.lock().expect("domain store poisoned").retain(policy, now, PASS)?;
+                changed += pass;
+                if pass < PASS {
+                    break;
+                }
+            }
+            retained.tables.push((policy.name, changed));
+        }
         self.store.lock().expect("domain store poisoned").reclaim_space(4096)?;
-        Ok(total)
+        Ok(retained)
     }
     /// Provider evidence, its normalization and the domain's decision commit in one transaction.
     /// Still under the writer lock, readers get the committed state and the change is notified;

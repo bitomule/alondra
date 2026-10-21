@@ -522,15 +522,20 @@ impl DomainStore {
         let scope = AuthorityScope::new(epoch_of(&self.conn)?)?;
         Ok(self.own(scope, |owner| owner.retain_evidence(limit))?.0)
     }
-    /// Gives the disk back the pages the retention freed. A database created without incremental
-    /// vacuum is rebuilt once to get it, and its write-ahead log truncated after the rebuild.
+    /// Gives the disk back up to `pages` of the pages the retention freed, one per step of the
+    /// pragma. A database created without incremental vacuum is rebuilt once to get it, and one
+    /// whose rows retention shrank in place once they are all done; its write-ahead log is
+    /// truncated after the rebuild.
     pub(crate) fn reclaim_space(&self, pages: u32) -> Result<()> {
         let mode: i64 = self.conn.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
-        if mode == 0 {
+        if mode == 0 || self.owes_rebuild()? {
             self.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;")?;
             self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+            self.rebuilt()?;
         } else {
-            self.conn.query_row(&format!("PRAGMA incremental_vacuum({pages})"), [], |_| Ok(())).optional()?;
+            let mut vacuum = self.conn.prepare(&format!("PRAGMA incremental_vacuum({pages})"))?;
+            let mut freed = vacuum.query([])?;
+            while freed.next()?.is_some() {}
         }
         Ok(())
     }

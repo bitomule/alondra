@@ -12,6 +12,7 @@ mod lifecycle_migration;
 mod handover;
 pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
 mod repository;
+pub(crate) mod retention;
 
 use alondra_core::domain::*;
 use anyhow::{Context, Result, ensure};
@@ -500,28 +501,6 @@ impl DomainStore {
         if let Some(hook) = &self.before_live_read { hook(getter); }
         self.live_read_trace.as_ref().map(|sink| live_read_trace::Read::new(sink.clone(), getter))
     }
-    /// Return only a command that already has a durable semantic receipt for this exact actor,
-    /// command id and epoch. Route adapters use this to recover opaque fields for an idempotent
-    /// retry without reopening a completed authorization to a new command.
-    pub(crate) fn receipted_command(
-        &self,
-        actor: &Actor,
-        command_id: &CommandId,
-        data_epoch: &DataEpoch,
-    ) -> std::result::Result<Option<Command>, StoreError> {
-        let actor_key = String::from_utf8(canonical::bytes(&match actor {
-            Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
-            _ => serde_json::to_value(actor)?,
-        })?)
-        .context("actor encoding")?;
-        let command: Option<String> = self.conn.query_row(
-            "SELECT a.command FROM command_audit a JOIN semantic_receipts r USING(actor,command_id,data_epoch) WHERE a.actor=?1 AND a.command_id=?2 AND a.data_epoch=?3",
-            params![actor_key, command_id.0, data_epoch.0],
-            |row| row.get(0),
-        ).optional()?;
-        command.map(|command| serde_json::from_str(&command).map_err(StoreError::from)).transpose()
-    }
-
     /// Schedule route adapters must check the transport receipt before parsing a
     /// draft or reading current options. A retry returns the original outcome.
     pub(crate) fn transport_receipt(
@@ -615,6 +594,7 @@ impl DomainStore {
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(EVENTS_VIEW)?;
+        retention::upgrade(&tx)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;

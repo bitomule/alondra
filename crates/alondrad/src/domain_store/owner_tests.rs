@@ -960,11 +960,11 @@ fn the_retention_gives_the_disk_back_what_normalized_observations_held() {
     let pages = |name: &str| observer(&fixture).pragma_query_value(None, name, |row| row.get::<_, i64>(0)).unwrap();
     let before = pages("page_count");
     assert!(pages("freelist_count") > 0);
-    assert_eq!(runtime.retain_evidence().unwrap(), alondra_store::EvidenceRetention::default());
+    assert_eq!(runtime.retain(alondra_core::now_millis()).unwrap().evidence, alondra_store::EvidenceRetention::default());
     assert_eq!(pages("auto_vacuum"), 2, "the store vacuums incrementally from now on");
     assert_eq!(pages("freelist_count"), 0);
     assert!(pages("page_count") < before, "{} pages, {before} before", pages("page_count"));
-    runtime.retain_evidence().unwrap();
+    runtime.retain(alondra_core::now_millis()).unwrap();
     assert_eq!(pages("auto_vacuum"), 2);
 }
 
