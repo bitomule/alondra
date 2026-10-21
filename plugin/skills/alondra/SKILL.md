@@ -333,6 +333,21 @@ launches another node for it.
 When Alondra tells you your task was cancelled, stop: do not commit, push or deliver anything;
 delete what you generated that git does not track, and end your turn.
 
+## Fewer, fuller steps
+
+Every step you take re-reads your whole context, often hundreds of thousands of tokens, however
+small the step. Your context is not capped; spend it on fewer steps:
+
+- Batch: do the reads, searches and edits you already know you need in one tool call (several
+  commands in one shell call) or in several parallel calls in one turn, never one step per
+  `grep`, `sed`, `cat` or `git status`.
+- Broad exploration (finding how something works across many files, tracing a flow, surveying a
+  subsystem) goes to a subagent with its own small context; it returns only the conclusion and the
+  exact files and lines you need.
+- Long commands (builds, test suites, installs) run in the background, and you wait for their
+  completion notification: no polling with `sleep`, `tail`, `until` loops or repeated status
+  checks, each of which is a full re-read for nothing. Do other work meanwhile or end your turn.
+
 ## Scratch files
 
 Scratch binaries, copies of files under test, logs and other temporary files go in `.scratch/` at

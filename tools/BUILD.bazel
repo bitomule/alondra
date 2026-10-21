@@ -30,3 +30,10 @@ sh_test(
     data = ["connection_measurements.py"],
     size = "small",
 )
+
+sh_test(
+    name = "node_token_usage_test",
+    srcs = ["tests/test_node_token_usage.py"],
+    data = ["node_token_usage.py"],
+    size = "small",
+)
