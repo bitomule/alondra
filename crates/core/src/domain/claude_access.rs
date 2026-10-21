@@ -115,7 +115,7 @@ impl DomainState {
             }
             let Some((card, true, _)) = last_hold(journal) else { continue };
             let Some(hold) = ClaudeHold::of(card) else { continue };
-            let waits = lifecycle::replay(task, journal).is_ok_and(|lifecycle| {
+            let waits = self.lifecycle_of(task).is_ok_and(|lifecycle| {
                 lifecycle.cards().iter().any(|(id, reason)| *id == card && *reason == LifecycleWait::Pause)
             });
             if waits {

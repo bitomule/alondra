@@ -1673,6 +1673,8 @@ impl DomainStore {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod lifecycle_cache_tests;
+#[cfg(test)]
 #[path = "domain_store/load_bench.rs"]
 mod load_bench;
 #[cfg(test)]

@@ -61,9 +61,7 @@ pub(crate) const NO_HOST: &str = "this Alondra has no Agent SDK host, so no task
 pub(crate) fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
     state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
         state
-            .lifecycle_journal
-            .get(&task.id)
-            .and_then(|journal| replay(&task.id, journal).ok())
+            .lifecycle_of(&task.id).ok()
             .is_some_and(|lifecycle| lifecycle.execution().is_some_and(|execution| execution.host().as_str() == HOST))
     })
 }
@@ -331,7 +329,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
     driver.dispatch(permit)?;
     let read = driver.domain.read();
-    driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+    driver.awaiting = read.state().lifecycle_of(&task).ok()
         .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
     drop(read);
     Ok(driver)
@@ -341,7 +339,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
 /// lock every host takes, which stays after it ends.
 pub(crate) fn host_started(backend: &SdkBackend, domain: &DomainRuntime, task: &TaskId) -> bool {
     let read = domain.read();
-    let instance = read.state().lifecycle_journal.get(task).and_then(|journal| replay(task, journal).ok())
+    let instance = read.state().lifecycle_of(task).ok()
         .and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.instance().as_str().to_owned()));
     instance.is_none_or(|instance| backend.state_root.join(instance).join("host.lock").exists())
 }
@@ -427,7 +425,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         }
         driver.sealed();
         let read = driver.domain.read();
-        driver.awaiting = read.state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+        driver.awaiting = read.state().lifecycle_of(&task).ok()
             .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
         drop(read);
         return Ok(Some(driver));
@@ -485,7 +483,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     }
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     let base = adapter_state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
-    let resume = domain.read().state().lifecycle_journal.get(&task).and_then(|journal| replay(&task, journal).ok())
+    let resume = domain.read().state().lifecycle_of(&task).ok()
         .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
@@ -568,7 +566,7 @@ fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskId, R
         .values()
         .filter(|task| {
             task.agent_id.as_ref().is_some_and(|agent| !domain.owns_sdk_host(agent))
-                && state.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| {
+                && state.lifecycle_of(&task.id).ok().is_some_and(|lifecycle| {
                     lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
                         && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
                 })
@@ -827,8 +825,7 @@ impl Driver {
             return Ok(false);
         }
         let state = Arc::clone(self.domain.read().state());
-        let journal = state.lifecycle_journal.get(&self.task).ok_or_else(|| Failed("the task has no lifecycle".into()))?;
-        let lifecycle = replay(&self.task, journal).map_err(|error| Failed(format!("{error:#}")))?;
+        let lifecycle = state.lifecycle_of(&self.task).map_err(|error| Failed(format!("{error:#}")))?;
         if self.awaiting.as_ref().is_some_and(|input| !lifecycle.pending_inputs().contains(&input)) {
             self.awaiting = None;
         }

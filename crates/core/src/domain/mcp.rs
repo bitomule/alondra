@@ -166,7 +166,7 @@ fn valid_sign_in(sign_in: &McpSignIn) -> Result<()> {
 impl DomainState {
     /// The node of the task's current SDK execution of `generation`.
     fn mcp_node(&self, task_id: &TaskId, generation: u64) -> Result<AgentId> {
-        self.sdk_replay(task_id, generation)?;
+        self.sdk_lifecycle_at(task_id, generation)?;
         self.task(task_id)?.agent_id.clone().ok_or_else(|| DomainError::new("no_task", format!("Task {task_id} has no node")))
     }
 

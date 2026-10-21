@@ -198,7 +198,7 @@ fn bg_task<'a>(state: &'a DomainState, agent: &AgentId) -> Option<&'a Task> {
         task.agent_id.as_ref() == Some(agent)
             && !task.state.terminal()
             && !task.archived
-            && state.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| {
+            && state.lifecycle_of(&task.id).ok().is_some_and(|lifecycle| {
                 lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST && stamp.node() == agent)
             })
     })

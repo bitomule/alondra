@@ -12,6 +12,7 @@ use alondra_domain::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, DomainError>;
 
@@ -320,8 +321,9 @@ pub enum LifecycleRecord {
     DecisionAborted { epoch: u64, unheard_card: InteractionId },
 }
 
-/// The aggregates of the tasks one transaction decides on, replayed from their journals when first
-/// needed and dropped with the transaction. Nothing clones or restores one from the DTO.
+/// The aggregates of the tasks one transaction decides on, taken from the lifecycles the state
+/// keeps when first needed and dropped with the transaction. Nothing clones or restores one from
+/// the DTO.
 ///
 /// ```compile_fail,E0277
 /// fn duplicate<T: Clone>() {}
@@ -334,12 +336,30 @@ pub enum LifecycleRecord {
 /// ```
 #[derive(Debug)]
 pub struct Lifecycles {
-    replayed: BTreeMap<TaskId, TaskLifecycle>,
+    replayed: BTreeMap<TaskId, Arc<TaskLifecycle>>,
 }
 
 impl Lifecycles {
     pub(super) fn new() -> Self {
         Self { replayed: BTreeMap::new() }
+    }
+}
+
+/// Each task's lifecycle as its journal leads to it, kept with the state and moved on by the same
+/// decision that journals a record: reading a task never replays its journal. Neither stored nor
+/// compared, since it follows from the journal, which is both.
+#[derive(Clone, Default)]
+pub(super) struct LifecycleCache(BTreeMap<TaskId, Arc<TaskLifecycle>>);
+
+impl PartialEq for LifecycleCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for LifecycleCache {}
+impl std::fmt::Debug for LifecycleCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LifecycleCache").field("tasks", &self.0.len()).finish()
     }
 }
 
@@ -900,32 +920,67 @@ impl DomainState {
 
     pub(super) fn lifecycle<'a>(&self, lifecycles: &'a mut Lifecycles, task: &TaskId) -> Result<&'a TaskLifecycle> {
         if !lifecycles.replayed.contains_key(task) {
-            let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
-            lifecycles.replayed.insert(task.clone(), replay(task, journal)?);
+            lifecycles.replayed.insert(task.clone(), self.lifecycle_of(task)?);
         }
         Ok(&lifecycles.replayed[task])
+    }
+
+    /// The lifecycle `task`'s journal leads to: the one the domain keeps, or a replay of the
+    /// journal when the kept one is missing or behind it.
+    pub fn lifecycle_of(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
+        let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
+        match self.lifecycles.0.get(task) {
+            Some(kept) if usize::try_from(kept.revision()).is_ok_and(|revision| revision + 1 == journal.len()) => Ok(Arc::clone(kept)),
+            _ => Ok(Arc::new(replay(task, journal)?)),
+        }
+    }
+
+    /// Whether every journaled task keeps the lifecycle a full replay of its journal gives: what
+    /// tests hold the cache to, without the replay `lifecycle_of` falls back on.
+    pub fn kept_lifecycles_match_journals(&self) -> std::result::Result<(), String> {
+        match self.lifecycle_journal.iter().find(|(task, _)| !self.lifecycles.0.contains_key(*task)) {
+            Some((task, journal)) => Err(format!("task {task} keeps no lifecycle for its journal of {} records", journal.len())),
+            None => self.kept_lifecycles_agree_with_journals(),
+        }
+    }
+
+    /// Whether every lifecycle the domain keeps is the one a full replay of its task's journal
+    /// gives. A state read without them, as from JSON, keeps none until a decision moves a task.
+    pub fn kept_lifecycles_agree_with_journals(&self) -> std::result::Result<(), String> {
+        for (task, kept) in &self.lifecycles.0 {
+            let journal = self.lifecycle_journal.get(task).ok_or_else(|| format!("task {task} keeps a lifecycle and has no journal"))?;
+            let replayed = replay(task, journal).map_err(|error| error.message)?;
+            if **kept != replayed {
+                return Err(format!("task {task} keeps revision {} of its lifecycle; its journal of {} records replays to revision {}: {kept:?} ≠ {replayed:?}", kept.revision(), journal.len(), replayed.revision()));
+            }
+        }
+        Ok(())
+    }
+
+    fn keep(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, lifecycle: Arc<TaskLifecycle>) {
+        lifecycles.replayed.insert(task.clone(), Arc::clone(&lifecycle));
+        self.lifecycles.0.insert(task.clone(), lifecycle);
     }
 
     /// Opens the journal of a task that was just created: from here on only decisions move it.
     pub(super) fn plan_lifecycle(&mut self, lifecycles: &mut Lifecycles, task: &TaskId) -> Result<()> {
         let record = LifecycleRecord::Planned { input: self.next_input(task) };
-        let lifecycle = replay(task, std::slice::from_ref(&record))?;
+        let lifecycle = Arc::new(replay(task, std::slice::from_ref(&record))?);
         self.lifecycle_journal.insert(task.clone(), vec![record]);
         self.materialize(task, &lifecycle);
-        lifecycles.replayed.insert(task.clone(), lifecycle);
+        self.keep(lifecycles, task, lifecycle);
         Ok(())
     }
 
     /// A lifecycle decision on a task: the aggregate validates it, the journal keeps it and
     /// the task's DTO reads it, in one step. A refusal changes nothing.
     pub(super) fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
-        self.lifecycle(lifecycles, task)?;
-        let lifecycle = lifecycles.replayed.get_mut(task).expect("replayed above");
+        let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
-        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?;
+        let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);
         self.lifecycle_journal.get_mut(task).expect("replayed above").push(record);
-        let lifecycle = &lifecycles.replayed[task];
-        self.materialize(task, lifecycle);
+        self.materialize(task, &next);
+        self.keep(lifecycles, task, next);
         Ok(())
     }
 
@@ -957,6 +1012,7 @@ impl DomainState {
         for task in tasks {
             let lifecycle = replay(&task, &self.lifecycle_journal[&task])?;
             self.read_ending(&task, &lifecycle)?;
+            self.lifecycles.0.insert(task, Arc::new(lifecycle));
         }
         Ok(())
     }
@@ -975,7 +1031,7 @@ impl DomainState {
         let mut lifecycles = Lifecycles::new();
         for (task, records, lifecycle) in journals {
             self.lifecycle_journal.insert(task.clone(), records);
-            lifecycles.replayed.insert(task, lifecycle);
+            self.keep(&mut lifecycles, &task, Arc::new(lifecycle));
         }
         for (task, lifecycle) in &lifecycles.replayed {
             self.read_ending(task, lifecycle)?;
@@ -1013,8 +1069,7 @@ impl DomainState {
     /// is refused. Checked for every task a transition touched.
     pub(super) fn validate_lifecycles<'a>(&self, tasks: impl Iterator<Item = &'a TaskId>) -> Result<()> {
         for task in tasks {
-            let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
-            self.validate_lifecycle(task, &replay(task, journal)?)?;
+            self.validate_lifecycle(task, &*self.lifecycle_of(task)?)?;
         }
         Ok(())
     }
@@ -1103,19 +1158,19 @@ impl DomainState {
         current_sdk(task, generation, self.lifecycle(lifecycles, task)?)
     }
 
-    /// The task's lifecycle replayed, when its current execution is the SDK execution of
-    /// `generation`: what a guard judges facts about that execution on.
-    pub(super) fn sdk_replay(&self, task: &TaskId, generation: u64) -> Result<TaskLifecycle> {
-        let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
-        let lifecycle = replay(task, journal)?;
+    /// The task's lifecycle, when its current execution is the SDK execution of `generation`: what
+    /// a guard judges facts about that execution on.
+    pub(super) fn sdk_lifecycle_at(&self, task: &TaskId, generation: u64) -> Result<Arc<TaskLifecycle>> {
+        let lifecycle = self.lifecycle_of(task)?;
         current_sdk(task, generation, &lifecycle)?;
         Ok(lifecycle)
     }
 
-    /// Applies `record` to a replay a guard judges on, as `decide` would apply it.
-    pub(super) fn judge(&self, task: &TaskId, lifecycle: &mut TaskLifecycle, record: &LifecycleRecord) -> Result<()> {
+    /// Moves the lifecycle a guard judges on by `record`, as `decide` would.
+    pub(super) fn judge(&self, task: &TaskId, lifecycle: &mut Arc<TaskLifecycle>, record: &LifecycleRecord) -> Result<()> {
         let event = event(task, record, lifecycle)?;
-        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, record, lifecycle, refusal))
+        *lifecycle = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, record, lifecycle, refusal))?);
+        Ok(())
     }
 
     /// The root turn of the task's SDK execution ended. A result of the SDK is evidence, never
@@ -1515,13 +1570,13 @@ impl DomainState {
         Ok(())
     }
 
-    /// The open task whose current execution `agent` runs through the SDK, its lifecycle replayed.
-    pub(super) fn sdk_task_of(&self, agent: &AgentId) -> Result<(TaskId, TaskLifecycle)> {
+    /// The open task whose current execution `agent` runs through the SDK, with its lifecycle.
+    pub(super) fn sdk_task_of(&self, agent: &AgentId) -> Result<(TaskId, Arc<TaskLifecycle>)> {
         for (id, t) in &self.tasks {
             if t.agent_id.as_ref() != Some(agent) || t.over() || !self.lifecycle_journal.contains_key(id) {
                 continue;
             }
-            let lifecycle = replay(id, &self.lifecycle_journal[id])?;
+            let lifecycle = self.lifecycle_of(id)?;
             if lifecycle.execution().is_some_and(|stamp| stamp.node() == agent && stamp.host().as_str() != CLAUDE_BG_HOST) {
                 return Ok((id.clone(), lifecycle));
             }
@@ -1530,23 +1585,22 @@ impl DomainState {
     }
 
     /// The lifecycle of an open task whose current execution runs through the SDK.
-    pub(super) fn sdk_lifecycle(&self, task: &TaskId) -> Result<TaskLifecycle> {
+    pub(super) fn sdk_lifecycle(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
         let t = self.tasks.get(task).ok_or_else(|| DomainError::new("not_found", "Task missing"))?;
         if t.over() {
             return Err(DomainError::new("task_not_active", format!("Task {task} is ending")));
         }
-        let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
-        let lifecycle = replay(task, journal)?;
+        let lifecycle = self.lifecycle_of(task)?;
         if !lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() != CLAUDE_BG_HOST) {
             return Err(DomainError::new("no_task", format!("Task {task} has no execution running through the Agent SDK")));
         }
         Ok(lifecycle)
     }
 
-    /// `record` if the task's lifecycle accepts it, judged on a replay that is then dropped.
-    pub(super) fn judged(&self, task: &TaskId, mut lifecycle: TaskLifecycle, record: LifecycleRecord) -> Result<LifecycleRecord> {
+    /// `record` if the task's lifecycle accepts it, judged on a copy that is then dropped.
+    pub(super) fn judged(&self, task: &TaskId, lifecycle: Arc<TaskLifecycle>, record: LifecycleRecord) -> Result<LifecycleRecord> {
         let event = event(task, &record, &lifecycle)?;
-        lifecycle.apply(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, &lifecycle, refusal))?;
+        lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, &lifecycle, refusal))?;
         Ok(record)
     }
 
@@ -1616,9 +1670,7 @@ impl DomainState {
     /// Whether the work after the merge the task's node declared still holds it. A declaration
     /// from before the lifecycle owed it holds it too, until the next commit adopts it.
     pub fn post_merge_owed(&self, task: &Task) -> bool {
-        let owed = self.lifecycle_journal.get(&task.id)
-            .and_then(|journal| replay(&task.id, journal).ok())
-            .is_some_and(|lifecycle| lifecycle.post_merge().is_some());
+        let owed = self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.post_merge().is_some());
         owed || (task.wrap_up.post_merge_work.is_some() && !task.over())
     }
 

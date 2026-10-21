@@ -114,7 +114,7 @@ impl DomainState {
     pub(super) fn decision_end_guard(&self, actor: &Actor, task: &TaskId, generation: u64, epoch: u64, answered: bool) -> Result<(Vec<LifecycleRecord>, Option<InteractionId>)> {
         system(actor)?;
         self.task(task)?;
-        let mut lifecycle = self.sdk_replay(task, generation)?;
+        let mut lifecycle = self.sdk_lifecycle_at(task, generation)?;
         let unheard = decision_cancelled_card_id(task, generation, epoch);
         let mut records = vec![if answered {
             LifecycleRecord::DecisionSettled { epoch }

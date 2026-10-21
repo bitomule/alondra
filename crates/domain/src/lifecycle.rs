@@ -1160,6 +1160,12 @@ impl TaskLifecycle {
 
     /// Rejection leaves the entire aggregate, including the runtime cursor, unchanged.
     pub fn apply(&mut self, expected_revision: Revision, event: Event) -> Result<(), Refusal> {
+        *self = self.advanced(expected_revision, event)?;
+        Ok(())
+    }
+
+    /// The aggregate `event` leads to, leaving this one as it was for whoever still reads it.
+    pub fn advanced(&self, expected_revision: Revision, event: Event) -> Result<Self, Refusal> {
         if expected_revision != self.revision {
             return Err(Refusal::StaleRevision);
         }
@@ -1180,8 +1186,7 @@ impl TaskLifecycle {
         };
         candidate.transition(event)?;
         candidate.revision += 1;
-        *self = candidate;
-        Ok(())
+        Ok(candidate)
     }
 }
 

@@ -69,6 +69,7 @@ rust_test(
     version = "0.1.0",
     deps = [
         ":alondra_core",
+        "//crates/domain:domain",
         "@crates//:serde_json",
     ],
 )

@@ -487,8 +487,7 @@ pub(crate) fn blocking<T>(wait: impl FnOnce() -> T) -> T {
 /// work it owns, a continuation it owes or an input it has not taken yet.
 fn sdk_working(state: &DomainState, task: &Task) -> bool {
     use alondra_domain::ActivityView;
-    state.lifecycle_journal.get(&task.id)
-        .and_then(|journal| alondra_core::domain::replay(&task.id, journal).ok())
+    state.lifecycle_of(&task.id).ok()
         .is_some_and(|lifecycle| matches!(lifecycle.activity(),
             ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
 }

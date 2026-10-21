@@ -617,8 +617,7 @@ fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
 /// user leaves it.
 fn waiting_input(domain: &DomainRuntime, task: &alondra_core::domain::TaskId) -> bool {
     let read = domain.read();
-    read.state().lifecycle_journal.get(task)
-        .and_then(|journal| alondra_core::domain::replay(task, journal).ok())
+    read.state().lifecycle_of(task).ok()
         .is_some_and(|lifecycle| !lifecycle.pending_inputs().is_empty())
 }
 

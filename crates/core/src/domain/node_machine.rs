@@ -705,7 +705,7 @@ impl DomainState {
             .find(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal() && super::read_index::admitted_through_sdk(self, &t.id, &agent.id));
         match sdk {
             Some(task) => !matches!(agent.phase, NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed)
-                && self.lifecycle_journal.get(&task.id).and_then(|journal| replay(&task.id, journal).ok()).is_some_and(|lifecycle| lifecycle.holds_slot()),
+                && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()),
             None => agent.phase.holds_slot(),
         }
     }

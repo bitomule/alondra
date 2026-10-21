@@ -627,7 +627,7 @@ pub(super) fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &Ag
 /// Whether the SDK execution of `task` is connected and runs a turn or work of its own, and how
 /// far stopping its turn went.
 fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_domain::TurnStop>) {
-    let Some(lifecycle) = state.lifecycle_journal.get(task).and_then(|journal| replay(task, journal).ok()) else { return (false, None) };
+    let Ok(lifecycle) = state.lifecycle_of(task) else { return (false, None) };
     if lifecycle.resource() != Some(alondra_domain::ResourceEvidence::Available) {
         return (false, None);
     }
@@ -639,6 +639,9 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
 /// on demand, card by card and task by task.
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
+    if let Err(divergence) = state.kept_lifecycles_agree_with_journals() {
+        panic!("the lifecycles the domain keeps are the ones its journals replay to: {divergence}");
+    }
     for task in state.tasks.values() {
         let owed = state.lifecycle_journal.get(&task.id)
             .and_then(|journal| super::replay(&task.id, journal).ok())

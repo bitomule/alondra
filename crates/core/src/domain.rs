@@ -47,6 +47,8 @@ mod plan_review_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod lifecycle_cache_tests;
+#[cfg(test)]
 pub(crate) mod mcp_wait_tests;
 #[cfg(test)]
 mod decision_tests;

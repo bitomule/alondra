@@ -2,7 +2,7 @@
 //! after a commit: what a row needs is read from the committed index, never by walking the domain
 //! once per row.
 use alondra_core::domain::{
-    Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan, LifecycleRecord,
+    Actor, CardKind, CardSpec, Command, replay, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan, LifecycleRecord,
     McpServerState, McpStatus, MergeMethod, NodeEvent, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient,
     RuntimeObservation, Schedule, ScheduleFrequency, Scope,
 };
@@ -210,7 +210,7 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
     let DomainState {
         data_epoch: _, revision, orchestrator_generation: _, orchestrator_session: _, requests, agents, tasks, documents,
         document_revisions, document_reviews, pull_requests, mut interactions, merge_authorizations, stack_readiness, schedule,
-        holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp,
+        holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp, ..
     } = copy;
     let next = into.interactions.values().map(|i| i.order).max().unwrap_or(0);
     for interaction in interactions.values_mut() {
@@ -262,6 +262,15 @@ fn real_size() -> DomainState {
     }
     state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
     state.validate().expect("the synthetic domain is valid");
+    loaded(state)
+}
+
+/// The domain as the daemon opens it: each journal replayed once and handed to the domain with it.
+fn loaded(mut state: DomainState) -> DomainState {
+    let journals: Vec<_> = state.lifecycle_journal.iter()
+        .map(|(task, records)| (task.clone(), records.clone(), replay(task, records).expect("the journal replays")))
+        .collect();
+    state.load_journal(journals).expect("the synthetic domain loads");
     state
 }
 
@@ -441,4 +450,64 @@ fn the_first_card_comes_with_the_first_answer() {
         assert_eq!(trips, 1, "{root} ({client:?}) brings its first card: {embedded:?}");
         assert_eq!(embedded.len(), 3, "{root} ({client:?}) brings the front card and the two behind it");
     }
+}
+
+/// The number a unit whose task keeps a long journal carries.
+const LONG: usize = 900;
+
+/// The views of a domain with a task whose journal is as long as the longest real one read every
+/// lifecycle as the domain keeps it: building the index and rendering every view applies no
+/// event, however long a journal is.
+#[test]
+fn reading_every_view_replays_no_journal() {
+    const TOLD: usize = 2000;
+    let mut long = Seed(unit(Shape::WaitingMcp));
+    let task = id("t", Shape::WaitingMcp);
+    for notice in 0..TOLD {
+        long.run(Actor::System, Command::TellNode { task_id: task.as_str().into(), text: format!("Synthetic notice {notice}") });
+    }
+    let mut state = real_size();
+    absorb(&mut state, &long.0, LONG);
+    state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
+    let mut state = loaded(state);
+    let long_task = id("t", Shape::WaitingMcp).replace(TOKEN, &format!("u{LONG:03}"));
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: "long-journal-commit".into(),
+        expected_revision: state.revision,
+        command: Command::TellNode { task_id: long_task.as_str().into(), text: "One more notice".into() },
+    };
+    state.execute(&Actor::System, &envelope).expect("one more commit");
+    let journal = state.lifecycle_journal[&long_task.as_str().into()].len();
+    let state = Arc::new(state);
+    let live = live(&state);
+    let mut keys = keys();
+    let long_node = id("a", Shape::WaitingMcp).replace(TOKEN, &format!("u{LONG:03}"));
+    keys.extend([
+        (format!("task:{long_task}"), Client::Ios),
+        (format!("task:{long_task}"), Client::Tui),
+        (format!("node:{long_node}"), Client::Ios),
+    ]);
+    let read = || {
+        let committed = ReadSnapshot::build(Arc::clone(&state));
+        for (key, client) in &keys {
+            build(key, RenderContext {
+                domain: committed.state(), index: committed.index(), live: &live, client: *client, lang: Lang::Es,
+                transport: Transport::Loopback, cursor: "budget", rendered_at: "",
+            }).unwrap_or_else(|error| panic!("{key} ({client:?}) does not render: {error:?}"));
+        }
+    };
+    let before = alondra_domain::measure::applied();
+    read();
+    let applied = alondra_domain::measure::applied() - before;
+    let mut samples: Vec<f64> = (0..SAMPLES).map(|_| {
+        let start = Instant::now();
+        read();
+        start.elapsed().as_secs_f64() * 1000.0
+    }).collect();
+    samples.sort_by(f64::total_cmp);
+    println!("{}", serde_json::json!({"journal": journal, "views": keys.len(), "events_applied": applied,
+        "median_ms": samples[SAMPLES / 2], "max_ms": samples[SAMPLES - 1]}));
+    assert_eq!(applied, 0, "reading the index and {} views over a journal of {journal} records applied {applied} events", keys.len());
 }

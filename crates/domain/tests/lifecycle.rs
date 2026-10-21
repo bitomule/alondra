@@ -2439,3 +2439,22 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn advancing_leaves_the_aggregate_it_started_from_as_it_was() {
+    let planned = || TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    let admission = || Event::Admit {
+        node: AgentId::from("node"),
+        conversation: ConversationId::new("conversation").unwrap(),
+        instance: InstanceId::new("instance").unwrap(),
+        host: HostId::new("host").unwrap(),
+    };
+    let task = planned();
+    let next = task.advanced(task.revision(), admission()).unwrap();
+    assert_eq!(task, planned(), "the aggregate a reader still holds is unchanged");
+    let mut applied = planned();
+    admit(&mut applied, "instance");
+    assert_eq!(next, applied, "advancing reaches what applying reaches");
+    assert_eq!(task.advanced(task.revision() + 1, admission()), Err(Refusal::StaleRevision));
+    assert!(next.advanced(next.revision(), admission()).is_err(), "a second admission of the same execution is refused");
+}
