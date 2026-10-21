@@ -4,11 +4,11 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v9487df4d9bfc02f1",
+  "version": "v59846c3bee7d30c9",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
-    "version": "v64084a39d9568b1f",
+    "version": "vc27e33cc05a39d44",
     "summary": "2 questions · 3 to read · 1 node working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 4
       },
       {

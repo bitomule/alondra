@@ -850,7 +850,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     ];
     let n_comments = review.map(|rv| rv.count()).unwrap_or(0);
     if !still_there && app.loaded && !app.review_sends.values().any(|key| *key == r.key) {
-        let gone = match (n_comments > 0, r.agent_id.is_some(), r.agent.is_empty()) {
+        let gone = match (n_comments > 0, r.task_id.is_some(), r.agent.is_empty()) {
             (true, true, false) => {
                 let agent = &r.agent;
                 trf!(

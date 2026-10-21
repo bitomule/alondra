@@ -317,8 +317,8 @@ pub enum Part {
 pub struct Reader {
     pub key: Key,
     pub agent: String,
-    /// The node the card came from, so comments still reach it if the card goes away.
-    agent_id: Option<AgentId>,
+    /// The task the card came from, so comments still reach its node if the card goes away.
+    task_id: Option<alondra_core::domain::TaskId>,
     pub title: String,
     pub kind: String,
     pub glyph: &'static str,
@@ -2987,11 +2987,11 @@ impl App {
                 .and_then(view_render::card_agent)
                 .map(|line| line.text.clone())
                 .unwrap_or_default();
-            let agent_id = first_card.and_then(view_render::card_agent_id);
+            let task_id = first_card.and_then(view_render::card_task_id);
             self.reader = Some(Reader {
                 key: Key(view.key),
                 agent,
-                agent_id,
+                task_id,
                 title,
                 kind,
                 glyph,
@@ -3023,7 +3023,7 @@ impl App {
             let agent = view_render::card_agent(&card)
                 .map(|line| line.text.clone())
                 .unwrap_or_default();
-            let agent_id = view_render::card_agent_id(&card);
+            let task_id = view_render::card_task_id(&card);
             let (glyph, color) = (view_render::icon(card.icon), view_render::icon_color(card.icon));
             let mut text = format!("# {}", card.title);
             for context in &card.context {
@@ -3045,7 +3045,7 @@ impl App {
             self.reader = Some(Reader {
                 key,
                 agent,
-                agent_id,
+                task_id,
                 title: card.title,
                 kind,
                 glyph,
@@ -3284,8 +3284,8 @@ impl App {
             ));
             return;
         };
-        let Some((agent, name, title)) = self.reader.as_ref().and_then(|reader| {
-            Some((reader.agent_id.clone()?, reader.agent.clone(), reader.title.clone()))
+        let Some((task, name, title)) = self.reader.as_ref().and_then(|reader| {
+            Some((reader.task_id.clone()?, reader.agent.clone(), reader.title.clone()))
         }) else {
             self.fail(tr!(
                 "This card is gone and has no node to send your comments to: they stay here.",
@@ -3302,22 +3302,23 @@ impl App {
             ),
             review.feedback()
         );
-        let mut message = ops::Message::to(Some(agent), ops::MessageKind::Message, text);
+        let mut message = ops::Message::to(None, ops::MessageKind::Message, text);
         message.attachments = dropped::stored(&review.chips);
+        message.task = Some(task.clone());
         let ok = if name.is_empty() {
             tr!("Comments sent", "Comentarios enviados").to_owned()
         } else {
             trf!("Comments sent to {name}", "Comentarios enviados a {name}")
         };
         self.pending(tr!("Sending…", "Enviando…"));
-        let (path, body) = (message.path(), message.body());
         #[cfg(test)]
-        self.posted.borrow_mut().push((path.clone(), body.clone()));
+        self.posted.borrow_mut().push((format!("task:{task}"), message.body()));
         self.action_sent();
         self.spawn(move |tx, target| {
-            let result = Client::for_target(target, Duration::from_secs(30))
-                .post(&path, &body)
-                .map_err(|e| format!("{e:#}"))
+            let client = Client::for_target(target, Duration::from_secs(30));
+            let result = task_node(&client, &task)
+                .map(|agent| ops::Message { agent: Some(agent), ..message })
+                .and_then(|message| client.post(&message.path(), &message.body()).map_err(|e| format!("{e:#}")))
                 .and_then(|reply| comments_delivered(&reply, ok));
             let _ = tx.send(Msg::Posted { key: Some(key), result });
         });
@@ -3360,6 +3361,16 @@ impl App {
         }
     }
 
+}
+
+/// The node working on a task, read from the message action its detail offers.
+fn task_node(client: &Client, task: &alondra_core::domain::TaskId) -> Result<AgentId, String> {
+    let view = client.views(&format!("task:{task}"), None).map_err(|e| format!("{e:#}"))?;
+    crate::cli::view_action(&view, |action| action.id.starts_with("msg:") && !action.id.starts_with("msg:view@"))
+        .and_then(|action| alondra_core::views::action_id::ActionId::parse(&action.id).ok())
+        .map(|id| AgentId(id.subject))
+        .ok_or_else(|| tr!("This task has no node to send your comments to: they stay here.",
+            "Esta tarea no tiene nodo al que enviar tus comentarios: se quedan aquí.").to_owned())
 }
 
 /// Whether comments sent to a node reached it: handed to its session, or queued for it, as a

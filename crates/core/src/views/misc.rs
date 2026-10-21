@@ -340,23 +340,17 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     );
     let rows: Vec<_> = context
         .domain
-        .agents
+        .tasks
         .values()
-        .filter(|agent| agent.name.to_ascii_lowercase().contains(&q)
-            || context.live.search_matches.as_ref().is_some_and(|matches| matches.contains(&agent.id.0)))
-        .map(|agent| {
-            if context.client == Client::Ios {
-                Item::Row(super::fleet::node_row(agent, context))
-            } else {
-                Item::Row(common::row(
-                    &agent.id.0,
-                    &format!("node:{}", agent.id),
-                    Icon::Node,
-                    common::agent_label(&agent.id, context),
-                    None,
-                ))
-            }
+        .filter(|task| task.title.to_ascii_lowercase().contains(&q))
+        .chain(context.live.search_matches.iter().flatten()
+            .filter_map(|agent| common::current_task(context, &crate::domain::AgentId(agent.clone()))))
+        .fold(Vec::<&crate::domain::Task>::new(), |mut found, task| {
+            if !found.iter().any(|seen| seen.id == task.id) { found.push(task); }
+            found
         })
+        .into_iter()
+        .map(|task| Item::Row(super::tasks::task_row(task, context)))
         .collect();
     let count = rows.len();
     view.sections.push(common::section("results",
@@ -368,6 +362,20 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             tone: Tone::Neutral, action: None });
     }
     Ok(view)
+}
+
+/// Where the CLI posts maintenance for the orchestrator: only the message action, and no screen
+/// links to it, because the orchestrator is Alondra's own.
+pub(super) fn orchestrator(key: &str, context: &RenderContext<'_>) -> View {
+    let mut view = common::view("orchestrator", key, Some("Alondra".into()), context, vec![]);
+    if let Some(mut message) = common::action(super::action_id::Verb::Msg, "view", context.domain.revision,
+        t!(context.lang, "Message", "Mensaje"), super::Style::Primary) {
+        message.input = super::Input::Text { placeholder: t!(context.lang, "Write to Alondra…", "Escribe a Alondra…").into(),
+            required: true, multiline: true };
+        message.attachments = true;
+        view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: vec![message] })]));
+    }
+    view
 }
 
 pub(super) fn machine(context: &RenderContext<'_>) -> View {

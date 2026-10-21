@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v01c74e1a83eff4aa",
+  "version": "vd26e56aa272e8ad1",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "v782c674d4b42fe3c",
+    "version": "v1d701d9684ea0a41",
     "summary": "2 questions · 3 to read · 3 nodes working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 6
       },
       {

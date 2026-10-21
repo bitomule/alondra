@@ -348,14 +348,14 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
     lines
 }
 
-/// The agent a card came from, the way its header names it.
+/// The task or node a card came from, the way its header names it.
 pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
-    card.context.iter().find(|line| line.icon == Icon::Node)
+    card.context.iter().find(|line| matches!(line.icon, Icon::Task | Icon::Node))
 }
 
-pub fn card_agent_id(card: &Card) -> Option<alondra_core::domain::AgentId> {
+pub fn card_task_id(card: &Card) -> Option<alondra_core::domain::TaskId> {
     match card_agent(card)?.link.as_ref()? {
-        alondra_core::views::Link::View { key } => key.strip_prefix("node:").map(|id| alondra_core::domain::AgentId(id.to_owned())),
+        alondra_core::views::Link::View { key } => key.strip_prefix("task:").map(|id| alondra_core::domain::TaskId(id.to_owned())),
         _ => None,
     }
 }

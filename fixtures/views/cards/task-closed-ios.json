@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "veed27ae14c49b81b",
+  "version": "v662ab8cdf6e6e6e3",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "vb88e29f836903c22",
+    "version": "v4f0957651827f8e6",
     "summary": "0 nodes working",
     "badge": 0,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 0
       },
       {

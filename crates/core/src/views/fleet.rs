@@ -74,7 +74,7 @@ pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>
 }
 
 /// A node's tasks that are not archived.
-fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a crate::domain::Task> {
+pub(super) fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a crate::domain::Task> {
     let domain = context.domain;
     context.index.node(agent).into_iter().flat_map(|node| &node.tasks).filter_map(move |id| domain.tasks.get(id))
 }
@@ -437,20 +437,6 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
         .into()
 }
 
-/// Where the CLI posts maintenance for the orchestrator: only the message action, and no screen
-/// links to it, because the orchestrator is Alondra's own.
-fn orchestrator_inbox(id: &str, context: &RenderContext<'_>) -> View {
-    let mut view = common::view("node", &format!("node:{id}"), Some("Alondra".into()), context, vec![]);
-    if let Some(mut message) = common::action(Verb::Msg, "view", context.domain.revision,
-        t!(context.lang, "Message", "Mensaje"), Style::Primary) {
-        message.input = super::Input::Text { placeholder: t!(context.lang, "Write to Alondra…", "Escribe a Alondra…").into(),
-            required: true, multiline: true };
-        message.attachments = true;
-        view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: vec![message] })]));
-    }
-    view
-}
-
 /// What a live node reads now: the tool it runs, its background work, a last turn that was
 /// interrupted, its context and its cost.
 pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>) -> Vec<Fact> {
@@ -541,7 +527,7 @@ pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContex
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
-        return Ok(orchestrator_inbox(id, context));
+        return Ok(super::misc::orchestrator(&format!("node:{id}"), context));
     }
     let agent = context
         .domain

@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v610c48256ac37093",
+  "version": "v1a80ae06b246fd7c",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "v3877aa7fcba5a278",
+    "version": "ve4008980d1dbc4ce",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 4
       },
       {

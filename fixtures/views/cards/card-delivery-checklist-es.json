@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v409411f38ac66267",
+  "version": "v0fe58495219d83d7",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
-    "version": "ve1fd29addaecad00",
+    "version": "v21e817e49a9c8092",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 0
       },
       {

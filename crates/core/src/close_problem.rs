@@ -93,12 +93,12 @@ impl CloseProblem {
         };
         text.push_str(if self.cancelled {
             t!(lang,
-                "\n\n**Leave it open:** Alondra stops trying; the session stays in Fleet and you close it from there when you want.",
-                "\n\n**Dejarla abierta:** Alondra deja de intentarlo; la sesión sigue en la flota y la cierras desde ahí cuando quieras.")
+                "\n\n**Leave it open:** Alondra stops trying and leaves the session open.",
+                "\n\n**Dejarla abierta:** Alondra deja de intentarlo y la sesión se queda abierta.")
         } else {
             t!(lang,
-                "\n\n**Leave it open:** the task is marked finished and the session stays in Fleet; you close it from there when you want.",
-                "\n\n**Dejarla abierta:** la tarea se da por terminada y la sesión sigue en la flota; la cierras desde ahí cuando quieras.")
+                "\n\n**Leave it open:** the task is marked finished and the session stays open.",
+                "\n\n**Dejarla abierta:** la tarea se da por terminada y la sesión se queda abierta.")
         });
         if self.stop == CloseStop::Error && !detail.is_empty() {
             let shown: String = detail.chars().take(ERROR_SHOWN).collect();
@@ -122,7 +122,7 @@ pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &
         ),
         (LEAVE_OPEN, LEAVE_OPEN_LABEL) => (
             t!(lang, "Leave it open", "Dejarla abierta"),
-            t!(lang, "Alondra stops trying; you close it from Fleet when you want", "Alondra deja de intentarlo; la cierras desde la flota cuando quieras"),
+            t!(lang, "Alondra stops trying and leaves the session open", "Alondra deja de intentarlo y la sesión se queda abierta"),
         ),
         _ => return None,
     })

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v64de950d23a476ed",
+  "version": "v57c6266353dcdf8f",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "v93bd14a9c2d056aa",
+    "version": "v8218eda2299a4268",
     "summary": "3 preguntas · 2 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 0
       },
       {
@@ -155,11 +155,11 @@
           "subtitle": "The release needs it",
           "context": [
             {
-              "icon": "node",
-              "text": "Node One",
+              "icon": "task",
+              "text": "Build a feature",
               "link": {
                 "kind": "view",
-                "key": "node:a-1"
+                "key": "task:t-1"
               }
             }
           ],

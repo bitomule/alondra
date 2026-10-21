@@ -1163,7 +1163,7 @@ fn reader_header_names_the_real_kind_and_the_agent() {
     app.open_reader();
     let shown = screen(&mut app, 120, 20);
     assert!(
-        shown.contains("? decide · Alondra · iOS · Choose the welcome copy"),
+        shown.contains("? decide · Restore the native review experience · Choose the welcome copy"),
         "{shown}"
     );
     assert!(!shown.contains("item"), "{shown}");
@@ -2230,7 +2230,7 @@ fn sent_reader_comments_close_the_reader_and_say_they_went_not_that_the_card_is_
 
     app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: applied("done", "Cambios solicitados") });
     assert!(app.reviews.is_empty(), "sent comments are not left as unsent");
-    assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
+    assert_eq!(flash(&app), "Comentarios enviados a Restore the native review experience");
     let after = screen(&mut app, 140, 30);
     assert!(!after.contains("ya no está en la bandeja") && !after.contains("sin enviar"), "{after}");
 }
@@ -2250,26 +2250,26 @@ fn reader_comments_the_mac_did_not_take_stay_in_the_reader() {
 }
 
 #[test]
-fn comments_on_a_card_that_went_away_are_sent_to_its_node_with_their_quotes() {
+fn comments_on_a_card_that_went_away_are_sent_to_its_tasks_node_with_their_quotes() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let key = reader_with_a_comment(&mut app);
     app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(settled_card(&key)) });
-    let gone = screen(&mut app, 160, 30);
-    assert!(gone.contains("s: enviar tus comentarios a Alondra · iOS"), "{gone}");
+    let gone = screen(&mut app, 260, 30);
+    assert!(gone.contains("s: enviar tus comentarios a Restore the native review experience"), "{gone}");
 
     press(&mut app, KeyCode::Char('s'));
     let sent = posted(&app);
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0].0, "/agents/d887a34b-249e-4487-a89b-57de38c26372/messages");
+    assert_eq!(sent[0].0, "task:t-651c38484cd2f34e74d5107ba05f7f15", "to the node of the card's task");
     let text = sent[0].1["text"].as_str().unwrap();
     assert!(text.starts_with("Mis comentarios sobre «"), "{text}");
     assert!(text.contains("Tighter"), "{text}");
 
-    app.on_msg(Msg::Posted { key: Some(Key(key)), result: Ok("Comentarios enviados a Alondra · iOS".into()) });
+    app.on_msg(Msg::Posted { key: Some(Key(key)), result: Ok("Comentarios enviados a Restore the native review experience".into()) });
     assert!(app.reader.is_none() && app.reviews.is_empty());
-    assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
+    assert_eq!(flash(&app), "Comentarios enviados a Restore the native review experience");
 }
 
 /// The TUI hides a card on the server's word alone: an action that takes it out hides it at

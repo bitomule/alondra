@@ -82,11 +82,17 @@ import Testing
             }
             return String(key.split(separator: ":").last ?? "")
         }
-        let nodeID = linkedID(questionCard.context.first { $0.icon == .node }?.link)
         let taskFact = question.sections.flatMap(\.items).compactMap { item -> Fact? in
             if case let .facts(facts) = item { facts.items.first { $0.label == "Task" } } else { nil }
         }.first
         let taskID = linkedID(taskFact?.link)
+        #expect(linkedID(questionCard.context.first { $0.icon == .task }?.link) == taskID)
+        guard case let .document(fleet) = try await client.load(.fleet, nil),
+              case let .row(firstNode)? = fleet.sections.flatMap(\.items).first(where: { if case .row = $0 { true } else { false } }) else {
+            Issue.record("The demo fleet must list a node")
+            return
+        }
+        let nodeID = linkedID(firstNode.link)
         for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID),
                     .newRequest(), .machine, .schedules, .schedule("new")] {
             guard case let .document(screen) = try await client.load(key, nil) else {

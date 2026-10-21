@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v04244133f89724ca",
+  "version": "v32d1138b86acc987",
   "cursor": "cursor-1",
   "status": {
-    "version": "ve1fd29addaecad00",
+    "version": "v21e817e49a9c8092",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -23,7 +23,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 0
       },
       {
@@ -88,11 +88,11 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v79924e14e3f24075",
+      "version": "v6d927ccf3bbe784f",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "ve1fd29addaecad00",
+        "version": "v21e817e49a9c8092",
         "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
         "badge": 5,
         "counts": [
@@ -108,7 +108,7 @@
           },
           {
             "id": "agents",
-            "label": "Flota",
+            "label": "En marcha",
             "value": 0
           },
           {
@@ -236,18 +236,18 @@
               "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
               "context": [
                 {
-                  "icon": "node",
-                  "text": "Alondra · iOS",
+                  "icon": "task",
+                  "text": "Restore the native review experience",
                   "link": {
                     "kind": "view",
-                    "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
                   },
                   "chip": {
                     "text": "Demo Garden",
                     "tone": "neutral"
                   },
                   "state": {
-                    "text": "Esperando respuesta",
+                    "text": "Te necesita",
                     "tone": "warning"
                   }
                 }
@@ -333,11 +333,11 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v5dfd814ca097fb24",
+      "version": "vd2dd2d623d3451f2",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "ve1fd29addaecad00",
+        "version": "v21e817e49a9c8092",
         "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
         "badge": 5,
         "counts": [
@@ -353,7 +353,7 @@
           },
           {
             "id": "agents",
-            "label": "Flota",
+            "label": "En marcha",
             "value": 0
           },
           {
@@ -496,11 +496,11 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "vf9c099a12eabc702",
+      "version": "v9f57a756e1d44d9e",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
-        "version": "ve1fd29addaecad00",
+        "version": "v21e817e49a9c8092",
         "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
         "badge": 5,
         "counts": [
@@ -516,7 +516,7 @@
           },
           {
             "id": "agents",
-            "label": "Flota",
+            "label": "En marcha",
             "value": 0
           },
           {

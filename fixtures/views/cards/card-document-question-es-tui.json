@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vf421a337a441fddc",
+  "version": "v0d7cfac2578fc62b",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
-    "version": "ve1fd29addaecad00",
+    "version": "v21e817e49a9c8092",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 0
       },
       {
@@ -154,18 +154,18 @@
           "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
           "context": [
             {
-              "icon": "node",
-              "text": "Alondra · iOS",
+              "icon": "task",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               },
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
               },
               "state": {
-                "text": "Esperando respuesta",
+                "text": "Te necesita",
                 "tone": "warning"
               }
             }

@@ -421,6 +421,7 @@ fn normalize_key(raw: &str) -> Option<String> {
             | "sidebar"
             | "tasks"
             | "fleet"
+            | "orchestrator"
             | "schedules"
             | "new_request"
             | "issue_picker"

@@ -30,6 +30,16 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
     Some(action)
 }
 
+/// The open tasks a live node is working on now, each with that node.
+pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<Item = (&'a Task, &'a crate::domain::Agent)> {
+    context.domain.agents.values()
+        .filter(|agent| super::fleet::in_fleet(agent, context))
+        .filter_map(|agent| common::current_task(context, &agent.id)
+            .filter(|task| !task.archived && !task.state.terminal())
+            .or_else(|| super::fleet::node_tasks(&agent.id, context).find(|task| !task.state.terminal()))
+            .map(|task| (task, agent)))
+}
+
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     presented_row(task, &task_state::present(task, context), context)
 }
@@ -967,16 +977,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         tone: Some(task_state::present(task, context).tone),
         link: None,
     }];
-    if let Some(agent_id) = &task.agent_id {
-        facts.push(Fact {
-            label: t!(context.lang, "Node", "Nodo").into(),
-            value: common::agent_label(agent_id, context),
-            tone: None,
-            link: Some(super::Link::View {
-                key: format!("node:{agent_id}"),
-            }),
-        });
-    }
     facts.push(Fact {
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request

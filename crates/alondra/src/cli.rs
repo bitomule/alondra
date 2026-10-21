@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::client::Client;
 use crate::ops::{self, Recovery};
 
-fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Action> {
+pub(crate) fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Action> {
     fn scan(items: &[Item], predicate: &impl Fn(&Action) -> bool) -> Option<Action> {
         for item in items {
             match item {
@@ -166,7 +166,8 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
 /// The orchestrator's view when the daemon resolves `name` to it: "orchestrator", or the
 /// session the orchestrator runs in now.
 fn orchestrator_view(client: &Client, name: &str) -> Option<View> {
-    let view = client.views(&format!("node:{name}"), None).ok()?;
+    let key = if name == "orchestrator" { name.to_owned() } else { format!("node:{name}") };
+    let view = client.views(&key, None).ok()?;
     view_action(&view, |action| action.id.starts_with("msg:view@")).is_some().then_some(view)
 }
 

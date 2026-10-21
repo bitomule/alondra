@@ -122,14 +122,14 @@ fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
 
 fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
     let mut projects: BTreeMap<String, Vec<super::Row>> = BTreeMap::new();
-    for agent in context.domain.agents.values() {
-        if !super::fleet::in_fleet(agent, context) { continue; }
+    for (task, agent) in super::tasks::in_progress(context) {
         let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
         let project = live.and_then(|node| node.project.as_deref()).filter(|name| *name != "others")
             .unwrap_or(t!(context.lang, "Other", "Otros"));
-        let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node,
-            common::agent_label(&agent.id, context), None);
-        row.badges.push(super::fleet::node_state(&agent.id, context));
+        let (icon, _) = common::task_presentation(task.state);
+        let presented = super::task_state::present(task, context);
+        let mut row = common::row(&task.id.0, &format!("task:{}", task.id), icon, task.title.clone(), None);
+        row.badges.push(Label { text: presented.state, tone: presented.tone });
         if let Some(node) = live {
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
             row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
@@ -139,16 +139,6 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         }
         let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());
         row.trailing = Some(Trailing::Count { value: pending as u32 });
-        row.children = common::current_task(context, &agent.id).into_iter()
-            .map(|task| {
-                let (icon, _) = common::task_presentation(task.state);
-                let presented = super::task_state::present(task, context);
-                let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,
-                    task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
-                child.depth = 1;
-                child.badges.push(Label { text: presented.state, tone: presented.tone });
-                child
-            }).collect();
         projects.entry(project.into()).or_default().push(row);
     }
     projects.into_iter().map(|(project, rows)| {
@@ -222,10 +212,10 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     ));
     view.status.summary = tf!(
         context.lang,
-        "{pending_count} pending · {node_count} nodes",
-        "{pending_count} pendientes · {node_count} nodos",
+        "{pending_count} pending · {running_count} in progress",
+        "{pending_count} pendientes · {running_count} en marcha",
         pending_count = pending.len(),
-        node_count = context.domain.agents.len()
+        running_count = super::tasks::in_progress(context).count()
     );
     view.status.version = super::version(&view.status);
     Ok(view)

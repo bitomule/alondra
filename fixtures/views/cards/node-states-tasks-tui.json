@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vd32a71e36f5d880f",
+  "version": "v0fd19d1dc2b00e14",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v542a086c414e7f8b",
+    "version": "v41891ae08ceb5ca5",
     "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 6
       },
       {

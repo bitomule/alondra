@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "v3da9ae1a85ea0443",
+  "version": "v02fda7ba47471c63",
   "cursor": "cursor-1",
   "title": "Read the report on indexing Redraft's whole library",
   "status": {
-    "version": "vd760a3445e960618",
+    "version": "vb7b081b6c72395b1",
     "summary": "1 por leer · 1 nodo trabajando",
     "badge": 1,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 1
       },
       {
@@ -139,11 +139,11 @@
           "subtitle": "It ends in a plan: approve it to start building it, or only archive the report.",
           "context": [
             {
-              "icon": "node",
-              "text": "redraft/library-index",
+              "icon": "task",
+              "text": "Redraft: analyse the whole library at once",
               "link": {
                 "kind": "view",
-                "key": "node:a-1"
+                "key": "task:t-1"
               }
             }
           ],

@@ -1129,13 +1129,109 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
 }
 
 #[test]
-fn search_view_counts_found_agents_and_reports_empty_results() {
+fn search_finds_tasks_by_title_and_by_what_their_node_said() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let keys = |view: &View| view.sections[0].items.iter().filter_map(|item| match item {
+        Item::Row(row) => row.link.as_ref().map(|link| match link { Link::View { key } => key.clone(), _ => String::new() }),
+        _ => None,
+    }).collect::<Vec<_>>();
+    let found = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "search?q=feature", "");
+    assert_eq!(found.sections[0].title.as_deref(), Some("1 result found"));
+    assert_eq!(keys(&found), ["task:t-1"]);
+    let said = LiveSnapshot { search_matches: Some(vec!["a-1".into()]), ..LiveSnapshot::default() };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &said, client, Lang::En, "search?q=what+it+said", "");
+        assert_eq!(keys(&view), ["task:t-1"], "{client:?}: the session that matched is its task");
+    }
+    let missing = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "search?q=NoSuchTask", "");
+    assert_eq!(missing.empty.as_ref().map(|notice| notice.text.as_str()), Some("No results found"));
+}
+
+#[test]
+fn no_view_but_the_fleet_and_the_node_links_to_a_node() {
+    let state = golden_in_progress();
+    let live = golden_live();
+    for (key, client) in [
+        ("home", Client::Ios), ("home", Client::Tui),
+        ("card:a98d034b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("card:a98d034b-249e-4487-a89b-57de38c26372", Client::Mac),
+        ("card:a98d034b-249e-4487-a89b-57de38c26372", Client::Tui),
+        ("card:f12d034b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("tasks", Client::Ios), ("tasks", Client::Mac), ("tasks", Client::Tui),
+        ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios),
+        ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Mac),
+        ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Tui),
+        ("request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Mac),
+        ("sidebar", Client::Mac),
+        ("search?q=Alondra", Client::Ios), ("search?q=Alondra", Client::Mac),
+        ("orchestrator", Client::Tui),
+    ] {
+        let json = serde_json::to_string(&render(&state, &live, client, Lang::En, key, "2026-09-30T10:00:00Z")).unwrap();
+        assert!(!json.contains("\"node:"), "{key} on {client:?} links to a node: {json}");
+    }
+}
+
+/// The golden domain with its task worked on by its node right now.
+fn golden_in_progress() -> DomainState {
+    let mut state = golden_fixture();
+    let agent = "d887a34b-249e-4487-a89b-57de38c26372";
+    let task = state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap();
+    task.agent_id = Some(agent.into());
+    task.state = TaskState::Running;
+    state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::Working;
+    state
+}
+
+#[test]
+fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
+    let state = golden_in_progress();
+    let mut live = golden_live();
+    let agent = "d887a34b-249e-4487-a89b-57de38c26372";
+    let node = live.nodes.iter_mut().find(|node| node.agent_id == agent).unwrap();
+    node.background_badge = Some("2 subagents".into());
+    node.background_suspect = true;
+    let project = node.project.clone().unwrap();
+    let view = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
+    let section = view.sections.iter().find(|section| section.id == format!("project:{project}")).expect("the project's section");
+    let [Item::Row(row)] = section.items.as_slice() else { panic!("one task in progress: {:?}", section.items) };
+    assert_eq!(row.link, Some(Link::View { key: "task:t-651c38484cd2f34e74d5107ba05f7f15".into() }));
+    assert_eq!(row.title, "Restore the native review experience");
+    assert_eq!(row.badges[0], Label { text: "Needs you".into(), tone: Tone::Warning }, "its task's state");
+    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Warning }, "and what runs in its background");
+    assert!(row.children.is_empty());
+    assert!(view.status.summary.ends_with(" · 1 in progress"), "{}", view.status.summary);
+}
+
+#[test]
+fn the_status_counts_the_tasks_in_progress_not_a_fleet() {
+    let state = golden_in_progress();
+    let live = golden_live();
+    for (lang, label) in [(Lang::En, "In progress"), (Lang::Es, "En marcha")] {
+        let view = render(&state, &live, Client::Tui, lang, "home", "");
+        let count = view.status.counts.iter().find(|count| count.id == "agents").unwrap();
+        assert_eq!((count.label.as_str(), count.value), (label, 1));
+        assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
+    }
+    let mut done = state.clone();
+    for task in done.tasks.values_mut() { task.state = TaskState::Done; }
+    let view = render(&done, &live, Client::Tui, Lang::En, "home", "");
+    assert_eq!(view.status.counts.iter().find(|count| count.id == "agents").unwrap().value, 0,
+        "a node whose task finished is not a task in progress");
+}
+
+#[test]
+fn the_orchestrator_key_holds_only_the_message_to_alondra() {
     let state = fixture();
     let live = LiveSnapshot::default();
-    let found = render(&state, &live, Client::Tui, Lang::En, "search?q=Node", "");
-    assert_eq!(found.sections[0].title.as_deref(), Some("1 result found"));
-    let missing = render(&state, &live, Client::Tui, Lang::En, "search?q=NoSuchNode", "");
-    assert_eq!(missing.empty.as_ref().map(|notice| notice.text.as_str()), Some("No results found"));
+    let view = render(&state, &live, Client::Tui, Lang::En, "orchestrator", "");
+    assert_eq!(view.key, "orchestrator");
+    let actions: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item|
+        if let Item::Actions(bar) = item { Some(bar.actions.iter().map(|action| action.id.clone())) } else { None }).flatten().collect();
+    assert_eq!(actions, [format!("msg:view@{}", state.revision)]);
+    let node = render(&state, &live, Client::Tui, Lang::En, "node:orchestrator", "");
+    assert_eq!(node.key, "node:orchestrator", "the node key still answers until the clients leave it");
+    assert_eq!(node.sections, view.sections);
 }
 
 #[test]
@@ -2260,7 +2356,7 @@ fn query_keys_decode_percent_encoding_and_reject_malformed_values() {
         &live,
         Client::Mac,
         Lang::En,
-        "search?q=Node+One",
+        "search?q=Build+a",
         "2026-09-30T10:00:00Z",
     );
     assert_eq!(query.sections[0].items.len(), 1);
@@ -2562,6 +2658,8 @@ fn mac_views_match_goldens() {
     }
     let spanish = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "2026-09-30T10:00:00Z");
     assert_golden("sidebar-mac-es.json", &spanish, include_str!("../../../../fixtures/views/cards/sidebar-mac-es.json"));
+    let working = render(&golden_in_progress(), &live, Client::Mac, Lang::En, "sidebar", "2026-09-30T10:00:00Z");
+    assert_golden("sidebar-in-progress-mac.json", &working, include_str!("../../../../fixtures/views/cards/sidebar-in-progress-mac.json"));
 }
 
 /// The golden fixture with the node of its task stopped after writing to the user in its
@@ -3977,6 +4075,7 @@ fn card_context_texts(state: &DomainState) -> Vec<String> {
     let view = render(state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
         Item::Card(card) => Some(card.context.iter().map(|line| line.text.clone()).collect::<Vec<_>>()),
+        Item::Facts(facts) => Some(facts.items.iter().map(|fact| fact.value.clone()).collect()),
         _ => None,
     }).flatten().collect()
 }
@@ -3984,7 +4083,7 @@ fn card_context_texts(state: &DomainState) -> Vec<String> {
 #[test]
 fn scheduled_run_agent_shows_the_schedule_title_never_the_raw_run_name() {
     let texts = card_context_texts(&scheduled_run_fixture(true));
-    assert!(texts.iter().any(|text| text == "Morning review"), "{texts:?}");
+    assert!(texts.iter().any(|text| text.contains("Morning review")), "{texts:?}");
     assert!(!texts.iter().any(|text| text.contains("scheduled/")), "{texts:?}");
 }
 
@@ -4354,13 +4453,15 @@ fn pull_request_detail_shows_the_change_size() {
 }
 
 #[test]
-fn card_node_line_carries_the_node_state_next_to_the_project() {
+fn card_task_line_links_to_the_task_with_its_state_next_to_the_project() {
     let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
-    let node = card_of(&view).context.iter().find(|line| line.icon == Icon::Node).unwrap();
-    let state = node.state.as_ref().expect("node state");
-    assert_eq!((state.text.as_str(), state.tone), ("Waiting for an answer", Tone::Warning));
-    assert_eq!(node.chip.as_ref().map(|chip| chip.text.as_str()), Some("Demo Garden"));
+    let line = card_of(&view).context.iter().find(|line| line.icon == Icon::Task).unwrap();
+    assert_eq!(line.text, "Restore the native review experience");
+    assert_eq!(line.link, Some(Link::View { key: "task:t-651c38484cd2f34e74d5107ba05f7f15".into() }));
+    let state = line.state.as_ref().expect("task state");
+    assert_eq!((state.text.as_str(), state.tone), ("Needs you", Tone::Warning));
+    assert_eq!(line.chip.as_ref().map(|chip| chip.text.as_str()), Some("Demo Garden"));
     let bare = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
     assert!(card_of(&bare).context.iter().all(|line| line.state.is_none()));
@@ -4713,16 +4814,6 @@ fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
     let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
     assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
         [(Some("accept"), "Accept", false), (Some("decline"), "Decline", false), (None, "Reply", true)]);
-}
-
-#[test]
-fn status_names_the_node_count_fleet() {
-    for (lang, label) in [(Lang::En, "Fleet"), (Lang::Es, "Flota")] {
-        let view = render(&fixture(), &LiveSnapshot::default(), Client::Tui, lang, "home", "");
-        let count = view.status.counts.iter().find(|count| count.id == "agents").unwrap();
-        assert_eq!(count.label, label);
-        assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
-    }
 }
 
 fn presented_pr() -> DomainState {

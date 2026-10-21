@@ -174,8 +174,7 @@ Pick the tool by what you need:
   fix it and call `cleanup_done` again.
 - `post_merge_work`: something you started for the task still runs after its PR merged (a deploy,
   a Homebrew publish, a release script), above all in the background, where you look idle. Call
-  it with `task_id` and a one-line `reason` as soon as it starts: the user sees the reason in
-  Fleet and Alondra does not close the session while you say so. When it ends, call it again
+  it with `task_id` and a one-line `reason` as soon as it starts: Alondra does not close the session while you say so. When it ends, call it again
   without `reason` (or call `cleanup_done`): the wait to close the session then starts over.
   After 3 hours Alondra asks you whether it still runs: call it again with the reason if it
   does. If you are not working and do not answer within 30 minutes, the user decides whether to

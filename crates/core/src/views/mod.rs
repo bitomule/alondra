@@ -139,7 +139,7 @@ macro_rules! families {
         }
     };
 }
-families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Schedules, Schedule, NewRequest,
+families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Orchestrator, Schedules, Schedule, NewRequest,
     IssuePicker, Search, Machine);
 
 impl Family {
@@ -166,6 +166,8 @@ impl Family {
             Family::Fleet
         } else if key.starts_with("node:") {
             Family::Node
+        } else if key == "orchestrator" {
+            Family::Orchestrator
         } else if key == "schedules" {
             Family::Schedules
         } else if key.starts_with("schedule:") {
@@ -197,6 +199,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::Request => tasks::request(tail(), &context)?,
         Family::Fleet => fleet::list(&context),
         Family::Node => fleet::detail(tail(), &context)?,
+        Family::Orchestrator => misc::orchestrator(key, &context),
         Family::Schedules => schedules::list(&context),
         Family::Schedule => schedules::editor(key, &context)?,
         Family::NewRequest => misc::new_request(key, &context)?,

@@ -420,14 +420,22 @@ fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLin
 
 fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLine> {
     let mut lines = vec![];
+    let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id));
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
-        lines.push(ContextLine {
-            icon: Icon::Node,
-            text: super::common::agent_label(agent_id, context),
-            link: Some(Link::View { key: format!("node:{agent_id}") }),
-            chip: node.and_then(|node| node.project.as_ref()).map(|project| Label { text: project.clone(), tone: Tone::Neutral }),
-            state: node.map(|_| super::fleet::node_state(agent_id, context)),
+        let chip = node.and_then(|node| node.project.as_ref()).map(|project| Label { text: project.clone(), tone: Tone::Neutral });
+        lines.push(match task {
+            Some(task) => {
+                let presentation = super::task_state::present(task, context);
+                ContextLine {
+                    icon: Icon::Task,
+                    text: task.title.clone(),
+                    link: Some(Link::View { key: format!("task:{}", task.id) }),
+                    chip,
+                    state: node.map(|_| Label { text: presentation.state, tone: presentation.tone }),
+                }
+            }
+            None => ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None, chip, state: None },
         });
     }
     lines.extend(review_lines(item, context));

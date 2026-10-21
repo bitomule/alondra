@@ -303,7 +303,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "post_merge_work",
             "post_merge_work",
-            "Say that you are still working on something for your task after its PR merged (a deploy, a Homebrew publish, a release script), with the reason the user sees in Fleet. Alondra does not close this session while you say so, even if the task is closing and you look idle. Call it again without reason as soon as that work ends, or call cleanup_done: Alondra's wait to close the session then starts over. Work your task still has to do after the merge (publish, install, deploy, verify) is declared here before you present the PR as final: the task then stays in progress after the merge until you end it.",
+            "Say that you are still working on something for your task after its PR merged (a deploy, a Homebrew publish, a release script), with its reason. Alondra does not close this session while you say so, even if the task is closing and you look idle. Call it again without reason as soon as that work ends, or call cleanup_done: Alondra's wait to close the session then starts over. Work your task still has to do after the merge (publish, install, deploy, verify) is declared here before you present the PR as final: the task then stays in progress after the merge until you end it.",
             json!({"task_id":{"type":"string"},"reason":{"type":"string","description":"What you are still doing, in one short line, e.g. \"release.sh publishes 0.2.54\". Leave it out when the work has ended."}}),
             vec!["task_id"],
         ),

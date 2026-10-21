@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "vb8edb33ef3465d00",
+  "version": "vd9ce92a38182b975",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v72ec2a761297ed86",
+    "version": "v73340bacd6f9082e",
     "summary": "1 nodo trabajando",
     "badge": 0,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 1
       },
       {
@@ -56,14 +56,6 @@
               "label": "Estado",
               "value": "Trabajando",
               "tone": "accent"
-            },
-            {
-              "label": "Nodo",
-              "value": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
             },
             {
               "label": "Solicitud",

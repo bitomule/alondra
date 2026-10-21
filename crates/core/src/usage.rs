@@ -126,7 +126,7 @@ pub fn usage_wait(reason: &str) -> bool {
 
 /// Whether a node's question asks whether to stop, pause or wait for the subscription's usage.
 /// That is never a node's call, nor the orchestrator's: the user decides on the usage card and
-/// Alondra paces the fleet. Narrower than `usage_wait`: a question must name the usage and a stop,
+/// Alondra paces the nodes. Narrower than `usage_wait`: a question must name the usage and a stop,
 /// and a lone "token" (a login token, say) is not usage.
 pub fn usage_stop_question(text: &str) -> bool {
     let text = text.to_lowercase();
@@ -192,7 +192,7 @@ mod tests {
             "Should I wait for the token refresh fix to land?",
             "¿Espero a que termine la revisión de la PR 12?",
             "Memory usage is at 95%: should I wait before building?",
-            "Show the weekly usage on the Fleet screen?",
+            "Show the weekly usage on the Tasks screen?",
             "¿Paro el servidor de pruebas al acabar?",
         ] {
             assert!(!usage_stop_question(other), "{other}");

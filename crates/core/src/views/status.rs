@@ -59,8 +59,8 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
             },
             Count {
                 id: "agents".into(),
-                label: t!(context.lang, "Fleet", "Flota").into(),
-                value: context.domain.agents.values().filter(|agent| super::fleet::in_fleet(agent, context)).count() as u32,
+                label: t!(context.lang, "In progress", "En marcha").into(),
+                value: super::tasks::in_progress(context).count() as u32,
             },
             Count {
                 id: "working".into(),

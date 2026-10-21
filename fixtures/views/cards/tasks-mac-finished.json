@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "vee3474fc0145187b",
+  "version": "v40a17494082e35c9",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v40cfda0daa29c308",
+    "version": "vdc99634e44d70ce7",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 3
       },
       {

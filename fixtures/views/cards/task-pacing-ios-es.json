@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "vf7845c7149c0a909",
+  "version": "v90f9a306634355be",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
-    "version": "v6f7d7d059afd4a95",
+    "version": "v0ab6b23c0bf2415b",
     "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 4
       },
       {

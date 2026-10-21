@@ -39,7 +39,7 @@ impl Client {
         Ok(match close_node(&self.domain, sessions.as_ref(), &agent, true).await? {
             CloseOutcome::Closed { output } => Reply::ok(json!({"ok": true, "interactive": false, "output": output})),
             CloseOutcome::NotListed => Reply::ok(json!({"ok": true, "interactive": true, "output": format!(
-                "{name} is an interactive session, not a background job: Alondra removed it from the fleet and left the terminal session itself open. Close it there with /exit when you are done."
+                "{name} is an interactive session, not a background job: Alondra stopped tracking it and left the terminal session itself open. Close it there with /exit when you are done."
             )})),
             CloseOutcome::Refused { reasons, message } => refused(message, reasons),
             CloseOutcome::Failed { status, message } => failed(status, message),

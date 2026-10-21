@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "v02d7753267e77a95",
+  "version": "v14d4f779173cc2b6",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "vf63c69ea87e89a7d",
+    "version": "v82c7b6cd48c03746",
     "summary": "1 node working",
     "badge": 0,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 1
       },
       {
@@ -56,14 +56,6 @@
               "label": "State",
               "value": "Working",
               "tone": "accent"
-            },
-            {
-              "label": "Node",
-              "value": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
             },
             {
               "label": "Request",

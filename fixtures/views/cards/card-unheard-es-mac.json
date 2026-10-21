@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "mac",
-  "version": "v085ef4d3ca52575f",
+  "version": "vb1cc1e595e3f336d",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
-    "version": "v202b578d49a36f2f",
+    "version": "vef0bd29f344e185c",
     "summary": "1 pregunta · 0 nodos trabajando",
     "badge": 1,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 1
       },
       {
@@ -148,18 +148,18 @@
           "subtitle": "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.",
           "context": [
             {
-              "icon": "node",
-              "text": "Alondra · iOS",
+              "icon": "task",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               },
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
               },
               "state": {
-                "text": "Esperando respuesta",
+                "text": "Te necesita",
                 "tone": "warning"
               }
             }

@@ -341,6 +341,7 @@ fn keys() -> Vec<(String, Client)> {
         ("fleet".to_owned(), Client::Tui),
         (format!("node:{}", one("a", Shape::Running)), Client::Ios),
         (format!("node:{}", one("a", Shape::Done)), Client::Tui),
+        ("orchestrator".to_owned(), Client::Tui),
         ("schedules".to_owned(), Client::Ios),
         ("schedule:schedule-1".to_owned(), Client::Ios),
         ("new_request".to_owned(), Client::Ios),

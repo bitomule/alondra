@@ -280,7 +280,7 @@ impl App {
         let view = self.card_view.as_ref().filter(|view| view.key == r.key.0);
         let sends = match view {
             Some(view) => self.review_action(view).is_some(),
-            None => review.is_some() && r.agent_id.is_some(),
+            None => review.is_some() && r.task_id.is_some(),
         };
         if sends {
             t.add(vec![char('s')], "s", tr!("send your comments", "enviar tus comentarios"), Act::ReaderSend);
