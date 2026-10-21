@@ -1459,3 +1459,27 @@ fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
         println!("github_requests_held=2 home_view=ok physical_read_slots_free=2 requests_drained=true");
     });
 }
+
+// The routes of the card tasks waiting for an MCP server wait on: signed devices only, on this Mac
+// and through the relay, each with its exact body, and none of them one of the relay's atomic
+// command writes.
+#[tokio::test]
+async fn the_mcp_sign_in_routes_take_only_a_signed_device_and_their_own_body() {
+    let fixture = Fixture::start().await;
+    let card = "mcp-sign-in-task-1-7";
+    for step in ["connect", "return", "reconnect", "without"] {
+        let path = format!("/mcp-sign-ins/{card}/{step}");
+        assert!(approved_write_path(&path) && !atomic_write_path(&path), "{path} goes through the relay as a write of its own");
+        let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN, "{path}");
+        let body = if step == "return" { json!({"address": "http://localhost:49200/callback?code=c&state=s"}) } else { json!({}) };
+        let (status, answer) = fixture.send("POST", &path, &body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no such card: {path} {answer}");
+        let extra = if step == "return" { json!({"address": "x", "extra": 1}) } else { json!({"extra": 1}) };
+        assert_eq!(fixture.send("POST", &path, &extra).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{path}");
+    }
+    assert_eq!(fixture.send("POST", &format!("/mcp-sign-ins/{card}/return"), &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    for refused in ["/mcp-sign-ins/other-card/connect", "/mcp-sign-ins/mcp-sign-in-t/open", "/mcp-sign-ins/mcp-sign-in-t", "/mcp-sign-ins/mcp sign/connect"] {
+        assert_eq!(parse_write(refused), None, "{refused}");
+    }
+}

@@ -377,7 +377,9 @@ fn data_version(c: &Connection) -> Result<i64> {
 /// The state as of this transaction: the cached copy when it is still current,
 /// otherwise a full load. Also returns whether the cache served it and the
 /// `data_version` that state corresponds to, read inside the transaction so a
-/// commit by another connection after ours can never be absorbed into it.
+/// commit by another connection after ours can never be absorbed into it. What
+/// the nodes reported of their MCP servers lives only in memory: a full load
+/// keeps what the cached copy held.
 fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState>, bool, i64)> {
     let version = data_version(tx)?;
     let changes = tx.total_changes();
@@ -385,7 +387,13 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
         Some(c) if c.data_version == version && c.total_changes == changes => {
             Ok((Arc::clone(&c.state), true, version))
         }
-        _ => Ok((Arc::new(repository::load(tx)?), false, version)),
+        _ => {
+            let mut state = repository::load(tx)?;
+            if let Some(c) = cached {
+                state.mcp = c.state.mcp.clone();
+            }
+            Ok((Arc::new(state), false, version))
+        }
     }
 }
 #[derive(Debug)]

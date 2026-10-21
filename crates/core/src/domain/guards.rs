@@ -41,6 +41,7 @@ impl DomainState {
             Command::ReconnectMcp { task_id, server } => self.mcp_reconnect_guard(actor, task_id, server).map(drop),
             Command::StartMcpSignIn { task_id, server } => self.mcp_sign_in_guard(actor, task_id, server).map(drop),
             Command::CompleteMcpSignIn { task_id, server, state } => self.mcp_complete_guard(actor, task_id, server, state).map(drop),
+            Command::WaitForMcp { task_id, server } => self.mcp_wait_guard(actor, task_id, server).map(drop),
             Command::CompactConversation { task_id } => self.compact_guard(actor, task_id).map(drop),
             Command::RecordDecisionSettled { task_id, generation, epoch } => {
                 self.decision_end_guard(actor, task_id, *generation, *epoch, true).map(drop)

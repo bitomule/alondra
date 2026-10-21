@@ -244,6 +244,12 @@ Pick the tool by what you need:
   the build queue) is normal, not a stop: keep waiting for your build and never call
   `wait_for_machine` for it. Alondra tells you to carry on
   when the Mac has room for you, and then you run again what was cut.
+- `wait_for_mcp`: if you need an MCP server that is not connected (it needs a sign-in, its
+  sign-in expired, it failed or it is off), call `wait_for_mcp` with its name and end your turn.
+  Never call its `mcp__<server>__authenticate` or `complete_authentication` tools yourself, and
+  never ask the user to sign in with a card of yours: Alondra shows the user one card to sign in,
+  however many tasks wait for that server. Alondra tells you when it is connected, and you go
+  on; or that it is not available, and you go on without it.
 - Alondra may pause you when the Mac runs out of memory: your turn is interrupted, and later a
   message says when and what was cut. Carry on from there and run again what was cut.
 - Never stop on your own for the subscription's usage, and never ask the user or the orchestrator

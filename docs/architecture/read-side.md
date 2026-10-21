@@ -46,6 +46,7 @@ Relations, by id:
 | `reviewers`, `dependents`, `prs_of_task` | the tasks that review a task, those that depend on it, the PRs it registered |
 | `group_members`, `group_complete` | questions asked together |
 | `scheduled`, `failed_launch`, `schedule_title` | tasks created by a scheduled run, the error of a failed launch, the schedule that launched a node |
+| `mcp_waiting`, `mcp_waiting_for`, `mcp_wait_of_task` | the open tasks that wait for an MCP server, oldest card first, by server and by task |
 
 What is derived from the domain alone:
 

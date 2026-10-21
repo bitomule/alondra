@@ -8,7 +8,10 @@ mod guards;
 mod decisions;
 #[path = "mcp.rs"]
 mod mcp;
+#[path = "mcp_wait.rs"]
+mod mcp_wait;
 pub use mcp::{MAX_MCP_SERVERS, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
+pub use mcp_wait::{MCP_GO_ON_WITHOUT, MCP_WAIT_PREFIX, McpServerKey, McpWaiting};
 pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNWRITTEN_PLAN, decision_policy};
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
@@ -2003,6 +2006,7 @@ impl DomainState {
             | Command::RecordMcpServers { task_id, .. }
             | Command::RecordMcpSignIn { task_id, .. }
             | Command::CompleteMcpSignIn { task_id, .. }
+            | Command::WaitForMcp { task_id, .. }
             | Command::CompactConversation { task_id }
             | Command::TellNode { task_id, .. }
             | Command::RecordDecisionRequest { task_id, .. }
@@ -3209,6 +3213,7 @@ impl DomainState {
                     return fail("withdrawn", "Its author withdrew this question");
                 }
                 validate_answer(options, option_id, inputs, attachments)?;
+                self.mcp_answer_guard(&i, option_id)?;
                 validate_attachments(attachments)?;
                 if let (Some(Hold::Plan), Scope::Task { task_id }) = (self.holds.get(interaction_id), &i.scope)
                     && option_id == Hold::APPROVE
@@ -3237,7 +3242,8 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
-                if !self.settle_claude_card(interaction_id, lifecycles)? && !self.decide_sdk_card(interaction_id, lifecycles)? {
+                if !self.settle_claude_card(interaction_id, lifecycles)? && !self.settle_mcp_card(interaction_id, lifecycles)?
+                    && !self.decide_sdk_card(interaction_id, lifecycles)? {
                     self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
                 }
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
@@ -4165,7 +4171,11 @@ impl DomainState {
                 let record = self.mcp_sign_in_guard(actor, task_id, server)?;
                 self.decide(lifecycles, task_id, record)?;
             }
-            Command::RecordMcpServers { task_id, generation, servers } => self.record_mcp_servers(actor, task_id, *generation, servers)?,
+            Command::RecordMcpServers { task_id, generation, servers } => {
+                self.record_mcp_servers(actor, task_id, *generation, servers)?;
+                self.mcp_reported(task_id, lifecycles)?;
+            }
+            Command::WaitForMcp { task_id, server } => self.wait_for_mcp(actor, task_id, server, effects, lifecycles)?,
             Command::RecordMcpSignIn { task_id, generation, server, sign_in } => {
                 self.record_mcp_sign_in(actor, task_id, *generation, server, sign_in)?;
             }

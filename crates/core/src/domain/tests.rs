@@ -2967,9 +2967,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordMcpServers { .. } => 85,
         Command::RecordMcpSignIn { .. } => 86,
         Command::CompleteMcpSignIn { .. } => 87,
+        Command::WaitForMcp { .. } => 88,
     }
 }
-const COMMAND_KINDS: usize = 88;
+const COMMAND_KINDS: usize = 89;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3108,6 +3109,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordMcpServers { task_id: ids.task.into(), generation: 1, servers: vec![] }, false),
         (Command::RecordMcpSignIn { task_id: ids.task.into(), generation: 1, server: "linear".into(), sign_in: McpSignIn::Connected }, false),
         (Command::CompleteMcpSignIn { task_id: ids.task.into(), server: "linear".into(), state: "s".into() }, false),
+        (Command::WaitForMcp { task_id: ids.task.into(), server: "linear".into() }, false),
         (Command::CompactConversation { task_id: ids.task.into() }, false),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
@@ -4363,9 +4365,22 @@ fn guards_refuse_what_the_commands_refuse() {
     let mut decided = asking.clone();
     exec(&mut decided, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"sdk".into(), 1, 1),
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
+    let mut mcp = sdk.clone();
+    exec(&mut mcp, Actor::System, Command::RecordMcpServers { task_id: "sdk".into(), generation: 1, servers: vec![
+        McpServerState { name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: None, transport: None, url: None },
+        McpServerState { name: "files".into(), status: McpStatus::Connected, error: None, source: None, transport: None, url: None },
+    ] }).unwrap();
+    let mut waiting_mcp = mcp.clone();
+    exec(&mut waiting_mcp, Actor::Agent { agent_id: "s".into() }, Command::WaitForMcp { task_id: "sdk".into(), server: "linear".into() }).unwrap();
+    let commands: Vec<Command> = commands.into_iter().chain([
+        Command::WaitForMcp { task_id: "sdk".into(), server: "linear".into() },
+        Command::WaitForMcp { task_id: "sdk".into(), server: "files".into() },
+        Command::WaitForMcp { task_id: "sdk".into(), server: "missing".into() },
+        Command::WaitForMcp { task_id: "t".into(), server: "linear".into() },
+    ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &asking, &asked_resting, &decided] {
-        for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &asking, &asked_resting, &decided, &mcp, &waiting_mcp] {
+        for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
                 for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
                     (0, state.data_epoch.clone(), state.revision),

@@ -6,6 +6,7 @@ mod files;
 mod inbox;
 mod input;
 mod keys;
+mod mcp_sign_in;
 mod md;
 mod optimistic;
 mod restore;
@@ -491,6 +492,13 @@ pub enum Target {
     General {
         send: bool,
     },
+    /// Where the browser came back to after signing in to an MCP server away from the daemon's
+    /// Mac: it carries a one-time code, so it is never kept as a draft.
+    McpReturn {
+        card: String,
+        server: String,
+        url: String,
+    },
 }
 
 pub struct Composer {
@@ -520,7 +528,7 @@ impl Target {
                 Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
             }
             Target::Form { view } => Some(format!("form:{view}")),
-            Target::Comment { .. } | Target::General { .. } => None,
+            Target::Comment { .. } | Target::General { .. } | Target::McpReturn { .. } => None,
         }
     }
 }
@@ -584,6 +592,12 @@ enum Msg {
     Runtime(Option<Box<Runtime>>),
     /// The local daemon's own readings: machine, usage and update state.
     Daemon(Option<Box<Runtime>>),
+    /// What the daemon answered to Connect on the card of the tasks waiting for `server`.
+    McpOpened {
+        card: String,
+        server: String,
+        result: Result<Value, String>,
+    },
     /// A request that is not a domain command: what to flash, or why it failed.
     Posted {
         key: Option<Key>,
@@ -1031,9 +1045,17 @@ fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -
     Ok(())
 }
 
-/// The Mac's default app for a URL or file, through `open`. Tests never open one.
+/// The Mac's default app for a URL or file, through `open`. Tests never open one, and a sandbox
+/// TUI given `ALONDRA_SANDBOX_OPENED` writes it there instead, for a journey to follow.
 fn open_with_mac(target: &str) {
     if cfg!(test) {
+        return;
+    }
+    if let Some(opened) = std::env::var_os("ALONDRA_SANDBOX_OPENED").filter(|_| std::env::var("ALONDRA_SANDBOX").as_deref() == Ok("1")) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(opened) {
+            let _ = writeln!(file, "{target}");
+        }
         return;
     }
     let _ = std::process::Command::new("/usr/bin/open")
@@ -2083,6 +2105,7 @@ impl App {
                 }
             },
             Msg::Closed { name, result } => self.closed(&name, result),
+            Msg::McpOpened { card, server, result } => self.mcp_opened(card, server, result),
             Msg::File { route, result } => {
                 self.loading.remove(&route);
                 if let (Ok(files::FileBody::Image(img)), Some(picker)) = (&result, &self.picker) {
@@ -2742,6 +2765,7 @@ impl App {
             Target::Message { .. } => c.chips.is_empty(),
             Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
+            Target::McpReturn { .. } => true,
         };
         if needs_text && text.is_empty() {
             self.composer = Some(c);
@@ -2811,6 +2835,7 @@ impl App {
                 self.message(key, message, ok);
             }
             Target::Form { .. } => {}
+            Target::McpReturn { card, server, .. } => self.mcp_give_back(&card, &server, text),
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
                     return;

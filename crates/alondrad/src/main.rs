@@ -53,6 +53,7 @@ mod local_network_card;
 mod reachability;
 mod machine;
 mod mcp_sign_in;
+mod mcp_waits;
 mod machine_state;
 mod machine_watch;
 mod fleet_gate;
@@ -545,6 +546,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
     tokio::spawn(claude_access::run(domain.clone()));
+    tokio::spawn(mcp_waits::run(domain.clone()));
     tokio::spawn(machine_watch::run(
         domain.clone(),
         gauges.clone(),

@@ -325,3 +325,44 @@ fn remove_hides_the_rule_at_once_and_a_refusal_brings_it_back_with_its_message()
     assert_eq!(shown_rules(&app), ["rule-4"]);
     assert_eq!(app.spawned.borrow().len(), asked + 1, "the list is asked again once it is gone");
 }
+
+fn sign_in_page(returns_to_claude: bool) -> Result<Value, String> {
+    Ok(json!({"server": "linear", "url": "https://linear.app/oauth/authorize?state=s1", "returns_to_claude": returns_to_claude}))
+}
+
+#[test]
+fn connect_on_the_daemon_s_mac_opens_the_browser_and_the_return_needs_nothing_more() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.mcp_connect("mcp-sign-in-t-7", "linear");
+    assert_eq!(app.posted.borrow().last().map(|(path, _)| path.clone()).as_deref(), Some("/mcp-sign-ins/mcp-sign-in-t-7/connect"));
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
+    assert!(app.composer.is_none(), "the browser comes back to Claude on this Mac by itself");
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), Ok(json!({"server": "linear", "connected": true})));
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), Ok(json!({"server": "linear", "url": "http://evil.example.com/", "returns_to_claude": true})));
+    assert!(app.composer.is_none(), "only an https page, or one on this Mac, is opened");
+}
+
+#[test]
+fn connect_away_from_the_mac_asks_for_where_the_browser_came_back_to_and_keeps_it_nowhere() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::with_target(tx, direct_mac("mac-studio"));
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
+    assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::McpReturn { server, .. } if server == "linear")));
+    let screen = drawn(&mut app, 160, 40);
+    assert!(screen.contains("Sign in to linear in the browser, then paste the address of the page that did not load"), "{screen}");
+    let address = "http://localhost:49200/callback?code=one-time&state=s1";
+    app.on_paste(address);
+    assert!(app.to_restore().composer.is_none(), "a restart never hands the address to the next process");
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
+    app.on_paste(address);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.drafts.is_empty(), "nor is it kept as a draft");
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
+    app.on_paste(address);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.posted.borrow().last().cloned(), Some(("/mcp-sign-ins/mcp-sign-in-t-7/return".to_owned(), json!({"address": address}))));
+    app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(false));
+    assert!(app.composer.is_none(), "a claude.ai connector is connected on claude.ai, then reconnected");
+}

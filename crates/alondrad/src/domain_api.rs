@@ -59,7 +59,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"), ("/tasks/{id}/plan-review", "POST"),
-        ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"),
+        ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"), ("/tasks/{id}/mcp-wait", "PUT"),
         ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -742,6 +742,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/post-merge-work") => ("declare_post_merge_work", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/mcp-wait") => ("wait_for_mcp", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/settlement") => ("settle_suggestion", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw", Some(("interaction_id", interaction?))),
@@ -807,7 +808,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"] | ["tasks", _, "cleanup"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
-        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "post-merge-work"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
+        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "post-merge-work"] | ["tasks", _, "mcp-wait"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
             | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
         ("PATCH", ["tasks", _]) => true,

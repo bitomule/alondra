@@ -324,6 +324,8 @@ impl App {
                             "Alondra ya no abre el terminal de un nodo: su detalle tiene su estado y sus tarjetas"
                         ));
                     }
+                    alondra_core::views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
+                    alondra_core::views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
                     alondra_core::views::LocalLink::OpenPath { path } => {
                         self.flash(trf!(
                             "Local file reference: {path}",

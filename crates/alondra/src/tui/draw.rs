@@ -1347,6 +1347,10 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
         )
         .into(),
         Target::General { send: false } => tr!("General comment", "Comentario general").into(),
+        Target::McpReturn { server, .. } => trf!(
+            "Sign in to {server} in the browser, then paste the address of the page that did not load",
+            "Inicia sesión en {server} en el navegador y pega la dirección de la página que no carga"
+        ),
     };
     let action = composer_action(&c.target);
     let title = truncate(&title, (area.width as usize).saturating_sub(6));

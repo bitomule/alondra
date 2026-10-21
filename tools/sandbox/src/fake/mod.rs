@@ -7,6 +7,7 @@ mod gh;
 mod mcp;
 pub mod native;
 pub mod node;
+mod oauth;
 mod orchestrator;
 pub mod script;
 mod work;
@@ -109,6 +110,21 @@ impl Drop for Lock {
     fn drop(&mut self) {
         let _ = fs::remove_dir(&self.0);
     }
+}
+
+/// The files under `root` that hold `needle`, symbolic links and unreadable entries aside.
+pub fn written_under(root: &Path, needle: &[u8]) -> Result<Vec<PathBuf>> {
+    let mut found = vec![];
+    let Ok(entries) = fs::read_dir(root) else { return Ok(found) };
+    for entry in entries.flatten() {
+        let (path, kind) = (entry.path(), entry.file_type()?);
+        if kind.is_dir() {
+            found.extend(written_under(&path, needle)?);
+        } else if kind.is_file() && fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle)) {
+            found.push(path);
+        }
+    }
+    Ok(found)
 }
 
 pub fn append(path: &Path, value: &Value) -> Result<()> {

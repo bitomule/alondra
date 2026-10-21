@@ -250,7 +250,8 @@ impl App {
             agent_sel: self.agent_sel.clone(),
             agent_scroll: self.agent_scroll,
             agent_detail_scroll: self.agent_detail_scroll,
-            composer: self.composer.take().map(|c| Draft { text: c.input.text(), chips: c.chips, target: c.target }),
+            composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. }))
+                .map(|c| Draft { text: c.input.text(), chips: c.chips, target: c.target }),
             drafts: self.drafts.iter().map(|(k, (text, chips))| (k.clone(), text.clone(), chips.clone())).collect(),
         }
     }

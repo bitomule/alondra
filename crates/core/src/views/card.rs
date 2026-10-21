@@ -824,6 +824,88 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| session_ended_text(interaction, domain, lang))
         .or_else(|| decision_cancelled_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
+        .or_else(|| mcp_wait_text(interaction, domain, lang))
+}
+
+/// How Alondra can sign in to the server an MCP wait's card waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum McpWay {
+    /// Claude signs in to it: Connect opens the sign-in.
+    SignIn,
+    /// A claude.ai connector: it is connected on claude.ai, then connected again here.
+    ClaudeAi,
+    /// Turned off in Claude Code: only going on without it is left.
+    Off,
+}
+
+fn mcp_way(interaction: &Interaction, domain: &DomainState) -> Option<(crate::domain::McpServerKey, McpWay)> {
+    let server = crate::domain::McpServerKey::of_card(interaction)?;
+    let Scope::Task { task_id } = &interaction.scope else { return Some((server, McpWay::SignIn)) };
+    let reported = domain.mcp_server_of(task_id, &server);
+    let way = match reported {
+        Some(reported) if reported.status == crate::domain::McpStatus::Disabled => McpWay::Off,
+        Some(reported) if reported.source.as_deref() == Some("claudeai") || reported.transport.as_deref() == Some("claudeai-proxy") => McpWay::ClaudeAi,
+        _ => McpWay::SignIn,
+    };
+    Some((server, way))
+}
+
+/// The card of the tasks that wait for an MCP server, in the viewer's language: Waiting for You
+/// shows one of them for every task that waits for the same server.
+fn mcp_wait_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    let (server, way) = mcp_way(interaction, domain)?;
+    let name = server.name.as_str();
+    let tasks: Vec<&str> = domain.mcp_waiting_for(&server).iter().filter_map(|waiting| domain.tasks.get(&waiting.task)).map(|task| task.title.as_str()).collect();
+    let waiting = tasks.len().max(1);
+    let need = match waiting {
+        1 => tf!(lang, "Sign in to {name}: a task waits for it", "Inicia sesión en {name}: espera una tarea"),
+        _ => tf!(lang, "Sign in to {name}: {waiting} tasks wait for it", "Inicia sesión en {name}: esperan {waiting} tareas"),
+    };
+    let why = match way {
+        McpWay::SignIn => tf!(lang,
+            "Claude cannot use the MCP server {name} until you sign in. Connect opens the sign-in; once it is done, every waiting task goes on by itself.",
+            "Claude no puede usar el servidor MCP {name} hasta que inicies sesión. Conectar abre el inicio de sesión; al terminar, las tareas que esperan siguen solas."),
+        McpWay::ClaudeAi => tf!(lang,
+            "{name} is a claude.ai connector. Connect opens it on claude.ai; once it is connected there, press Reconnect and every waiting task goes on.",
+            "{name} es un conector de claude.ai. Conectar lo abre en claude.ai; cuando esté conectado allí, pulsa Reconectar y las tareas que esperan siguen."),
+        McpWay::Off => tf!(lang,
+            "{name} is turned off in Claude Code, so Alondra cannot sign in to it. Turn it on in Claude Code or go on without it.",
+            "{name} está desactivado en Claude Code, así que Alondra no puede iniciar sesión. Actívalo en Claude Code o sigue sin él."),
+    };
+    let titles = |list: &[&str]| list.iter().map(|title| tf!(lang, "“{title}”", "«{title}»")).collect::<Vec<_>>();
+    let who = match tasks.as_slice() {
+        [] => String::new(),
+        [one] => {
+            let one = titles(&[*one]).concat();
+            tf!(lang, " Waiting: {one}.", " Espera: {one}.")
+        }
+        [first @ .., last] if tasks.len() <= 3 => {
+            let (first, last) = (titles(first).join(", "), titles(&[*last]).concat());
+            tf!(lang, " Waiting: {first} and {last}.", " Esperan: {first} y {last}.")
+        }
+        [first, second, rest @ ..] => {
+            let (shown, more) = (titles(&[*first, *second]).join(", "), rest.len());
+            tf!(lang, " Waiting: {shown} and {more} more.", " Esperan: {shown} y {more} más.")
+        }
+    };
+    Some((clip(&need, CardSpec::NEED_MAX), format!("{why}{who}")))
+}
+
+/// Connect and Reconnect of an MCP wait's card: the TUI runs them itself, through the daemon.
+fn mcp_actions(interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Action> {
+    let Some((server, way)) = mcp_way(interaction, context.domain) else { return vec![] };
+    if context.client != Client::Tui || way == McpWay::Off {
+        return vec![];
+    }
+    let lang = context.lang;
+    let card = interaction.id.0.clone();
+    let mut connect = local_action(t!(lang, "Connect", "Conectar"), "1", LocalLink::McpSignIn { card: card.clone(), server: server.name.clone() });
+    connect.style = Style::Primary;
+    connect.role = Some(Role::Advance);
+    connect.description = Some(t!(lang, "Opens the sign-in in the browser", "Abre el inicio de sesión en el navegador").into());
+    let mut reconnect = local_action(t!(lang, "Reconnect", "Reconectar"), "2", LocalLink::McpReconnect { card });
+    reconnect.description = Some(t!(lang, "The waiting tasks read their sign-in again", "Las tareas que esperan vuelven a leer su sesión").into());
+    vec![connect, reconnect]
 }
 
 /// The card of a task Claude holds, in the viewer's language: Waiting for You shows one of them
@@ -1040,6 +1122,13 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
     {
         return (label.into(), Some(description.into()));
     }
+    if option.id == crate::domain::MCP_GO_ON_WITHOUT
+        && let Some(server) = crate::domain::McpServerKey::of_card(interaction)
+    {
+        let name = server.name.as_str();
+        return (tf!(lang, "Go on without {name}", "Seguir sin {name}"),
+            Some(t!(lang, "Every task that waits for it goes on without it", "Las tareas que lo esperan siguen sin él").into()));
+    }
     if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));
     }
@@ -1161,6 +1250,18 @@ fn answer_actions(
         };
         action.stamp = Some(t!(lang, "Answered", "Respondida").into());
         buttons.push(with_availability(action, available, lang));
+    }
+    if let Some(server) = crate::domain::McpServerKey::of_card(interaction) {
+        let name = server.name.as_str();
+        let mut own = mcp_actions(interaction, context);
+        let reconnect = own.pop();
+        own.extend(buttons.drain(..).map(|mut button| {
+            button.role = Some(Role::Neutral);
+            button.stamp = Some(tf!(lang, "The tasks go on without {name}", "Las tareas siguen sin {name}"));
+            button
+        }));
+        own.extend(reconnect);
+        buttons = own;
     }
     if matches!(interaction.subject, Some(InteractionSubject::DocumentReview { .. })) {
         buttons.extend(request_changes(Verb::Changes, &interaction.id.0, revision, None, true, available, context));
@@ -1459,6 +1560,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| {
         start_problem_of(interaction).is_none() && !is_machine_card(interaction) && crate::domain::ClaudeHold::of(&interaction.id).is_none()
+            && crate::domain::McpServerKey::of_card(interaction).is_none()
     })?;
     let answers = answered_by_reply(interaction)
         && (interaction.author != Author::System || matches!(interaction.scope, Scope::Task { .. }));

@@ -182,7 +182,13 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
             Some(crate::domain::ClaudeHold::SignedOut) => t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude"),
             Some(crate::domain::ClaudeHold::Outage) => t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude"),
             Some(crate::domain::ClaudeHold::Usage) => t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude"),
-            None => t!(lang, "Waiting for an answer", "Esperando respuesta"),
+            None => match context.index.mcp_wait_of_task(&task.id) {
+                Some(waiting) => {
+                    let name = waiting.server.name.as_str();
+                    return warn(&tf!(lang, "Waiting for you to sign in to {name}", "Espera a que inicies sesión en {name}"));
+                }
+                None => t!(lang, "Waiting for an answer", "Esperando respuesta"),
+            },
         }),
         (TaskActivity::WaitingDependency, _) => return waiting_dependency(task, context),
         (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),

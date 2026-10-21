@@ -261,7 +261,7 @@ fn text_of(message: &Value) -> String {
 /// The permission requests the session waits on, by request id: each gets the host's answer.
 type Asked = Arc<Mutex<std::collections::BTreeMap<String, mpsc::Sender<Value>>>>;
 
-fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, log: &Path) -> Result<()> {
+fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, servers: &Arc<super::oauth::Servers>, log: &Path) -> Result<()> {
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -281,7 +281,16 @@ fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, log: &Path
                         let _ = events.send(Event::Interrupt);
                     }
                     Some("set_model" | "set_permission_mode") => out.control(request, json!({}))?,
-                    Some("mcp_status") => out.control(request, json!({"mcpServers": [{"name": "plugin:alondra:alondra", "status": "connected"}]}))?,
+                    Some("mcp_status") => out.control(request, json!({"mcpServers": servers.statuses()}))?,
+                    Some(subtype @ ("mcp_reconnect" | "mcp_authenticate")) => {
+                        let name = message["request"]["serverName"].as_str().unwrap_or_default();
+                        let answer = if subtype == "mcp_reconnect" { servers.reconnect(name).map(|()| json!({})) } else { servers.authenticate(name) };
+                        note(log, &format!("{subtype} {name}: {}", if answer.is_ok() { "ok" } else { "refused" }));
+                        match answer {
+                            Ok(response) => out.control(request, response)?,
+                            Err(error) => out.send(&json!({"type": "control_response", "response": {"subtype": "error", "request_id": request, "error": error}}))?,
+                        }
+                    }
                     other => {
                         note(log, &format!("refused control request {other:?}"));
                         out.send(&json!({"type": "control_response", "response": {"subtype": "error", "request_id": request, "error": format!("the sandbox's Claude does not take {other:?}")}}))?;
@@ -373,10 +382,11 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let out = Out(Arc::new(Mutex::new(std::io::stdout())));
     let (events, inbox) = mpsc::channel();
     let asked = Asked::default();
+    let servers = super::oauth::Servers::load(fakes);
     {
-        let (out, events, asked, log) = (out.clone(), events.clone(), asked.clone(), log.clone());
+        let (out, events, asked, servers, log) = (out.clone(), events.clone(), asked.clone(), servers.clone(), log.clone());
         std::thread::spawn(move || {
-            if let Err(error) = read_input(&out, &events, &asked, &log) {
+            if let Err(error) = read_input(&out, &events, &asked, &servers, &log) {
                 note(&log, &format!("input: {error:#}"));
                 let _ = events.send(Event::Closed);
             }
@@ -393,7 +403,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         Some(task) => fakes.task_script(task)?,
         None => None,
     };
-    let mut native = Native { fakes, out, session, script, turn: None, fresh: history == 0, asked, dir, log };
+    let mut native = Native { fakes, out, session, script, turn: None, fresh: history == 0, asked, servers, dir, log };
     let ended = native.live(inbox);
     let _ = fs::remove_file(&socket);
     if native.session.state == State::Running {
@@ -416,6 +426,7 @@ struct Native<'a> {
     /// Its next input is the mission of a session that never ran before.
     fresh: bool,
     asked: Asked,
+    servers: Arc<super::oauth::Servers>,
     dir: PathBuf,
     log: PathBuf,
 }
@@ -501,7 +512,7 @@ impl Native<'_> {
                 "type": "system", "subtype": "init", "session_id": self.session.session_id, "uuid": uuid()?,
                 "claude_code_version": VERSION, "model": "sandbox", "cwd": self.session.cwd,
                 "tools": ["Bash", "Read", "Write", "mcp__plugin_alondra_alondra__present_result", "mcp__plugin_alondra_alondra__ask"],
-                "mcp_servers": [{"name": "plugin:alondra:alondra", "status": "connected"}],
+                "mcp_servers": self.servers.statuses().iter().map(|server| json!({"name": server["name"], "status": server["status"]})).collect::<Vec<_>>(),
                 "permissionMode": "default", "slash_commands": [], "output_style": "default", "skills": ["alondra:alondra"],
                 "plugins": [], "apiKeySource": "none",
             }))?;

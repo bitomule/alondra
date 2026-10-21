@@ -3,6 +3,7 @@
 //! the only authority; nothing here decides an action.
 mod close;
 mod live;
+mod mcp;
 mod new_work;
 mod pr_details;
 mod tasks;
@@ -88,6 +89,7 @@ pub(crate) enum Write {
     Presence,
     CancelReason(String),
     ResolveConflicts(String),
+    McpSignIn { card: String, step: mcp::Step },
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
@@ -99,6 +101,11 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     }
     if path == "/orchestrator/messages" {
         return Some(Write::OrchestratorMessage);
+    }
+    if let Some((card, step)) = path.strip_prefix("/mcp-sign-ins/").and_then(|rest| rest.split_once('/')) {
+        return (plain_id(card) && card.starts_with(alondra_core::domain::MCP_WAIT_PREFIX))
+            .then(|| mcp::Step::of(step).map(|step| Write::McpSignIn { card: card.to_owned(), step }))
+            .flatten();
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
         return crate::domain_api::decoded_pull_request_id(id).map(Write::ResolveConflicts);
@@ -305,6 +312,7 @@ impl Client {
                 authorize()?;
                 self.cancel_reason(&id, body)
             }
+            Write::McpSignIn { card, step } => self.mcp_sign_in(user_id, &card, step, body, authorize).await,
         }
     }
 
@@ -572,6 +580,7 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
         .route("/orchestrator/messages", post(write))
         .route("/activity", post(write))
+        .route("/mcp-sign-ins/{card}/{step}", post(write))
         .route("/tasks/{id}/cancel-reason", put(write))
         .route("/delivery-attempts/{id}/resolve", post(resolve_delivery))
         .with_state(client)

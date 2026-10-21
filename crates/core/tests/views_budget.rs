@@ -2,9 +2,9 @@
 //! after a commit: what a row needs is read from the committed index, never by walking the domain
 //! once per row.
 use alondra_core::domain::{
-    Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan,
-    MergeMethod, NodeEvent, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient, Schedule, ScheduleFrequency,
-    Scope,
+    Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan, LifecycleRecord,
+    McpServerState, McpStatus, MergeMethod, NodeEvent, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient,
+    RuntimeObservation, Schedule, ScheduleFrequency, Scope,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -31,6 +31,8 @@ enum Shape {
     Cancelled,
     /// A request the orchestrator has not split into tasks yet.
     Defining,
+    /// Its node runs through the Agent SDK and waits for the user to sign in to an MCP server.
+    WaitingMcp,
 }
 
 impl Shape {
@@ -43,13 +45,14 @@ impl Shape {
             Shape::Running => "running",
             Shape::Cancelled => "cancelled",
             Shape::Defining => "defining",
+            Shape::WaitingMcp => "waiting-mcp",
         }
     }
 }
 
 /// The real domain on 15 October: ~300 tasks, ~280 nodes, ~300 requests, ~1700 cards, ~250
 /// deliveries with a PR and 12 cards waiting for the user.
-const UNITS: [(Shape, usize); 7] = [
+const UNITS: [(Shape, usize); 8] = [
     (Shape::Done, 230),
     (Shape::Document, 10),
     (Shape::Review, 6),
@@ -57,6 +60,7 @@ const UNITS: [(Shape, usize); 7] = [
     (Shape::Running, 24),
     (Shape::Cancelled, 10),
     (Shape::Defining, 14),
+    (Shape::WaitingMcp, 4),
 ];
 
 fn user() -> Actor {
@@ -99,11 +103,26 @@ fn unit(shape: Shape) -> DomainState {
     }
     seed.run(user(), Command::TitleRequest { request_id: request.as_str().into(), title: format!("Synthetic {} {TOKEN}", shape.name()) });
     seed.run(Actor::System, Command::RegisterAgent { agent_id: agent.as_str().into(), name: format!("{} node {TOKEN}", shape.name()), at: 0 });
+    let through_sdk = shape == Shape::WaitingMcp;
     seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: task.as_str().into(), request_id: request.as_str().into(), title: format!("Synthetic {} task {TOKEN}", shape.name()),
-        agent_id: Some(agent.as_str().into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
+        agent_id: (!through_sdk).then(|| agent.as_str().into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic/project")),
     });
+    if through_sdk {
+        seed.run(Actor::System, Command::AdmitExecution { task_id: task.as_str().into(), agent_id: agent.as_str().into(),
+            conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None });
+        let Some(LifecycleRecord::Planned { input }) = seed.0.lifecycle_journal[&task.as_str().into()].first().cloned() else { panic!("planned first") };
+        seed.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.as_str().into(), generation: 1, facts: vec![
+            RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+        ] });
+        seed.run(Actor::System, Command::RecordMcpServers { task_id: task.as_str().into(), generation: 1, servers: vec![McpServerState {
+            name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: Some("user".into()),
+            transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+        }] });
+        seed.run(node, Command::WaitForMcp { task_id: task.as_str().into(), server: "linear".into() });
+        return seed.0;
+    }
     seed.run(node.clone(), Command::StartTask { task_id: task.as_str().into() });
     seed.run(Actor::System, Command::MoveNode { agent_id: agent.as_str().into(), event: NodeEvent::TurnStarted, at: 1 });
     let notices = match shape {
@@ -279,6 +298,12 @@ fn live(state: &DomainState) -> LiveSnapshot {
     }
 }
 
+/// The card of the tasks that wait for the MCP server: one for all of them.
+fn mcp_card() -> String {
+    let card = unit(Shape::WaitingMcp).mcp_waiting().first().expect("the unit waits").card.0.clone();
+    card.replace(TOKEN, "u000")
+}
+
 fn keys() -> Vec<(String, Client)> {
     let one = |kind: &str, shape: Shape| id(kind, shape).replace(TOKEN, "u001");
     [
@@ -289,6 +314,8 @@ fn keys() -> Vec<(String, Client)> {
         (format!("card:{}", one("q", Shape::Asking)), Client::Tui),
         (format!("card:{}", one("d", Shape::Done)), Client::Ios),
         (format!("card:{}", one("pr", Shape::Review)), Client::Mac),
+        (format!("card:{}", mcp_card()), Client::Tui),
+        (format!("task:{}", one("t", Shape::WaitingMcp)), Client::Tui),
         (format!("document:{}", one("rev", Shape::Document)), Client::Ios),
         (format!("pull_request:{}", one("pr", Shape::Review)), Client::Ios),
         (format!("pull_request:{}", one("pr", Shape::Done)), Client::Mac),

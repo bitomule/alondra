@@ -79,6 +79,7 @@ pub struct ReadIndex {
     asks_outside_tasks: bool,
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
+    mcp_waiting: Vec<McpWaiting>,
 }
 
 impl ReadIndex {
@@ -202,6 +203,18 @@ impl ReadIndex {
     pub fn group_complete(&self, state: &DomainState, card: &Interaction) -> bool {
         self.group_members(state, card).iter().all(|member| !member.withdrawn && DomainState::answered_question(member))
     }
+    /// The open tasks that wait for an MCP server, oldest card first.
+    pub fn mcp_waiting(&self) -> &[McpWaiting] {
+        &self.mcp_waiting
+    }
+    /// The tasks that wait for `server`, oldest card first.
+    pub fn mcp_waiting_for<'a>(&'a self, server: &'a McpServerKey) -> impl Iterator<Item = &'a McpWaiting> + 'a {
+        self.mcp_waiting.iter().filter(move |waiting| waiting.server == *server)
+    }
+    /// What a task waits for, when it waits for an MCP server.
+    pub fn mcp_wait_of_task(&self, task: &TaskId) -> Option<&McpWaiting> {
+        self.mcp_waiting.iter().find(|waiting| waiting.task == *task)
+    }
     /// A scheduled run created the task.
     pub fn scheduled(&self, task: &TaskId) -> bool {
         self.scheduled.contains(task)
@@ -307,6 +320,7 @@ impl<'a> Builder<'a> {
             index.prs_by_task.entry(pr.task_id.clone()).or_default().push(pr.id.clone());
         }
         Self::schedules(state, &mut index);
+        index.mcp_waiting = state.mcp_waiting();
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -647,6 +661,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     }).count() as u64;
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
+    assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {

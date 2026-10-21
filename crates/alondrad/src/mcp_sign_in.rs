@@ -1,9 +1,7 @@
 //! Hands the browser's return from an MCP server's sign-in to Claude's own listener on this Mac,
 //! exactly as a browser on this Mac would. The return carries a one-time code: it lives only in
 //! memory, for that one request, and is never written down or logged. Claude exchanges it and
-//! keeps the credential; Alondra records only that the sign-in is no longer open. The routes the
-//! apps sign in through come with the sign-in card.
-#![cfg_attr(not(test), allow(dead_code))]
+//! keeps the credential; Alondra records only that the sign-in is no longer open.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
 use std::io::{Read, Write};

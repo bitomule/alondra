@@ -83,6 +83,9 @@ pub struct NodeMcp {
     pub servers: Vec<McpServerState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sign_ins: BTreeMap<String, OpenSignIn>,
+    /// Why Claude refused the last sign-in to each server, and the revision that recorded it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, (String, u64)>,
 }
 
 impl NodeMcp {
@@ -168,7 +171,7 @@ impl DomainState {
     }
 
     /// What the node of the task's current SDK execution reported of `server`.
-    fn mcp_server(&self, task_id: &TaskId, server: &str) -> Result<&McpServerState> {
+    pub(super) fn mcp_server(&self, task_id: &TaskId, server: &str) -> Result<&McpServerState> {
         let agent = self.task(task_id)?.agent_id.as_ref().ok_or_else(|| DomainError::new("no_task", format!("Task {task_id} has no node")))?;
         self.mcp
             .get(agent)
@@ -238,12 +241,17 @@ impl DomainState {
         if node.generation != generation {
             *node = NodeMcp { generation, ..NodeMcp::default() };
         }
+        node.refused.remove(server);
         match sign_in {
             McpSignIn::Browser { url, callback_port, state } => {
                 node.sign_ins.insert(server.into(), OpenSignIn { url: url.clone(), callback_port: *callback_port, state: state.clone() });
             }
-            McpSignIn::Connected | McpSignIn::Refused { .. } => {
+            McpSignIn::Connected => {
                 node.sign_ins.remove(server);
+            }
+            McpSignIn::Refused { error } => {
+                node.sign_ins.remove(server);
+                node.refused.insert(server.into(), (error.clone(), self.revision + 1));
             }
         }
         Ok(())

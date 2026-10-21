@@ -84,6 +84,9 @@ fn schedule() -> Command {
     }
 }
 fn binding() -> ProviderBinding {
+    binding_with(BTreeSet::from([Capability::OfferInput]))
+}
+fn binding_with(capabilities: BTreeSet<Capability>) -> ProviderBinding {
     ProviderBinding::new(
         "composite-binding".into(),
         "fixture-service".into(),
@@ -91,7 +94,7 @@ fn binding() -> ProviderBinding {
         "fixture-config".into(),
         1,
         1,
-        BTreeSet::from([Capability::OfferInput]),
+        capabilities,
         "fixture-credential-reference".into(),
         1,
     )
@@ -157,7 +160,10 @@ fn admit(label: &str) -> Command {
     }
 }
 fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<ExecutionStamp> {
-    journal.stage_launch(&task(), &Placement::RemoteWorkspace("fixture/workspace".into()), &binding())?;
+    launch_with(journal, &binding())
+}
+fn launch_with(journal: &mut LifecycleTransaction<'_>, binding: &ProviderBinding) -> alondra_store::Result<ExecutionStamp> {
+    journal.stage_launch(&task(), &Placement::RemoteWorkspace("fixture/workspace".into()), binding)?;
     let execution = journal.load(&task())?.execution().unwrap().clone();
     journal.reserve_owner(&execution, 0)?;
     Ok(execution)
@@ -166,6 +172,9 @@ fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<Execu
 /// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
 /// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.
 pub(in crate::domain_store) fn running() -> (Fixture, DomainStore, ExecutionStamp) {
+    running_with(&binding())
+}
+fn running_with(binding: &ProviderBinding) -> (Fixture, DomainStore, ExecutionStamp) {
     let (fixture, mut store) = installed();
     let state = store.load().unwrap();
     let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into() };
@@ -177,7 +186,7 @@ pub(in crate::domain_store) fn running() -> (Fixture, DomainStore, ExecutionStam
             let journal = owner.journal();
             let pending = journal.load(&task())?.pending_inputs()[0].clone();
             journal.give_input_text(&task(), InputPayload::new(pending, "Authorized fixture input").unwrap())?;
-            Ok(launch(journal)?)
+            Ok(launch_with(journal, binding)?)
         })
         .unwrap();
     (fixture, store, execution)
@@ -957,4 +966,99 @@ fn the_retention_gives_the_disk_back_what_normalized_observations_held() {
     assert!(pages("page_count") < before, "{} pages, {before} before", pages("page_count"));
     runtime.retain_evidence().unwrap();
     assert_eq!(pages("auto_vacuum"), 2);
+}
+
+// A task that waits for an MCP server goes on once its own node reports it connected, after the
+// user signed in through the card's routes away from the Mac: Connect opens one sign-in and
+// hands every device the same page while Claude still waits for it, and where the browser came
+// back to reaches Claude's listener in memory. Neither that address nor its one-time code is
+// kept anywhere under Alondra's HOME.
+#[test]
+fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_kept_nowhere() {
+    use crate::mcp_waits::{Opened, connect, give_back, reconnect};
+    use alondra_provider_contract::McpSignInReport;
+    use std::io::{BufRead, BufReader, Write};
+    const CODE: &str = "one-time-code-5be1d4";
+    let mcp = binding_with(BTreeSet::from([Capability::OfferInput, Capability::McpStatus, Capability::McpReconnect, Capability::McpSignIn]));
+    let (fixture, store, execution) = running_with(&mcp);
+    let runtime = Arc::new(runtime(&fixture, store));
+    let cursor = std::sync::atomic::AtomicU64::new(0);
+    let observe = |facts: Vec<Observation>| {
+        let state = Arc::clone(runtime.read().state());
+        let at = cursor.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&mcp, 1, &batch(&execution, at), &Normalizer::Facts(facts), no_home())).unwrap();
+    };
+    let controls = |kind: &str| -> usize {
+        runtime.read().state().lifecycle_journal[&task()].iter().filter(|record| matches!(record,
+            LifecycleRecord::ControlRequested { operation, .. } if format!("{operation:?}").starts_with(kind))).count()
+    };
+    observe(vec![Observation::Available, mcp_report("needs-auth")]);
+    let state = runtime.read().state().clone();
+    let wait = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "wait-linear", Command::WaitForMcp { task_id: task(), server: "linear".into() }) };
+    runtime.execute(&agent(), &wait, None, || Ok(())).unwrap();
+    let card = runtime.read().state().mcp_waiting()[0].card.clone();
+    let tokio = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let opening = tokio.spawn({
+        let (runtime, card) = (runtime.clone(), card.clone());
+        async move { connect(&runtime, &card).await }
+    });
+    while controls("StartMcpSignIn") == 0 {
+        assert!(!opening.is_finished(), "Connect asked for no sign-in: {:?}", tokio.block_on(opening));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    observe(vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Browser {
+        url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: Some(port), state: Some("s1".into()),
+    } }]);
+    let page = Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), returns_to_claude: true };
+    assert_eq!(tokio.block_on(opening).unwrap(), Ok(page.clone()));
+    assert_eq!(tokio.block_on(connect(&runtime, &card)), Ok(page), "another device gets the same page while Claude waits for it");
+    assert_eq!(controls("StartMcpSignIn"), 1, "one sign-in for every device");
+
+    let address = format!("http://localhost:{port}/callback?code={CODE}&state=s1");
+    let refused = tokio.block_on(give_back(&runtime, &card, "https://evil.example.com/callback?code=c&state=s1".into()));
+    assert_eq!(refused.unwrap_err().code, "invalid_input");
+    let claude = std::thread::spawn(move || loop {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        if line.is_empty() {
+            continue;
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+        return line.trim_end().to_owned();
+    });
+    tokio.block_on(give_back(&runtime, &card, address.clone())).unwrap();
+    assert_eq!(claude.join().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
+    assert_eq!(controls("ReadMcpStatus"), 1, "the node then says how its servers are");
+    assert_eq!(runtime.read().state().mcp_waiting().len(), 1, "a return is no fact that the server connected");
+    observe(vec![mcp_report("connected")]);
+    assert!(runtime.read().state().mcp_waiting().is_empty(), "its own node reported it connected");
+    assert!(matches!(runtime.read().state().lifecycle_journal[&task()].last(),
+        Some(LifecycleRecord::Resumed { text: Some(text), .. }) if text.starts_with("linear is connected")));
+    assert_eq!(reconnect(&runtime, &card).unwrap_err().code, "conflict", "nothing waits any more");
+    drop(tokio);
+    drop(runtime);
+    for kept in [CODE, address.as_str(), "callback?code"] {
+        assert_eq!(written_anywhere(&fixture.0, kept.as_bytes()), Vec::<PathBuf>::new(), "{kept} is written nowhere");
+    }
+}
+
+// 21 Oct, in the sandbox: a node said it waits for Linear and was told its Claude had no such
+// server. A write outside the domain had made the store load the state again from its rows, which
+// never hold what the nodes reported of their MCP servers. A reload keeps it.
+#[test]
+fn what_a_node_reported_of_its_mcp_servers_outlives_a_reload_of_the_state_from_its_rows() {
+    let (_fixture, mut store, execution) = running();
+    let state = store.load().unwrap();
+    store.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1),
+        &Normalizer::Facts(vec![Observation::Available, mcp_report("needs-auth")]), no_home())).unwrap();
+    let before = store.load().unwrap();
+    assert_eq!(before.mcp[&AgentId::from("agent-1")].servers[0].name, "linear");
+    store.conn.execute("UPDATE domain_meta SET revision = revision WHERE singleton = 1", []).unwrap();
+    let after = store.load().unwrap();
+    assert!(!Arc::ptr_eq(&before, &after), "the store loaded the state again from its rows");
+    assert_eq!(after.mcp, before.mcp, "the reload kept what the node reported");
 }

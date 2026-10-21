@@ -575,6 +575,16 @@ pub enum LocalLink {
     OpenPath {
         path: String,
     },
+    /// The TUI opens the sign-in to the MCP server an MCP wait's card waits for: in the Mac's
+    /// browser on the Mac, or with a field for where the browser came back to elsewhere.
+    McpSignIn {
+        card: String,
+        server: String,
+    },
+    /// The TUI has the nodes that wait for the server connect it again.
+    McpReconnect {
+        card: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Form {

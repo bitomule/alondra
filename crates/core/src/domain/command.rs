@@ -567,6 +567,12 @@ pub enum Command {
         server: String,
         state: String,
     },
+    /// The Task's node needs an MCP server its Claude reported and that is not connected: the
+    /// Task waits for it on a card of its own until it connects or the user goes on without it.
+    WaitForMcp {
+        task_id: TaskId,
+        server: String,
+    },
     /// The Task's resting SDK execution compacts its conversation; the cards it waits on stay.
     CompactConversation {
         task_id: TaskId,

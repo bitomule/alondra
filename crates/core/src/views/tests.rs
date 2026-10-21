@@ -7067,3 +7067,34 @@ fn an_sdk_nodes_state_in_fleet_reads_its_execution() {
     state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().state = TaskState::NeedsYou;
     assert_eq!(label(&state, Lang::En), "Waiting for an answer", "a card of its task waits on the user");
 }
+
+fn mcp_card(client: Client, lang: Lang) -> (DomainState, Card) {
+    let state = crate::domain::mcp_wait_tests::waiting_for_linear();
+    let card = state.mcp_waiting()[0].card.clone();
+    let view = render(&state, &LiveSnapshot::default(), client, lang, &format!("card:{card}"), "");
+    let Item::Card(card) = view.sections[0].items[0].clone() else { panic!("the MCP wait's card") };
+    (state, card)
+}
+
+#[test]
+fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
+    let (state, card) = mcp_card(Client::Tui, Lang::Es);
+    assert_eq!(card.need.as_deref(), Some("Inicia sesión en linear: esperan 2 tareas"));
+    assert!(card.why.as_deref().is_some_and(|why| why.contains("Conectar abre el inicio de sesión")
+        && why.ends_with("Esperan: «Task t» y «Task u».")), "every waiting task is named: {:?}", card.why);
+    let labels: Vec<&str> = card.actions.iter().map(|action| action.label.as_str()).collect();
+    assert_eq!(labels, ["Conectar", "Seguir sin linear", "Reconectar"]);
+    let wait = state.mcp_waiting()[0].card.0.clone();
+    assert!(matches!(&card.actions[0].link, Some(Link::Local { local: LocalLink::McpSignIn { card, server } }) if *card == wait && server == "linear"));
+    assert!(matches!(&card.actions[2].link, Some(Link::Local { local: LocalLink::McpReconnect { card } }) if *card == wait));
+    assert_eq!(card.actions[1].option_id.as_deref(), Some(crate::domain::MCP_GO_ON_WITHOUT));
+    assert_eq!(card.actions[1].stamp.as_deref(), Some("Las tareas siguen sin linear"));
+    assert!(card.reply.is_none(), "nothing written on the card would send the tasks on");
+    let (_, ios) = mcp_card(Client::Ios, Lang::En);
+    let labels: Vec<&str> = ios.actions.iter().map(|action| action.label.as_str()).collect();
+    assert_eq!(labels, ["Go on without linear"], "the apps sign in from their own release");
+    let waiting: Vec<String> = inbox_items(&state).into_iter().filter(|item| item.pending).map(|item| item.id).collect();
+    assert_eq!(waiting.iter().filter(|id| id.contains(crate::domain::MCP_WAIT_PREFIX)).count(), 1, "{waiting:?}");
+    let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:u", "");
+    assert!(serde_json::to_string(&task).unwrap().contains("Espera a que inicies sesión en linear"));
+}
