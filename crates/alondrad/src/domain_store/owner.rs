@@ -448,6 +448,11 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.resolve_control(stamp, id, owner_generation, receipt)?)
     }
 
+    /// One bounded pass of the raw evidence retention.
+    pub(crate) fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
+        Ok(self.journal.retain_evidence(limit)?)
+    }
+
     /// Lifecycle fixtures for states no typed owner step produces yet.
     #[cfg(test)]
     fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
@@ -494,6 +499,23 @@ impl DomainStore {
         };
         self.remember(Arc::clone(&committed.draft.state), committed.draft.version);
         Ok((value, committed))
+    }
+    /// One bounded pass of the raw evidence retention, in its own transaction.
+    pub(crate) fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
+        let scope = AuthorityScope::new(epoch_of(&self.conn)?)?;
+        Ok(self.own(scope, |owner| owner.retain_evidence(limit))?.0)
+    }
+    /// Gives the disk back the pages the retention freed. A database created without incremental
+    /// vacuum is rebuilt once to get it, and its write-ahead log truncated after the rebuild.
+    pub(crate) fn reclaim_space(&self, pages: u32) -> Result<()> {
+        let mode: i64 = self.conn.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+        if mode == 0 {
+            self.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;")?;
+            self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        } else {
+            self.conn.query_row(&format!("PRAGMA incremental_vacuum({pages})"), [], |_| Ok(())).optional()?;
+        }
+        Ok(())
     }
 }
 

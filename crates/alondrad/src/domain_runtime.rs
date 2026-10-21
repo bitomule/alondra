@@ -154,6 +154,22 @@ impl DomainRuntime {
     pub fn read(&self) -> Arc<ReadSnapshot> {
         Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned"))
     }
+    /// Releases the raw provider evidence no reader needs any more, one bounded pass at a time
+    /// under the writer lock so other writers run between passes, then gives the disk the space.
+    pub(crate) fn retain_evidence(&self) -> Result<alondra_store::EvidenceRetention, StoreError> {
+        const PASS: usize = 256;
+        let mut total = alondra_store::EvidenceRetention::default();
+        loop {
+            let pass = self.store.lock().expect("domain store poisoned").retain_evidence(PASS)?;
+            total.released += pass.released;
+            total.removed += pass.removed;
+            if pass.released < PASS && pass.removed < PASS {
+                break;
+            }
+        }
+        self.store.lock().expect("domain store poisoned").reclaim_space(4096)?;
+        Ok(total)
+    }
     /// Provider evidence, its normalization and the domain's decision commit in one transaction.
     /// Still under the writer lock, readers get the committed state and the change is notified;
     /// only then are the store's seals queued for acknowledgement.

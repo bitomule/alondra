@@ -10,6 +10,9 @@ const ADDITIONS: &str = include_str!("controls.sql");
 /// The definitions of the addition tables whose checks the MCP controls widened, as journals
 /// installed before them still hold them.
 const BEFORE_MCP: &str = include_str!("controls_before_mcp.sql");
+/// The observation triggers journals installed before the retention of normalized evidence hold:
+/// they refused every update and delete.
+const BEFORE_RETENTION: &str = include_str!("observations_before_retention.sql");
 
 pub(super) fn install(connection: &Connection) -> Result<()> {
     let existing: bool = connection.query_row(
@@ -48,6 +51,7 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
     if format.as_deref() != Some(FORMAT) {
         return Ok(false);
     }
+    retain(connection)?;
     for (_, name, _) in objects(ADDITIONS)? {
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get(0))?;
         if present {
@@ -84,6 +88,22 @@ fn widen(connection: &Connection) -> Result<()> {
     }
     if rebuilt {
         connection.execute_batch(ADDITIONS)?;
+    }
+    Ok(())
+}
+/// Replaces each observation trigger that still has its definition from before the retention with
+/// the current one; the table and its rows are untouched.
+fn retain(connection: &Connection) -> Result<()> {
+    let current = objects(SCHEMA)?;
+    for (_, name, previous) in objects(BEFORE_RETENTION)? {
+        let held: Option<String> = connection
+            .query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1", [name], |row| row.get(0))
+            .optional()?;
+        if held.as_deref() != Some(previous.as_str()) {
+            continue;
+        }
+        let (_, _, definition) = current.iter().find(|(_, current, _)| *current == name).ok_or(Error::UnsupportedJournalFormat)?;
+        connection.execute_batch(&format!("DROP TRIGGER main.{name}; {definition};"))?;
     }
     Ok(())
 }

@@ -191,6 +191,20 @@ execution. What a start
 costs grows with the journal's events and inputs, and only linearly; `store_test`
 `a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending` holds it.
 
+### How long raw SDK observations keep their bytes
+
+`provider_observations` holds every event an SDK host sends. Its bytes are read only while the
+normalizer has not passed them: the commit that moves the checkpoint replaces the bytes of every
+observation below it with one byte (`X'00'`) and keeps the digest, which still tells a copy the
+host sends again (`Duplicate`) from a different one (`ObservationConflict`). The checkpoint's own
+observation and those not normalized yet keep their bytes; the schema's triggers refuse anything
+else. Once an execution is no longer its task's current one, its released rows are removed and
+only the checkpoint's observation stays. `evidence_retention` runs the bounded pass
+(`LifecycleTransaction::retain_evidence`) a minute after start and every hour, and gives the disk
+the space back with `PRAGMA incremental_vacuum`; a database still without incremental vacuum is
+rebuilt once with `VACUUM`. Nothing in Alondra shows these bytes; to see what a native Claude
+said, read its host's `sdk/<instance>/outbox`.
+
 21 October, copy of the real HOME (64 MB `domain.db`, 4974 journal events; one closing task held
 1568 pending inputs, 1563 of them the same closer message): preflight 5.15 s → 0.48 s. Before, each
 event looked up every pending input again with a freshly prepared statement (1.2 M lookups per

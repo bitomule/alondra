@@ -159,8 +159,21 @@ struct Slice {
     worktree: PathBuf,
     plugin: PathBuf,
     backend: SdkBackend,
+    /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
+    kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
     _home: Directory,
     _state: Directory,
+}
+
+/// Adds to `kept` the task's raw host events the domain still holds the bytes of.
+fn keep(database: &Path, kept: &Mutex<BTreeMap<u64, Vec<u8>>>) {
+    let observer = Connection::open(database).unwrap();
+    let mut statement = observer.prepare("SELECT cursor,bytes FROM provider_observations WHERE task_id=?1 AND length(bytes)>1").unwrap();
+    let held = statement.query_map([TASK], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))).unwrap().map(Result::unwrap);
+    let mut kept = kept.lock().unwrap();
+    for (cursor, bytes) in held {
+        kept.entry(cursor as u64).or_insert(bytes);
+    }
 }
 
 fn user() -> Actor {
@@ -183,7 +196,8 @@ impl Slice {
         let (backend, capture) = fixture_backend(&home, &state);
         let database = home.join("domain.sqlite");
         let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
-        let slice = Self { domain, database, capture, worktree, plugin, backend, _home: home, _state: state };
+        let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
+        slice.on_acknowledge(|| {});
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "sdk-slice-request".into(),
             body: "Write the release notes".into(),
@@ -268,12 +282,20 @@ impl Slice {
         self.observer().query_row("SELECT count(*) FROM lifecycle_events WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap()
     }
 
-    /// The raw host events kept for the task that carry `text`.
+    /// Runs `hook` after each commit of a host event, once the event is kept. The domain keeps an
+    /// event's bytes only until the next one is normalized, so they are kept here first.
+    fn on_acknowledge(&self, mut hook: impl FnMut() + Send + 'static) {
+        let (database, kept) = (self.database.clone(), Arc::clone(&self.kept));
+        self.domain.on_acknowledge(move || {
+            keep(&database, &kept);
+            hook();
+        });
+    }
+
+    /// The raw host events committed for the task that carry `text`.
     fn observations_with(&self, text: &str) -> usize {
-        let observer = self.observer();
-        let mut statement = observer.prepare("SELECT bytes FROM provider_observations WHERE task_id=?1").unwrap();
-        statement.query_map([TASK], |row| row.get::<_, Vec<u8>>(0)).unwrap().map(Result::unwrap)
-            .filter(|bytes| String::from_utf8_lossy(bytes).contains(text)).count()
+        keep(&self.database, &self.kept);
+        self.kept.lock().unwrap().values().filter(|bytes| String::from_utf8_lossy(bytes).contains(text)).count()
     }
 
     /// Reads the host until Claude's turn has its result, whatever the lifecycle then waits for.
@@ -333,7 +355,7 @@ fn committed_revision(database: &Path) -> u64 {
 fn watch_acknowledgements(slice: &Slice) -> Arc<Mutex<Vec<(u64, u64)>>> {
     let seen = Arc::new(Mutex::new(vec![]));
     let (recorded, database, domain) = (Arc::clone(&seen), slice.database.clone(), Arc::downgrade(&slice.domain));
-    slice.domain.on_acknowledge(move || {
+    slice.on_acknowledge(move || {
         let (published, committed) = (domain.upgrade().unwrap().read().state().revision, committed_revision(&database));
         assert_eq!(published, committed, "readers see the committed revision when its observation is acknowledged");
         recorded.lock().unwrap().push((published, committed));
@@ -2025,7 +2047,7 @@ fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_cla
     let slice = Slice::new();
     let seen = Arc::new(Mutex::new(vec![]));
     let (recorded, database, domain) = (Arc::clone(&seen), slice.database.clone(), Arc::downgrade(&slice.domain));
-    slice.domain.on_acknowledge(move || {
+    slice.on_acknowledge(move || {
         let observer = Connection::open(&database).unwrap();
         let count = |sql: &str| observer.query_row(sql, [TASK], |row| row.get::<_, i64>(0)).unwrap();
         let asked = count("SELECT count(*) FROM provider_observations WHERE task_id=?1 AND CAST(bytes AS TEXT) LIKE '%decision_requested%'");

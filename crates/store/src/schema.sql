@@ -170,8 +170,11 @@ CREATE TABLE IF NOT EXISTS provider_observation_heads(
  FOREIGN KEY(task_id,generation,cursor) REFERENCES provider_observations(task_id,generation,cursor)
 );
 CREATE TRIGGER IF NOT EXISTS provider_observation_immutable BEFORE UPDATE ON provider_observations
+ WHEN NEW.task_id IS NOT OLD.task_id OR NEW.generation IS NOT OLD.generation OR NEW.binding_id IS NOT OLD.binding_id OR NEW.cursor IS NOT OLD.cursor OR NEW.digest IS NOT OLD.digest OR NEW.bytes IS NOT X'00'
+  OR NOT EXISTS(SELECT 1 FROM provider_normalization_checkpoints c WHERE c.task_id=OLD.task_id AND c.generation=OLD.generation AND c.cursor>OLD.cursor)
  BEGIN SELECT RAISE(ABORT,'provider observation evidence is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS provider_observation_retained BEFORE DELETE ON provider_observations
+ WHEN OLD.bytes IS NOT X'00'
  BEGIN SELECT RAISE(ABORT,'provider observation evidence is retained'); END;
 
 CREATE TABLE IF NOT EXISTS provider_execution_owners(

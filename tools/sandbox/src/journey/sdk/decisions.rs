@@ -219,17 +219,10 @@ pub(super) fn turn_ended(report: &mut Report, user: &User, task: &str, card: &st
 }
 
 /// Whether Claude Code reported the command of `tool_use` as work it tracks (`task_started`), as
-/// the Mac kept it with the task's raw observations.
+/// the task's host kept it.
 fn tracked(sandbox: &Sandbox, task: &str, tool_use: &str) -> Result<bool> {
-    let database = sandbox.dir.join("mac-1/domain.db");
-    let output = std::process::Command::new("sqlite3")
-        .arg("-readonly")
-        .arg(&database)
-        .arg(format!("SELECT count(*) FROM provider_observations WHERE task_id='{task}' AND cast(bytes AS text) LIKE '%\"subtype\":\"task_started\"%' AND cast(bytes AS text) LIKE '%\"tool_use_id\":\"{tool_use}\"%'"))
-        .output()
-        .context("sqlite3")?;
-    ensure!(output.status.success(), "sqlite3: {}", String::from_utf8_lossy(&output.stderr));
-    Ok(String::from_utf8_lossy(&output.stdout).trim() != "0")
+    let tool_use = format!("\"tool_use_id\":\"{tool_use}\"");
+    Ok(super::host_events(sandbox, task)?.iter().map(Value::to_string).any(|event| event.contains("\"subtype\":\"task_started\"") && event.contains(&tool_use)))
 }
 
 /// Whether a process runs exactly `command`.

@@ -391,9 +391,12 @@ fn scenario(prompt: &str, terminal_gap: bool) {
             .unwrap();
         assert_eq!(commands, 1);
         for batch in &witness.received {
-            let stored: Option<Vec<u8>> = raw.query_row("SELECT bytes FROM provider_observations WHERE task_id='sdk-task' AND cursor=?1", [i64::try_from(batch.cursor).unwrap()], |row| row.get(0)).optional().unwrap();
+            let stored: Option<(Vec<u8>, Vec<u8>)> = raw.query_row("SELECT bytes,digest FROM provider_observations WHERE task_id='sdk-task' AND cursor=?1", [i64::try_from(batch.cursor).unwrap()], |row| Ok((row.get(0)?, row.get(1)?))).optional().unwrap();
             if batch.cursor <= committed {
-                assert_eq!(stored.as_ref(), Some(&batch.evidence));
+                let (bytes, digest) = stored.unwrap();
+                assert_eq!(digest, Sha256::digest(&batch.evidence).to_vec());
+                let expected = if batch.cursor == committed { batch.evidence.clone() } else { vec![0] };
+                assert_eq!(bytes, expected, "only the checkpoint's observation keeps its bytes");
             } else {
                 assert!(
                     stored.is_none(),

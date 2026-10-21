@@ -328,3 +328,40 @@ fn upgrading_installs_no_journal_and_repairs_no_partial_addition() {
         assert_eq!(schema_snapshot(&database.connection), before);
     }
 }
+
+/// A journal installed before the retention of normalized evidence: observation triggers that
+/// refuse every update and delete.
+fn journal_before_retention() -> Database {
+    let database = Database::domain();
+    let current = "CREATE TRIGGER IF NOT EXISTS provider_observation_immutable";
+    let schema = include_str!("../src/schema.sql");
+    let start = schema.find(current).unwrap();
+    let end = schema[start..].find("\n\n").unwrap() + start;
+    let schema = format!("{}{}{}", &schema[..start], include_str!("../src/observations_before_retention.sql").trim_end(), &schema[end..]);
+    database.connection.execute_batch(&schema).unwrap();
+    database.connection.execute_batch(include_str!("../src/controls.sql")).unwrap();
+    database.connection.execute_batch("CREATE TABLE lifecycle_journal_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1),format TEXT NOT NULL); INSERT INTO lifecycle_journal_format VALUES(1,'alondra-task-resources-v1');").unwrap();
+    database
+}
+#[test]
+fn a_journal_from_before_the_retention_gets_the_new_observation_triggers_and_opens() {
+    for install in [true, false] {
+        let mut database = journal_before_retention();
+        let raw = database.connection.transaction().unwrap();
+        assert!(matches!(LifecycleTransaction::attach(raw, AuthorityScope::new("epoch".into()).unwrap()), Err(Error::UnsupportedJournalFormat)));
+        let mut tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        if install {
+            LifecycleTransaction::install(&mut tx).unwrap();
+        } else {
+            LifecycleTransaction::upgrade(&mut tx).unwrap();
+        }
+        tx.commit().unwrap();
+        let tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()).unwrap().commit().unwrap();
+        let before = schema_snapshot(&database.connection);
+        let mut tx = database.connection.transaction().unwrap();
+        LifecycleTransaction::upgrade(&mut tx).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(schema_snapshot(&database.connection), before, "upgrading twice changes nothing");
+    }
+}

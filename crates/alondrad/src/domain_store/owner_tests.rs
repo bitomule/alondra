@@ -935,3 +935,26 @@ fn a_node_s_mcp_servers_and_sign_in_are_recorded_and_its_return_reaches_only_cla
     drop(runtime);
     assert_eq!(written_anywhere(&fixture.0, CODE.as_bytes()), Vec::<PathBuf>::new(), "the one-time code is written nowhere");
 }
+
+#[test]
+fn the_retention_gives_the_disk_back_what_normalized_observations_held() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    for cursor in 1..=60 {
+        let state = Arc::clone(runtime.read().state());
+        let mut observed = batch(&execution, cursor);
+        observed.evidence.resize(32 * 1024, b'x');
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &observed, &Normalizer::Facts(vec![]), no_home())).unwrap();
+    }
+    let held: i64 = observer(&fixture).query_row("SELECT sum(length(bytes)) FROM provider_observations", [], |row| row.get(0)).unwrap();
+    assert_eq!(held, 32 * 1024 + 59, "only the checkpoint's observation keeps its bytes");
+    let pages = |name: &str| observer(&fixture).pragma_query_value(None, name, |row| row.get::<_, i64>(0)).unwrap();
+    let before = pages("page_count");
+    assert!(pages("freelist_count") > 0);
+    assert_eq!(runtime.retain_evidence().unwrap(), alondra_store::EvidenceRetention::default());
+    assert_eq!(pages("auto_vacuum"), 2, "the store vacuums incrementally from now on");
+    assert_eq!(pages("freelist_count"), 0);
+    assert!(pages("page_count") < before, "{} pages, {before} before", pages("page_count"));
+    runtime.retain_evidence().unwrap();
+    assert_eq!(pages("auto_vacuum"), 2);
+}

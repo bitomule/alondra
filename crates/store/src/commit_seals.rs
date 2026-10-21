@@ -1,5 +1,6 @@
 //! Commit values attest only to SQL persistence, never application publication or policy.
 use super::*;
+use std::collections::BTreeMap;
 
 /// What a transaction staged; only `LifecycleTransaction::commit`, after the SQL commit
 /// returned, turns it into the public value.
@@ -237,8 +238,27 @@ impl LifecycleTransaction<'_> {
             params![observation.execution.task().0,sql_number(observation.execution.generation())?,observation.binding.id(),sql_number(observation.cursor)?],
             |row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         let (bytes, digest) = raw.ok_or(Error::ObservationConflict)?;
-        if digest != observation.digest || !observation.matches_evidence(&bytes) {
+        let released = bytes == NORMALIZED_EVIDENCE;
+        if digest != observation.digest || !(released || observation.matches_evidence(&bytes)) {
             return Err(Error::ObservationConflict);
+        }
+        Ok(())
+    }
+    /// Leaves only the digest of every observation of this transaction's executions that its
+    /// checkpoint is now past, from the one before the first it staged: earlier ones already have.
+    pub(super) fn release_normalized_evidence(&self) -> Result<()> {
+        let mut from = BTreeMap::<(&TaskId, u64), u64>::new();
+        for observation in &self.observations {
+            let key = (observation.execution.task(), observation.execution.generation());
+            let first = observation.cursor.saturating_sub(1).max(1);
+            from.entry(key).and_modify(|cursor| *cursor = (*cursor).min(first)).or_insert(first);
+        }
+        let mut release = self.transaction.prepare_cached(
+            "UPDATE provider_observations SET bytes=?4 WHERE task_id=?1 AND generation=?2 AND cursor>=?3 AND (length(bytes)>1 OR bytes IS NOT ?4)
+             AND cursor<(SELECT cursor FROM provider_normalization_checkpoints c WHERE c.task_id=?1 AND c.generation=?2)",
+        )?;
+        for ((task, generation), cursor) in from {
+            release.execute(params![task.0, sql_number(generation)?, sql_number(cursor)?, NORMALIZED_EVIDENCE])?;
         }
         Ok(())
     }

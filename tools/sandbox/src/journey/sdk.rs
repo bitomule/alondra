@@ -309,15 +309,36 @@ fn write_parity(sandbox: &Sandbox) -> Result<()> {
     Ok(())
 }
 
-/// The native Claude's init for `task`, as the Mac kept it with the task's raw observations.
+/// The events the SDK hosts of `task` kept in their own outboxes, under the backend's state root,
+/// in cursor order. The Mac keeps a
+/// raw observation's bytes only until it is normalized, so the hosts' journals are what tells what
+/// the native Claude said.
+pub(super) fn host_events(sandbox: &Sandbox, task: &str) -> Result<Vec<Value>> {
+    let mut events = std::collections::BTreeMap::new();
+    let backend: Value = serde_json::from_slice(&std::fs::read(sandbox.dir.join("mac-1/sdk-backend.json")).context("the Mac's SDK backend")?)?;
+    let root = backend["state_root"].as_str().context("the SDK backend's state root")?;
+    let Ok(folders) = std::fs::read_dir(root) else { return Ok(vec![]) };
+    for folder in folders {
+        let Ok(raw) = std::fs::read(folder?.path().join("outbox")) else { continue };
+        let mut offset = 0;
+        while let Some(header) = raw.get(offset..offset + 4) {
+            let length = u32::from_be_bytes(header.try_into()?) as usize;
+            let Some(payload) = raw.get(offset + 4..offset + 4 + length) else { break };
+            offset += 4 + length;
+            let Ok(frame) = serde_json::from_slice::<Value>(payload) else { continue };
+            let body = &frame["body"];
+            if body["type"] == "event" && body["execution"]["task_id"] == task {
+                if let Some(cursor) = body["cursor"].as_u64() {
+                    events.insert(cursor, frame);
+                }
+            }
+        }
+    }
+    Ok(events.into_values().collect())
+}
+
+/// The native Claude's init for `task`, as its host kept it.
 fn native_init(sandbox: &Sandbox, task: &str) -> Result<Option<Value>> {
-    let database = sandbox.dir.join("mac-1/domain.db");
-    let output = std::process::Command::new("sqlite3")
-        .arg(&database)
-        .arg(format!("SELECT cast(bytes AS text) FROM provider_observations WHERE task_id='{task}' ORDER BY cursor"))
-        .output()
-        .context("sqlite3")?;
-    anyhow::ensure!(output.status.success(), "sqlite3: {}", String::from_utf8_lossy(&output.stderr));
     fn init(value: &Value) -> Option<&Value> {
         match value {
             Value::Object(map) if map.get("type") == Some(&Value::from("system")) && map.get("subtype") == Some(&Value::from("init")) => Some(value),
@@ -326,10 +347,7 @@ fn native_init(sandbox: &Sandbox, task: &str) -> Result<Option<Value>> {
             _ => None,
         }
     }
-    Ok(String::from_utf8_lossy(&output.stdout).lines().find_map(|line| {
-        let value: Value = serde_json::from_str(&line[line.find('{')?..]).ok()?;
-        init(&value).cloned()
-    }))
+    Ok(host_events(sandbox, task)?.iter().find_map(|event| init(event).cloned()))
 }
 
 fn hold_card(user: &User, prefix: &str) -> Result<(Option<String>, String)> {

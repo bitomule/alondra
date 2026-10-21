@@ -3463,3 +3463,108 @@ fn a_binding_with_every_control_signs_in_and_reconnects_its_mcp_servers() {
         assert!(matches!(tx.stage_control(&"task".into(), &op(name), &kind), Err(Error::UnsupportedCapability)), "a binding from before the MCP controls is never asked for them");
     }
 }
+
+fn observe(fixture: &mut Fixture, grant: &OwnerGrant, cursor: u64, evidence: &[u8]) {
+    let mut tx = fixture.transaction();
+    tx.accept_owned_observation(grant.execution(), grant.generation(), cursor, CommandEvidence::new(evidence.to_vec()).unwrap()).unwrap();
+    tx.put_normalization_checkpoint(grant.execution(), cursor, (cursor > 1).then(|| cursor - 1), b"checkpoint".to_vec()).unwrap();
+    tx.settle_observation(grant.execution(), cursor, 0).unwrap();
+    tx.commit().unwrap();
+}
+fn observed(cursor: u64) -> Vec<u8> {
+    let mut bytes = format!("observation {cursor} ").into_bytes();
+    bytes.resize(16 * 1024, b'x');
+    bytes
+}
+/// Rows of `provider_observations` and the bytes they hold.
+fn held(fixture: &Fixture) -> (i64, i64) {
+    fixture.connection.query_row("SELECT count(*),coalesce(sum(length(bytes)),0) FROM provider_observations", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+}
+
+#[test]
+fn normalized_observations_keep_only_their_digest_and_copies_are_still_told_apart() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let grant = owner(&mut fixture, &stamp);
+    for cursor in 1..=400 {
+        observe(&mut fixture, &grant, cursor, &observed(cursor));
+    }
+    assert_eq!(held(&fixture), (400, 16 * 1024 + 399), "only the checkpoint's observation keeps its bytes");
+    let tx = fixture.transaction();
+    assert_eq!(tx.normalization_checkpoint(&stamp).unwrap().unwrap().cursor(), 400);
+    drop(tx);
+    for cursor in [7, 399, 400] {
+        let mut tx = fixture.transaction();
+        let again = tx.accept_owned_observation(&stamp, grant.generation(), cursor, CommandEvidence::new(observed(cursor)).unwrap()).unwrap();
+        assert_eq!(again, ObservationAcceptance::Duplicate, "cursor {cursor}");
+        assert_eq!(tx.commit().unwrap().observations.len(), 1);
+        let mut tx = fixture.transaction();
+        let other = tx.accept_owned_observation(&stamp, grant.generation(), cursor, CommandEvidence::new(observed(cursor + 1)).unwrap());
+        assert!(matches!(other, Err(Error::ObservationConflict)), "cursor {cursor}: {other:?}");
+    }
+    assert_eq!(held(&fixture), (400, 16 * 1024 + 399));
+}
+
+#[test]
+fn the_journal_refuses_to_release_evidence_not_normalized_or_to_drop_evidence_still_held() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let grant = owner(&mut fixture, &stamp);
+    for cursor in 1..=3 {
+        observe(&mut fixture, &grant, cursor, &observed(cursor));
+    }
+    for refused in [
+        "UPDATE provider_observations SET bytes=X'00' WHERE cursor=3",
+        "UPDATE provider_observations SET digest=zeroblob(32) WHERE cursor=1",
+        "UPDATE provider_observations SET bytes=X'01' WHERE cursor=1",
+        "DELETE FROM provider_observations WHERE cursor=3",
+    ] {
+        assert!(fixture.connection.execute(refused, []).is_err(), "{refused}");
+    }
+    assert_eq!(held(&fixture), (3, 16 * 1024 + 2));
+}
+
+#[test]
+fn retention_releases_old_evidence_in_bounded_passes_and_drops_it_once_the_execution_ends() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    owner(&mut fixture, &stamp);
+    let binding: String = fixture.connection.query_row("SELECT binding_id FROM lifecycle_execution_bindings WHERE task_id='task'", [], |row| row.get(0)).unwrap();
+    for cursor in 1..=40u64 {
+        let bytes = observed(cursor);
+        let sum: Vec<u8> = { use sha2::Digest; sha2::Sha256::digest(&bytes).to_vec() };
+        fixture.connection.execute("INSERT INTO provider_observations(task_id,generation,binding_id,cursor,digest,bytes) VALUES('task',?1,?2,?3,?4,?5)", params![stamp.generation() as i64, binding, cursor as i64, sum, bytes]).unwrap();
+    }
+    fixture.connection.execute("INSERT INTO provider_observation_heads(task_id,generation,cursor) VALUES('task',?1,40)", params![stamp.generation() as i64]).unwrap();
+    fixture.connection.execute("INSERT INTO provider_normalization_checkpoints(task_id,generation,binding_id,cursor,digest,bytes) VALUES('task',?1,?2,40,?3,X'01')", params![stamp.generation() as i64, binding, { use sha2::Digest; sha2::Sha256::digest([1u8]).to_vec() }]).unwrap();
+    assert_eq!(held(&fixture), (40, 40 * 16 * 1024), "a journal from before the retention holds every observation");
+    assert!(fixture.connection.execute("DELETE FROM provider_observations WHERE cursor=1", []).is_err(), "an observation that holds its bytes is never dropped");
+    let mut passes = vec![];
+    loop {
+        let mut tx = fixture.transaction();
+        let pass = tx.retain_evidence(16).unwrap();
+        tx.commit().unwrap();
+        passes.push(pass);
+        if pass.released < 16 {
+            break;
+        }
+    }
+    assert_eq!(passes.iter().map(|pass| pass.released).collect::<Vec<_>>(), [16, 16, 7]);
+    assert!(passes.iter().all(|pass| pass.removed == 0), "the current execution keeps its digests: {passes:?}");
+    assert_eq!(held(&fixture), (40, 16 * 1024 + 39));
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.put_input(&"task".into(), payload("requeue")).unwrap();
+    tx.apply(&"task".into(), revision, "release", Event::ExecutionReleased { input: id("requeue") }).unwrap();
+    tx.commit().unwrap();
+    let mut removed = vec![];
+    for _ in 0..4 {
+        let mut tx = fixture.transaction();
+        removed.push(tx.retain_evidence(16).unwrap());
+        tx.commit().unwrap();
+    }
+    assert_eq!(removed.iter().map(|pass| pass.removed).collect::<Vec<_>>(), [16, 16, 7, 0]);
+    assert_eq!(held(&fixture), (1, 16 * 1024), "an ended execution keeps only its checkpoint's observation");
+    let kept: i64 = fixture.connection.query_row("SELECT cursor FROM provider_observations", [], |row| row.get(0)).unwrap();
+    assert_eq!(kept, 40);
+}

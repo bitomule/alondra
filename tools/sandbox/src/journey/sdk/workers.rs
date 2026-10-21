@@ -225,15 +225,11 @@ fn dispatches(sandbox: &Sandbox, task: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().replace('\n', ", "))
 }
 
-/// The last raw observations the Mac kept of the task's host: type, subtype and state of each.
+/// The last raw observations the task's host kept: type, subtype and state of each.
 fn observations(sandbox: &Sandbox, task: &str) -> Result<String> {
-    let output = std::process::Command::new("sqlite3").arg("-readonly").arg(sandbox.dir.join("mac-1/domain.db"))
-        .arg(format!("SELECT cast(bytes AS text) FROM provider_observations WHERE task_id='{task}' ORDER BY cursor DESC LIMIT 16"))
-        .output().context("sqlite3")?;
+    let events = super::host_events(sandbox, task)?;
     let mut seen = vec![];
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Some(at) = line.find('{') else { continue };
-        let Ok(value) = serde_json::from_str::<Value>(&line[at..]) else { continue };
+    for value in events.into_iter().rev().take(16) {
         let mut found = vec![];
         collect(&value, &mut |item| item.get("type").is_some() && (item.get("subtype").is_some() || item.get("state").is_some() || item.get("uuid").is_some()), &mut found);
         let item = found.first().cloned().unwrap_or(value);

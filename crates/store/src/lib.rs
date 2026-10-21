@@ -33,6 +33,8 @@ mod persistence;
 mod provider_binding;
 mod read;
 pub use read::{JournalTask, read_journal};
+mod retention;
+pub use retention::EvidenceRetention;
 
 use alondra_domain::{
     CLAUDE_BG_HOST, Event, ExecutionStamp, InputId, Refusal, ResourceEvidence, TaskLifecycle, TaskPhase,
@@ -46,6 +48,9 @@ use std::path::Path;
 
 pub type Result<T> = std::result::Result<T, Error>;
 const MAX_PAYLOAD: usize = 1_048_576;
+/// What a raw observation keeps of its bytes once the normalization checkpoint is past it: its
+/// digest still answers a copy the host sends again, and no host frame is one byte long.
+const NORMALIZED_EVIDENCE: &[u8] = &[0];
 
 #[derive(Debug)]
 pub enum Error {
@@ -1015,7 +1020,12 @@ impl<'connection> LifecycleTransaction<'connection> {
             let binding = provider_binding::for_execution(&self.transaction, stamp)?;
             let prior:Option<(Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT bytes,digest FROM provider_observations WHERE task_id=?1 AND generation=?2 AND cursor=?3 AND binding_id=?4",params![stamp.task().0,sql_number(stamp.generation())?,sql_number(cursor)?,binding.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
             if let Some((bytes, digest)) = prior {
-                if bytes != evidence.bytes() || evidence_digest(&bytes) != digest {
+                let same = if bytes == NORMALIZED_EVIDENCE {
+                    evidence_digest(evidence.bytes()) == digest
+                } else {
+                    bytes == evidence.bytes() && evidence_digest(&bytes) == digest
+                };
+                if !same {
                     return Err(Error::ObservationConflict);
                 }
                 return Ok(ObservationAcceptance::Duplicate);
@@ -1396,6 +1406,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             for observation in &self.observations {
                 self.verify_observation_commit(observation)?;
             }
+            self.release_normalized_evidence()?;
             for attempt in &self.claimed_controls {
                 self.fence_control(attempt)?;
             }
