@@ -1,0 +1,393 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-1",
+  "client": "tui",
+  "version": "vfc4c999374d3a28e",
+  "cursor": "cursor-1",
+  "title": "Build a feature",
+  "status": {
+    "version": "vf63c69ea87e89a7d",
+    "summary": "1 node working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "State",
+              "value": "Working",
+              "tone": "accent"
+            },
+            {
+              "label": "Node",
+              "value": "Node One",
+              "link": {
+                "kind": "view",
+                "key": "node:a-1"
+              }
+            },
+            {
+              "label": "Folder",
+              "value": "/work/alondra/.claude/worktrees/t-1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "readings",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Running",
+              "value": "Bash: cargo test"
+            },
+            {
+              "label": "In the background",
+              "value": "2 subagents · 1 shell",
+              "tone": "warning"
+            },
+            {
+              "label": "Context",
+              "value": "84% of 200K tokens",
+              "tone": "warning"
+            },
+            {
+              "label": "Cost",
+              "value": "$1.20"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "activity",
+      "title": "Right now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:59:00Z",
+          "icon": "history",
+          "title": "Editing views/tasks.rs",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:59:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "needs",
+      "title": "What it needs",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "The staging key",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "steps",
+      "title": "Steps",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Progress",
+              "value": "2 of 5",
+              "tone": "info"
+            },
+            {
+              "label": "Now",
+              "value": "Running the tests"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "step:0",
+          "icon": "check",
+          "title": "Read the code",
+          "depth": 0,
+          "struck": true
+        },
+        {
+          "type": "row",
+          "id": "step:1",
+          "icon": "check",
+          "title": "Write the fix",
+          "depth": 0,
+          "struck": true
+        },
+        {
+          "type": "row",
+          "id": "step:2",
+          "icon": "task",
+          "title": "Run the tests",
+          "badges": [
+            {
+              "text": "In progress",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "step:3",
+          "icon": "task",
+          "title": "Open the PR",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "step:4",
+          "icon": "task",
+          "title": "Reply",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "background",
+      "title": "Running in the background",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:40:00Z",
+          "icon": "history",
+          "title": "npm run dev",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Possibly hung",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:40:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "last_message",
+      "title": "What it said last",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Tests pass; opening the PR",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Request",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Build a feature",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Options",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
+              "label": "PR handling",
+              "value": "Auto-merge: Alondra merges it once its checks pass"
+            },
+            {
+              "label": "Model",
+              "value": "Opus 5.5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "msg:a-1@0~t-1",
+              "label": "Message",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write to this task's node…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "key": "r",
+              "resolves_card": false
+            },
+            {
+              "id": "interrupt:a-1@0",
+              "label": "Interrupt",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Interrupt",
+                "message": "Stop what this node is doing now? It keeps its task and waits for you.",
+                "button": "Interrupt"
+              },
+              "enabled": true,
+              "key": "i",
+              "resolves_card": false
+            },
+            {
+              "id": "pause:a-1@0",
+              "label": "Pause",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Pause this node?",
+                "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                "button": "Pause"
+              },
+              "enabled": true,
+              "stamp": "Paused",
+              "key": "p",
+              "resolves_card": false
+            },
+            {
+              "id": "set_priority:t-1@0",
+              "label": "Priority",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "High",
+                  "description": "Starts before Normal and Low",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · now",
+                  "description": "The default",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Low",
+                  "description": "Starts when nothing else waits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "P",
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

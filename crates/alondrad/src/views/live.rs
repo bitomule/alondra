@@ -9,7 +9,7 @@ use crate::node_work::StepStatus;
 use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
-use std::{collections::{BTreeMap, HashMap}, sync::Mutex};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Mutex};
 use tokio::sync::watch;
 
 #[derive(Default)]
@@ -658,11 +658,8 @@ async fn gather_keyed(
         None => (Vec::new(), None),
     };
     let mut activity = BTreeMap::new();
-    for id in keys
-        .iter()
-        .filter_map(|key| key.strip_prefix("node:"))
-        .filter(|id| !matches!(state.resolve_target(id), alondra_core::domain::Target::Orchestrator(_)))
-    {
+    for id in activity_agents(state, keys) {
+        let id = id.as_str();
         let path = format!("/agents/{id}/activity");
         let activity_revision = activity_source_revision(client, id);
         if let Some(data) = read_live_json(client, &path, state.revision, &activity_revision).await {
@@ -819,6 +816,17 @@ fn search_source_revision(client: &crate::client_routes::Client, state: &DomainS
     }).collect();
     let bytes = serde_json::to_vec(&candidates).expect("search source serialization");
     digest_hex(&bytes)
+}
+
+/// The nodes whose activity an open screen shows: a node's own, and the node of an open task.
+fn activity_agents(state: &DomainState, keys: &[String]) -> BTreeSet<String> {
+    keys.iter()
+        .filter_map(|key| key.strip_prefix("node:").map(str::to_owned).or_else(|| {
+            let task = state.tasks.get(&TaskId(key.strip_prefix("task:")?.to_owned()))?;
+            task.agent_id.as_ref().filter(|_| !task.state.terminal()).map(|agent| agent.0.clone())
+        }))
+        .filter(|id| !matches!(state.resolve_target(id), alondra_core::domain::Target::Orchestrator(_)))
+        .collect()
 }
 
 fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> String {
@@ -1301,6 +1309,36 @@ mod cache_tests {
             assert!(gather(&client, &state, lang, &[], false, true).await.inbox_times.is_empty());
         }
         assert_eq!(serde_json::to_vec(&*domain.state().unwrap()).unwrap(), before);
+    }
+
+    /// What a node does right now is on its task's screen too, while the task is open.
+    #[test]
+    fn an_open_task_screen_reads_its_nodes_activity_and_a_finished_one_does_not() {
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = crate::domain_runtime::DomainRuntime::open(&home).unwrap();
+        let run = |actor: Actor, id: &str, command: Command| {
+            let state = domain.state().unwrap();
+            domain.execute(&actor, &CommandEnvelope {
+                protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: id.into(),
+                expected_revision: state.revision, command,
+            }, None, || Ok(())).unwrap();
+        };
+        run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Phase B".into(), at: 0 });
+        run(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "r".into(), body: "Index".into(), auto_merge: false, maintenance: false, message: false });
+        run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "t-b".into(), request_id: "r".into(), title: "Phase B".into(), agent_id: Some("a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(crate::launch_plans::LaunchPlan { mission: Some("Phase B".into()), ..crate::launch_plans::LaunchPlan::new("t-b", "/tmp") }),
+            plan_items: None,
+        });
+        let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
+        let mut state = (*domain.state().unwrap()).clone();
+        assert_eq!(activity_agents(&state, &keys(&["task:t-b", "home"])), BTreeSet::from(["a".to_owned()]));
+        assert_eq!(activity_agents(&state, &keys(&["node:a", "task:t-b"])), BTreeSet::from(["a".to_owned()]));
+        state.tasks.get_mut(&TaskId("t-b".into())).unwrap().state = TaskState::Done;
+        assert!(activity_agents(&state, &keys(&["task:t-b", "task:missing"])).is_empty());
     }
 
     #[tokio::test]

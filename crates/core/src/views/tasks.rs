@@ -4,6 +4,7 @@ use super::{
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
+use crate::model_label::model_family;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A task's own screen says its state with the fact that explains it, unless what it does now has its own lines.
@@ -892,6 +893,10 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
     {
         return Some(line(wait_text(&reason, context), None));
     }
+    if let Some(work) = task.wrap_up.post_merge_work.as_ref().filter(|_| !task.state.terminal()) {
+        return Some(line(tf!(context.lang, "finishing after the merge: {reason}", "terminando tras fusionar: {reason}",
+            reason = work.reason), None));
+    }
     match task.state {
         TaskState::NeedsYou => context.waiting_cards_of(&task.id).next()
             .map(|item| line(
@@ -991,11 +996,20 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if context.client == super::Client::Tui {
         facts.retain(|fact| fact.value != task.title);
     }
+    let agent = task.agent_id.as_ref()
+        .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
+        .and_then(|agent| context.domain.agents.get(agent));
+    let live = agent.and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.id.0));
+    facts.extend(live.and_then(|node| super::fleet::folder(node, context)));
     view.sections.push(common::section(
         "header",
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
+    let readings = live.map(|node| super::fleet::node_readings(node, context)).unwrap_or_default();
+    if !readings.is_empty() {
+        view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
+    }
     if let Some(step) = context.live.task_history.get(id).and_then(|history| history.last()) {
         let mut row = common::row("since", "task", Icon::History, t!(context.lang, "Since", "Desde").into(), None);
         row.link = None;
@@ -1005,10 +1019,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(now) = now_line(task, context) {
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }
-    if let Some(node) = task.agent_id.as_ref()
-        .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
-        .and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.0)) {
+    view.sections.extend(agent.and_then(|agent| super::fleet::activity_rows(agent, context))
+        .map(|rows| common::section("activity", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
+    if let Some(node) = live {
+        view.sections.extend(super::fleet::needs_section(node, context));
         view.sections.extend(super::fleet::work_sections(node, context.lang));
+        view.sections.extend(super::fleet::background_section(node, context));
+        view.sections.extend(super::fleet::last_message_section(node, context));
     }
     if let Some(history) = context
         .live
@@ -1147,13 +1164,19 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             });
         }
     }
+    let running_model = live.and_then(|node| node.model.as_deref());
     if let Some(launched) = &task.model {
         let model = crate::model_label::launched_model_label(&launched.model);
-        let value = match launched.chosen_by {
+        let mut value = match launched.chosen_by {
             ModelChooser::Orchestrator => tf!(context.lang, "{model} · chosen by the orchestrator", "{model} · elegido por el orquestador", model = model),
             ModelChooser::User => tf!(context.lang, "{model} · from your Effort choice", "{model} · por tu elección de esfuerzo", model = model),
         };
+        if let Some(now) = running_model.filter(|now| model_family(now) != model_family(&launched.model)) {
+            value.push_str(&tf!(context.lang, " (now: {model})", " (ahora: {model})", model = crate::model_label::model_label(now)));
+        }
         task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value, tone: None, link: None });
+    } else if let Some(now) = running_model {
+        task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value: crate::model_label::model_label(now), tone: None, link: None });
     }
     view.sections.push(common::section(
         "options",
@@ -1205,6 +1228,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             }
         }
     }
+    actions.extend(agent.and_then(|agent| super::fleet::interrupt_action(&agent.id.0, context)));
     actions.extend(relaunch_action(task, context));
     actions.extend(super::pacing::task_actions(task, context));
     actions.extend(super::pacing::priority_action(task, context));

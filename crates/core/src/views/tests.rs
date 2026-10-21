@@ -2700,6 +2700,11 @@ fn generate_goldens() {
         )
         .unwrap();
     }
+    let (working_state, working_live) = task_working_fixture();
+    for (filename, client, lang) in TASK_WORKING_GOLDENS {
+        let view = render(&working_state, &working_live, client, lang, "task:t-1", "2026-09-30T10:00:00Z");
+        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+    }
     let (fleet_state, fleet_live) = fleet_fixture();
     for (filename, client, lang) in FLEET_GOLDENS {
         let view = render(&fleet_state, &fleet_live, client, lang, "fleet", "2026-09-30T10:00:00Z");
@@ -3278,6 +3283,120 @@ fn the_task_a_node_works_shows_the_nodes_progress_and_a_finished_task_does_not()
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let done = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert!(done.sections.iter().all(|section| section.id != "steps"));
+}
+
+fn node_on_its_task() -> LiveNode {
+    LiveNode {
+        agent_id: "a-1".into(), name: "Build a feature".into(), working: true,
+        cwd: Some("/work/alondra/.claude/worktrees/t-1".into()),
+        tool: Some("Bash: cargo test".into()), background_badge: Some("2 subagents · 1 shell".into()), background_suspect: true,
+        context_percent: Some(84), context_window: Some(200_000), cost_cents: Some(120),
+        needs: Some("The staging key".into()),
+        background: vec![LiveBackground { kind: "shell".into(), label: "npm run dev".into(), since: "2026-09-30T09:40:00Z".into(), suspect: true }],
+        last_message: Some("Tests pass; opening the PR".into()), last_message_at: Some("2026-09-30T09:58:00Z".into()),
+        ..Default::default()
+    }
+}
+
+fn task_working_fixture() -> (DomainState, LiveSnapshot) {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { model: Some("claude-opus-5-5".into()), ..node_on_its_task() });
+    live.nodes[0].steps = working_node().steps;
+    live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: None,
+        tool: Some("Edit".into()), summary: Some("Editing views/tasks.rs".into()), since: "2026-09-30T09:59:00Z".into() }]);
+    (state, live)
+}
+
+const TASK_WORKING_GOLDENS: [(&str, Client, Lang); 4] = [
+    ("task-working-ios.json", Client::Ios, Lang::En),
+    ("task-working-ios-es.json", Client::Ios, Lang::Es),
+    ("task-working-mac.json", Client::Mac, Lang::En),
+    ("task-working-tui.json", Client::Tui, Lang::En),
+];
+
+#[test]
+fn task_working_views_match_goldens() {
+    let (state, live) = task_working_fixture();
+    for (filename, client, lang) in TASK_WORKING_GOLDENS {
+        let expected = match filename {
+            "task-working-ios.json" => include_str!("../../../../fixtures/views/cards/task-working-ios.json"),
+            "task-working-ios-es.json" => include_str!("../../../../fixtures/views/cards/task-working-ios-es.json"),
+            "task-working-mac.json" => include_str!("../../../../fixtures/views/cards/task-working-mac.json"),
+            _ => include_str!("../../../../fixtures/views/cards/task-working-tui.json"),
+        };
+        assert_golden(filename, &render(&state, &live, client, lang, "task:t-1", "2026-09-30T10:00:00Z"), expected);
+    }
+}
+
+/// The task is the unit: what the node's screen showed about the node working on it is on the
+/// task's own screen, for every client, while that task is the node's current one.
+#[test]
+fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
+    let (mut state, mut live) = task_working_fixture();
+    live.nodes[0].model = None;
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &live, client, Lang::En, "task:t-1", "");
+        assert!(section_facts(&view, "header").contains(&("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into())), "{client:?}");
+        assert_eq!(section_facts(&view, "readings"), [
+            ("Running".into(), "Bash: cargo test".into()),
+            ("In the background".into(), "2 subagents · 1 shell".into()),
+            ("Context".into(), "84% of 200K tokens".into()),
+            ("Cost".into(), "$1.20".into()),
+        ], "{client:?}");
+        let ids: Vec<&str> = view.sections.iter().map(|section| section.id.as_str()).collect();
+        for id in ["activity", "needs", "background", "last_message"] {
+            assert!(ids.contains(&id), "{client:?} shows {id}: {ids:?}");
+        }
+        assert_eq!(node_work_rows(&view, "activity")[0].title, "Editing views/tasks.rs");
+        assert_eq!(badges(node_work_rows(&view, "background")[0]), ["Possibly hung"]);
+        assert!(action_ids(&view).iter().any(|id| id == "interrupt:a-1"), "{client:?}: {:?}", action_ids(&view));
+    }
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    assert_eq!(section_facts(&spanish, "readings")[3], ("Coste".into(), "1,20 $".into()));
+
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    live.nodes[0].last_turn_aborted = true;
+    let resting = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
+    assert!(section_facts(&resting, "readings").contains(&("Last turn".into(), "Interrupted".into())));
+    assert!(resting.sections.iter().all(|section| section.id != "activity"), "nothing runs right now once its turn ended");
+    assert!(action_ids(&resting).iter().all(|id| !id.starts_with("interrupt:")), "nothing to interrupt once its turn ended");
+
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let done = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
+    assert!(done.sections.iter().all(|section| !["readings", "needs", "background", "last_message"].contains(&section.id.as_str())));
+    assert!(section_facts(&done, "header").iter().all(|(label, _)| label != "Folder"));
+}
+
+#[test]
+fn a_task_detail_says_the_model_its_node_runs_on_when_it_is_not_the_one_it_was_launched_with() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    let model = |state: &DomainState, running: Option<&str>| {
+        let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), model: running.map(Into::into), ..Default::default() }], ..Default::default() };
+        section_facts(&render(state, &live, Client::Ios, Lang::En, "task:t-1", ""), "options").into_iter()
+            .find(|(label, _)| label == "Model").map(|(_, value)| value)
+    };
+    assert_eq!(model(&state, Some("claude-opus-5-5[1m]")).as_deref(), Some("Opus 5.5"));
+    state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::User });
+    assert_eq!(model(&state, Some("claude-sonnet-5-5")).as_deref(), Some("Sonnet · from your Effort choice"));
+    assert_eq!(model(&state, Some("claude-opus-5-5")).as_deref(), Some("Sonnet · from your Effort choice (now: Opus 5.5)"));
+}
+
+#[test]
+fn a_task_detail_says_what_its_node_still_does_after_the_merge() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Closing);
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
+    state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.post_merge_work =
+        Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
+    let now = |lang| {
+        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
+        node_work_rows(&view, "now").first().map(|row| row.title.clone())
+    };
+    assert_eq!(now(Lang::En).as_deref(), Some("finishing after the merge: release.sh publishes 0.2.54"));
+    assert_eq!(now(Lang::Es).as_deref(), Some("terminando tras fusionar: release.sh publishes 0.2.54"));
 }
 
 fn workflow_agent(label: &str, phase: &str, model: Option<&str>, running: bool) -> LiveWorkflowAgent {

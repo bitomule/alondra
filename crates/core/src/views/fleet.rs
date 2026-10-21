@@ -20,7 +20,7 @@ fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action
 
 /// Stopping a node's current turn, offered only while it works: for a node that runs through the
 /// SDK, while its execution runs a turn or work of its own.
-fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+pub(super) fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
     let working = match context.index.node(&AgentId(id.into())) {
         Some(node) if node.through_sdk => node.sdk_running,
         _ => common::working(id, context),
@@ -425,6 +425,93 @@ fn orchestrator_inbox(id: &str, context: &RenderContext<'_>) -> View {
     view
 }
 
+/// What a live node reads now: the tool it runs, its background work, a last turn that was
+/// interrupted, its context and its cost.
+pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>) -> Vec<Fact> {
+    let lang = context.lang;
+    let mut readings = vec![];
+    if let Some(tool) = &node.tool {
+        readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
+    }
+    if let Some(text) = &node.background_badge {
+        readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
+            tone: node.background_suspect.then_some(Tone::Warning), link: None });
+    }
+    if node.last_turn_aborted && !common::working(&node.agent_id, context) {
+        readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
+            value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
+    }
+    if let Some(percent) = node.context_percent {
+        let label = context_label(percent, lang);
+        let value = match node.context_window {
+            Some(window) => tf!(lang, "{percent}% of {window} tokens", "{percent}% de {window} tokens", percent = percent, window = tokens(window)),
+            None => format!("{percent}%"),
+        };
+        readings.push(Fact { label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
+    }
+    if let Some(cents) = node.cost_cents {
+        readings.push(Fact { label: t!(lang, "Cost", "Coste").into(), value: cost(cents, lang), tone: None, link: None });
+    }
+    readings
+}
+
+pub(super) fn folder(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<Fact> {
+    node.cwd.clone().map(|cwd| Fact { label: t!(context.lang, "Folder", "Carpeta").into(), value: cwd, tone: None, link: None })
+}
+
+pub(super) fn needs_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {
+    let needs = node.needs.as_ref().filter(|needs| !needs.is_empty())?;
+    Some(common::section("needs", Some(t!(context.lang, "What it needs", "Qué necesita").into()),
+        vec![Item::Markdown(Markdown { text: needs.clone(), truncated: false, more: None, commentable: false })]))
+}
+
+pub(super) fn background_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {
+    if node.background.is_empty() {
+        return None;
+    }
+    let rows = node.background.iter().map(|background| {
+        let mut row = common::row(&background.since, "node", Icon::History, background.label.clone(),
+            Some(match background.kind.as_str() {
+                "agent" => t!(context.lang, "Subagent", "Subagente"),
+                "shell" => t!(context.lang, "Shell", "Shell"),
+                _ => t!(context.lang, "Task", "Tarea"),
+            }.into()));
+        row.link = None;
+        row.trailing = Some(Trailing::Time { at: background.since.clone(), format: super::TimeFormat::Relative });
+        if background.suspect { row.badges.push(super::Label { text: t!(context.lang, "Possibly hung", "Quizá colgado").into(), tone: Tone::Warning }); }
+        Item::Row(row)
+    }).collect();
+    Some(common::section("background", Some(t!(context.lang, "Running in the background", "En segundo plano").into()), rows))
+}
+
+pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {
+    let message = node.last_message.as_ref().filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())?;
+    let mut items = vec![Item::Markdown(Markdown { text: message.clone(), truncated: false, more: None, commentable: false })];
+    if context.client == super::Client::Ios
+        && let Some(at) = node.last_message_at.as_ref() {
+        let mut row = common::row("last_message_time", "node", Icon::History,
+            t!(context.lang, "Last message", "Último mensaje").into(), None);
+        row.link = None;
+        row.trailing = Some(Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
+        items.push(Item::Row(row));
+    }
+    Some(common::section("last_message", Some(t!(context.lang, "What it said last", "Lo último que dijo").into()), items))
+}
+
+/// What a node does right now, one row per running thread, while it is in a turn.
+pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> Option<Vec<Item>> {
+    let activity = context.live.activity.get(&agent.id.0).filter(|items| !items.is_empty() && agent.phase.in_turn())?;
+    Some(activity.iter().map(|entry| {
+        let title = entry.summary.clone().or_else(|| entry.tool.clone())
+            .unwrap_or_else(|| t!(context.lang, "Working", "Trabajando").into());
+        let subtitle = entry.task.as_ref().map(|task| format!("{} {task}", t!(context.lang, "Task", "Tarea")));
+        let mut row = common::row(&entry.since, "node", Icon::History, title, subtitle);
+        row.link = None;
+        row.trailing = Some(Trailing::Time { at: entry.since.clone(), format: super::TimeFormat::Relative });
+        Item::Row(row)
+    }).collect())
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
@@ -457,40 +544,12 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: t!(lang, "Reconnecting", "Reconectando").into(),
                 tone: Some(Tone::Info), link: None });
         }
-        if let Some(tool) = &node.tool {
-            readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
-        }
-        if let Some(text) = &node.background_badge {
-            readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
-                tone: node.background_suspect.then_some(Tone::Warning), link: None });
-        }
-        if node.last_turn_aborted && !common::working(&node.agent_id, context) {
-            readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
-                value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
-        }
+        readings.extend(node_readings(node, context));
         if let Some(model) = &node.model {
             readings.push(Fact { label: t!(lang, "Model", "Modelo").into(), value: crate::model_label::model_label(model), tone: None, link: None });
         }
-        if let Some(percent) = node.context_percent {
-            let label = context_label(percent, lang);
-            let value = match node.context_window {
-                Some(window) => tf!(lang, "{percent}% of {window} tokens", "{percent}% de {window} tokens", percent = percent, window = tokens(window)),
-                None => format!("{percent}%"),
-            };
-            readings.push(Fact { label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
-        }
-        if let Some(cents) = node.cost_cents {
-            readings.push(Fact { label: t!(lang, "Cost", "Coste").into(), value: cost(cents, lang), tone: None, link: None });
-        }
     }
-    if let Some(cwd) = live.and_then(|node| node.cwd.clone()) {
-        facts.push(Fact {
-            label: t!(context.lang, "Folder", "Carpeta").into(),
-            value: cwd,
-            tone: None,
-            link: None,
-        });
-    }
+    facts.extend(live.and_then(|node| folder(node, context)));
     let tasks: Vec<_> = context.index.node(&agent.id).into_iter().flat_map(|node| &node.all_tasks)
         .filter_map(|id| context.domain.tasks.get(id))
         .collect();
@@ -547,85 +606,14 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         Some(t!(context.lang, "Tasks", "Tareas").into()),
         rows,
     ));
-    if let Some(needs) = live.and_then(|node| node.needs.as_ref()).filter(|needs| !needs.is_empty()) {
-        view.sections.push(common::section("needs", Some(t!(context.lang, "What it needs", "Qué necesita").into()),
-            vec![Item::Markdown(Markdown { text: needs.clone(), truncated: false, more: None, commentable: false })]));
-    }
+    view.sections.extend(live.and_then(|node| needs_section(node, context)));
     if let Some(node) = live {
         view.sections.extend(work_sections(node, context.lang));
     }
-    if let Some(node) = live.filter(|node| !node.background.is_empty()) {
-        let rows = node.background.iter().map(|background| {
-            let mut row = common::row(&background.since, "node", Icon::History, background.label.clone(),
-                Some(match background.kind.as_str() {
-                    "agent" => t!(context.lang, "Subagent", "Subagente"),
-                    "shell" => t!(context.lang, "Shell", "Shell"),
-                    _ => t!(context.lang, "Task", "Tarea"),
-                }.into()));
-            row.link = None;
-            row.trailing = Some(Trailing::Time { at: background.since.clone(), format: super::TimeFormat::Relative });
-            if background.suspect { row.badges.push(super::Label { text: t!(context.lang, "Possibly hung", "Quizá colgado").into(), tone: Tone::Warning }); }
-            Item::Row(row)
-        }).collect();
-        view.sections.push(common::section("background", Some(t!(context.lang, "Running in the background", "En segundo plano").into()), rows));
-    }
-    if let Some(message) = live
-        .and_then(|node| node.last_message.as_ref())
-        .filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())
-    {
-        let mut items = vec![Item::Markdown(Markdown {
-            text: message.clone(),
-            truncated: false,
-            more: None,
-            commentable: false,
-        })];
-        if context.client == super::Client::Ios
-            && let Some(at) = live.and_then(|node| node.last_message_at.as_ref()) {
-            let mut row = common::row("last_message_time", "node", Icon::History,
-                t!(context.lang, "Last message", "Último mensaje").into(), None);
-            row.link = None;
-            row.trailing = Some(Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
-            items.push(Item::Row(row));
-        }
-        view.sections.push(common::section(
-            "last_message",
-            Some(t!(context.lang, "What it said last", "Lo último que dijo").into()),
-            items,
-        ));
-    }
-    if let Some(activity) = context
-        .live
-        .activity
-        .get(id)
-        .filter(|items| !items.is_empty() && agent.phase.in_turn())
-    {
-        let rows = activity
-            .iter()
-            .map(|entry| {
-                let title = entry
-                    .summary
-                    .clone()
-                    .or_else(|| entry.tool.clone())
-                    .unwrap_or_else(|| t!(context.lang, "Working", "Trabajando").into());
-                let subtitle = entry
-                    .task
-                    .as_ref()
-                    .map(|task| format!("{} {task}", t!(context.lang, "Task", "Tarea")));
-                let mut row = common::row(&entry.since, "node", Icon::History, title, subtitle);
-                row.link = None;
-                row.trailing = Some(super::Trailing::Time {
-                    at: entry.since.clone(),
-                    format: super::TimeFormat::Relative,
-                });
-                Item::Row(row)
-            })
-            .collect();
-        view.sections.push(common::section(
-            "now",
-            Some(t!(context.lang, "Right now", "Ahora mismo").into()),
-            rows,
-        ));
-    }
+    view.sections.extend(live.and_then(|node| background_section(node, context)));
+    view.sections.extend(live.and_then(|node| last_message_section(node, context)));
+    view.sections.extend(activity_rows(agent, context)
+        .map(|rows| common::section("now", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
     let mut actions = vec![];
     // A node still on `claude --bg` takes a message through its mod's connection, and moves to the
     // Agent SDK with it when it rests.
