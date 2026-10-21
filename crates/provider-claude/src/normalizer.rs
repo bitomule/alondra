@@ -186,7 +186,7 @@ impl ObservationNormalizer for Normalizer {
         });
         let facts = match folded {
             Ok(facts) => facts,
-            Err(AdapterError::Unsupported) => {
+            Err(AdapterError::Unsupported | AdapterError::InvalidObservation) => {
                 checkpoint = serde_json::from_slice(&before).map_err(|_| AdapterError::InvalidObservation)?;
                 Vec::new()
             }
