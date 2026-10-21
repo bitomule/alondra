@@ -13,10 +13,10 @@ pub(crate) const BOOT_DATA: &str = "/System/Volumes/Data";
 /// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header.
 pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
 
-/// The plan's limits travel with the machine's gauges, read from what the node mods measured.
+/// The plan's limits travel with the machine's gauges, read from what each account measured.
 pub(crate) async fn run(gauges: Gauges, domain: Arc<crate::domain_runtime::DomainRuntime>) {
     sample_loop(|machine| {
-        let usage = domain.live.mods.usage(machine.at);
+        let usage = crate::usage_probe::usage(&domain, machine.at);
         *gauges.lock().expect("machine gauges poisoned") = Some((machine, usage));
     }).await
 }

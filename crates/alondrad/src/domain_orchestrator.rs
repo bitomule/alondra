@@ -397,7 +397,7 @@ impl Executor {
         if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
             && let Some(reset) = output.stream.limit(&output.diagnostic)
         {
-            let reset = reset.or_else(|| output.stream.limited.then(|| self.domain.live.mods.reset_after_limit(now_millis())).flatten());
+            let reset = reset.or_else(|| output.stream.limited.then(|| self.domain.live.measured.reset_after_limit(now_millis())).flatten());
             self.domain.live.usage_pause.exhaust(reset, now_millis());
         }
         let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };

@@ -371,11 +371,9 @@ async fn gather_inner(
                 if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
                 text
             });
-            let context = reported.context.as_ref().map(|context| (context.percent, Some(context.window))).or_else(|| {
-                let used = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
-                    .find_map(|task| client.domain.contexts.used(&task.id))?;
-                Some((used.percent(), used.window))
-            });
+            let context = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
+                .find_map(|task| client.domain.contexts.used(&task.id))
+                .map(|used| (used.percent(), used.window));
             Some(LiveNode {
                 agent_id: node.session_id,
                 short_id: Some(node.short_id),
@@ -437,7 +435,7 @@ async fn gather_inner(
                 tool: tool.map(|tool| tool.chars().take(141).collect()),
                 context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: context.and_then(|(_, window)| window),
-                cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
+                cost_cents: None,
                 model: reported.model.clone(),
                 disconnected: agent.phase == NodePhase::Closed && open_task,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
@@ -1691,7 +1689,7 @@ mod tests {
             cpu_usage: cpu, disk_total: 1_000, disk_available: 120, unreliable: false };
         let usage = |week: f64| alondra_core::usage::Usage { week_percent: week, week_resets_at: 0,
             today_spent: None, today_share: None, per_day_left: 0.0, over_pace: false, five_hour_percent: Some(10.0),
-            five_hour_resets_at: Some(0), measured_at: 0 };
+            five_hour_resets_at: Some(0), measured_at: 0, margin: None };
         let sample = |m: &alondra_core::Machine, u: &alondra_core::usage::Usage| {
             (gauges(m, Some(u), Lang::En, 0), gauges(m, Some(u), Lang::Es, 0))
         };

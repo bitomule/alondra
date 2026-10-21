@@ -4,6 +4,7 @@
 use super::*;
 use alondra_agent_application::{InputMetadata, ObservationNormalizer, ObservedFact};
 use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
+use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
 use alondra_foundation::ExecutionStamp;
 use alondra_provider_contract::{AdapterError, Capability, McpServerReport, McpSignInReport, OrderedObservation, Placement, PreparedCommand, ProviderBinding, TurnOutcome};
 use alondra_store::{
@@ -377,6 +378,16 @@ impl<'connection> OwnerTransaction<'connection> {
                         read_status = true;
                     }
                 }
+                ObservedFact::Usage(report) => {
+                    flush(&mut commands, &mut technical);
+                    let account = crate::usage_probe::account_of(binding.credential());
+                    let reading = usage_reading(report);
+                    let at = alondra_core::now_millis();
+                    if !reading.is_empty() && reading.check().is_ok() && self.usage_changes(&account, &reading, at) {
+                        let day = crate::node_reports::local_day(at);
+                        commands.push(Command::RecordAccountUsage { provider: alondra_core::accounts::Provider::Claude, account, reading, at, day });
+                    }
+                }
             }
         }
         flush(&mut commands, &mut technical);
@@ -445,6 +456,16 @@ impl<'connection> OwnerTransaction<'connection> {
         let mut probe = DomainState::clone(&self.draft.state);
         let envelope = CommandEnvelope { expected_revision: probe.revision, ..envelope.clone() };
         probe.execute(&Actor::System, &envelope).err()
+    }
+
+    /// Whether `reading` says something new of `account`: the same windows and plan again within
+    /// a few minutes change nothing, and a provider event repeats them on every request.
+    fn usage_changes(&self, account: &alondra_core::accounts::AccountId, reading: &UsageReading, at: alondra_core::Millis) -> bool {
+        const FRESH: alondra_core::Millis = 5 * 60_000;
+        let Some(known) = self.draft.state.account_usage.iter().find(|usage| usage.account == *account) else { return true };
+        let reread = reading.plan.as_ref().is_none_or(|plan| known.plan.as_ref() == Some(plan))
+            && reading.windows.iter().all(|read| known.window(&read.kind).is_some_and(|window| window.reading == *read && at - window.measured_at < FRESH));
+        !reread
     }
 
     /// Whether `servers` changes what the task's node holds of its MCP servers: init repeats them
@@ -687,5 +708,24 @@ fn mcp_server(report: &McpServerReport) -> McpServerState {
         transport: report.transport.clone(),
         url: report.url.clone(),
         traits: report.traits,
+    }
+}
+
+/// What the provider said of its account's usage, as the domain records it: a partial reading.
+fn usage_reading(report: &alondra_provider_contract::UsageReport) -> UsageReading {
+    use alondra_provider_contract::UsageWindowKind;
+    UsageReading {
+        windows: report.windows.iter().map(|window| WindowReading {
+            kind: match &window.kind {
+                UsageWindowKind::Session => WindowKind::Session,
+                UsageWindowKind::Weekly => WindowKind::Weekly,
+                UsageWindowKind::Other(name) => WindowKind::Other(name.clone()),
+            },
+            used: Share::of(f64::from(window.used) / 10_000.0),
+            resets_at: window.resets_at,
+            exhausted: window.exhausted,
+        }).collect(),
+        plan: report.plan.clone(),
+        complete: false,
     }
 }

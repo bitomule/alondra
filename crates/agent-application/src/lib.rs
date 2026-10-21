@@ -261,6 +261,9 @@ pub enum ObservedFact {
         sign_in: alondra_provider_contract::McpSignInReport,
     },
     McpToolFailed,
+    /// What the provider said of the usage of the binding's account: evidence about the account,
+    /// the task's runtime does not move.
+    Usage(alondra_provider_contract::UsageReport),
 }
 impl ObservedFact {
     /// How far the task's runtime moves when the domain records this fact.
@@ -271,7 +274,8 @@ impl ObservedFact {
             | Self::SubagentWorktree { .. }
             | Self::McpServers { .. }
             | Self::McpSignIn { .. }
-            | Self::McpToolFailed => 0,
+            | Self::McpToolFailed
+            | Self::Usage(_) => 0,
             Self::Settled { answered: true, continued: true, .. } => 2,
             _ => 1,
         }
@@ -336,6 +340,7 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             return Ok(ObservedFact::McpSignIn { server: server.clone(), sign_in: sign_in.clone() });
         }
         Observation::McpToolFailed => return Ok(ObservedFact::McpToolFailed),
+        Observation::Usage(report) => return Ok(ObservedFact::Usage(report.clone())),
         Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
     }))
 }

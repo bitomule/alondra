@@ -200,11 +200,7 @@ async fn node_event(mut stream: UnixStream, domain: &Arc<DomainRuntime>, report:
             _ => {}
         }
         let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
-        let measured = matches!(envelope.report, Report::Measure { .. });
         domain.report(envelope, alondra_core::now_millis());
-        if measured {
-            domain.live.note_measures();
-        }
         if let Some(session) = ended {
             record_node_cost(&domain, &session);
             domain.live.losses.report(&session);
@@ -478,8 +474,8 @@ pub(crate) fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<(
     }
 }
 
-/// Keeps what the session's mod last reported about its cost and context, which the daemon
-/// otherwise forgets when it restarts.
+/// Keeps the model the session's mod last reported, which the daemon otherwise forgets when it
+/// restarts.
 pub(crate) fn record_node_cost(domain: &DomainRuntime, session: &str) {
     let Some(reported) = domain.live.mods.session(session) else { return };
     let task_id = domain.state().ok().and_then(|state| {
@@ -490,8 +486,8 @@ pub(crate) fn record_node_cost(domain: &DomainRuntime, session: &str) {
         session_id: session.to_owned(),
         task_id,
         model: reported.model,
-        cost_usd: reported.cost_usd,
-        context_peak_percent: reported.context_peak.or_else(|| reported.context.as_ref().and_then(crate::node_reports::ContextReading::full_percent)),
+        cost_usd: None,
+        context_peak_percent: None,
         started_at: reported.started_at,
         ended_at: alondra_core::now_millis(),
     };

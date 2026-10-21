@@ -85,6 +85,8 @@ pub struct ReadIndex {
     mcp_waiting: Vec<McpWaiting>,
     mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
+    account_reserve: crate::usage::Share,
+    account_usage: Vec<crate::usage::AccountUsage>,
 }
 
 impl ReadIndex {
@@ -228,6 +230,18 @@ impl ReadIndex {
     pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
         &self.accounts
     }
+    /// What each account last said of its usage.
+    pub fn account_usage(&self) -> &[crate::usage::AccountUsage] {
+        &self.account_usage
+    }
+    /// Each account's margin and their combined margin at `now`, on the local `today`.
+    pub fn margins(&self, now: crate::model::Millis, today: &str) -> crate::usage::Margins {
+        crate::usage::margins(&self.accounts, &self.account_usage, self.account_reserve, now, today)
+    }
+    /// The accounts' usage together, as the usage gauges and the pace card read it.
+    pub fn usage(&self, now: crate::model::Millis, today: &str) -> Option<crate::usage::Usage> {
+        crate::usage::summary(&self.accounts, &self.account_usage, self.account_reserve, now, today)
+    }
     /// A scheduled run created the task.
     pub fn scheduled(&self, task: &TaskId) -> bool {
         self.scheduled.contains(task)
@@ -336,6 +350,8 @@ impl<'a> Builder<'a> {
         index.mcp_waiting = state.mcp_waiting();
         index.mcp_nodes = state.mcp_nodes();
         index.accounts = state.accounts.clone();
+        index.account_reserve = state.account_reserve;
+        index.account_usage = state.account_usage.clone();
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -691,6 +707,8 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let indexed: Vec<(TaskId, Vec<McpServerState>)> = index.mcp_nodes().iter().map(|node| (node.task.clone(), node.servers.clone())).collect();
     assert_eq!(indexed, reported, "the MCP servers each open task's node reported");
     assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
+    assert_eq!(index.account_usage(), state.account_usage.as_slice(), "the accounts' usage");
+    assert_eq!(index.account_reserve, state.account_reserve, "the accounts' reserve");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {

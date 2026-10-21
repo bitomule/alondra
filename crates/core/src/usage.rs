@@ -1,25 +1,431 @@
-//! The Claude plan's limits as the node mod measures them after each turn (`session.measure`):
-//! the 5-hour and 7-day windows, how much of each is used and when each resets. Today's slice of
-//! the week is what was left at the day's first measurement, split over the days left until the
-//! reset, the same rule the usage guard warns with. A window whose reset has passed no longer
-//! describes the plan, so it is left out.
+//! How much of its plan each provider account has used and how much room it has left. A provider
+//! reports usage windows (the session's 5 hours, the week, others it names) as a share used, when
+//! each resets and the account's plan; Alondra keeps the latest reading of every window per
+//! account. From them come each account's margin, the combined margin of all of them weighted by
+//! plan, and the day's pace: today's slice of the week is what was left at the day's first
+//! reading, split over the days left until the week resets. A window whose reset has passed no
+//! longer describes the plan, so it counts as unused.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
 use crate::model::Millis;
 
-pub const FIVE_HOUR: &str = "five_hour";
-pub const SEVEN_DAY: &str = "seven_day";
+const DAY_MILLIS: f64 = 86_400_000.0;
+/// Two readings of the week whose resets are closer than this describe the same week.
+const SAME_WEEK_MILLIS: Millis = 3_600_000;
+const PLAN_LIMIT: usize = 64;
+const WINDOW_NAME_LIMIT: usize = 64;
+const WINDOWS_LIMIT: usize = 16;
 
-/// One window of the plan's limits, as `session.measure` reports it.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct RateLimit {
-    pub kind: String,
-    pub percent_used: f64,
-    #[serde(default)]
-    pub resets_at: Option<Millis>,
+/// A share of a window from 0 to 1, kept in ten-thousandths so readings compare exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Share(u16);
+
+impl Share {
+    pub const NONE: Share = Share(0);
+    pub const FULL: Share = Share(10_000);
+
+    pub fn of(fraction: f64) -> Share {
+        if fraction.is_nan() {
+            return Share::NONE;
+        }
+        Share((fraction.clamp(0.0, 1.0) * 10_000.0).round() as u16)
+    }
+
+    pub fn fraction(self) -> f64 {
+        f64::from(self.0) / 10_000.0
+    }
+
+    /// Its ten-thousandths, as it is kept.
+    pub fn parts(self) -> u16 {
+        self.0
+    }
+
+    pub fn from_parts(parts: u16) -> Option<Share> {
+        (parts <= Share::FULL.0).then_some(Share(parts))
+    }
 }
 
+/// Kept as its ten-thousandths: domain commands carry whole numbers only.
+impl Serialize for Share {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u16(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Share {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let parts = u16::deserialize(deserializer)?;
+        if parts > Share::FULL.0 {
+            return Err(serde::de::Error::custom(format!("a share is at most 10000 ten-thousandths, not {parts}")));
+        }
+        Ok(Share(parts))
+    }
+}
+
+/// The share of the 5-hour window an account may use before it counts as having no margin.
+pub fn default_reserve() -> Share {
+    Share::of(crate::accounts::RESERVE)
+}
+
+pub fn is_default_reserve(reserve: &Share) -> bool {
+    *reserve == default_reserve()
+}
+
+/// Which window a reading is about: the provider's short one, its week, or another it names.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WindowKind {
+    Session,
+    Weekly,
+    Other(String),
+}
+
+impl WindowKind {
+    pub fn named(name: &str) -> WindowKind {
+        match name {
+            "session" => WindowKind::Session,
+            "weekly" => WindowKind::Weekly,
+            other => WindowKind::Other(other.to_owned()),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            WindowKind::Session => "session",
+            WindowKind::Weekly => "weekly",
+            WindowKind::Other(name) => name,
+        }
+    }
+}
+
+impl Serialize for WindowKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for WindowKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(WindowKind::named(&String::deserialize(deserializer)?))
+    }
+}
+
+/// One window as the provider reported it. `exhausted` when it refused work for this window.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WindowReading {
+    pub kind: WindowKind,
+    pub used: Share,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exhausted: bool,
+}
+
+/// What one observation of an account said: some of its windows and perhaps its plan. A
+/// `complete` reading (a probe's) lists every window the account has, so the ones it leaves out
+/// no longer apply; a partial one (an event during a turn) changes only the windows it names.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UsageReading {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<WindowReading>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub complete: bool,
+}
+
+impl UsageReading {
+    pub fn check(&self) -> Result<(), String> {
+        if self.windows.len() > WINDOWS_LIMIT {
+            return Err(format!("a reading holds at most {WINDOWS_LIMIT} windows"));
+        }
+        if let Some(plan) = &self.plan
+            && (plan.trim().is_empty() || plan.len() > PLAN_LIMIT || plan.chars().any(char::is_control))
+        {
+            return Err(format!("a plan is 1 to {PLAN_LIMIT} printable characters"));
+        }
+        let mut kinds = std::collections::BTreeSet::new();
+        for window in &self.windows {
+            let name = window.kind.name();
+            if name.trim().is_empty() || name.len() > WINDOW_NAME_LIMIT || name.chars().any(char::is_control) {
+                return Err(format!("a window's name is 1 to {WINDOW_NAME_LIMIT} printable characters"));
+            }
+            if !kinds.insert(&window.kind) {
+                return Err(format!("the window {name} is read twice"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.plan.is_none() && !self.complete
+    }
+}
+
+/// A window as Alondra keeps it: the latest reading of it and when it came.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct UsageWindow {
+    #[serde(flatten)]
+    pub reading: WindowReading,
+    pub measured_at: Millis,
+}
+
+/// The week's share used at the local day's first reading, which anchors today's slice.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DayStart {
+    pub day: String,
+    pub weekly: Share,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_resets_at: Option<Millis>,
+}
+
+/// What Alondra knows of one account's usage.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AccountUsage {
+    pub provider: Provider,
+    pub account: AccountId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<UsageWindow>,
+    /// The plan the provider last reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_start: Option<DayStart>,
+}
+
+impl AccountUsage {
+    pub fn window(&self, kind: &WindowKind) -> Option<&UsageWindow> {
+        self.windows.iter().find(|window| window.reading.kind == *kind)
+    }
+
+    /// When the latest reading came: how old what Alondra knows is.
+    pub fn measured_at(&self) -> Option<Millis> {
+        self.windows.iter().map(|window| window.measured_at).max()
+    }
+
+    /// The window as it stands at `now`: none once its reset has passed.
+    fn current(&self, kind: &WindowKind, now: Millis) -> Option<&WindowReading> {
+        self.window(kind).map(|window| &window.reading).filter(|reading| reading.resets_at.is_none_or(|reset| reset > now))
+    }
+
+    /// When the account can work again, when a window it ran out of says so.
+    pub fn exhausted_until(&self, now: Millis) -> Option<Millis> {
+        self.ran_out(now, |_| true)
+    }
+
+    /// When the account's session or week, which hold back every model, comes back after running
+    /// out. A window of one model alone leaves the others working.
+    pub fn plan_exhausted_until(&self, now: Millis) -> Option<Millis> {
+        self.ran_out(now, |kind| matches!(kind, WindowKind::Session | WindowKind::Weekly))
+    }
+
+    fn ran_out(&self, now: Millis, counts: impl Fn(&WindowKind) -> bool) -> Option<Millis> {
+        self.windows
+            .iter()
+            .map(|window| &window.reading)
+            .filter(|reading| counts(&reading.kind) && (reading.exhausted || reading.used == Share::FULL))
+            .filter_map(|reading| reading.resets_at.filter(|reset| *reset > now))
+            .max()
+    }
+
+    /// When a limit reported without a time ends: the window that ran out, else the session's,
+    /// else the soonest reset the plan has.
+    pub fn reset_after_limit(&self, now: Millis) -> Option<Millis> {
+        self.exhausted_until(now)
+            .or_else(|| self.current(&WindowKind::Session, now).and_then(|reading| reading.resets_at))
+            .or_else(|| self.windows.iter().filter_map(|window| window.reading.resets_at.filter(|reset| *reset > now)).min())
+    }
+
+    fn exhausted(&self, now: Millis) -> bool {
+        self.windows.iter().map(|window| &window.reading).any(|reading| {
+            (reading.exhausted || reading.used == Share::FULL) && reading.resets_at.is_none_or(|reset| reset > now)
+        })
+    }
+}
+
+/// `usage` after `reading` came for `account` at `at`, on the local `day`. The week's share at the
+/// day's first reading of the week anchors today's slice; a new day or a new week moves it.
+pub fn record(usage: Option<&AccountUsage>, provider: Provider, account: &AccountId, reading: &UsageReading, at: Millis, day: &str) -> AccountUsage {
+    let mut next = usage.cloned().unwrap_or_else(|| AccountUsage { provider, account: account.clone(), windows: vec![], plan: None, day_start: None });
+    if reading.complete {
+        next.windows.retain(|window| reading.windows.iter().any(|read| read.kind == window.reading.kind));
+    }
+    for read in &reading.windows {
+        let kept = UsageWindow { reading: read.clone(), measured_at: at };
+        match next.windows.iter_mut().find(|window| window.reading.kind == read.kind) {
+            Some(window) => *window = kept,
+            None => next.windows.push(kept),
+        }
+    }
+    next.windows.sort_by(|a, b| a.reading.kind.cmp(&b.reading.kind));
+    if let Some(plan) = &reading.plan {
+        next.plan = Some(plan.trim().to_owned());
+    }
+    if let Some(week) = next.current(&WindowKind::Weekly, at).cloned() {
+        let same_week = |start: &DayStart| match (start.week_resets_at, week.resets_at) {
+            (Some(before), Some(now)) => (before - now).abs() < SAME_WEEK_MILLIS,
+            _ => true,
+        };
+        if !next.day_start.as_ref().is_some_and(|start| start.day == day && same_week(start)) {
+            next.day_start = Some(DayStart { day: day.to_owned(), weekly: week.used, week_resets_at: week.resets_at });
+        }
+    }
+    next
+}
+
+/// Whether `day` names a local day as `YYYY-MM-DD`.
+pub fn is_day(day: &str) -> bool {
+    let bytes = day.as_bytes();
+    bytes.len() == 10 && bytes.iter().enumerate().all(|(i, b)| if i == 4 || i == 7 { *b == b'-' } else { b.is_ascii_digit() })
+}
+
+/// How many Pro weeks a plan is worth: Pro 1, Max 5x 5, Max 20x 10; Max without its size, Team
+/// and any plan Alondra does not know count as 5.
+pub fn plan_weight(plan: Option<&str>) -> u32 {
+    let plan: String = plan.unwrap_or_default().to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect();
+    match plan.as_str() {
+        "pro" | "claudepro" => 1,
+        _ if plan.contains("20x") => 10,
+        _ => 5,
+    }
+}
+
+/// What an account counts for in the combined margin: the weight the user set, else its plan's
+/// (the one the user set, else the one the provider reported). An account paid per use has none:
+/// it never counts.
+pub fn weight(billing: &AccountBilling, reported_plan: Option<&str>) -> Option<u32> {
+    match billing {
+        AccountBilling::PayPerUse => None,
+        AccountBilling::Subscription { weight: Some(weight), .. } => Some(*weight),
+        AccountBilling::Subscription { plan, weight: None } => Some(plan_weight(plan.as_deref().or(reported_plan))),
+    }
+}
+
+/// How the account's week goes today: its share used, the slice today allows and what today took.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pace {
+    pub week_used: f64,
+    pub week_resets_at: Millis,
+    pub today_spent: Option<f64>,
+    pub today_share: Option<f64>,
+    pub per_day_left: f64,
+}
+
+impl Pace {
+    pub fn over(&self) -> bool {
+        self.today_spent.zip(self.today_share).is_some_and(|(spent, share)| spent >= share)
+    }
+
+    /// What is left of today's slice, from 0 to 1; all of it before the day's first reading.
+    pub fn today_left(&self) -> f64 {
+        match self.today_spent.zip(self.today_share) {
+            Some((spent, share)) => (1.0 - spent / share).clamp(0.0, 1.0),
+            None => 1.0,
+        }
+    }
+}
+
+/// The account's daily pace on the local `today`, when it has a week that has not reset.
+pub fn pace(usage: &AccountUsage, now: Millis, today: &str) -> Option<Pace> {
+    let week = usage.current(&WindowKind::Weekly, now)?;
+    let resets_at = week.resets_at?;
+    let days_left = ((resets_at - now).max(0) as f64 / DAY_MILLIS).ceil().max(1.0);
+    let used = week.used.fraction();
+    let start = usage
+        .day_start
+        .as_ref()
+        .filter(|start| start.day == today && start.week_resets_at.is_none_or(|reset| (reset - resets_at).abs() < SAME_WEEK_MILLIS))
+        .map(|start| start.weekly.fraction());
+    Some(Pace {
+        week_used: used,
+        week_resets_at: resets_at,
+        today_spent: start.map(|start| (used - start).max(0.0)),
+        today_share: start.map(|start| ((1.0 - start) / days_left).max(0.001)),
+        per_day_left: (1.0 - used).max(0.0) / days_left,
+    })
+}
+
+/// The account's own margin, from 0 to 1: none when its sign-in expired, it ran out or its
+/// session window went past `reserve`; otherwise the least of what is left of its week and of
+/// today's slice. Unknown for a disabled account or one never measured.
+pub fn own_margin(state: AccountState, usage: Option<&AccountUsage>, reserve: Share, now: Millis, today: &str) -> Option<f64> {
+    match state {
+        AccountState::Disabled => return None,
+        AccountState::SignedOut => return Some(0.0),
+        AccountState::Unchecked | AccountState::SignedIn | AccountState::Unavailable => {}
+    }
+    let usage = usage?;
+    if usage.exhausted(now) || usage.current(&WindowKind::Session, now).is_some_and(|session| session.used > reserve) {
+        return Some(0.0);
+    }
+    let week_left = usage.current(&WindowKind::Weekly, now).map_or(1.0, |week| 1.0 - week.used.fraction());
+    let today_left = pace(usage, now, today).map_or(1.0, |pace| pace.today_left());
+    Some(week_left.min(today_left).clamp(0.0, 1.0))
+}
+
+/// One account's part in the combined margin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountMargin {
+    pub provider: Provider,
+    pub account: AccountId,
+    pub weight: u32,
+    pub own: f64,
+    /// `weight × own`: how many Pro weeks of room the account has.
+    pub absolute: f64,
+    pub pace: Option<Pace>,
+    pub measured_at: Option<Millis>,
+}
+
+/// Every account that counts, in the user's order, and their margin together: the sum of their
+/// absolute margins over the sum of their weights. Accounts paid per use, disabled ones and the
+/// ones never measured do not count; with none that counts there is no combined margin.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Margins {
+    pub accounts: Vec<AccountMargin>,
+    pub combined: Option<f64>,
+}
+
+/// Until the daemon records the accounts, the provider's own sign-in is the one there is.
+pub fn margins(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Margins {
+    let implicit;
+    let accounts = if accounts.is_empty() {
+        let account = crate::accounts::ProviderAccount::implicit_default();
+        implicit = [AccountStatus {
+            provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, email: None, plan: None, billing: account.billing,
+        }];
+        &implicit[..]
+    } else {
+        accounts
+    };
+    let counted: Vec<AccountMargin> = accounts
+        .iter()
+        .filter_map(|account| {
+            let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
+            let weight = weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()))?;
+            let own = own_margin(account.state, measured, reserve, now, today)?;
+            Some(AccountMargin {
+                provider: account.provider,
+                account: account.id.clone(),
+                weight,
+                own,
+                absolute: f64::from(weight) * own,
+                pace: measured.and_then(|u| pace(u, now, today)),
+                measured_at: measured.and_then(AccountUsage::measured_at),
+            })
+        })
+        .collect();
+    let weights: f64 = counted.iter().map(|m| f64::from(m.weight)).sum();
+    let combined = (weights > 0.0).then(|| counted.iter().map(|m| m.absolute).sum::<f64>() / weights);
+    Margins { accounts: counted, combined }
+}
+
+/// The accounts' usage together, weighted by plan, as the usage gauges and the pace card read it:
+/// the week, today's slice and the session window, in percent.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Usage {
     pub week_percent: f64,
@@ -36,6 +442,43 @@ pub struct Usage {
     pub measured_at: Millis,
     #[serde(default)]
     pub over_pace: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<f64>,
+}
+
+pub fn summary(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Option<Usage> {
+    let margins = margins(accounts, usage, reserve, now, today);
+    let paced: Vec<(f64, Pace)> = margins.accounts.iter().filter_map(|m| Some((f64::from(m.weight), m.pace?))).collect();
+    let weights: f64 = paced.iter().map(|(weight, _)| weight).sum();
+    if weights <= 0.0 {
+        return None;
+    }
+    let weighted = |value: &dyn Fn(&Pace) -> f64| paced.iter().map(|(weight, pace)| weight * value(pace)).sum::<f64>() / weights;
+    let every_day_known = paced.iter().all(|(_, pace)| pace.today_spent.is_some());
+    let today_spent = every_day_known.then(|| 100.0 * weighted(&|pace| pace.today_spent.unwrap_or_default()));
+    let today_share = every_day_known.then(|| 100.0 * weighted(&|pace| pace.today_share.unwrap_or_default()));
+    let sessions: Vec<(f64, &WindowReading)> = margins
+        .accounts
+        .iter()
+        .filter_map(|m| {
+            let measured = usage.iter().find(|u| u.provider == m.provider && u.account == m.account)?;
+            Some((f64::from(m.weight), measured.current(&WindowKind::Session, now)?))
+        })
+        .collect();
+    let session_weights: f64 = sessions.iter().map(|(weight, _)| weight).sum();
+    Some(Usage {
+        week_percent: 100.0 * weighted(&|pace| pace.week_used),
+        week_resets_at: paced.iter().map(|(_, pace)| pace.week_resets_at).min().unwrap_or_default(),
+        today_spent,
+        today_share,
+        per_day_left: 100.0 * weighted(&|pace| pace.per_day_left),
+        five_hour_percent: (session_weights > 0.0)
+            .then(|| 100.0 * sessions.iter().map(|(weight, session)| weight * session.used.fraction()).sum::<f64>() / session_weights),
+        five_hour_resets_at: sessions.iter().filter_map(|(_, session)| session.resets_at).min(),
+        measured_at: margins.accounts.iter().filter_map(|m| m.measured_at).max().unwrap_or_default(),
+        over_pace: today_spent.zip(today_share).is_some_and(|(spent, share)| spent >= share),
+        margin: margins.combined,
+    })
 }
 
 /// The cards Alondra raises about the pace of the week's usage. The first is raised once per local
@@ -75,31 +518,6 @@ impl PaceNumbers {
         let numbers = Self { today_spent: parts.next()??, today_share: parts.next()??, week_percent: parts.next()?? };
         parts.next().is_none().then_some(numbers)
     }
-}
-
-const DAY_MILLIS: f64 = 86_400_000.0;
-
-/// `day_start` is the week's percent at today's first measurement; `now` and `measured_at` are
-/// Unix milliseconds.
-pub fn compute(limits: &[RateLimit], day_start: Option<f64>, measured_at: Millis, now: Millis) -> Option<Usage> {
-    let window = |kind: &str| limits.iter().find(|limit| limit.kind == kind);
-    let week = window(SEVEN_DAY)?;
-    let resets_at = week.resets_at.filter(|reset| *reset > now)?;
-    let days_left = ((resets_at - now).max(0) as f64 / DAY_MILLIS).ceil().max(1.0);
-    let today_spent = day_start.map(|start| (week.percent_used - start).max(0.0));
-    let today_share = day_start.map(|start| ((100.0 - start) / days_left).max(0.1));
-    let five = window(FIVE_HOUR).filter(|limit| limit.resets_at.is_none_or(|reset| reset > now));
-    Some(Usage {
-        week_percent: week.percent_used,
-        week_resets_at: resets_at,
-        today_spent,
-        today_share,
-        per_day_left: (100.0 - week.percent_used).max(0.0) / days_left,
-        five_hour_percent: five.map(|limit| limit.percent_used),
-        five_hour_resets_at: five.and_then(|limit| limit.resets_at),
-        measured_at,
-        over_pace: today_spent.zip(today_share).is_some_and(|(spent, share)| spent >= share),
-    })
 }
 
 fn words(text: &str) -> Vec<&str> {
@@ -198,48 +616,8 @@ mod tests {
             assert!(!usage_stop_question(other), "{other}");
         }
     }
-
-    /// This Mac on 23 Sep at ~21:30: 53% of the week used, 12% at the day's first measurement,
-    /// reset in just under 5 days. The guard said "41% against the 18% that today's slice allows".
-    fn today() -> (Vec<RateLimit>, Millis) {
-        let limits = vec![
-            RateLimit { kind: FIVE_HOUR.into(), percent_used: 6.0, resets_at: Some(1_790_202_000_000) },
-            RateLimit { kind: SEVEN_DAY.into(), percent_used: 53.0, resets_at: Some(1_790_553_600_000) },
-        ];
-        (limits, 1_790_192_202_000)
-    }
-
-    #[test]
-    fn today_is_measured_against_its_slice_of_the_week() {
-        let (limits, now) = today();
-        let u = compute(&limits, Some(12.0), now, now).unwrap();
-        assert_eq!(u.week_percent, 53.0);
-        assert_eq!(u.week_resets_at, 1_790_553_600_000);
-        assert_eq!(u.today_spent, Some(41.0));
-        assert_eq!(u.today_share.map(f64::round), Some(18.0));
-        assert_eq!(u.per_day_left.round(), 9.0);
-        assert!(u.over_pace);
-        assert_eq!(u.five_hour_percent, Some(6.0));
-        assert_eq!(u.five_hour_resets_at, Some(1_790_202_000_000));
-        assert_eq!(u.measured_at, now);
-    }
-
-    #[test]
-    fn a_day_within_its_slice_or_without_a_start_is_not_over_pace() {
-        let (limits, now) = today();
-        assert!(!compute(&limits, Some(45.0), now, now).unwrap().over_pace, "8% spent against a ~11% slice");
-        let unknown = compute(&limits, None, now, now).unwrap();
-        assert_eq!((unknown.today_spent, unknown.over_pace), (None, false));
-        assert!(compute(&limits[..1], Some(12.0), now, now).is_none(), "no week window, no usage");
-    }
-
-    #[test]
-    fn a_window_whose_reset_has_passed_is_left_out() {
-        let (limits, now) = today();
-        let after_five_hours = 1_790_202_000_001;
-        let usage = compute(&limits, Some(12.0), now, after_five_hours).unwrap();
-        assert_eq!(usage.five_hour_percent, None, "the 5-hour window reset");
-        assert_eq!(usage.week_percent, 53.0);
-        assert!(compute(&limits, Some(12.0), now, 1_790_553_600_001).is_none(), "the week reset");
-    }
 }
+
+#[cfg(test)]
+#[path = "usage_tests.rs"]
+mod margin_tests;

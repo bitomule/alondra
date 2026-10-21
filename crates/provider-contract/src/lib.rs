@@ -231,6 +231,34 @@ pub enum Observation {
     },
     /// A call to an MCP server's tool failed: how its server is may have changed.
     McpToolFailed,
+    /// What the provider said of its account's usage: about the account of the binding that
+    /// produced the observation.
+    Usage(UsageReport),
+}
+/// Which window of the account's usage limits a reading is about: the provider's short session
+/// window, its week, or another it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UsageWindowKind {
+    Session,
+    Weekly,
+    Other(String),
+}
+/// One usage window as the provider reported it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageWindow {
+    pub kind: UsageWindowKind,
+    /// The share used, in ten-thousandths: 0 is none and 10 000 all of it.
+    pub used: u16,
+    /// When the window resets, in Unix milliseconds.
+    pub resets_at: Option<i64>,
+    /// The provider refused work because this window ran out.
+    pub exhausted: bool,
+}
+/// Some of the account's windows and, when the provider said it, the account's plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageReport {
+    pub windows: Vec<UsageWindow>,
+    pub plan: Option<String>,
 }
 /// An MCP server as the provider reported it; its status verbatim.
 #[derive(Clone, Debug, PartialEq, Eq)]

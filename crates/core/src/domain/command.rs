@@ -541,12 +541,24 @@ pub enum Command {
         input: String,
         text: String,
     },
-    /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
     /// The provider accounts as the daemon sees them now, in the user's order: each one's sign-in,
-    /// email and plan. It replaces what was recorded before.
+    /// email and plan, and how much of the session window each may use. It replaces what was
+    /// recorded before.
     RecordAccounts {
         accounts: Vec<crate::accounts::AccountStatus>,
+        #[serde(default = "crate::usage::default_reserve")]
+        reserve: crate::usage::Share,
     },
+    /// What `account` said of its usage at `at`, on the Mac's local `day`, from a provider event
+    /// or a probe.
+    RecordAccountUsage {
+        provider: crate::accounts::Provider,
+        account: crate::accounts::AccountId,
+        reading: crate::usage::UsageReading,
+        at: Millis,
+        day: String,
+    },
+    /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
     ProbeClaudeAccess {
         hold: ClaudeHold,
     },

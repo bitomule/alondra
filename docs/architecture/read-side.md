@@ -48,6 +48,7 @@ Relations, by id:
 | `scheduled`, `failed_launch`, `schedule_title` | tasks created by a scheduled run, the error of a failed launch, the schedule that launched a node |
 | `mcp_waiting`, `mcp_waiting_for`, `mcp_wait_of_task` | the open tasks that wait for an MCP server, oldest card first, by server and by task |
 | `accounts` | the provider accounts in the user's order, each with its state, email and plan, as the daemon last recorded them (`RecordAccounts`) |
+| `account_usage`, `margins(now, today)`, `usage(now, today)` | what each account last said of its usage windows (`RecordAccountUsage`, from the SDK's `rate_limit_event` and the probe), and from it, at the reader's clock, each account's margin, the combined margin and the usage gauges |
 
 What is derived from the domain alone:
 

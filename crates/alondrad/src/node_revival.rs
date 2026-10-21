@@ -570,7 +570,7 @@ mod tests {
     async fn a_session_with_recent_activity_or_no_open_task_is_not_stalled() {
         let (_home, domain) = world(true);
         let _link = silent_turn(&domain);
-        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure"})).unwrap(), alondra_core::now_millis());
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "model", "model": "claude-opus-5-5"})).unwrap(), alondra_core::now_millis());
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "any report is activity");
         let (_home, finished) = world(false);
         let _link = silent_turn(&finished);

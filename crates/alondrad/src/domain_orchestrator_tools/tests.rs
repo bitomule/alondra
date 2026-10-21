@@ -475,14 +475,17 @@ fn the_requests_choices_read_as_8ccd131_told_the_orchestrator() {
     assert!(text.contains("attached shot.png: /h/files/att-1") && text.contains("paths in the mission"), "{text}");
 }
 
-/// Claude measures the week at each of `week_percents`, all with the same reset, as it reports a
-/// window that has not ended.
+/// Claude measures the default account's week at each of `week_percents`, all with the same reset,
+/// as it reports a window that has not ended.
 fn measured(domain: &DomainRuntime, week_percents: &[f64]) {
-    let reset = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t + 5 * 86_400, 0);
+    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+    let reset = alondra_core::now_millis() + 5 * 86_400_000;
     for week_percent in week_percents {
-        let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure",
-            "rate_limits": [{"kind": "seven_day", "percent_used": week_percent, "resets_at": reset}]})).unwrap();
-        domain.report(envelope, alondra_core::now_millis());
+        let reading = UsageReading {
+            windows: vec![WindowReading { kind: WindowKind::Weekly, used: Share::of(week_percent / 100.0), resets_at: Some(reset), exhausted: false }],
+            plan: None, complete: false,
+        };
+        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), reading, alondra_core::now_millis());
     }
 }
 
@@ -490,7 +493,7 @@ fn measured(domain: &DomainRuntime, week_percents: &[f64]) {
 async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_once_a_day() {
     let f = world();
     measured(&f.domain, &[12.0, 53.0]);
-    assert!(f.domain.live.mods.usage(alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
+    assert!(crate::usage_probe::usage(&f.domain, alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)), "over pace no longer blocks");
     assert!(answer.get("warning").is_none(), "the orchestrator is not asked to relay it: {answer}");
@@ -673,22 +676,19 @@ async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
 }
 
 #[tokio::test]
-async fn closing_a_launched_node_keeps_its_cost_and_the_fullest_its_context_got() {
+async fn closing_a_launched_node_keeps_its_model_and_task() {
     let f = bare_world();
     give(&f, "t", "agent-b");
     record(&f.domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("agent-b".into()), at: 1, kind: DecisionKind::Launch,
         model: Some("sonnet".into()), effort: None, approach: None, chosen_by: ModelChooser::Orchestrator, reason: None, title: "Editor colours".into() });
     f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "session.start", "version": "2.1.287"})).unwrap(), 1);
-    for (context, cost) in [(json!({"window": 200000, "percent": 62.5}), 0.8), (json!({"window": 200000, "tokens": 50000}), 1.25)] {
-        f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "session.measure", "context": context, "cost_usd": cost})).unwrap(), 2);
-    }
     f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 3);
     assert!(f.domain.store.lock().unwrap().node_cost("agent-b").unwrap().is_none());
 
     crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
     let kept = f.domain.store.lock().unwrap().node_cost("agent-b").unwrap().expect("the closed node's cost is kept");
     assert_eq!((kept.task_id.as_deref(), kept.model.as_deref(), kept.cost_usd, kept.context_peak_percent),
-        (Some("t"), Some("claude-sonnet-5-5"), Some(1.25), Some(62.5)), "the task comes from its launch, though closing freed it");
+        (Some("t"), Some("claude-sonnet-5-5"), None, None), "the task comes from its launch, though closing freed it");
     assert!(kept.started_at.is_some_and(|started| kept.ended_at >= started));
 }
 

@@ -308,20 +308,6 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('session.measure', async ($, e, next) => {
-    queue($, {
-      event: 'session.measure',
-      context: e.context,
-      rate_limits: e.rateLimits.map((limit) => ({
-        kind: limit.kind,
-        percent_used: limit.percentUsed,
-        resets_at: limit.resetsAt,
-      })),
-      cost_usd: e.cost?.usd,
-    })
-    return next(e)
-  })
-
   on('turn.start', async ($, e, next) => {
     if (!('agentId' in e && e.agentId !== undefined)) turnId = e.turnId
     queue($, { event: 'turn.start', turn_id: e.turnId })

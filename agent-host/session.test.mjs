@@ -157,6 +157,11 @@ try {
   const alias = await run('uuid_alias', undefined, 'ABCDEFAB-1234-4ABC-8DEF-ABCDEFABCDEF');
   assert(alias.observations.some((o) => o.type === 'sdk' && o.kind === 'result' && o.payload.user_message_uuid === 'abcdefab-1234-4abc-8def-abcdefabcdef'));
   const success = await run('success');
+  const reported = (run) => run.observations.filter((observation) => observation.type === 'sdk' && observation.payload?.type === 'account');
+  assert.deepEqual(reported(success), [], 'an account without a plan reports none');
+  const account = await run('account');
+  assert.deepEqual(reported(account).map((observation) => [observation.kind, observation.payload]),
+    [['status', { type: 'account', session_id: 'fixture-session', account: { subscriptionType: 'max' } }]], 'the plan of the account Claude signed in with, and nothing else of it');
   assert(success.observations.some((o) => o.type === 'sdk' && o.kind === 'initialized' && o.payload.session_id === 'fixture-session'));
   assert(success.observations.some((o) => o.type === 'sdk' && o.kind === 'result' && o.failures.length === 0 && o.payload.user_message_uuid === start.action.input_id));
   const failedDelivery = await run('failed_delivery', undefined, start.action.input_id, (session) => {

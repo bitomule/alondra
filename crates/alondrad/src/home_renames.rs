@@ -1,5 +1,6 @@
-//! Startup moves of HOME files to their current names, and removal of the copies
-//! earlier migrations left under the old ones once they are no longer a way back.
+//! Startup moves of HOME files to their current names, removal of the copies earlier migrations
+//! left under the old ones once they are no longer a way back, and of files no reader uses any
+//! more.
 use crate::{domain_cutover, domain_database_migration as database, domain_orchestrator};
 use anyhow::Result;
 use std::fs;
@@ -9,6 +10,9 @@ use std::time::{Duration, SystemTime};
 
 /// How long the old database stays as a recovery copy after the move to `domain.db`.
 const RECOVERY_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// The plan's limits as the node mods measured them, and the Mac-wide usage pause, with their
+/// half-written copies: each account's usage now lives in the domain, and the pause in memory.
+const RETIRED: [&str; 4] = ["usage.json", "usage.next", "usage-exhausted.json", "usage-exhausted.next"];
 
 /// Run before anything reads HOME. Without the HOME lock (another daemon owns it)
 /// nothing moves; readers still accept the old names.
@@ -21,6 +25,9 @@ pub(crate) fn apply(home: &Path) -> Result<()> {
     };
     rename(home, domain_orchestrator::PREVIOUS_FILE, domain_orchestrator::FILE)?;
     rename(home, domain_cutover::PREVIOUS_MARKER, domain_cutover::MARKER)?;
+    for name in RETIRED {
+        remove(&home.join(name))?;
+    }
     remove_recovery_copies(home, SystemTime::now())
 }
 
@@ -159,6 +166,20 @@ mod tests {
 
         assert_eq!(home.names(), ["domain-cutover.json"]);
         assert_eq!(domain_cutover::read_marker(&home.0).unwrap().unwrap().phase, domain_cutover::Phase::Committed);
+    }
+
+    #[test]
+    fn the_usage_files_of_an_earlier_release_are_removed() {
+        let home = Home::new();
+        home.write("usage.json", r#"{"windows":[{"kind":"seven_day","percent_used":53.0,"resets_at":1790553600000}],"measured_at":1790192202000}"#);
+        home.write("usage.next", "{");
+        home.write("usage-exhausted.json", r#"{"exhausted":{"until":1790202000000,"since":1790192202000},"announced":true}"#);
+        home.write("usage-exhausted.next", "{");
+        home.write("device-usage.json", r#"{"tracking_since_ms":0}"#);
+
+        apply(&home.0).unwrap();
+
+        assert_eq!(home.names(), ["device-usage.json"], "another file named for usage stays");
     }
 
     #[test]

@@ -2975,9 +2975,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordAccounts { .. } => 93,
         Command::RefuseDecisionRequest { .. } => 94,
         Command::ClearMcpSignIn { .. } => 95,
+        Command::RecordAccountUsage { .. } => 96,
     }
 }
-const COMMAND_KINDS: usize = 96;
+const COMMAND_KINDS: usize = 97;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3104,7 +3105,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
         (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
-        (Command::RecordAccounts { accounts: vec![] }, true),
+        (Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }, true),
+        (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
+            reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
@@ -4483,11 +4486,11 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
     };
     let mut s = DomainState::new("epoch");
     let accounts = vec![account("default", AccountState::SignedIn), account("work", AccountState::SignedOut)];
-    assert_eq!(exec(&mut s, user(), Command::RecordAccounts { accounts: accounts.clone() }).unwrap_err().code, "forbidden");
+    assert_eq!(exec(&mut s, user(), Command::RecordAccounts { accounts: accounts.clone(), reserve: crate::usage::default_reserve() }).unwrap_err().code, "forbidden");
     let twice = vec![account("work", AccountState::SignedIn), account("work", AccountState::SignedOut)];
-    assert_eq!(exec(&mut s, Actor::System, Command::RecordAccounts { accounts: twice }).unwrap_err().code, "invalid_input");
+    assert_eq!(exec(&mut s, Actor::System, Command::RecordAccounts { accounts: twice, reserve: crate::usage::default_reserve() }).unwrap_err().code, "invalid_input");
     assert!(s.accounts.is_empty());
-    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: accounts.clone() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: accounts.clone(), reserve: crate::usage::default_reserve() }).unwrap();
     let index = ReadIndex::build(&s);
     assert_eq!(index.accounts(), accounts.as_slice());
     let restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
@@ -4507,6 +4510,39 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
         ("WORK".to_owned(), Some("work@example.org · max · sin sesión".to_owned())),
     ]);
     assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a view never shows a folder");
-    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![] }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }).unwrap();
     assert!(ReadIndex::build(&s).accounts().is_empty());
+}
+
+#[test]
+fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    use crate::usage::{Share, UsageReading, WindowKind, WindowReading};
+    let account = |id: &str| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
+        email: None, plan: None, billing: AccountBilling::default(),
+    };
+    let (now, day) = (1_790_192_202_000, "2026-09-23");
+    let reading = |week: f64| UsageReading {
+        windows: vec![WindowReading { kind: WindowKind::Weekly, used: Share::of(week), resets_at: Some(now + 3 * 86_400_000), exhausted: false }],
+        plan: Some("max".into()), complete: true,
+    };
+    let record = |account: &str, week: f64, day: &str| Command::RecordAccountUsage {
+        provider: Provider::Claude, account: AccountId::parse(account).unwrap(), reading: reading(week), at: now, day: day.into(),
+    };
+    let mut s = DomainState::new("epoch");
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![account("default"), account("work")], reserve: Share::of(0.8) }).unwrap();
+    assert_eq!(exec(&mut s, user(), record("default", 0.4, day)).unwrap_err().code, "forbidden");
+    assert_eq!(exec(&mut s, Actor::System, record("default", 0.4, "yesterday")).unwrap_err().code, "invalid_input");
+    exec(&mut s, Actor::System, record("default", 0.4, day)).unwrap();
+    exec(&mut s, Actor::System, record("work", 0.0, day)).unwrap();
+    let index = ReadIndex::build(&s);
+    let margins = index.margins(now, day);
+    assert_eq!(margins.accounts.iter().map(|m| (m.account.as_str(), m.own)).collect::<Vec<_>>(), [("default", 0.6), ("work", 1.0)]);
+    assert_eq!(margins.combined, Some(0.8));
+    assert_eq!(index.usage(now, day).map(|usage| usage.week_percent), Some(20.0));
+    let restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!((restored.account_usage, restored.account_reserve), (s.account_usage.clone(), Share::of(0.8)), "the readings survive a restart");
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![account("default")], reserve: Share::of(0.8) }).unwrap();
+    assert_eq!(s.account_usage.iter().map(|u| u.account.as_str()).collect::<Vec<_>>(), ["default"], "a removed account's usage goes with it");
 }

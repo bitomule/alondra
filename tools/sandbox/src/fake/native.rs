@@ -37,7 +37,71 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     if args.iter().any(|arg| arg == "--restricted") {
         return orchestrator::batch(fakes, args);
     }
+    if flag(args, "--resume").is_none() && flag(args, "--session-id").is_none() {
+        return usage_probe(fakes);
+    }
     worker(fakes, args)
+}
+
+/// The account a start of the native Claude signs in with: its configuration folder's name, or
+/// `default` for Claude's own profile.
+fn account() -> String {
+    std::env::var("CLAUDE_CONFIG_DIR").ok().and_then(|dir| Some(Path::new(&dir).file_name()?.to_string_lossy().into_owned())).unwrap_or_else(|| "default".into())
+}
+
+/// What the account has used, as Claude's usage endpoint answers it: `fakes/usage/<account>.json`
+/// when a journey wrote one, else a quiet plan whose 5 hours reset in 3 and whose week in 4 days. While `fakes/usage/<account>.fail` exists the
+/// endpoint fails.
+fn usage_of(fakes: &Fakes, account: &str) -> Result<Value> {
+    let folder = fakes.dir.join("usage");
+    if folder.join(format!("{account}.fail")).exists() {
+        bail!("the usage endpoint did not answer");
+    }
+    match fs::read(folder.join(format!("{account}.json"))) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let at = |hours: u64| super::node::rfc3339(now_ms() + hours * 3_600_000);
+            Ok(json!({
+                "five_hour": {"utilization": 10.0, "resets_at": at(3)},
+                "seven_day": {"utilization": 30.0, "resets_at": at(4 * 24)},
+            }))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A start without a session, as the probe of an account's usage makes: it answers the host's
+/// controls until its input closes, and never takes a prompt.
+fn usage_probe(fakes: &Fakes) -> Result<i32> {
+    let account = account();
+    append(&fakes.dir.join("usage-probes.jsonl"), &json!({"at": now_ms(), "account": account}))?;
+    let out = Out(Arc::new(Mutex::new(std::io::stdout())));
+    for line in std::io::stdin().lock().lines() {
+        let message: Value = serde_json::from_str(&line?)?;
+        if message["type"].as_str() != Some("control_request") {
+            bail!("the usage probe sent {message}, not a control request");
+        }
+        let request = message["request_id"].as_str().unwrap_or_default();
+        match message["request"]["subtype"].as_str() {
+            Some("initialize") => out.control(request, initialized())?,
+            Some("get_usage") => match usage_of(fakes, &account) {
+                Ok(rate_limits) => out.control(request, json!({
+                    "session": {"total_cost_usd": 0, "total_api_duration_ms": 0, "total_duration_ms": 0, "total_lines_added": 0, "total_lines_removed": 0, "model_usage": {}},
+                    "subscription_type": "max", "rate_limits_available": true, "rate_limits": rate_limits, "behaviors": null,
+                }))?,
+                Err(error) => out.send(&json!({"type": "control_response", "response": {"subtype": "error", "request_id": request, "error": error.to_string()}}))?,
+            },
+            other => out.send(&json!({"type": "control_response", "response": {"subtype": "error", "request_id": request, "error": format!("the sandbox's Claude does not take {other:?}")}}))?,
+        }
+    }
+    Ok(0)
+}
+
+fn initialized() -> Value {
+    json!({
+        "commands": [], "account": {"subscriptionType": "max"}, "output_style": "default",
+        "models": (["sonnet", "opus", "haiku"].map(|model| json!({"value": model, "displayName": model, "description": "A sandbox model"}))),
+    })
 }
 
 /// The value of `name` in either form the SDK writes it: `--name=value` or `--name value`.
@@ -281,10 +345,7 @@ fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, servers: &
             Some("control_request") => {
                 let request = message["request_id"].as_str().unwrap_or_default();
                 match message["request"]["subtype"].as_str() {
-                    Some("initialize") => out.control(request, json!({
-                        "commands": [], "account": {}, "output_style": "default",
-                        "models": (["sonnet", "opus", "haiku"].map(|model| json!({"value": model, "displayName": model, "description": "A sandbox model"}))),
-                    }))?,
+                    Some("initialize") => out.control(request, initialized())?,
                     Some("interrupt") => {
                         out.control(request, json!({"still_queued": []}))?;
                         let _ = events.send(Event::Interrupt);

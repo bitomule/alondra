@@ -1,13 +1,17 @@
-//! What the daemon does while Claude usage has run out on this Mac. One durable record says
-//! until when Claude reported the limit lasts; while it stands, the orchestrator starts no
+//! What the daemon does while Claude usage has run out on this Mac. One record says until when
+//! Claude reported the limit lasts; while it stands, the orchestrator starts no
 //! batch, no scheduled launch or node revival calls Claude, and nodes the limit stopped wait for
 //! the machine. When the time comes the daemon resumes: it wakes those nodes, and the batch and
 //! the deferred schedules run again, each once. A limit that is still there when they run
 //! records itself again, later and after a growing backoff.
 //!
+//! The record lives in memory: after a restart the probe of each account's usage
+//! (`usage_probe`) finds again a window that ran out, and a pause the user chose comes back from
+//! the answered card, which the domain keeps.
+//!
 //! How a limit shows up (Claude Code docs): a node's `StopFailure` hook with `error_type`
 //! `rate_limit` carries no reset time (code.claude.com/docs/en/hooks), so the reset comes from
-//! the plan windows the node mod measures (`rate_limits[].resets_at`) or from the text
+//! the plan windows measured for the account (`usage_probe`) or from the text
 //! "You've hit your session limit · resets 3:45pm" (code.claude.com/docs/en/errors); a `claude -p`
 //! stream says it with a `rate_limit_event` whose `rate_limit_info.status` is `rejected` and
 //! whose `resetsAt` is Unix seconds, and with an assistant message whose `error` is `rate_limit`
@@ -15,12 +19,10 @@
 use alondra_core::{Millis, now_millis};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::watch;
 
-pub(crate) const FILE: &str = "usage-exhausted.json";
 const UNKNOWN_RESET_WAIT_MS: Millis = 30 * 60_000;
 const FLAP_WINDOW_MS: Millis = 15 * 60_000;
 const BACKOFF_BASE_MS: Millis = 60_000;
@@ -37,19 +39,15 @@ pub(crate) struct Exhausted {
     pub by_user: bool,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Record {
     exhausted: Option<Exhausted>,
     /// The user was told about the standing exhaustion.
-    #[serde(default)]
     announced: bool,
-    #[serde(default)]
     resumed_at: Option<Millis>,
     /// Exhaustions that came back right after a resume, which lengthen the next wait.
-    #[serde(default)]
     strikes: u32,
     /// Pace cards whose answer was already acted on, the latest last.
-    #[serde(default)]
     settled_cards: Vec<String>,
 }
 
@@ -62,28 +60,17 @@ pub(crate) enum Change {
 
 pub(crate) struct UsagePause {
     record: Mutex<Record>,
-    file: Option<PathBuf>,
     changed: watch::Sender<Option<Exhausted>>,
 }
 
 impl Default for UsagePause {
     fn default() -> Self {
-        Self::from_record(Record::default(), None)
+        let (changed, _) = watch::channel(None);
+        Self { record: Mutex::new(Record::default()), changed }
     }
 }
 
 impl UsagePause {
-    pub(crate) fn persisted_in(home: &Path) -> Self {
-        let file = home.join(FILE);
-        let record = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-        Self::from_record(record, Some(file))
-    }
-
-    fn from_record(record: Record, file: Option<PathBuf>) -> Self {
-        let (changed, _) = watch::channel(record.exhausted.clone());
-        Self { record: Mutex::new(record), file, changed }
-    }
-
     pub(crate) fn current(&self) -> Option<Exhausted> {
         self.record.lock().expect("usage pause poisoned").exhausted.clone()
     }
@@ -100,17 +87,6 @@ impl UsagePause {
     pub(crate) async fn until_clear(&self) {
         let mut changes = self.subscribe();
         let _ = changes.wait_for(Option::is_none).await;
-    }
-
-    fn save(&self, record: &Record) {
-        let Some(file) = &self.file else { return };
-        let next = file.with_extension("next");
-        let written = serde_json::to_vec(record).map_err(std::io::Error::from)
-            .and_then(|bytes| std::fs::write(&next, bytes))
-            .and_then(|()| std::fs::rename(&next, file));
-        if let Err(error) = written {
-            log!("could not save {}: {error}", file.display());
-        }
     }
 
     /// Claude said usage is out; `until` is the reset it reported, when known. A later reset
@@ -141,7 +117,6 @@ impl UsagePause {
             }
         };
         if change != Change::Unchanged {
-            self.save(&record);
             self.changed.send_replace(record.exhausted.clone());
         }
         change
@@ -163,7 +138,6 @@ impl UsagePause {
             }
         };
         if change != Change::Unchanged {
-            self.save(&record);
             self.changed.send_replace(record.exhausted.clone());
         }
         change
@@ -178,7 +152,6 @@ impl UsagePause {
         record.settled_cards.push(id.to_owned());
         let excess = record.settled_cards.len().saturating_sub(32);
         record.settled_cards.drain(..excess);
-        self.save(&record);
         true
     }
 
@@ -191,7 +164,6 @@ impl UsagePause {
         }
         let exhausted = record.exhausted.clone().filter(|standing| !standing.by_user)?;
         record.announced = true;
-        self.save(&record);
         Some((exhausted, record.strikes > 0))
     }
 
@@ -203,7 +175,6 @@ impl UsagePause {
             record.resumed_at = Some(now);
         }
         let announced = std::mem::take(&mut record.announced);
-        self.save(&record);
         self.changed.send_replace(None);
         Some(announced)
     }
@@ -304,7 +275,7 @@ fn option(id: &str, label: &str) -> alondra_core::domain::QuestionOption {
 /// per local day: pause until tomorrow or keep going. The launch is never refused.
 pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
     use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
-    let Some(usage) = domain.live.mods.usage(now).filter(|usage| usage.over_pace) else { return };
+    let Some(usage) = crate::usage_probe::usage(domain, now).filter(|usage| usage.over_pace) else { return };
     let numbers = PaceNumbers::of(&usage);
     let id = format!("{OVER_PACE_PREFIX}{}", crate::node_reports::local_day(now));
     let options = vec![option(OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), option(OVER_PACE_KEEP_OPTION, "Keep going")];
@@ -322,9 +293,10 @@ fn log_unless_repeated(result: Result<alondra_core::domain::CommandOutcome, crat
     }
 }
 
-/// Acts on the answers to the pace cards, once each: "Pause until tomorrow" pauses everything
-/// until the next local midnight and offers to resume early, "Resume now" ends that pause. A
-/// resume card that no longer has a pause behind it is withdrawn.
+/// Acts on the answers to the pace cards, once each: "Pause until tomorrow" on today's card pauses
+/// everything until the next local midnight and offers to resume early, "Resume now" ends that
+/// pause. A resume card that no longer has a pause behind it is withdrawn. After a restart the
+/// answered cards bring the pause back as the user left it.
 pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
     use alondra_core::domain::InteractionPayload;
     use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
@@ -332,7 +304,8 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
     let pause = &domain.live.usage_pause;
     for (id, interaction) in state.interactions.iter().filter(|(_, interaction)| !interaction.withdrawn) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
-        if id.0.starts_with(OVER_PACE_PREFIX) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
+        let today = crate::node_reports::local_day(now);
+        if id.0.strip_prefix(OVER_PACE_PREFIX) == Some(today.as_str()) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
             pause.pause_by_user(next_local_midnight(now), now);
             let resume = format!("{PACE_RESUME_PREFIX}{}", crate::node_reports::local_day(now));
             let options = vec![option(PACE_RESUME_OPTION, "Resume now"), option(PACE_STAY_OPTION, "Stay paused")];
@@ -468,7 +441,7 @@ pub(crate) fn record_from_text(domain: &crate::domain_runtime::DomainRuntime, te
         return false;
     }
     let now = now_millis();
-    domain.live.usage_pause.exhaust(reset_in(text, now).or_else(|| domain.live.mods.reset_after_limit(now)), now);
+    domain.live.usage_pause.exhaust(reset_in(text, now).or_else(|| domain.live.measured.reset_after_limit(now)), now);
     true
 }
 
@@ -488,28 +461,18 @@ mod tests {
     }
 
     #[test]
-    fn an_exhaustion_is_recorded_extended_and_resumed_and_survives_a_restart() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-pause-{}", crate::auth::random_hex(6)));
-        std::fs::create_dir_all(&home).unwrap();
-        let pause = UsagePause::persisted_in(&home);
+    fn an_exhaustion_is_recorded_extended_told_once_and_resumed() {
+        let pause = UsagePause::default();
         assert!(!pause.is_active());
         assert_eq!(pause.exhaust(Some(5_000_000), 1_000_000), Change::Started);
         assert_eq!(pause.current(), Some(Exhausted { until: 5_000_000, since: 1_000_000, by_user: false }));
         assert_eq!(pause.exhaust(Some(4_000_000), 1_100_000), Change::Unchanged, "an earlier reset changes nothing");
         assert_eq!(pause.exhaust(Some(6_000_000), 1_200_000), Change::Extended);
         assert_eq!(pause.current(), Some(Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }), "extended, still since the start");
-
-        let restarted = UsagePause::persisted_in(&home);
-        assert_eq!(restarted.current(), pause.current(), "a restart still knows");
-        assert_eq!(restarted.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }, false)));
-        assert_eq!(restarted.claim_announcement(), None, "told once");
-        assert_eq!(UsagePause::persisted_in(&home).claim_announcement(), None, "and a restart does not tell again");
-
-        assert_eq!(restarted.resume(7_000_000), Some(true));
-        assert_eq!(restarted.resume(7_000_001), None);
-        assert!(!UsagePause::persisted_in(&home).is_active(), "the resume is persisted too");
-        std::fs::remove_dir_all(home).unwrap();
+        assert_eq!(pause.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }, false)));
+        assert_eq!(pause.claim_announcement(), None, "told once");
+        assert_eq!(pause.resume(7_000_000), Some(true));
+        assert_eq!(pause.resume(7_000_001), None);
     }
 
     #[test]
@@ -566,6 +529,7 @@ mod tests {
 
     use crate::domain_runtime::DomainRuntime;
     use crate::node_push::testing::Node;
+    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -575,14 +539,14 @@ mod tests {
         (Arc::new(DomainRuntime::open(&home).unwrap()), home)
     }
 
-    fn measure(domain: &DomainRuntime, windows: serde_json::Value) {
-        let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure", "rate_limits": windows})).unwrap();
-        domain.report(envelope, now_millis());
-        domain.live.note_measures();
-    }
-
-    fn rfc3339(millis: Millis) -> String {
-        crate::log::local_iso(millis.div_euclid(1000) as libc::time_t, 0)
+    /// The default account's windows as a node's events report them: `(kind, share used, reset)`.
+    fn measure(domain: &DomainRuntime, windows: &[(WindowKind, f64, Millis)]) {
+        let reading = UsageReading {
+            windows: windows.iter().map(|(kind, used, resets_at)| WindowReading { kind: kind.clone(), used: Share::of(*used), resets_at: Some(*resets_at), exhausted: false }).collect(),
+            plan: None, complete: false,
+        };
+        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), reading, now_millis());
+        crate::usage_probe::follow(domain, now_millis());
     }
 
     fn stop_failure(session: &str, error: &str, details: Option<&str>) -> serde_json::Value {
@@ -600,7 +564,7 @@ mod tests {
         domain.live.observe(&stop_failure("s1", "overloaded", None));
         assert!(!domain.live.usage_pause.is_active(), "an overloaded API is not an empty plan");
 
-        measure(&domain, json!([{"kind": "five_hour", "percent_used": 80, "resets_at": rfc3339(now + 2 * 3_600_000)}]));
+        measure(&domain, &[(WindowKind::Session, 0.8, now + 2 * 3_600_000)]);
         domain.live.observe(&stop_failure("s1", "rate_limit", None));
         let until = domain.live.usage_pause.current().unwrap().until;
         assert!((until - (now + 2 * 3_600_000)).abs() < 2_000, "the 5-hour window's reset: {until}");
@@ -621,17 +585,17 @@ mod tests {
 
     #[test]
     fn a_measurement_with_a_window_used_up_is_the_limit_too() {
-        let (domain, home) = domain();
+        let (domain, _home) = domain();
         let now = now_millis();
-        measure(&domain, json!([{"kind": "five_hour", "percent_used": 60, "resets_at": rfc3339(now + 3_600_000)}]));
+        measure(&domain, &[(WindowKind::Session, 0.6, now + 3_600_000)]);
         assert!(!domain.live.usage_pause.is_active());
-        measure(&domain, json!([
-            {"kind": "five_hour", "percent_used": 100, "resets_at": rfc3339(now + 3_600_000)},
-            {"kind": "seven_day", "percent_used": 40, "resets_at": rfc3339(now + 4 * 86_400_000)},
-        ]));
+        measure(&domain, &[(WindowKind::Session, 1.0, now + 3_600_000), (WindowKind::Weekly, 0.4, now + 4 * 86_400_000)]);
         let until = domain.live.usage_pause.current().unwrap().until;
-        assert!((until - (now + 3_600_000)).abs() < 2_000, "{until}");
-        std::fs::remove_dir_all(home).unwrap();
+        assert_eq!(until, now + 3_600_000);
+
+        let (opus, _opus_home) = self::domain();
+        measure(&opus, &[(WindowKind::Other("seven_day_opus".into()), 1.0, now + 86_400_000)]);
+        assert!(!opus.live.usage_pause.is_active(), "one model's window alone leaves the others working");
     }
 
     #[tokio::test]
@@ -684,11 +648,11 @@ mod tests {
 
     fn over_pace_domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
         let (domain, home) = domain();
-        let reset = rfc3339(now_millis() + 5 * 86_400_000);
-        for percent in [12.0, 53.0] {
-            measure(&domain, json!([{"kind": "seven_day", "percent_used": percent, "resets_at": reset}]));
+        let reset = now_millis() + 5 * 86_400_000;
+        for used in [0.12, 0.53] {
+            measure(&domain, &[(WindowKind::Weekly, used, reset)]);
         }
-        assert!(domain.live.mods.usage(now_millis()).unwrap().over_pace);
+        assert!(crate::usage_probe::usage(&domain, now_millis()).unwrap().over_pace);
         (domain, home)
     }
 
@@ -761,6 +725,17 @@ mod tests {
         assert!(!domain.live.usage_pause.is_active(), "resume now clears the pause");
         assert_eq!(domain.live.usage_pause.record.lock().unwrap().strikes, 0);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_answer_to_a_pace_card_pauses_only_on_its_own_day_as_after_a_restart() {
+        let (domain, _home) = over_pace_domain();
+        raise_over_pace_card(&domain, now_millis());
+        answer(&domain, &the_card(&domain, "over-pace-").unwrap().id.0, "pause_until_tomorrow");
+        settle_pace_cards(&domain, now_millis() + 86_400_000);
+        assert!(!domain.live.usage_pause.is_active(), "yesterday's answer paused yesterday only");
+        settle_pace_cards(&domain, now_millis());
+        assert!(domain.live.usage_pause.current().is_some_and(|standing| standing.by_user), "today's answer brings the pause back");
     }
 
     #[test]

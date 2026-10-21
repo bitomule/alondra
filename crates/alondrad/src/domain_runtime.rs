@@ -809,6 +809,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::HoldQuestions { .. }
         | Command::ProbeClaudeAccess { .. }
         | Command::RecordAccounts { .. }
+        | Command::RecordAccountUsage { .. }
         | Command::InterruptTurn { .. }
         | Command::ForceStopTurn { .. } => None,
     }

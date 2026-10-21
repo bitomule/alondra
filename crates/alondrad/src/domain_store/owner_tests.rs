@@ -1113,3 +1113,32 @@ fn what_a_node_reported_of_its_mcp_servers_outlives_a_reload_of_the_state_from_i
     assert!(!Arc::ptr_eq(&before, &after), "the store loaded the state again from its rows");
     assert_eq!(after.mcp, before.mcp, "the reload kept what the node reported");
 }
+
+// What Claude says of its usage during a turn belongs to the account of the binding that ran the
+// turn; the same reading again soon after changes nothing.
+#[test]
+fn a_usage_observation_is_recorded_for_the_account_of_the_binding_that_produced_it() {
+    use alondra_core::usage::{Share, WindowKind};
+    use alondra_provider_contract::{UsageReport, UsageWindow, UsageWindowKind};
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let observe = |cursor: u64, facts: Vec<Observation>| {
+        let state = Arc::clone(runtime.read().state());
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+    };
+    let week = |used: u16, exhausted: bool| Observation::Usage(UsageReport {
+        windows: vec![UsageWindow { kind: UsageWindowKind::Weekly, used, resets_at: Some(4_102_444_800_000), exhausted }], plan: None,
+    });
+    observe(1, vec![Observation::Available, week(5_300, false)]);
+    let usage = runtime.read().state().account_usage.clone();
+    assert_eq!(usage.iter().map(|u| u.account.as_str()).collect::<Vec<_>>(), ["fixture-credential-reference"], "the binding's credential names the account");
+    assert_eq!(usage[0].window(&WindowKind::Weekly).map(|w| w.reading.used), Some(Share::of(0.53)));
+    let revision = runtime.read().state().revision;
+    observe(2, vec![week(5_300, false)]);
+    assert_eq!(runtime.read().state().revision, revision, "the same reading again changes nothing");
+    observe(3, vec![week(10_000, true), Observation::Usage(UsageReport { windows: vec![], plan: Some("max".into()) })]);
+    let usage = runtime.read().state().account_usage[0].clone();
+    assert!(usage.window(&WindowKind::Weekly).unwrap().reading.exhausted, "the week ran out");
+    assert_eq!(usage.day_start.map(|start| start.weekly), Some(Share::of(0.53)), "today still starts from its first reading");
+    assert_eq!(usage.plan.as_deref(), Some("max"));
+}

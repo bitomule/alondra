@@ -330,8 +330,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     for report in [
         json!({"event": "turn.start", "turn_id": "t1"}),
         json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "cargo test"}}),
-        json!({"event": "session.measure", "context": {"tokens": 54944, "window": 1000000, "percent": 5},
-            "rate_limits": [{"kind": "seven_day", "percent_used": 78, "resets_at": "2099-10-05T00:00:00Z"}], "cost_usd": 1.25}),
+        json!({"event": "model", "model": "claude-opus-5-5"}),
     ] {
         let mut report = report;
         report["session_id"] = json!(SESSION);
@@ -339,9 +338,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     }
     let session = mods.session(SESSION).unwrap();
     assert_eq!(session.tool.as_ref().and_then(|tool| tool.summary.as_deref()), Some("cargo test"));
-    assert_eq!(session.context.as_ref().and_then(|context| context.percent), Some(5.0));
-    assert_eq!(session.cost_usd, Some(1.25));
-    assert_eq!(mods.usage(alondra_core::now_millis()).map(|usage| usage.week_percent), Some(78.0));
+    assert_eq!(session.model.as_deref(), Some("claude-opus-5-5"));
 
     held.kill().unwrap();
     held.wait().unwrap();

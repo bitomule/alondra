@@ -197,6 +197,7 @@ export class Session {
   private permissions: PermissionCallbacks;
   private inputs = new Set<string>();
   private seenResult = false;
+  private accountReported = false;
   private turnOpen = false;
   private closing = false;
   private child?: SpawnedProcess;
@@ -353,6 +354,7 @@ export class Session {
           }
         }
         this.config.observe(classify(payload));
+        if (payload.type === 'system' && payload.subtype === 'init' && !this.accountReported) this.reportAccount(payload.session_id);
         if (this.config.orchestrator && payload.type === 'result' && this.inputs.size === 0) this.input.close();
       }
       if (!this.closing && (!this.seenResult || this.inputs.size > 0)) this.diagnostic('eof_without_result', { unresolved_input_ids: [...this.inputs] });
@@ -368,6 +370,15 @@ export class Session {
         await this.releaseNativeReadEnds?.();
       }
     }
+  }
+  /** The plan of the account Claude signed in with, as the session initialized: Rust attributes it to the execution's account. */
+  private reportAccount(sessionId: unknown): void {
+    this.accountReported = true;
+    this.query.initializationResult().then((initialized) => {
+      const subscriptionType = initialized.account?.subscriptionType;
+      if (this.closing || typeof sessionId !== 'string' || typeof subscriptionType !== 'string') return;
+      this.config.observe({ type: 'sdk', kind: 'status', native: {}, payload: { type: 'account', session_id: sessionId, account: { subscriptionType } }, failures: [] });
+    }, () => { /* A session that never initialized reports no account. */ });
   }
   private diagnostic(code: string, details: unknown, surface = 'iterator'): void {
     details = fitValue(details, MAX_DIAGNOSTIC_BYTES);

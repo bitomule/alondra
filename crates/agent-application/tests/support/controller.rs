@@ -31,7 +31,8 @@ pub fn record_facts(
             | ObservedFact::SubagentWorktree { .. }
             | ObservedFact::McpServers { .. }
             | ObservedFact::McpSignIn { .. }
-            | ObservedFact::McpToolFailed => continue,
+            | ObservedFact::McpToolFailed
+            | ObservedFact::Usage(_) => continue,
             ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
                 return Err(Error::RequiresDomainCommand);
             }

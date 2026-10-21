@@ -1090,6 +1090,12 @@ pub struct DomainState {
     /// The provider accounts nodes may run on, in the user's order, as the daemon last saw them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<crate::accounts::AccountStatus>,
+    /// How much of its session window an account may use before it has no margin.
+    #[serde(default = "crate::usage::default_reserve", skip_serializing_if = "crate::usage::is_default_reserve")]
+    pub account_reserve: crate::usage::Share,
+    /// What each account last said of its usage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_usage: Vec<crate::usage::AccountUsage>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1119,6 +1125,8 @@ impl DomainState {
             lifecycles: LifecycleCache::default(),
             mcp: BTreeMap::new(),
             accounts: Vec::new(),
+            account_reserve: crate::usage::default_reserve(),
+            account_usage: Vec::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

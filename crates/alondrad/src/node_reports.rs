@@ -1,16 +1,15 @@
-//! What each session's node mod reports (`plugin/hooks/register.ts`): that it loaded, its turns,
-//! the tool it runs, how full its context is, what it has cost, and the plan's limits. Kept in
+//! What each session's node mod reports (`plugin/hooks/register.ts`): that it loaded, its turns
+//! and the tool it runs. Kept in
 //! memory beside the hooks' live view; the domain never records it. The open connection the mod
 //! holds (`alondra node connect`) is the node's liveness: a newer connection from the same
 //! session replaces the older one, and only the current one closing makes the node unreachable.
 //! A session binds to its launch by the key of the settings file the launch gave it
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
-use alondra_core::usage::{RateLimit, Usage};
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -21,15 +20,6 @@ pub(crate) enum Report {
     SessionStart { version: String, #[serde(default)] cwd: Option<String>, #[serde(default)] launch_key: Option<String> },
     #[serde(rename = "session.end")]
     SessionEnd,
-    #[serde(rename = "session.measure")]
-    Measure {
-        #[serde(default)]
-        context: Option<ContextIn>,
-        #[serde(default)]
-        rate_limits: Vec<RateLimitIn>,
-        #[serde(default)]
-        cost_usd: Option<f64>,
-    },
     /// The model a request was sent with: the main thread's, or with `agent_id` a subagent's.
     #[serde(rename = "model")]
     Model { model: String, #[serde(default)] agent_id: Option<String> },
@@ -85,23 +75,6 @@ pub(crate) struct TaskIn {
     name: Option<String>,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
-pub(crate) struct ContextIn {
-    #[serde(default)]
-    tokens: Option<u64>,
-    window: u64,
-    #[serde(default)]
-    percent: Option<f64>,
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-pub(crate) struct RateLimitIn {
-    kind: String,
-    percent_used: f64,
-    #[serde(default)]
-    resets_at: Option<String>,
-}
-
 /// One report as `alondra node event` hands it over.
 #[derive(Deserialize, Debug)]
 pub(crate) struct Envelope {
@@ -122,19 +95,6 @@ pub(crate) struct Hello {
     pub launch_key: Option<String>,
     #[serde(default)]
     pub working: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ContextReading {
-    pub percent: Option<f64>,
-    pub tokens: Option<u64>,
-    pub window: u64,
-}
-
-impl ContextReading {
-    pub(crate) fn full_percent(&self) -> Option<f64> {
-        self.percent.or_else(|| self.tokens.filter(|_| self.window > 0).map(|tokens| tokens as f64 * 100.0 / self.window as f64))
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,10 +135,6 @@ pub(crate) struct Reported {
     pub job_dir: Option<PathBuf>,
     pub tool: Option<ToolInFlight>,
     pub answer: Option<Answer>,
-    pub context: Option<ContextReading>,
-    /// The fullest the context has been while the daemon watched, in percent.
-    pub context_peak: Option<f64>,
-    pub cost_usd: Option<f64>,
     /// The model id the main thread last sent a request with.
     pub model: Option<String>,
     /// The subagents and background shells the node has running, by the id Claude Code gives them.
@@ -295,16 +251,6 @@ impl Reported {
     }
 }
 
-pub(crate) const USAGE_FILE: &str = "usage.json";
-
-#[derive(Default, Serialize, Deserialize)]
-struct Limits {
-    windows: Vec<RateLimit>,
-    measured_at: Millis,
-    /// The local day, the week's reset and the week's percent at that day's first measurement.
-    day_start: Option<(String, Millis, f64)>,
-}
-
 pub(crate) struct LiveChanges(tokio::sync::watch::Sender<()>);
 
 impl Default for LiveChanges {
@@ -320,44 +266,18 @@ impl LiveChanges {
 pub(crate) struct Reports {
     sessions: Mutex<HashMap<String, Reported>>,
     launches: Mutex<HashMap<String, String>>,
-    limits: Mutex<Limits>,
-    /// Where the plan's limits are kept so a restart still knows the last reading and the day's start.
-    saved_in: Option<PathBuf>,
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
     pub(crate) changed: LiveChanges,
 }
 
 impl Reports {
-    /// Reports that keep the plan's limits in `home`'s `usage.json` and start from what it holds.
-    pub(crate) fn persisted_in(home: &Path) -> Self {
-        let file = home.join(USAGE_FILE);
-        let limits = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-        Self { limits: Mutex::new(limits), saved_in: Some(file), ..Self::default() }
-    }
-
-    fn save(&self, limits: &Limits) {
-        let Some(file) = &self.saved_in else { return };
-        let next = file.with_extension("next");
-        let written = serde_json::to_vec(limits).map_err(std::io::Error::from)
-            .and_then(|bytes| std::fs::write(&next, bytes))
-            .and_then(|()| std::fs::rename(&next, file));
-        if let Err(error) = written {
-            log!("could not save {}: {error}", file.display());
-        }
-    }
-
     pub(crate) fn apply(&self, envelope: Envelope, now: Millis) {
-        self.apply_on(envelope, now, &local_day(now));
+        self.apply_on(envelope, now);
         self.changed.publish();
     }
 
-    fn apply_on(&self, Envelope { session_id, report }: Envelope, now: Millis, today: &str) {
-        if let Report::Measure { rate_limits, .. } = &report
-            && !rate_limits.is_empty()
-        {
-            self.measured(rate_limits, now, today);
-        }
+    fn apply_on(&self, Envelope { session_id, report }: Envelope, now: Millis) {
         let id = session_id.clone();
         let mut sessions = self.sessions.lock().expect("node reports poisoned");
         let session = sessions.entry(session_id).or_default();
@@ -382,16 +302,6 @@ impl Reports {
                 session.background.clear();
                 session.background_known = true;
                 session.work.ended(now);
-            }
-            Report::Measure { context, cost_usd, .. } => {
-                if let Some(context) = context {
-                    let reading = ContextReading { percent: context.percent, tokens: context.tokens, window: context.window };
-                    if let Some(percent) = reading.full_percent() {
-                        session.context_peak = Some(session.context_peak.map_or(percent, |peak| peak.max(percent)));
-                    }
-                    session.context = Some(reading);
-                }
-                session.cost_usd = cost_usd.or(session.cost_usd);
             }
             Report::Model { model, agent_id: None } => session.model = Some(model),
             Report::Model { model, agent_id: Some(agent) } => session.work.agent_model(&agent, model),
@@ -458,25 +368,6 @@ impl Reports {
                 }
             }
         }
-    }
-
-    fn measured(&self, rate_limits: &[RateLimitIn], now: Millis, today: &str) {
-        let windows: Vec<RateLimit> = rate_limits.iter().map(|limit| RateLimit {
-            kind: limit.kind.clone(),
-            percent_used: limit.percent_used,
-            resets_at: limit.resets_at.as_deref().and_then(crate::watcher::parse_rfc3339_millis),
-        }).collect();
-        let mut limits = self.limits.lock().expect("plan limits poisoned");
-        if let Some(week) = windows.iter().find(|limit| limit.kind == alondra_core::usage::SEVEN_DAY) {
-            let reset = week.resets_at.unwrap_or_default();
-            let same_day = limits.day_start.as_ref().is_some_and(|(day, week_reset, _)| day == today && *week_reset == reset);
-            if !same_day {
-                limits.day_start = Some((today.to_owned(), reset, week.percent_used));
-            }
-        }
-        limits.windows = windows;
-        limits.measured_at = now;
-        self.save(&limits);
     }
 
     pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
@@ -611,31 +502,6 @@ impl Reports {
         .await
         .is_ok()
     }
-
-    /// When a plan window the node mods measured as used up comes back.
-    pub(crate) fn exhausted_until(&self, now: Millis) -> Option<Millis> {
-        let limits = self.limits.lock().expect("plan limits poisoned");
-        limits.windows.iter().filter(|window| window.percent_used >= 100.0)
-            .filter_map(|window| window.resets_at.filter(|reset| *reset > now)).max()
-    }
-
-    /// When a limit Claude reported without a time ends: the window that ran out, else the
-    /// 5-hour window, else the soonest reset the plan has.
-    pub(crate) fn reset_after_limit(&self, now: Millis) -> Option<Millis> {
-        self.exhausted_until(now).or_else(|| {
-            let limits = self.limits.lock().expect("plan limits poisoned");
-            let future = |window: &&RateLimit| window.resets_at.is_some_and(|reset| reset > now);
-            limits.windows.iter().filter(future).find(|window| window.kind == alondra_core::usage::FIVE_HOUR)
-                .or_else(|| limits.windows.iter().filter(future).min_by_key(|window| window.resets_at))
-                .and_then(|window| window.resets_at)
-        })
-    }
-
-    pub(crate) fn usage(&self, now: Millis) -> Option<Usage> {
-        let limits = self.limits.lock().expect("plan limits poisoned");
-        let start = limits.day_start.as_ref().filter(|(day, _, _)| *day == local_day(now)).map(|(_, _, start)| *start);
-        alondra_core::usage::compute(&limits.windows, start, limits.measured_at, now)
-    }
 }
 
 pub(crate) fn local_day(millis: Millis) -> String {
@@ -699,8 +565,8 @@ mod tests {
     #[test]
     fn the_model_a_session_reports_is_the_one_it_keeps() {
         let reports = Reports::default();
-        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"})), 1, "2026-10-02");
-        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-sonnet-5-5"})), 2, "2026-10-02");
+        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"})), 1);
+        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-sonnet-5-5"})), 2);
         assert_eq!(reports.session("s").unwrap().model.as_deref(), Some("claude-sonnet-5-5"));
     }
 
@@ -708,7 +574,7 @@ mod tests {
     fn subagents_workflows_and_the_task_list_reported_by_the_mod_become_the_nodes_work() {
         use crate::node_work::StepStatus;
         let reports = Reports::default();
-        let apply = |value: Value, at| reports.apply_on(report(value), at, "2026-10-06");
+        let apply = |value: Value, at| reports.apply_on(report(value), at);
         apply(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"}), 1);
         apply(json!({"session_id": "s", "event": "subagent.start", "id": "a1", "description": "Fix the parser",
             "type": "general-purpose", "model": "claude-sonnet-5"}), 2);
@@ -739,67 +605,6 @@ mod tests {
 
         apply(json!({"session_id": "s", "event": "background", "tasks": []}), 12);
         assert_eq!(reports.session("s").unwrap().work.workflows[0].finished_at, Some(12));
-    }
-
-    #[test]
-    fn measurements_keep_the_context_the_cost_and_the_plan_limits_with_their_reset() {
-        let reports = Reports::default();
-        let measure = |week: f64, cost: f64| report(json!({"session_id": "s", "event": "session.measure",
-            "context": {"tokens": 54944, "window": 1000000, "percent": 5},
-            "rate_limits": [{"kind": "five_hour", "percent_used": 10, "resets_at": "2026-10-02T16:40:00Z"},
-                            {"kind": "seven_day", "percent_used": week, "resets_at": "2026-10-05T00:00:00Z"}],
-            "cost_usd": cost}));
-        let now = 1_790_950_000_000;
-        reports.apply_on(measure(20.0, 0.5), now, "2026-10-02");
-        reports.apply_on(measure(30.0, 1.25), now + 1, "2026-10-02");
-        let session = reports.session("s").unwrap();
-        assert_eq!(session.context, Some(ContextReading { percent: Some(5.0), tokens: Some(54944), window: 1_000_000 }));
-        assert_eq!(session.cost_usd, Some(1.25));
-        let limits = reports.limits.lock().unwrap();
-        let usage = alondra_core::usage::compute(&limits.windows, limits.day_start.as_ref().map(|d| d.2), limits.measured_at, now).unwrap();
-        assert_eq!((usage.week_percent, usage.today_spent), (30.0, Some(10.0)), "today counts from the day's first measurement");
-        assert_eq!(usage.week_resets_at, 1_791_158_400_000);
-        assert_eq!((usage.five_hour_percent, usage.five_hour_resets_at), (Some(10.0), Some(1_790_959_200_000)));
-        drop(limits);
-        reports.apply_on(measure(31.0, 2.0), now + 2, "2026-10-03");
-        assert_eq!(reports.limits.lock().unwrap().day_start.as_ref().map(|d| d.2), Some(31.0), "a new day starts from its own first measurement");
-    }
-
-    #[test]
-    fn the_last_reading_and_the_days_start_survive_a_restart() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-{}", std::process::id()));
-        std::fs::create_dir_all(&home).unwrap();
-        let measure = |week: f64| report(json!({"session_id": "s", "event": "session.measure",
-            "rate_limits": [{"kind": "five_hour", "percent_used": 10, "resets_at": "2026-10-02T16:40:00Z"},
-                            {"kind": "seven_day", "percent_used": week, "resets_at": "2026-10-05T00:00:00Z"}]}));
-        let now = 1_790_950_000_000;
-        let before = Reports::persisted_in(&home);
-        assert!(before.usage(now).is_none(), "nothing measured yet");
-        before.apply_on(measure(20.0), now, &local_day(now));
-        before.apply_on(measure(30.0), now + 1, &local_day(now));
-        let expected = before.usage(now + 2).unwrap();
-        drop(before);
-
-        let after = Reports::persisted_in(&home);
-        let restored = after.usage(now + 2).unwrap();
-        assert_eq!(restored, expected);
-        assert_eq!((restored.week_percent, restored.today_spent, restored.measured_at), (30.0, Some(10.0), now + 1));
-        assert_eq!((restored.five_hour_percent, restored.five_hour_resets_at), (Some(10.0), Some(1_790_959_200_000)));
-        after.apply_on(measure(35.0), now + 3, &local_day(now));
-        assert_eq!(after.usage(now + 3).unwrap().today_spent, Some(15.0), "the restored day start still anchors today");
-        std::fs::remove_dir_all(&home).unwrap();
-    }
-
-    #[test]
-    fn a_missing_or_broken_usage_file_starts_empty() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-broken-{}", std::process::id()));
-        std::fs::create_dir_all(&home).unwrap();
-        assert!(Reports::persisted_in(&home).usage(1).is_none());
-        std::fs::write(home.join(USAGE_FILE), "{not json").unwrap();
-        assert!(Reports::persisted_in(&home).usage(1).is_none());
-        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

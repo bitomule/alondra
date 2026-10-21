@@ -40,6 +40,7 @@ pub(crate) struct Live {
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
+    pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     pub(crate) gate: crate::fleet_gate::FleetGate,
@@ -68,8 +69,7 @@ impl Live {
             aborted_replaces_file: Some(aborted_replaces_file),
             closed_tasks: Mutex::new(closed_tasks),
             closed_tasks_file: Some(closed_tasks_file),
-            mods: crate::node_reports::Reports::persisted_in(home),
-            usage_pause: crate::usage_pause::UsagePause::persisted_in(home),
+            usage_pause: crate::usage_pause::UsagePause::default(),
             machine_watch: crate::machine_watch::MachineWatch::persisted_in(home),
             gate: crate::fleet_gate::FleetGate::persisted_in(home),
             closed: Mutex::new(closed),
@@ -192,18 +192,10 @@ impl Live {
         view.apply(self.next(), now, &Event::Hook(event));
         drop(view);
         if let Some(details) = limit {
-            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.mods.reset_after_limit(now));
+            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.measured.reset_after_limit(now));
             self.usage_pause.exhaust(until, now);
         }
         self.changed.publish();
-    }
-
-    /// A node's measurement that shows a plan window used up is the limit too.
-    pub(crate) fn note_measures(&self) {
-        let now = now_millis();
-        if let Some(until) = self.mods.exhausted_until(now) {
-            self.usage_pause.exhaust(Some(until), now);
-        }
     }
 
     fn next(&self) -> u64 {

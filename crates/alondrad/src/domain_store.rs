@@ -58,6 +58,10 @@ const API_FAILURES: &str = "CREATE TABLE IF NOT EXISTS api_failures(agent_id TEX
 /// and rule, and whether the file still has them. Kept outside the domain state: the file is the
 /// truth, this only remembers which of its rules came from Alondra and from which card.
 const ALLOWED_RULES: &str = "CREATE TABLE IF NOT EXISTS allowed_rules(id INTEGER PRIMARY KEY, repo TEXT NOT NULL, settings TEXT NOT NULL, rule TEXT NOT NULL, added_at INTEGER NOT NULL, task_id TEXT, interaction_id TEXT NOT NULL, machine TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','active','missing','removed')), UNIQUE(settings, rule));";
+/// The provider accounts as the daemon last saw them with their session reserve, and what each
+/// account last said of its usage, which anchors the day's pace across restarts.
+const ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS accounts(singleton INTEGER PRIMARY KEY CHECK(singleton=1), accounts TEXT NOT NULL CHECK(json_valid(accounts)), reserve INTEGER NOT NULL CHECK(reserve BETWEEN 1 AND 10000));\
+CREATE TABLE IF NOT EXISTS account_usage(provider TEXT NOT NULL, account TEXT NOT NULL, usage TEXT NOT NULL CHECK(json_valid(usage)), PRIMARY KEY(provider, account));";
 /// What each node said last as a turn of it ended; created on every open like task_models.
 const NODE_LAST_WORDS: &str = "CREATE TABLE IF NOT EXISTS node_last_words(agent_id TEXT PRIMARY KEY REFERENCES agents(id), text TEXT NOT NULL);";
 /// Domains written before no node could rest unheard kept such nodes `stopped`: what moved them
@@ -584,6 +588,7 @@ impl DomainStore {
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;
+        tx.execute_batch(ACCOUNTS)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;

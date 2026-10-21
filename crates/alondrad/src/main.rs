@@ -106,6 +106,7 @@ mod service_files;
 mod start_guard;
 mod updates;
 mod usage_pause;
+mod usage_probe;
 mod uploads;
 mod client_routes;
 mod views;
@@ -549,6 +550,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     ));
     tokio::spawn(claude_access::run(domain.clone()));
     tokio::spawn(accounts::run(domain.clone(), config.home.clone()));
+    tokio::spawn(usage_probe::run(domain.clone(), config.home.clone()));
     tokio::spawn(mcp_waits::run(domain.clone()));
     tokio::spawn(machine_watch::run(
         domain.clone(),

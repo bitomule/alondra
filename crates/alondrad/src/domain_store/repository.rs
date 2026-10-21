@@ -864,6 +864,20 @@ pub(super) fn save_changes(
     for (agent_id, text) in after.last_words.iter().filter(|(id, text)| before.last_words.get(*id) != Some(*text)) {
         upsert(c, "node_last_words", &["agent_id"], object(&json!({"agent_id": agent_id, "text": text}))?)?;
     }
+    if before.accounts != after.accounts || before.account_reserve != after.account_reserve {
+        exec(c, "INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts,reserve=excluded.reserve",
+            params![serde_json::to_string(&after.accounts)?, after.account_reserve.parts()])?;
+    }
+    if before.account_usage != after.account_usage {
+        let key = |usage: &alondra_core::usage::AccountUsage| (usage.provider.as_str(), usage.account.as_str().to_owned());
+        for gone in before.account_usage.iter().filter(|old| !after.account_usage.iter().any(|new| key(new) == key(old))) {
+            exec(c, "DELETE FROM account_usage WHERE provider=?1 AND account=?2", params![gone.provider.as_str(), gone.account.as_str()])?;
+        }
+        for usage in after.account_usage.iter().filter(|new| !before.account_usage.contains(new)) {
+            exec(c, "INSERT INTO account_usage(provider,account,usage) VALUES(?1,?2,?3) ON CONFLICT(provider,account) DO UPDATE SET usage=excluded.usage",
+                params![usage.provider.as_str(), usage.account.as_str(), serde_json::to_string(usage)?])?;
+        }
+    }
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
@@ -1290,6 +1304,16 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     for row in rows(c, "node_last_words", &[], &[])? {
         state.last_words.insert(AgentId::from(s(&row["agent_id"])?), s(&row["text"])?.to_owned());
     }
+    let accounts = c.query_row("SELECT accounts,reserve FROM accounts WHERE singleton=1", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?))).optional()?;
+    if let Some((accounts, reserve)) = accounts {
+        state.accounts = serde_json::from_str(&accounts)?;
+        state.account_reserve = alondra_core::usage::Share::from_parts(reserve).context("an account reserve above 10000")?;
+    }
+    let mut usage = c.prepare("SELECT usage FROM account_usage ORDER BY rowid")?;
+    for row in usage.query_map([], |r| r.get::<_, String>(0))? {
+        state.account_usage.push(serde_json::from_str(&row?)?);
+    }
+    drop(usage);
     state.schedule = load_schedule_state(c)?;
     Ok(state)
 }

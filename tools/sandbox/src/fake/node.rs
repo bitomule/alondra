@@ -254,7 +254,7 @@ fn write_job(node: &Node, state: &str) -> Result<()> {
     write_json(&node.claude_home.join("jobs").join(&node.short).join("state.json"), &job)
 }
 
-fn rfc3339(ms: u64) -> String {
+pub(super) fn rfc3339(ms: u64) -> String {
     let secs = ms / 1000;
     let (days, rest) = (secs / 86_400, secs % 86_400);
     let (y, m, d) = civil(days as i64);

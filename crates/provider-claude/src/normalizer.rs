@@ -5,7 +5,10 @@ use alondra_agent_protocol::{
     Observation as WireObservation, SdkEventKind, SignIn,
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
+use alondra_provider_contract::{
+    AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
+    UsageWindowKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +23,10 @@ const MAX_MCP_CALLS: usize = 64;
 const MAX_TAKEN: usize = 64;
 /// How a turn still open ends when Claude starts another prompt.
 const TURN_SUPERSEDED: &str = "turn_superseded";
+/// The `type` of the payload the host reports the session's account with.
+const ACCOUNT_REPORT: &str = "account";
+const MAX_PLAN_BYTES: usize = 64;
+const MAX_WINDOW_NAME_BYTES: usize = 64;
 
 pub(super) struct Normalizer {
     pub session: Option<SessionRecord>,
@@ -379,6 +386,13 @@ fn fold(
         facts.extend(listed_servers(payload));
         return Ok(facts);
     }
+    if kind == ACCOUNT_REPORT {
+        // The host reports the account Claude signed in with as the session initializes.
+        if let Some(plan) = account_plan(payload) {
+            facts.push(Observation::Usage(UsageReport { windows: vec![], plan: Some(plan) }));
+        }
+        return Ok(facts);
+    }
     if kind == "system"
         && matches!(
             payload.get("subtype").and_then(Value::as_str),
@@ -467,6 +481,9 @@ fn fold(
             if let Some(turn) = state.turn.as_mut() {
                 turn.resets_at = info.and_then(|info| info.get("resetsAt")).and_then(Value::as_u64);
             }
+        }
+        if let Some(window) = info.and_then(rate_limit_window) {
+            facts.push(Observation::Usage(UsageReport { windows: vec![window], plan: None }));
         }
         return Ok(facts);
     }
@@ -796,6 +813,40 @@ fn optional_string(payload: &Value, key: &str) -> Result<Option<String>, Adapter
         .get(key)
         .map(|_| string(payload, key).map(str::to_owned))
         .transpose()
+}
+
+/// The usage window a `rate_limit_event` describes: the 5-hour window is the session's, the
+/// 7-day one the week's, any other kept by its name. A share used is a fraction from 0 to 1; a
+/// rejection means the window ran out. An event that names no window, or says nothing of how much
+/// was used and refused nothing, reads no window.
+fn rate_limit_window(info: &Value) -> Option<UsageWindow> {
+    let kind = match info.get("rateLimitType").and_then(Value::as_str)? {
+        "five_hour" => UsageWindowKind::Session,
+        "seven_day" => UsageWindowKind::Weekly,
+        other if !other.is_empty() && other.len() <= MAX_WINDOW_NAME_BYTES && !other.chars().any(char::is_control) => {
+            UsageWindowKind::Other(other.to_owned())
+        }
+        _ => return None,
+    };
+    let exhausted = info.get("status").and_then(Value::as_str) == Some("rejected");
+    let utilization = info.get("utilization").and_then(Value::as_f64).filter(|used| used.is_finite());
+    let used = match (utilization, exhausted) {
+        (Some(used), _) => used,
+        (None, true) => 1.0,
+        (None, false) => return None,
+    };
+    let resets_at = info
+        .get("resetsAt")
+        .and_then(Value::as_u64)
+        .and_then(|seconds| i64::try_from(seconds).ok())
+        .and_then(|seconds| seconds.checked_mul(1000));
+    Some(UsageWindow { kind, used: (used.clamp(0.0, 1.0) * 10_000.0).round() as u16, resets_at, exhausted })
+}
+
+/// The plan in the account the host reported: Claude's `subscriptionType`, such as `max`.
+fn account_plan(payload: &Value) -> Option<String> {
+    let plan = payload.get("account")?.get("subscriptionType")?.as_str()?.trim();
+    (!plan.is_empty() && plan.len() <= MAX_PLAN_BYTES && !plan.chars().any(char::is_control)).then(|| plan.to_owned())
 }
 
 #[cfg(test)]
@@ -1412,6 +1463,41 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+    // The rate_limit_event Claude Code 2.1.300 writes from its usage headers: `utilization` is the
+    // window's share used from 0 to 1, `resetsAt` Unix seconds.
+    #[test]
+    fn a_rate_limit_event_reads_the_window_it_names_for_the_bindings_account() {
+        let window = |info: Value| fold(&event(json!({"type":"rate_limit_event","uuid":SECOND,"rate_limit_info":info})), &session(), &mut state(), input).unwrap();
+        assert_eq!(window(json!({"status":"allowed_warning","unifiedRateLimitFallbackAvailable":false,"resetsAt":1_790_202_000_u64,"rateLimitType":"five_hour","utilization":0.82,"surpassedThreshold":0.8})),
+            [Observation::Usage(UsageReport { windows: vec![UsageWindow { kind: UsageWindowKind::Session, used: 8_200, resets_at: Some(1_790_202_000_000), exhausted: false }], plan: None })]);
+        assert_eq!(window(json!({"status":"allowed","resetsAt":1_790_553_600_u64,"rateLimitType":"seven_day","utilization":0.53,"isUsingOverage":false})),
+            [Observation::Usage(UsageReport { windows: vec![UsageWindow { kind: UsageWindowKind::Weekly, used: 5_300, resets_at: Some(1_790_553_600_000), exhausted: false }], plan: None })]);
+        assert_eq!(window(json!({"status":"rejected","resetsAt":1_790_553_600_u64,"rateLimitType":"seven_day_opus","overageStatus":"rejected","overageDisabledReason":"out_of_credits"})),
+            [Observation::Usage(UsageReport { windows: vec![UsageWindow { kind: UsageWindowKind::Other("seven_day_opus".into()), used: 10_000, resets_at: Some(1_790_553_600_000), exhausted: true }], plan: None })],
+            "a refusal without a share is the window used up");
+        assert!(window(json!({"status":"allowed","rateLimitType":"five_hour"})).is_empty(), "nothing said of how much was used");
+        assert!(window(json!({"status":"rejected"})).is_empty(), "no window named");
+    }
+    #[test]
+    fn a_rejected_limit_reads_its_window_used_up_and_still_ends_the_turn_with_its_reset() {
+        let facts = turn_end(&mut state(), vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"rate_limit"}),
+            json!({"type":"rate_limit_event","uuid":SECOND,"rate_limit_info":{"status":"rejected","resetsAt":1_790_202_000_u64,"rateLimitType":"five_hour","utilization":1.0}}),
+            json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"blocking_limit","user_message_uuid":FIRST}),
+        ]);
+        assert!(facts.contains(&Observation::Usage(UsageReport {
+            windows: vec![UsageWindow { kind: UsageWindowKind::Session, used: 10_000, resets_at: Some(1_790_202_000_000), exhausted: true }], plan: None,
+        })), "{facts:?}");
+        assert_eq!(failure(&facts).and_then(|failure| failure.resets_at), Some(1_790_202_000));
+    }
+    #[test]
+    fn the_account_the_host_reports_as_claude_initializes_says_its_plan() {
+        let account = |payload: Value| fold(&event(payload), &session(), &mut state(), input).unwrap();
+        assert_eq!(account(json!({"type":"account","account":{"subscriptionType":"max"}})),
+            [Observation::Usage(UsageReport { windows: vec![], plan: Some("max".into()) })]);
+        assert!(account(json!({"type":"account","account":{}})).is_empty(), "an API key has no plan");
+        assert!(account(json!({"type":"account","account":{"subscriptionType":" "}})).is_empty());
     }
     fn turn_end(state: &mut Checkpoint, payloads: Vec<Value>) -> Vec<Observation> {
         payloads

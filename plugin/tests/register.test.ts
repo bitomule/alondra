@@ -133,7 +133,7 @@ test('a helper killed with SIGTERM is not started again', async ($, on) => {
   expect(spawns).toBe(1)
 })
 
-test('turns, tool calls and measurements of the main loop are reported in order', async ($, on) => {
+test('turns and tool calls of the main loop are reported in order, and measurements are not', async ($, on) => {
   mock.clock(on)
   const reports: Record<string, unknown>[] = []
   on('session.start', () => ({ cwd: '/work' }))
@@ -175,12 +175,6 @@ test('turns, tool calls and measurements of the main loop are reported in order'
     { event: 'tool.end', tool_use_id: 'tool-1' },
     { event: 'subagent.end', id: 'sub-1' },
     { event: 'turn.complete', turn_id: 'turn-1', answer: 'Done.', aborted: true },
-    {
-      event: 'session.measure',
-      context: { tokens: 54944, window: 1000000, percent: 5 },
-      rate_limits: [{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-02T16:40:00Z' }],
-      cost_usd: 1.25,
-    },
   ])
 })
 

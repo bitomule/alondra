@@ -2432,13 +2432,31 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::RecordAccounts { accounts } => {
+            Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;
                 let mut seen = BTreeSet::new();
                 if let Some(twice) = accounts.iter().find(|a| !seen.insert((a.provider, a.id.clone()))) {
                     return fail("invalid_input", &format!("Account {} is recorded twice", twice.id));
                 }
+                if *reserve == crate::usage::Share::NONE {
+                    return fail("invalid_input", "An account's reserve is above 0");
+                }
                 self.accounts = accounts.clone();
+                self.account_reserve = *reserve;
+                self.account_usage.retain(|usage| seen.contains(&(usage.provider, usage.account.clone())));
+            }
+            Command::RecordAccountUsage { provider, account, reading, at, day } => {
+                system(actor)?;
+                reading.check().map_err(|why| DomainError::new("invalid_input", why))?;
+                if !crate::usage::is_day(day) {
+                    return fail("invalid_input", "The day of a usage reading is YYYY-MM-DD");
+                }
+                let index = self.account_usage.iter().position(|usage| usage.provider == *provider && usage.account == *account);
+                let recorded = crate::usage::record(index.map(|i| &self.account_usage[i]), *provider, account, reading, *at, day);
+                match index {
+                    Some(i) => self.account_usage[i] = recorded,
+                    None => self.account_usage.push(recorded),
+                }
             }
             Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;

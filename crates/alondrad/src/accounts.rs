@@ -11,6 +11,7 @@ use std::time::Duration;
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, AccountsConfig, Provider};
 use alondra_core::claude_account;
 use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_core::usage::Share;
 use alondra_core::views::Lang;
 use axum::http::StatusCode;
 use serde::Deserialize;
@@ -108,11 +109,11 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
         .collect()
 }
 
-/// Records `accounts` in the domain when it holds something else.
-fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
+/// Records `accounts` and their `reserve` in the domain when it holds something else.
+fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>, reserve: Share) {
     for _ in 0..5 {
         let state = domain.read();
-        if state.state().accounts == accounts {
+        if state.state().accounts == accounts && state.state().account_reserve == reserve {
             return;
         }
         let envelope = CommandEnvelope {
@@ -120,7 +121,7 @@ fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
             data_epoch: state.state().data_epoch.clone(),
             command_id: format!("accounts-{}", crate::auth::random_hex(16)).into(),
             expected_revision: state.state().revision,
-            command: Command::RecordAccounts { accounts: accounts.clone() },
+            command: Command::RecordAccounts { accounts: accounts.clone(), reserve },
         };
         match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
             Ok(_) => return,
@@ -132,7 +133,7 @@ fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
 /// Checks every account's sign-in and records what it saw.
 pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
     match config(home) {
-        Ok(config) => record(domain, observe(home, Claude::of(domain).as_ref(), &config)),
+        Ok(config) => record(domain, observe(home, Claude::of(domain).as_ref(), &config), Share::of(config.distribution.reserve)),
         Err(why) => log!("accounts not checked: {why}"),
     }
 }

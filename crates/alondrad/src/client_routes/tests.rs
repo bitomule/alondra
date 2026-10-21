@@ -1072,8 +1072,7 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
     report("agent-a", json!({"event": "turn.start", "turn_id": "t1"}));
     report("agent-a", json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1",
         "input": {"command": "bazel test //crates/..."}}));
-    report("agent-a", json!({"event": "session.measure", "context": {"tokens": 850000, "window": 1000000, "percent": 85},
-        "rate_limits": [], "cost_usd": 0.42}));
+    report("agent-a", json!({"event": "model", "model": "claude-opus-5-5"}));
     let b = mods.connect_node(hello("agent-b"), 2);
     report("agent-b", json!({"event": "turn.complete", "turn_id": "t2", "answer": "Stopped halfway through the parser", "aborted": true}));
     mods.live.mods.disconnect("agent-b", b);
@@ -1098,8 +1097,7 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
 
     let node = view_json(&fixture, "node:agent-a", "es").await;
     let facts = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "readings").unwrap()["items"][0]["items"].as_array().unwrap();
-    assert!(facts.iter().any(|fact| fact["label"] == "Contexto" && fact["value"] == "85% de 1M tokens"), "{facts:?}");
-    assert!(facts.iter().any(|fact| fact["label"] == "Coste" && fact["value"] == "0,42 $"), "{facts:?}");
+    assert!(facts.iter().any(|fact| fact["label"] == "Modelo" && fact["value"] == "Opus 5.5"), "{facts:?}");
     assert!(facts.iter().any(|fact| fact["label"] == "Ejecutando" && fact["value"] == "Bash: bazel test //crates/..."), "{facts:?}");
 }
 
