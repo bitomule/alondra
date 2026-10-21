@@ -1104,35 +1104,66 @@ impl DomainState {
                 None => TurnEnd::Unexplained,
             };
             self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
-            if !self.covered_by_node_question(&self.interactions[&card]) {
+            if !self.covered_by_recorded_wait(&self.interactions[&card]) {
                 effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
             }
         }
         Ok(())
     }
 
-    /// A card that says a turn ended with nothing that explains the task's next step, while the
-    /// node asked the user something that does: a question still open, or one the user answered
-    /// after the turn ended, whose answer is on its way to the node and ends this card's wait.
-    /// The card waits out of sight until then, and shows only once nothing covers it.
-    pub(super) fn covered_by_node_question(&self, card: &Interaction) -> bool {
+    /// A card that says a turn ended with nothing that explains the task's next step, while
+    /// something Alondra recorded does (`recorded_wait`). The card waits out of sight until what
+    /// ends that wait reaches the node and ends the card, and shows only once nothing covers it.
+    pub(super) fn covered_by_recorded_wait(&self, card: &Interaction) -> bool {
         let Scope::Task { task_id } = &card.scope else { return false };
-        if card.author != Author::System || !card.id.0.starts_with(TURN_ENDED_PREFIX) || card.card.why != TURN_ENDED_WHY {
-            return false;
-        }
-        let Some(node) = self.tasks.get(task_id).and_then(|t| t.agent_id.clone()) else { return false };
-        self.interactions.values().any(|i| {
-            matches!(&i.scope, Scope::Task { task_id: of } if of == task_id)
+        card.author == Author::System && card.id.0.starts_with(TURN_ENDED_PREFIX) && card.card.why == TURN_ENDED_WHY
+            && self.recorded_wait(task_id, card.revision).is_some()
+    }
+
+    /// What the node of `task` waits for, as Alondra recorded it, for a turn that ended at
+    /// `revision`: a question or request of its own to the user or the orchestrator (a message
+    /// or a suggestion too) still open, or answered after `revision` so the answer is on its way
+    /// to the node; a pause that holds it (`wait_for_machine`); or another task its task depends
+    /// on, not done yet or done after `revision`, so the word that it is done is on its way.
+    /// Only facts end it, never time.
+    pub fn recorded_wait(&self, task: &TaskId, revision: u64) -> Option<RecordedWait> {
+        let node = self.tasks.get(task)?.agent_id.clone()?;
+        let waits_on = |recipient: &Recipient| self.interactions.values().any(|i| {
+            matches!(&i.scope, Scope::Task { task_id } if task_id == task)
                 && i.author == Author::Agent { agent_id: node.clone() }
-                && i.recipient == Recipient::User
+                && i.recipient == *recipient
                 && !i.withdrawn
                 && !self.holds.contains_key(&i.id)
                 && match &i.payload {
                     InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } =>
-                        answer.as_ref().is_none_or(|answer| answer.at_revision > card.revision),
+                        answer.as_ref().is_none_or(|answer| answer.at_revision > revision),
                     _ => false,
                 }
-        })
+        });
+        let paused = matches!(self.node_phase(&node), Some(NodePhase::Paused(pause)) if !pause.released);
+        if waits_on(&Recipient::User) {
+            Some(RecordedWait::User)
+        } else if paused {
+            Some(RecordedWait::Machine)
+        } else if waits_on(&Recipient::Orchestrator) {
+            Some(RecordedWait::Orchestrator)
+        } else if self.tasks.get(task).is_some_and(|t| !self.unmet_dependencies(t).is_empty()
+            || t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| dep.state == TaskState::Done && dep.revision > revision)) {
+            Some(RecordedWait::Tasks)
+        } else {
+            None
+        }
+    }
+
+    /// What the node of `task` waits for now, if its last turn ended on a card that asks the
+    /// user how it goes on and that wait covers it, or else on something still unanswered.
+    pub fn waiting_on(&self, task: &TaskId) -> Option<RecordedWait> {
+        let since = self.interactions.values()
+            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.id.0.starts_with(TURN_ENDED_PREFIX) && self.open(i))
+            .map(|i| i.revision)
+            .max()
+            .unwrap_or(u64::MAX);
+        self.recorded_wait(task, since)
     }
 
     /// The user answered `card`, one the lifecycle of the task requires: cancelling ends the
@@ -1626,6 +1657,15 @@ pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &
 /// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
 /// explains its next step.
 pub const TURN_ENDED_PREFIX: &str = "turn-ended-";
+
+/// Who a node at rest waits for, by what Alondra recorded of its task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordedWait {
+    User,
+    Orchestrator,
+    Machine,
+    Tasks,
+}
 
 /// The card a turn end asks with. Clients name cards in view keys and action ids, whose grammar
 /// takes letters, digits, `-`, `_` and `.`: an SDK turn such as `claude-message:<uuid>` keeps its

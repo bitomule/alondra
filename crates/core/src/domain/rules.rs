@@ -1229,7 +1229,7 @@ impl DomainState {
     fn resume_waiting_nodes(&self, before: &DomainState, effects: &mut Vec<DomainEffect>) {
         for t in self.tasks.values() {
             let waited = before.tasks.get(&t.id).is_some_and(|b| b.state == TaskState::WaitingDependency);
-            if !waited || t.state != TaskState::Running || t.dependencies.is_empty() || t.final_presentation.is_some() {
+            if !waited || !matches!(t.state, TaskState::Running | TaskState::NeedsYou) || t.dependencies.is_empty() || t.final_presentation.is_some() {
                 continue;
             }
             let titles: Vec<&str> = t.dependencies.iter()
@@ -1363,7 +1363,10 @@ impl DomainState {
     /// The titles of the Tasks `task` still waits for, while its state is waiting for them:
     /// none when it waits for nothing another Task has to do.
     pub fn waited_tasks(&self, task: &TaskId) -> Vec<String> {
-        let Some(t) = self.tasks.get(task).filter(|t| t.state == TaskState::WaitingDependency) else { return vec![] };
+        self.tasks.get(task).filter(|t| t.state == TaskState::WaitingDependency).map(|t| self.unmet_dependencies(t)).unwrap_or_default()
+    }
+    /// The titles of the Tasks `t` depends on that are not done yet, whatever its state says.
+    pub fn unmet_dependencies(&self, t: &Task) -> Vec<String> {
         let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.state != TaskState::Done));
         let undelivered = t.delivered_dependencies.iter()
             .filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.final_presentation.is_none() || d.state == TaskState::Cancelled));
@@ -1623,16 +1626,20 @@ impl DomainState {
     fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
         i.card.blocks.is_empty() && self.unanswered_card(i, t)
     }
+    /// A card of the task that holds it on the user: a question to the orchestrator holds it on
+    /// the orchestrator, and a turn-ended card a recorded wait covers holds it on that wait.
     pub(super) fn blockers(&self, t: &TaskId) -> bool {
         self.interactions.values().any(|i| {
             i.scope == (Scope::Task { task_id: t.clone() })
                 && i.blocking
                 && !i.withdrawn
+                && i.recipient != Recipient::Orchestrator
                 && matches!(
                     i.payload,
                     InteractionPayload::Question { answer: None, .. }
                         | InteractionPayload::ActionRequest { answer: None, .. }
                 )
+                && !self.covered_by_recorded_wait(i)
         })
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {

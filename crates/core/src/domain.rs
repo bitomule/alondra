@@ -52,6 +52,8 @@ pub(crate) mod mcp_wait_tests;
 mod decision_tests;
 #[cfg(test)]
 mod plan_wait_tests;
+#[cfg(test)]
+mod turn_end_wait_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;

@@ -1088,6 +1088,25 @@ mod tests {
             continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
         }]);
     }
+    // A Monitor watch is a background task of its own (`local_bash`, per the SDK's
+    // SDKTaskStartedMessage): the turn that started it ends behind it, and its end wakes the node.
+    #[test]
+    fn a_monitor_watch_is_work_the_turn_ends_behind() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let turn = TurnId::new(format!("claude-message:{REPLY}")).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"monitor-1","tool_use_id":"toolu_monitor",
+            "task_type":"local_bash","description":"gh pr checks --watch","is_backgrounded":true}));
+        let work = WorkId::new(format!("claude-task:{SECOND}")).unwrap();
+        assert_eq!(fold(&started, &session(), &mut state, input).unwrap(), vec![Observation::WorkStarted { turn: turn.clone(), work: work.clone() }]);
+        let result = event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, failure: None }]);
+        let ended = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"monitor-1","tool_use_id":"toolu_monitor","status":"completed"}));
+        assert_eq!(fold(&ended, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
+            work, continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
+        }]);
+    }
     // What the native Claude 2.1.300 sends when a background subagent ends after its turn: the
     // notification names the run, Claude answers it with no input of Alondra's, and the result
     // names the same run as its origin.

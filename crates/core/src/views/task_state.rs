@@ -174,7 +174,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
         (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
         (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, _) => t!(lang, "Working", "Trabajando"),
-        (TaskActivity::WaitingUser, _) if context.domain.waits_for_orchestrator(&task.id) => return Presentation {
+        (TaskActivity::WaitingUser, _) if context.domain.waiting_on(&task.id) == Some(crate::domain::RecordedWait::Orchestrator) => return Presentation {
             since: active_at,
             ..Presentation::new(t!(lang, "Waiting for the orchestrator", "Esperando al orquestador"), Tone::Neutral, Block::Waiting, fact)
         },

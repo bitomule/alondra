@@ -12,6 +12,7 @@ make e2e-sandbox FAKES=1           # the same, with the sandbox's own claude and
 make e2e-journeys                  # opt-in: fresh sandbox with the fakes + scripted journeys
 make e2e-explore                   # the tester agent drives each Mac's TUI and writes a report
 make e2e-doc-review                # a document reviewed in the real TUI (tmux): the node gets the comments
+make e2e-turn-end-wait             # a turn that ends on a message to the orchestrator waits for it, in the real TUI (tmux)
 bazelisk test //tests/sandbox:doc_review  # the same, opt-in through Bazel
 ```
 

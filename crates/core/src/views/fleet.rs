@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, NodePhase, Pause, PauseReason, TaskState};
+use crate::domain::{AgentId, NodePhase, Pause, PauseReason, RecordedWait, TaskState};
 use std::collections::BTreeMap;
 
 fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -115,8 +115,12 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. } => (t!(lang, "Working", "Trabajando"), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
         NodePhase::WaitingUser { .. } if node_waiting(agent, context).next().is_none()
-            && context.node_task(agent).is_some_and(|task| context.domain.waits_for_orchestrator(&task.id)) =>
+            && context.node_task(agent).is_some_and(|task| context.domain.waiting_on(&task.id) == Some(RecordedWait::Orchestrator)) =>
             (t!(lang, "Waiting for the orchestrator", "Esperando al orquestador"), Tone::Neutral),
+        NodePhase::WaitingUser { .. } if node_waiting(agent, context).next().is_none()
+            && context.node_task(agent).is_some_and(|task| context.domain.waiting_on(&task.id) == Some(RecordedWait::Tasks))
+            && let Some(title) = awaited_title(agent, context) =>
+            return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
         NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
         NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
         NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),

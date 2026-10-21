@@ -12,6 +12,7 @@ pub fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<
     let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("");
     let touches_key = |s: &str| s.contains(USER_KEY_FILE) || (s.contains("Application Support") && s.to_lowercase().contains("alondra"));
     match tool? {
+        "CronCreate" | "ScheduleWakeup" => Some(SELF_WAKE_REFUSAL.into()),
         "Bash" => {
             let command = field("command");
             let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
@@ -53,6 +54,7 @@ pub fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<
     }
 }
 
+const SELF_WAKE_REFUSAL: &str = "Alondra does not see a wake Claude schedules for itself, so your task would read as stopped. To wait for work that runs, run it in the background (Bash with run_in_background, or Monitor): its end wakes you. For a durable schedule, ask the orchestrator for an Alondra schedule (ask, recipient kind orchestrator).";
 const WALK_REFUSAL: &str = "Do not search or measure the whole disk or home folder: walking it makes macOS ask the user to let Alondra read other apps' data. Search your worktree or the exact folder (node_modules, Bazel's output base), find a file by name with `mdfind`, and check free space with `df`.";
 const APP_DATA_REFUSAL: &str = "Nodes do not read other apps' data in ~/Library/Containers or ~/Library/Group Containers: macOS asks the user for permission every time.";
 const APP_DATA: [&str; 2] = ["Library/Containers", "Library/Group Containers"];
@@ -156,6 +158,17 @@ mod tests {
         assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
         assert!(bash("ls ~/Library/'Application Support'/com.bitomule.alondra.mac").is_some());
         assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
+    }
+
+    /// A wake Claude schedules for itself is no fact Alondra records: the turn it ends would read
+    /// as stopped, so a node waits on background work or an Alondra schedule instead.
+    #[test]
+    fn nodes_schedule_no_wake_of_their_own() {
+        for (tool, input) in [("CronCreate", json!({"cron": "*/5 * * * *", "prompt": "check CI"})), ("ScheduleWakeup", json!({"delaySeconds": 600}))] {
+            let refused = forbidden_for_nodes(Some(tool), Some(&input)).unwrap_or_else(|| panic!("{tool} passes"));
+            assert!(refused.contains("Monitor") && refused.contains("orchestrator"), "{refused}");
+        }
+        assert!(forbidden_for_nodes(Some("Monitor"), Some(&json!({"command": "gh pr checks --watch"}))).is_none());
     }
 
     #[test]

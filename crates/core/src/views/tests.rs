@@ -6703,7 +6703,7 @@ fn a_release_whose_node_asks_the_orchestrator_says_nothing_waits_for_you_on_any_
     state.interactions.insert(asked.id.clone(), asked);
     state.interactions.get_mut(&"published-1".into()).unwrap().withdrawn = true;
     state.derive_states();
-    assert_eq!(state.tasks[&"t-1".into()].state, TaskState::NeedsYou, "a blocking question to anyone reads as needing the user");
+    assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "a question to the orchestrator holds the task on the orchestrator, never on the user");
     says_nothing_waits(&state);
 }
 
