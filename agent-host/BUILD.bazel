@@ -155,6 +155,12 @@ js_test(
     data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 js_test(
+    name = "umask_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "umask.test.mjs",
+    data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
     name = "reconcile_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "reconcile.test.mjs",

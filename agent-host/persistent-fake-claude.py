@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -28,6 +29,9 @@ with open(capture + '.starts', 'a') as stream:
     stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history, cwd=os.getcwd())) + '\n')
     stream.flush()
     os.fsync(stream.fileno())
+# Like a command Claude runs, it creates a folder and a file under the umask it inherited.
+if 'FIXTURE_CREATES' in os.environ:
+    subprocess.run(['/bin/sh', '-c', 'mkdir "$1" && : > "$1/file"', 'sh', os.environ['FIXTURE_CREATES']], check=True)
 pending = []
 # Each decision Claude asked for and still waits on, by request id.
 asked = {}

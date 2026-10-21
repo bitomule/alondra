@@ -93,15 +93,19 @@ export class PersistentHost {
   }
   async listen(): Promise<void> {
     prepareSocket(this.config);
-    process.umask(0o077);
     await new Promise<void>((resolve, reject) => {
       const failed = (error: Error) => reject(error);
       this.server.once('error', failed);
-      this.server.listen({ path: this.config.socket_path, readableAll: false, writableAll: false }, () => {
-        this.server.off('error', failed);
-        if (this.server.address() !== this.config.socket_path) { reject(new Error('Owned socket address mismatch')); return; }
-        try { secureSocket(this.config); resolve(); } catch (error) { reject(error); }
-      });
+      // Node binds the Unix socket synchronously inside listen(): the private umask covers only that bind,
+      // so Claude and every command it runs keep the user's own umask.
+      const user = process.umask(0o077);
+      try {
+        this.server.listen({ path: this.config.socket_path, readableAll: false, writableAll: false }, () => {
+          this.server.off('error', failed);
+          if (this.server.address() !== this.config.socket_path) { reject(new Error('Owned socket address mismatch')); return; }
+          try { secureSocket(this.config); resolve(); } catch (error) { reject(error); }
+        });
+      } finally { process.umask(user); }
     });
   }
   private identity() { return { fence: this.config.fence, execution: this.config.execution, host_instance_id: this.config.host_instance_id }; }
