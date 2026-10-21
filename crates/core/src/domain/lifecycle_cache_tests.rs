@@ -121,7 +121,7 @@ fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandOutcome, Dom
                 _ => None,
             }).unwrap_or_else(|| "turn-none".into());
             let generation = s.lifecycle_of(&SDK.into())?.generation();
-            exec(s, Actor::System, Command::RecordTurnBoundary { task_id: SDK.into(), generation, turn, failure: None })
+            exec(s, Actor::System, Command::RecordTurnBoundary { task_id: SDK.into(), generation, turn, failure: None, failed: None })
         }
         Step::Stale => s.execute(&Actor::System, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("stale-{n}").into(),

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "vfdd67b67e4133dcf",
+  "version": "v3959fe7acf77487b",
   "cursor": "cursor-1",
   "title": "Inicia sesión en linear: esperan 2 tareas",
   "status": {
-    "version": "v7e35045c9d88fd6b",
+    "version": "v37e491f53d20a4c9",
     "summary": "1 pregunta · 3 nodos trabajando",
     "badge": 1,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 3
       },
       {

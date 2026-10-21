@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "v61aa51a806fbaf2d",
+  "version": "ve3be28fcc1984dcc",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
-    "version": "veced79ec6d756f7c",
+    "version": "vf5084eff43931e49",
     "summary": "1 question · 3 nodes working",
     "badge": 1,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
+        "label": "In progress",
         "value": 3
       },
       {
