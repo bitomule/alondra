@@ -129,11 +129,16 @@ impl DomainRuntime {
     /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
     /// with nothing to stop when this daemon owns no host for it.
     pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
-        let owner = {
-            let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
-            owners.iter().position(|owner| owner.agent() == agent).map(|at| owners.remove(at))
-        };
-        owner.map_or(Ok(()), |mut owner| owner.stop())
+        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.stop())
+    }
+    /// Stops the host of a node whose task is over, once the turn its Claude runs, if any, has
+    /// ended as an interrupted turn.
+    pub(crate) fn close_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
+        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
+    }
+    fn take_sdk_owner(&self, agent: &AgentId) -> Option<crate::sdk_owner::Owner> {
+        let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
+        owners.iter().position(|owner| owner.agent() == agent).map(|at| owners.remove(at))
     }
     pub(crate) fn sdk(&self) -> Option<(&crate::sdk_owner::SdkBackend, Arc<DomainRuntime>)> {
         let (backend, runtime) = self.sdk.get()?;

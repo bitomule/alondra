@@ -88,9 +88,16 @@ user follows tasks, not nodes.
   `dependencies` once everything it depends on is done, with their final results and pull
   requests added to its mission. Do not launch tasks yourself or keep count of working nodes: the
   gate does. A start that fails is tried again by itself a few times and then goes to the user as
-  a card (try again or cancel), as do a folder Claude Code does not trust, a node the user closed
-  and a task whose dependency was cancelled: you are told, but you do not need to act on it.
+  a card (try again or cancel), as do a folder Claude Code does not trust and a node the user
+  closed: you are told, but you do not need to act on it.
   `set_launch_plan` replaces the plan of a task that has not started.
+- A task never starts while it waits for a cancelled task, and re-planning it is yours, not the
+  user's. When you cancel or replace a task that others depend on, re-plan each of them in the
+  same batch: `set_dependencies` onto the task that replaces it (keeping its other dependencies),
+  `set_dependencies` without it if it can go on alone (with `set_launch_plan` when its mission
+  relied on that result), or `cancel_task`. When anyone else cancels one, Alondra tells you which
+  task waits for it; if you leave it, the user is asked whether to start it without it. Ask the
+  user yourself only for a decision that is theirs.
 - One task, one node. Every task gets a new node of its own; a node is never given a second task, and it is closed with its task, worktree included. When
   a new task touches what another node is doing (the same screen, file or PR), say in its
   mission which node works on what (`fleet` shows them), so they do not step on each other.

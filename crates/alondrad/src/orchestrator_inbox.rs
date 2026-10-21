@@ -3,14 +3,16 @@
 //! closes, a request of the user's goes back to it once and then becomes the user's Problem.
 //! A node's question gets its answer the same way: it goes back once, then becomes the user's
 //! Problem; a node's suggestion goes back once. A decision of the user that holds tasks for a
-//! plan review goes back once too, then becomes the user's Problem.
+//! plan review goes back once too, then becomes the user's Problem. A task that waits for a task
+//! that was cancelled is the orchestrator's to re-plan: it is told, reminded once, and only then
+//! does the user decide whether it starts without it.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
     Author, CardKind, DomainState, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
-    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope,
+    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, Task, TaskId,
 };
 use alondra_core::orchestrator_cards::{
-    UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
+    DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
     UNANSWERED_WITHDRAW_LABEL, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnansweredProblem, UnsplitProblem,
     PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL,
@@ -33,6 +35,9 @@ pub(crate) enum Step {
     /// A reminder about a decision of the user whose held plans are not reviewed yet.
     TellPlanReview { id: String, review: InteractionId, number: u32 },
     RaisePlanReview { request: Option<RequestId>, id: String, problem: PlanReviewProblem },
+    /// The orchestrator was told and reminded and the task still waits for a cancelled task: the
+    /// user decides whether it starts without it.
+    RaiseDependencyCancelled { task: TaskId, dependency: TaskId },
 }
 
 /// What is left in the orchestrator's inbox after it handled everything it was handed.
@@ -47,6 +52,9 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     }
     for (id, review) in &state.plan_reviews {
         steps.extend(unreviewed(state, id, review));
+    }
+    for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
+        steps.extend(dependency_cancelled(state, task));
     }
     for request in state.requests.values().filter(|request| !request.closed) {
         if state.tasks.values().any(|task| task.request_id == request.id) || asked_about(state, &request.id) {
@@ -243,6 +251,41 @@ fn unreviewed(state: &DomainState, id: &InteractionId, review: &PlanReview) -> O
     Some(Step::TellPlanReview { id: format!("{PLAN_REVIEW_NOTICE_PREFIX}{id}-{}", reminders + 1), review: id.clone(), number: reminders + 1 })
 }
 
+/// A task that waits for a cancelled task goes to the orchestrator twice, then to the user. Once
+/// it no longer waits for it, a card still asking about it is withdrawn.
+fn dependency_cancelled(state: &DomainState, task: &Task) -> Option<Step> {
+    let open = state.open_start_problem(&task.id);
+    let waits_for = state.cancelled_dependency(task);
+    if let Some(card) = open
+        && let Some(StartProblem::DependencyCancelled { dependency }) = alondra_core::start_problem::from_body(&card.body)
+        && waits_for.as_ref() != Some(&dependency)
+    {
+        return Some(Step::Withdraw { question: card.id.clone() });
+    }
+    let dependency = waits_for?;
+    if open.is_some() {
+        return None;
+    }
+    let subject = format!("{}--{dependency}", task.id);
+    let told = numbered(state, DEPENDENCY_CANCELLED_NOTICE_PREFIX, &subject).len() as u32;
+    if told >= 2 {
+        return Some(Step::RaiseDependencyCancelled { task: task.id.clone(), dependency });
+    }
+    let other = state.tasks.get(&dependency).map_or("", |t| t.title.as_str());
+    let kept: Vec<&str> = task.dependencies.iter().filter(|d| **d != dependency).map(|d| d.0.as_str()).collect();
+    let kept = if kept.is_empty() { "none".to_owned() } else { kept.join(", ") };
+    Some(Step::Tell {
+        id: format!("{DEPENDENCY_CANCELLED_NOTICE_PREFIX}{subject}-{}", told + 1),
+        text: format!(
+            "{}Task “{}” ({}) waits for “{other}” ({dependency}), which was cancelled, so it does not start. Re-plan it now with one \
+             of these: if another task replaces “{other}”, make it depend on that one with set_dependencies, keeping its other \
+             dependencies ({kept}); if it can go on without it, set_dependencies without {dependency}, and set_launch_plan if its \
+             mission relied on that task's result; if it no longer makes sense, cancel_task. Ask the user only for a decision \
+             that is theirs. If you leave it as it is, the user is asked whether to start it without “{other}” or cancel it.",
+            if told == 0 { "" } else { "Reminder: " }, task.title, task.id),
+    })
+}
+
 /// Carries the steps out; one that fails is tried again on the next pass.
 pub(crate) fn settle(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
@@ -288,6 +331,12 @@ pub(crate) fn settle(domain: &DomainRuntime) {
                     vec![option(PLAN_REVIEW_REMIND, PLAN_REVIEW_REMIND_LABEL), option(PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_KEEP_LABEL)],
                     Some(PLAN_REVIEW_REMIND),
                 ).map(drop)
+            }
+            Step::RaiseDependencyCancelled { task, dependency } => {
+                if let Err(error) = crate::start_failures::raise(domain, task, StartProblem::DependencyCancelled { dependency: dependency.clone() }) {
+                    log!("could not ask the user about {task}, which waits for the cancelled {dependency}: {error:#}");
+                }
+                Ok(())
             }
         };
         if let Err(error) = done {

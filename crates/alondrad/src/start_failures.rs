@@ -1,7 +1,7 @@
 //! What keeps every open task in someone's hands once its start goes wrong: a failed start is
-//! tried again by itself a few times and then put in front of the user, a node the user closed
-//! asks whether to relaunch, a cancelled dependency asks whether to start without it. The
-//! decisions are the domain's (`after_failure`, `DomainState::react`); this carries them out.
+//! tried again by itself a few times and then put in front of the user, and a node the user closed
+//! asks whether to relaunch. The decisions are the domain's (`after_failure`, `DomainState::react`);
+//! this carries them out.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{NodePhase, 

@@ -856,6 +856,8 @@ fn stale(error: &anyhow::Error) -> bool {
 /// Runs the owner on a thread of its own until it is told to stop or the host goes.
 pub(crate) struct Owner {
     stopped: Arc<AtomicBool>,
+    /// The stop it was told is a close: Claude's running turn ends as an interrupted turn first.
+    interrupt: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
     host: Arc<Mutex<Option<alondra_agent_runtime::owned_host::HostStop>>>,
     agent: AgentId,
@@ -865,6 +867,8 @@ pub(crate) struct Owner {
 impl Owner {
     pub(crate) fn spawn(mut driver: Driver) -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let interrupting = Arc::clone(&interrupt);
         let domain = Arc::clone(&driver.domain);
         let host = Arc::new(Mutex::new(driver.worker.stopper()));
         let current = Arc::clone(&host);
@@ -905,6 +909,12 @@ impl Owner {
                 if !told() && !driver.worker.host_exited() {
                     return Ok(());
                 }
+                if interrupting.load(Ordering::SeqCst)
+                    && let Some(host) = driver.worker.stopper()
+                    && let Err(error) = host.request_after_interrupt()
+                {
+                    log!("could not ask the SDK host of {} to interrupt its turn and stop: {error}", driver.task);
+                }
                 let stopped = driver.stop();
                 if let Err(error) = &stopped {
                     log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
@@ -912,7 +922,7 @@ impl Owner {
                 stopped
             })
             .expect("spawning the SDK owner");
-        Self { stopped, domain, host, agent, thread: Some(thread) }
+        Self { stopped, interrupt, domain, host, agent, thread: Some(thread) }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -923,10 +933,22 @@ impl Owner {
     /// until the owner has seen the host exit and its whole process group end. An error says the
     /// group did not empty, or the owner could not see it end.
     pub(crate) fn stop(&mut self) -> Result<(), Failed> {
+        self.end()
+    }
+
+    /// Stops the host as `stop` does, once a turn Claude is running has ended as an interrupted
+    /// turn: the close of a node whose task is over.
+    pub(crate) fn close(&mut self) -> Result<(), Failed> {
+        self.interrupt.store(true, Ordering::SeqCst);
+        self.end()
+    }
+
+    fn end(&mut self) -> Result<(), Failed> {
         self.stopped.store(true, Ordering::SeqCst);
         self.domain.seals.wake();
+        let interrupt = self.interrupt.load(Ordering::SeqCst);
         if let Some(host) = self.host.lock().expect("host stop poisoned").as_ref()
-            && let Err(error) = host.request()
+            && let Err(error) = if interrupt { host.request_after_interrupt() } else { host.request() }
         {
             log!("could not ask the SDK host of {} to stop: {error}", self.agent);
         }

@@ -35,6 +35,10 @@ pub const PLAN_REVIEW_NOTICE_PREFIX: &str = "plan-review-unsettled-";
 pub const PLAN_REVIEW_REMIND_LABEL: &str = "Remind the orchestrator again";
 pub const PLAN_REVIEW_KEEP_LABEL: &str = "Keep the plans as they are";
 
+/// Alondra's notice, then one reminder, to the orchestrator about a task that waits for a task
+/// that was cancelled.
+pub const DEPENDENCY_CANCELLED_NOTICE_PREFIX: &str = "dependency-cancelled-";
+
 const ERROR_SHOWN: usize = 600;
 const QUESTION_SHOWN: usize = 160;
 /// Held tasks a plan-review problem names before it counts the rest.

@@ -341,14 +341,18 @@ export class PersistentHost {
     })().catch(() => lane.channel.socket.destroy());
   }
   private diagnostic(code: string): void { process.stderr.write(`Alondra host: ${code}\n`); }
-  stop(): Promise<void> {
-    this.stopPromise ??= this.stopOwned();
+  /** With `interruptTurn`, a turn Claude is running ends as an interrupted turn before the session closes. */
+  stop(interruptTurn = false): Promise<void> {
+    this.stopPromise ??= this.stopOwned(interruptTurn);
     return this.stopPromise;
   }
-  private async stopOwned(): Promise<void> {
+  private async stopOwned(interruptTurn: boolean): Promise<void> {
     this.stopping = true;
     const failures: unknown[] = [];
     try {
+      if (interruptTurn) {
+        try { await this.session?.interruptTurn(); } catch { this.diagnostic('interrupt_before_close_failed'); }
+      }
       try { this.session?.close(); } catch (error) { failures.push(error); }
       try { await this.session?.finished; } catch (error) { failures.push(error); }
     } finally {

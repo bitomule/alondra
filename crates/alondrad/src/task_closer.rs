@@ -368,7 +368,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
 
 /// A node that runs through the Agent SDK is a process of Alondra's own: it is closed only by
 /// stopping its host through its owner, never with `claude rm`, a push or the process table. A
-/// cancelled task's node stops at once. A finished one stops once it owes no work after the merge
+/// cancelled task's node stops at once, a turn it is running interrupted first. A finished one stops once it owes no work after the merge
 /// and, unless it confirmed its cleanup or the user chose to close it, once its lifecycle shows
 /// nothing running: background work keeps it open, with no clock that cuts it. Its end is recorded
 /// once the host and everything in its process group have exited. A host this daemon does not own
@@ -420,7 +420,7 @@ async fn close_sdk_node(
         return hold_for_worktrees(domain, timing, now, task, agent, row, &left, cleanup);
     }
     forget_post_merge_check(domain, &task.id)?;
-    let stopped = if owned { blocking(|| domain.stop_sdk_host(agent)) } else { Ok(()) };
+    let stopped = if owned { blocking(|| domain.close_sdk_host(agent)) } else { Ok(()) };
     match stopped {
         Ok(()) => finish_with_worktree(domain, timing, now, task, agent, row, cleanup, if owned { NodeEnd::Closed } else { NodeEnd::Gone }).await,
         Err(why) => {

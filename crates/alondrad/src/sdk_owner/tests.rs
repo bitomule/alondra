@@ -681,6 +681,31 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
 }
 
+// 20 October: a task was cancelled while its node was mid-turn; Alondra never managed to close the
+// node and asked the user again and again to "Close it now". The node of a cancelled task is
+// Alondra's to close: its turn is interrupted, its host stopped, and the user hears nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_asks_nobody() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let group = driver.worker.host_group().unwrap();
+    let processes = alondra_process_group::members(group).unwrap();
+    let agent = driver.agent().clone();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude's turn was interrupted before its host closed");
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)));
+    assert!(!slice.domain.owns_sdk_host(&agent));
+    let left: Vec<String> =
+        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
+    let cards: Vec<&str> = state.interactions.keys().map(|id| id.0.as_str()).filter(|id| id.starts_with("problem-close-")).collect();
+    assert!(cards.is_empty(), "the user is never asked to close it: {cards:?}");
+}
+
 // The node delivers, its host dies with nothing left in its worktrees, and the user accepts the
 // result: the task closes without the session, which is gone, with its node's end as the fact.
 #[tokio::test]

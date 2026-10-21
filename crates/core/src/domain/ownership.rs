@@ -1,7 +1,7 @@
 //! Who an open task waits for. Every open task is in exactly one of these hands: its node works on
 //! it, the gate holds it until there is room (capacity, memory, disk, usage, or a retry Alondra
-//! scheduled), another open task holds it, the user holds it (a card, a review, their pause), or
-//! it is closing. A task in nobody's hands is a bug: `holder` names it, and `react` and
+//! scheduled), another open task holds it, the orchestrator re-plans it (a task it waited for was
+//! cancelled), the user holds it (a card, a review, their pause), or it is closing. A task in nobody's hands is a bug: `holder` names it, and `react` and
 //! `after_failure` are the decisions that keep every task in someone's.
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,9 @@ pub enum Holder {
     Node,
     Gate(GateCause),
     Task(TaskId),
+    /// It waits for a task that was cancelled: the orchestrator, which planned that wait, re-plans
+    /// it, and only if it does not is the user asked.
+    Orchestrator,
     User(UserCause),
     Closing,
 }
@@ -196,8 +199,7 @@ impl DomainState {
         }
         if t.state == TaskState::WaitingDependency {
             return match self.pending_dependency(t) {
-                Some(dependency) if self.tasks.get(&dependency).is_some_and(Task::cancelled) =>
-                    ownerless("depends on a cancelled task and nobody was asked"),
+                Some(dependency) if self.tasks.get(&dependency).is_some_and(Task::cancelled) => Ok(Holder::Orchestrator),
                 Some(dependency) => Ok(Holder::Task(dependency)),
                 None => ownerless("waits on nothing"),
             };
@@ -241,6 +243,15 @@ impl DomainState {
             .cloned()
     }
 
+    /// The cancelled task an open task still waits for, before it got its final delivery: it never
+    /// starts while it does.
+    pub fn cancelled_dependency(&self, t: &Task) -> Option<TaskId> {
+        if t.state != TaskState::WaitingDependency || t.final_presentation.is_some() {
+            return None;
+        }
+        self.pending_dependency(t).filter(|d| self.tasks.get(d).is_some_and(Task::cancelled))
+    }
+
     /// The user chose "try again" on its last start problem; with `since`, only if nothing happened
     /// to the task after, such as a new node closed again. A blocked start needs no such bound:
     /// the daemon unblocks it when it acts on the answer.
@@ -256,12 +267,6 @@ impl DomainState {
         for t in self.tasks.values().filter(|t| !t.state.terminal() && !t.archived) {
             let f = facts.get(&t.id).unwrap_or(&none);
             if self.open_start_problem(&t.id).is_some() {
-                continue;
-            }
-            if t.state == TaskState::WaitingDependency && t.final_presentation.is_none()
-                && let Some(dependency) = self.pending_dependency(t).filter(|d| self.tasks.get(d).is_some_and(Task::cancelled))
-            {
-                out.push(Reaction::Ask(t.id.clone(), StartProblem::DependencyCancelled { dependency }));
                 continue;
             }
             let unstarted = t.state == TaskState::NotStarted && t.agent_id.is_none() && !t.started;

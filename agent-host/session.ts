@@ -195,6 +195,7 @@ export class Session {
   private permissions: PermissionCallbacks;
   private inputs = new Set<string>();
   private seenResult = false;
+  private turnOpen = false;
   private closing = false;
   private childEnded: Promise<void> = Promise.resolve();
   private releaseNativeReadEnds?: () => Promise<void>;
@@ -280,11 +281,17 @@ export class Session {
     if (this.inputs.has(inputId)) throw new Error('Duplicate outstanding input');
     this.input.offer({ type: 'user', uuid: inputId as NonNullable<SDKUserMessage['uuid']>, session_id: '', parent_tool_use_id: null, message: { role: 'user', content: prompt } });
     this.inputs.add(inputId);
+    this.turnOpen = true;
   }
   respond(request: DecisionRequest, decision: Decision): boolean {
     return this.permissions.respond(request, decision);
   }
   interrupt(): ReturnType<Query['interrupt']> { return this.query.interrupt(); }
+  /** A turn still running ends as an interrupted turn, so closing never cuts Claude mid-turn; Claude exiting first also settles it. */
+  async interruptTurn(): Promise<void> {
+    if (!this.turnOpen || this.closing) return;
+    await Promise.race([this.query.interrupt(), this.finished]);
+  }
   supportedModels(): ReturnType<Query['supportedModels']> { return this.query.supportedModels(); }
   setModel(model: string): Promise<void> { return this.query.setModel(model); }
   setPermissionMode(mode: 'default' | 'plan' | 'dontAsk'): Promise<void> { return this.query.setPermissionMode(mode); }
@@ -307,6 +314,10 @@ export class Session {
       for await (const message of this.query) {
         const payload = message as unknown as Record<string, unknown>;
         if (payload.type === 'result') this.seenResult = true;
+        if (payload.parent_tool_use_id === undefined || payload.parent_tool_use_id === null) {
+          if (payload.type === 'result') this.turnOpen = false;
+          else if (payload.type === 'assistant') this.turnOpen = true;
+        }
         // This bounds outstanding sends; domain consumption remains a Rust observation decision.
         if ((payload.type === 'assistant' || payload.type === 'result')
             && (payload.parent_tool_use_id === undefined || payload.parent_tool_use_id === null)) {

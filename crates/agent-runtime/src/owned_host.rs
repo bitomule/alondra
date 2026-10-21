@@ -446,24 +446,31 @@ enum Leader {
 }
 impl HostStop {
     pub fn request(&self) -> io::Result<()> {
+        self.send(rustix::process::Signal::TERM)
+    }
+    /// Asks the host to stop once Claude's running turn, if any, has ended as an interrupted turn.
+    pub fn request_after_interrupt(&self) -> io::Result<()> {
+        self.send(rustix::process::Signal::INT)
+    }
+    fn send(&self, sig: rustix::process::Signal) -> io::Result<()> {
         let pid = match &self.0 {
             Leader::Launched(leader) => {
                 let leader = leader.lock().expect("owned host leader poisoned");
                 let Some(pid) = *leader else {
                     return Ok(());
                 };
-                return signal(pid);
+                return signal(pid, sig);
             }
             Leader::Adopted(peer) => match *peer.lock().expect("adopted host peer poisoned") {
                 Some(host) if alondra_process_group::alive(&host)? => host.pid,
                 _ => return Ok(()),
             },
         };
-        signal(rustix::process::Pid::from_raw(pid).ok_or_else(|| refused("adopted host without a process"))?)
+        signal(rustix::process::Pid::from_raw(pid).ok_or_else(|| refused("adopted host without a process"))?, sig)
     }
 }
-fn signal(pid: rustix::process::Pid) -> io::Result<()> {
-    match rustix::process::kill_process(pid, rustix::process::Signal::TERM) {
+fn signal(pid: rustix::process::Pid, sig: rustix::process::Signal) -> io::Result<()> {
+    match rustix::process::kill_process(pid, sig) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
         Err(error) => Err(error.into()),
     }

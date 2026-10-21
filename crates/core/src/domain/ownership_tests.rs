@@ -24,6 +24,9 @@ enum Step {
     Cancel(usize),
     Reopen(usize),
     AnswerProblem { pick: usize, option: usize },
+    /// What becomes of a task that waits for a cancelled task: the orchestrator re-points it,
+    /// drops the wait or cancels it, or leaves it and the inbox asks the user.
+    Replan { pick: usize, outcome: usize, onto: usize },
 }
 
 fn step() -> impl Strategy<Value = Step> {
@@ -44,6 +47,7 @@ fn step() -> impl Strategy<Value = Step> {
         1 => (0usize..8).prop_map(Step::Cancel),
         2 => (0usize..8).prop_map(Step::Reopen),
         2 => (0usize..8, 0usize..3).prop_map(|(pick, option)| Step::AnswerProblem { pick, option }),
+        2 => (0usize..8, 0usize..4, 0usize..8).prop_map(|(pick, outcome, onto)| Step::Replan { pick, outcome, onto }),
     ]
 }
 
@@ -321,6 +325,28 @@ impl World {
                     fact.node = NodeFact::Gone;
                 }
             }
+            Step::Replan { pick, outcome, onto } => {
+                let Some(task) = self.pick(pick, |t, _| self.s.cancelled_dependency(t).is_some()) else { return };
+                let t = &self.s.tasks[&task];
+                let cancelled = self.s.cancelled_dependency(t).unwrap();
+                let kept: BTreeSet<TaskId> = t.dependencies.iter().filter(|d| **d != cancelled).cloned().collect();
+                match outcome {
+                    0 => {
+                        let Some(replacement) = self.pick(onto, |other, _| other.id != task && other.id.0 != "run") else { return };
+                        let dependencies = kept.into_iter().chain([replacement]).collect();
+                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies, stack: None });
+                    }
+                    1 => {
+                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies: kept, stack: None });
+                    }
+                    2 => self.must(orchestrator(), Command::CancelTask { task_id: task }),
+                    _ => {
+                        if self.s.open_start_problem(&task).is_none() {
+                            self.must(Actor::System, Command::RaiseStartProblem { task_id: task, problem: StartProblem::DependencyCancelled { dependency: cancelled } });
+                        }
+                    }
+                }
+            }
             Step::AnswerProblem { pick, option } => {
                 let Some(task) = self.pick(pick, |t, _| self.s.open_start_problem(&t.id).is_some()) else { return };
                 let card = self.s.open_start_problem(&task).unwrap();
@@ -453,10 +479,9 @@ fn a_start_that_keeps_failing_is_retried_then_put_to_the_user() {
     assert_eq!(w.facts[&task].start, Start::Ready);
 }
 
-/// A node the user closes asks whether to relaunch its task; a cancelled dependency asks whether
-/// to start without it; answering cancel closes the task.
+/// A node the user closes asks whether to relaunch its task.
 #[test]
-fn a_closed_node_and_a_cancelled_dependency_each_ask_the_user() {
+fn a_closed_node_asks_the_user() {
     let mut w = World::new();
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
     w.apply(&Step::Admit(0));
@@ -464,18 +489,78 @@ fn a_closed_node_and_a_cancelled_dependency_each_ask_the_user() {
     w.react();
     let closed = w.s.open_start_problem(&"t1".into()).expect("a card for the closed node");
     assert_eq!(closed.card.need, "Relaunch “Task t1” or cancel it");
+}
 
+/// A task with `dependencies` on a task that is cancelled waits for its re-plan.
+fn waiting_for_a_cancelled_task() -> (World, TaskId) {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![1] });
-    let waiting = w.s.tasks.values().find(|t| t.dependencies.contains(&TaskId::from("t1"))).unwrap().id.clone();
+    let waiting: TaskId = "t2".into();
+    assert_eq!(w.s.tasks[&waiting].dependencies, BTreeSet::from([TaskId::from("t1")]));
     w.must(user(), Command::CancelTask { task_id: "t1".into() });
-    assert!(matches!(w.s.holder(&w.s.tasks[&waiting], &w.facts[&waiting]), Err(Ownerless { why: "depends on a cancelled task and nobody was asked", .. })));
     w.react();
-    let card = w.s.open_start_problem(&waiting).expect("a card for the cancelled dependency").clone();
+    (w, waiting)
+}
+
+/// 20 October: the user cancelled «the build queue sirve primero los trabajos de más prioridad» and was
+/// asked at once whether to start the Alondra task that waited for it without it. That re-plan is
+/// the orchestrator's: no card reaches the user, and no node starts it while it waits for the
+/// cancelled task. Only once the orchestrator leaves it does the user decide, and starting it
+/// without the cancelled task still works.
+#[test]
+fn a_task_whose_dependency_is_cancelled_goes_to_the_orchestrator_and_never_starts() {
+    let (mut w, waiting) = waiting_for_a_cancelled_task();
+    let t = &w.s.tasks[&waiting];
+    assert_eq!(t.state, TaskState::WaitingDependency);
+    assert_eq!(w.s.cancelled_dependency(t), Some("t1".into()));
+    assert!(w.s.open_start_problem(&waiting).is_none(), "the user is not asked");
+    assert_eq!(w.s.holder(t, &w.facts[&waiting]), Ok(Holder::Orchestrator));
+    let agent: AgentId = "eager".into();
+    w.must(Actor::System, Command::RegisterAgent { agent_id: agent.clone(), name: "eager".into(), at: 0 });
+    let refused = w.exec(Actor::System, Command::AssignTask { task_id: waiting.clone(), agent_id: agent.clone(), model: None });
+    assert!(refused.is_err() || w.exec(Actor::Agent { agent_id: agent }, Command::StartTask { task_id: waiting.clone() }).is_err(),
+        "no node starts it while it waits for a cancelled task");
+    assert!(!w.s.tasks[&waiting].started);
+
+    w.must(Actor::System, Command::RaiseStartProblem { task_id: waiting.clone(), problem: StartProblem::DependencyCancelled { dependency: "t1".into() } });
+    let card = w.s.open_start_problem(&waiting).expect("the user's card once the orchestrator left it").clone();
     assert_eq!(card.card.need, "“Task t1” was cancelled: start “Task t2” without it?");
+    assert_eq!(w.s.holder(&w.s.tasks[&waiting], &w.facts[&waiting]), Ok(Holder::User(UserCause::Card(card.id.clone()))));
     w.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id, option_id: START_WITHOUT.into(), inputs: BTreeMap::new() });
     let t = &w.s.tasks[&waiting];
     assert!(t.dependencies.is_empty() && t.state == TaskState::NotStarted);
     assert_eq!(w.s.holder(t, &w.facts[&waiting]), Ok(Holder::Gate(GateCause::Room)));
+}
+
+/// The orchestrator replaced the cancelled task: the dependent follows its dependencies, waits for
+/// the replacement and starts once it is done, with nobody asked.
+#[test]
+fn a_task_re_pointed_to_a_replacement_waits_for_it_and_nobody_is_asked() {
+    let (mut w, waiting) = waiting_for_a_cancelled_task();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    let replacement: TaskId = "t3".into();
+    w.must(orchestrator(), Command::SetDependencies { task_id: waiting.clone(), dependencies: BTreeSet::from([replacement.clone()]), stack: None });
+    w.react();
+    let t = &w.s.tasks[&waiting];
+    assert_eq!(w.s.cancelled_dependency(t), None);
+    assert_eq!(w.s.holder(t, &w.facts[&waiting]), Ok(Holder::Task(replacement.clone())));
+    assert!(w.s.open_start_problem(&waiting).is_none());
+
+    w.start_node(&replacement);
+    let agent = w.agent_of(&replacement).unwrap();
+    w.must(Actor::Agent { agent_id: agent }, Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: replacement.clone(), interaction_id: "final-t3".into(), body: "Done".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], is_final: true, nothing_to_review: false,
+        card: CardSpec::delivery("Review the result", &[], true),
+    });
+    w.apply(&Step::AcceptAndFinish(0));
+    w.react();
+    assert_eq!(w.s.tasks[&replacement].state, TaskState::Done);
+    let t = &w.s.tasks[&waiting];
+    assert_eq!(t.state, TaskState::NotStarted, "its wait is over");
+    assert_eq!(w.s.holder(t, &w.facts[&waiting]), Ok(Holder::Gate(GateCause::Room)));
+    assert!(w.s.open_start_problem(&waiting).is_none());
 }
 
 /// The flaky snapshots node: its question answered, it stopped without delivering. While Alondra

@@ -9,8 +9,8 @@ async function main(): Promise<void> {
   const host = new PersistentHost(config);
   try { await host.listen(); } catch (error) { await host.stop(); throw error; }
   let stopping = false;
-  const stop = () => { if (!stopping) { stopping = true; void host.stop().catch(() => { process.exitCode = 1; }); } };
-  process.on('SIGTERM', stop); process.on('SIGINT', stop);
+  const stop = (interruptTurn: boolean) => { if (!stopping) { stopping = true; void host.stop(interruptTurn).catch(() => { process.exitCode = 1; }); } };
+  process.on('SIGTERM', () => stop(false)); process.on('SIGINT', () => stop(true));
   // With its ownership lock unlinked no owner can ever adopt this host: end the whole group.
   const lock = fstatSync(0);
   const unadoptable = setInterval(() => {
