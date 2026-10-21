@@ -526,6 +526,25 @@ async fn http_the_orchestrator_creates_every_task_with_its_plan() {
 }
 
 #[tokio::test]
+async fn http_a_repository_with_capitals_registers_one_lowercase_pr_whichever_spelling_comes() {
+    let mut fixture = Fixture::start().await;
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    fixture.task("parcel-task", false).await;
+    for repository in ["acmecorp-private/Parcel", "acmecorp-private/parcel"] {
+        fixture.producer(false, json!({"kind":"register_pr", "task_id":"parcel-task", "pr_id":"pr-65",
+            "host":"github.com", "repository":repository, "number":65, "head":head, "base":"main",
+            "allowed_methods":["squash"]})).await;
+    }
+
+    let state = fixture.domain.state().unwrap();
+    let parcel = PrId::from("github.com/acmecorp-private/parcel#65");
+    assert_eq!(state.pull_requests.keys().collect::<Vec<_>>(), vec![&parcel]);
+    assert_eq!(state.pull_requests[&parcel].repository, "acmecorp-private/parcel");
+    assert_eq!(state.tasks[&"parcel-task".into()].pr_id.as_ref(), Some(&parcel));
+    fixture.finish().await;
+}
+
+#[tokio::test]
 async fn http_a_pr_number_another_repository_already_used_is_registered_and_presented_as_its_own() {
     let mut fixture = Fixture::start().await;
     let head = "0123456789abcdef0123456789abcdef01234567";

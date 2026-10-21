@@ -772,6 +772,11 @@ pub fn normalize_pr_host(host: &str) -> String {
         other => other.to_owned(),
     }
 }
+/// A PR repository as its owner/name, lowercase: GitHub does not tell `Parcel` from `parcel`,
+/// so both spellings name one PR and get one id.
+pub fn normalize_pr_repository(repository: &str) -> String {
+    repository.trim().to_ascii_lowercase()
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainError {
     pub code: String,

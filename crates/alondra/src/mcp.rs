@@ -949,6 +949,10 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
             let host = alondra_core::domain::normalize_pr_host(host);
             command.insert("host".into(), Value::String(host));
         }
+        if let Some(repository) = command.get("repository").and_then(Value::as_str) {
+            let repository = alondra_core::domain::normalize_pr_repository(repository);
+            command.insert("repository".into(), Value::String(repository));
+        }
         if let (Some(host), Some(repository), Some(number)) = (
             command.get("host").and_then(Value::as_str),
             command.get("repository").and_then(Value::as_str),
@@ -1647,6 +1651,17 @@ mod tests {
             let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
             assert_eq!(envelope["command"]["host"], expected, "{given}");
             assert_eq!(envelope["command"]["pr_id"], format!("{expected}/org/repo#12"), "{given}");
+        }
+    }
+
+    #[test]
+    fn register_pr_names_a_repository_with_capitals_by_its_lowercase_spelling() {
+        for repository in ["acmecorp-private/Parcel", "acmecorp-private/parcel"] {
+            let args = json!({"task_id":"task-a","host":"github.com","repository":repository,
+                "number":65,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
+            let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
+            assert_eq!(envelope["command"]["repository"], "acmecorp-private/parcel", "{repository}");
+            assert_eq!(envelope["command"]["pr_id"], "github.com/acmecorp-private/parcel#65", "{repository}");
         }
     }
 

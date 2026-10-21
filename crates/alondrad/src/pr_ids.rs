@@ -3,7 +3,7 @@
 //! a second repository reaches #163. Alondra gives the id when the PR is registered, and a node
 //! that later names "its PR" always gets the one its task owns, whatever id it writes.
 
-use alondra_core::domain::{hosted_pr_id, normalize_pr_host, DomainError, DomainState, InteractionId, PrId, Scope, TaskId};
+use alondra_core::domain::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, Scope, TaskId};
 use serde_json::Value;
 
 pub(crate) fn assign(state: &DomainState, method: &str, path: &str, id: Option<&str>, body: &mut Value) -> Result<(), DomainError> {
@@ -56,8 +56,10 @@ fn register(body: &mut Value) {
         return;
     };
     let host = normalize_pr_host(host);
-    body["pr_id"] = Value::String(hosted_pr_id(&host, repository, number).0);
+    let repository = normalize_pr_repository(repository);
+    body["pr_id"] = Value::String(hosted_pr_id(&host, &repository, number).0);
     body["host"] = Value::String(host);
+    body["repository"] = Value::String(repository);
 }
 
 fn owned(state: &DomainState, task: &TaskId) -> Option<PrId> {
@@ -79,6 +81,16 @@ mod tests {
         assign(&DomainState::new("epoch"), "POST", "/tasks/lumo/pull-requests", Some("lumo"), &mut body).unwrap();
         assert_eq!(body["pr_id"], "github.com/bitomule/lumo#163");
         assert_eq!(body["host"], "github.com");
+    }
+
+    #[test]
+    fn a_repository_with_capitals_names_the_same_pr_as_its_lowercase_spelling() {
+        for repository in ["acmecorp-private/Parcel", "acmecorp-private/parcel", " Acmecorp-Private/PARCEL "] {
+            let mut body = json!({"host":"github.com","repository":repository,"number":65});
+            assign(&DomainState::new("epoch"), "POST", "/tasks/parcel/pull-requests", Some("parcel"), &mut body).unwrap();
+            assert_eq!(body["pr_id"], "github.com/acmecorp-private/parcel#65", "{repository}");
+            assert_eq!(body["repository"], "acmecorp-private/parcel", "{repository}");
+        }
     }
 
     #[test]
