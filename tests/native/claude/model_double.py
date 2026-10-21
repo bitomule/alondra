@@ -180,6 +180,15 @@ ERRORS = {
 }
 
 
+# A task's answers report this usage while a file named `model-usage` next to the log holds it as
+# JSON: a long conversation, with what its request read from and wrote to the prompt cache.
+def task_usage(log):
+    try:
+        return json.loads(Path(log).with_name('model-usage').read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def refusal(log):
     try:
         status = int(Path(log).with_name('model-refuse').read_text().strip())
@@ -247,8 +256,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not orchestrator and Path(self.server.log).with_name('model-hold').exists():
             # Held unanswered, as when the Mac shuts down before the model replies.
             threading.Event().wait()
+        usage = (None if orchestrator else task_usage(self.server.log)) or {'input_tokens': 10, 'output_tokens': 0}
         message = {'id': 'msg_sandbox_' + str(served), 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
-                   'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 10, 'output_tokens': 0}}
+                   'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': usage}
         made = made_since_prompt(body)
         if orchestrator:
             calls = [(use, ORCHESTRATOR + tool, arguments) for use, tool, arguments in orchestrator_calls(self.server.scripts, batch_text(body))] if self.server.scripts else []
@@ -282,7 +292,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if text['type'] == 'tool_use':
                 text = dict(block, input=json.loads(delta['partial_json']))
             return self.reply(200, dict(message, content=[text], stop_reason=stop, stop_sequence=stop_sequence,
-                                        usage={'input_tokens': 10, 'output_tokens': 10}))
+                                        usage=dict(usage, output_tokens=10)))
         data = ''.join('event: ' + name + '\ndata: ' + json.dumps(event) + '\n\n' for name, event in events).encode()
         self.reply(200, data, 'text/event-stream')
 

@@ -135,7 +135,9 @@ the `sdk` journey: the phone sends a request, the native Claude's first turn end
 with a card of its own, and what the user writes on that card reaches Claude too. Then the model
 double answers the tasks' requests with a 401 and later a 529 while `sdk/model-refuse` holds that
 status: the native Claude's error holds each task on its sign-in or API card, and «I signed in» or
-«Try now» lets it go on once the double answers again. Last, a task's native Claude, in a synthetic HOME
+«Try now» lets it go on once the double answers again. While `sdk/model-usage` holds a usage as
+JSON, the double reports it for the tasks' answers: a 250 000-token conversation with a five-minute
+cache rests on its card and Alondra compacts it once, seconds later, keeping that card. Last, a task's native Claude, in a synthetic HOME
 that is its default profile, loads the user's CLAUDE.md, skill and enabled plugin, the project's
 CLAUDE.md, the local CLAUDE.local.md and Alondra's node plugin, whose MCP server connects.
 Then the double answers tasks with tool calls the journey scripts in `sdk/model-tools`: a command

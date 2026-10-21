@@ -42,6 +42,8 @@ pub struct DomainRuntime {
     pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
     /// Each `claude --bg` node's move to the SDK, once this daemon has an SDK backend.
     pub(crate) handovers: crate::sdk_handover::Handovers,
+    /// What each SDK task's conversation measured, to compact it while it rests.
+    pub(crate) contexts: crate::idle_compaction::Contexts,
     #[cfg(test)]
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
@@ -97,6 +99,7 @@ impl DomainRuntime {
             sdk: Default::default(),
             sdk_owners: Default::default(),
             handovers: Default::default(),
+            contexts: Default::default(),
             #[cfg(test)]
             before_owner_publish: Default::default(),
             #[cfg(test)]

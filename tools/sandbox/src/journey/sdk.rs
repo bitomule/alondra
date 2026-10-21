@@ -140,6 +140,45 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         Ok(())
     });
+    report.case("S13", "A long conversation resting on its card compacts once before its prompt cache expires, and the card stays", |report| {
+        const MISSION: &str = "Summarize the roadmap";
+        large_context(sandbox, true)?;
+        request(report, fakes, &user, &task_script("req-s13", "t-s13", MISSION), MISSION)?;
+        let card = wait(report, "the turn ends and its card waits in Inbox", || card_in_inbox(&user, "turn-ended-t-s13-"))?;
+        large_context(sandbox, false)?;
+        let mission = |sandbox: &Sandbox| -> Result<Vec<Value>> {
+            Ok(model_requests(sandbox)?.into_iter().filter(|request| request["context"].as_str().is_some_and(|context| context.contains(MISSION))).collect())
+        };
+        let compactions = |sandbox: &Sandbox| {
+            let log = std::fs::read_to_string(sandbox.dir.join("mac-1/alondrad.log")).unwrap_or_default();
+            log.lines().filter(|line| line.contains("compacting t-s13 while it rests")).count()
+        };
+        wait(report, "with nobody answering, Alondra compacts the resting conversation before its cache expires", || {
+            let compacted = compactions(sandbox);
+            Ok(((compacted > 0).then_some(()), format!("{compacted} compactions logged")))
+        })?;
+        wait(report, "Claude asks the model for the conversation's summary", || {
+            let requests = mission(sandbox)?;
+            Ok(((requests.len() >= 2).then_some(()), format!("{} requests carry the mission", requests.len())))
+        })?;
+        report.step("Alondra compacted the conversation once", || {
+            let compacted = compactions(sandbox);
+            anyhow::ensure!(compacted == 1, "{compacted} compactions logged");
+            Ok(())
+        })?;
+        report.step("the same card waits, and no other card of the task appeared", || {
+            let inbox = user.inbox()?;
+            let cards: Vec<&String> = inbox.iter().filter(|id| id.contains("t-s13")).collect();
+            anyhow::ensure!(cards == [&card], "{inbox:?}");
+            Ok(())
+        })?;
+        report.step("the model got the mission and one compaction, nothing else", || {
+            let requests = mission(sandbox)?;
+            anyhow::ensure!(requests.len() == 2, "{requests:?}");
+            Ok(())
+        })?;
+        report.snapshot("card-after-compaction", &user.view(&format!("card:{card}"))?)
+    });
     report.case("S4", "A task's native Claude loads the user's default profile, the project and Alondra's plugin", |report| {
         write_parity(sandbox)?;
         request(report, fakes, &user, &task_script("req-s4", "t-s4", "Write the parity notes"), "Write the parity notes")?;
@@ -364,6 +403,21 @@ fn refuse(sandbox: &Sandbox, status: Option<u16>) -> Result<()> {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error).context("removing the refusal"),
             _ => Ok(()),
         },
+    }
+}
+
+/// The model double reports a 250 000-token conversation whose request wrote a five-minute prompt
+/// cache while it is set.
+fn large_context(sandbox: &Sandbox, on: bool) -> Result<()> {
+    let marker = sandbox.dir.join("sdk/model-usage");
+    if on {
+        let usage = serde_json::json!({"input_tokens": 3, "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 248_000, "output_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 2000, "ephemeral_1h_input_tokens": 0}});
+        return std::fs::write(&marker, usage.to_string()).with_context(|| format!("writing {}", marker.display()));
+    }
+    match std::fs::remove_file(&marker) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error).context("removing the usage"),
+        _ => Ok(()),
     }
 }
 

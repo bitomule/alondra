@@ -14,7 +14,7 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control, native_exited};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control, context_event, native_exited};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -642,6 +642,7 @@ impl Driver {
             .own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker))
             .map_err(failed("recording the command"))?;
         let command = self.sealed().commands.pop().ok_or_else(|| Failed("the command left no seal".into()))?;
+        self.domain.contexts.handed(&self.task, alondra_core::now_millis());
         let handoff = self.worker.submit(&command).unwrap_or(Handoff::Uncertain);
         if handoff == Handoff::Uncertain && self.worker.host_exited() {
             self.host_closed = true;
@@ -683,6 +684,9 @@ impl Driver {
             .map_err(failed("committing the observation"))?;
         if let Some(answered) = answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);
+        }
+        if let Some(event) = context_event(&batch) {
+            self.domain.contexts.observed(&self.task, event, alondra_core::now_millis());
         }
         for observation in self.sealed().observations {
             #[cfg(test)]
@@ -838,6 +842,12 @@ impl Driver {
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
         self.host_closed && !self.replacement
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        self.domain.contexts.forget(&self.task);
     }
 }
 

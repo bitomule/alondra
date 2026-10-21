@@ -1879,6 +1879,35 @@ fn compacting_a_resting_task_runs_a_compaction_turn_and_keeps_its_one_card() {
     driver.stop().unwrap();
 }
 
+// A large conversation resting on its card compacts once, in the last minutes of the prompt cache
+// its last request wrote, and keeps that card; before then nothing happens.
+#[test]
+fn a_large_conversation_resting_on_its_card_compacts_once_before_its_cache_expires() {
+    use crate::idle_compaction::{Timing, compact_due};
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("large-context");
+    slice.settle(&mut driver);
+    let before = Slice::read_cards(&slice.domain);
+    assert_eq!(before.len(), 1);
+    let readings = slice.domain.contexts.readings();
+    assert_eq!(readings.len(), 1, "the answer's usage was measured");
+    let reading = readings[0].1;
+    assert_eq!(reading.tokens, 250_403);
+    let opens = reading.expires_at - Timing::LIVE.lead;
+    assert_eq!(compact_due(&slice.domain, opens - 1, &Timing::LIVE), Some(opens), "too early, it looks again when the window opens");
+    assert_eq!(driver.pending_permits(), 0);
+    compact_due(&slice.domain, opens, &Timing::LIVE);
+    assert_eq!(driver.pending_permits(), 1, "the compaction is an input the owner sends");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(slice.prompts(), ["large-context", "/compact"]);
+    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting);
+    assert_eq!(Slice::read_cards(&slice.domain), before, "the same card waits, unanswered, and no other");
+    compact_due(&slice.domain, opens + 1, &Timing::LIVE);
+    assert_eq!(driver.pending_permits(), 0, "one rest compacts once");
+    driver.stop().unwrap();
+}
+
 // C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
 // fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
 // and its status is kept.

@@ -5,6 +5,7 @@
 //! the controller deliberately leaves those observations unacknowledged.
 mod adapter;
 mod batch;
+mod context;
 mod elicitation;
 mod ended;
 mod normalizer;
@@ -14,6 +15,7 @@ mod wire;
 pub use adapter::{
     ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited,
 };
+pub use context::{ContextEvent, context_event};
 pub use elicitation::{elicitation_content, elicitation_fields};
 pub use ended::{EndedJournal, Retained};
 pub use batch::{BatchHost, HostEvent, McpServer, OrchestratorProfile};

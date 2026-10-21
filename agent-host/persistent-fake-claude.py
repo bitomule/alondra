@@ -63,7 +63,13 @@ def lifecycle(message, state):
 REFUSALS = {401: ('authentication_failed', 'Failed to authenticate. API Error: 401 OAuth token has expired'),
             529: ('server_error', 'API Error: 529 Overloaded')}
 
-def assistant(message, error=None, text='Fixture answer'):
+SMALL_USAGE = dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+# What the API reports for a long conversation whose request read most of it from the prompt cache
+# and wrote the rest for an hour.
+LARGE_USAGE = dict(input_tokens=3, output_tokens=400, cache_creation_input_tokens=2000, cache_read_input_tokens=248000,
+                   cache_creation=dict(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=2000))
+
+def assistant(message, error=None, text='Fixture answer', usage=SMALL_USAGE):
     global serial
     serial += 1
     value = dict(type='assistant', session_id=session_id,
@@ -71,8 +77,7 @@ def assistant(message, error=None, text='Fixture answer'):
                  parent_tool_use_id=None,
                  message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant',
                               model='fixture', content=[dict(type='text', text=text)],
-                              stop_reason=None, stop_sequence=None,
-                              usage=dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)),
+                              stop_reason=None, stop_sequence=None, usage=usage),
                  user_message_uuid=message['uuid'],
                  user_message_uuids=[entry['uuid'] for entry in pending])
     if error:
@@ -310,6 +315,9 @@ for raw in sys.stdin:
             result(message, failed=True)
         elif text == 'consume-and-hold':
             consume(message)
+        elif text == 'large-context':
+            assistant(message, usage=LARGE_USAGE)
+            result(message)
         elif text.startswith('bulky:'):
             # A long turn whose answers are close to the largest event the host keeps.
             for _ in range(int(text[len('bulky:'):])):

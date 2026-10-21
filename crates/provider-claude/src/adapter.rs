@@ -188,14 +188,18 @@ pub fn answered_by_event(command: &[u8]) -> Option<CommandId> {
         _ => None,
     }
 }
-/// The control a host event answers, when it is the result of one.
-pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
+/// The host event an observation's evidence holds.
+pub(crate) fn host_event(observation: &OrderedObservation) -> Option<alondra_agent_protocol::Event> {
     let mut framed = u32::try_from(observation.evidence.len()).ok()?.to_be_bytes().to_vec();
     framed.extend_from_slice(&observation.evidence);
-    let Body::Event(event) = decoded(&framed)?.body else {
-        return None;
-    };
-    match event.observation {
+    match decoded(&framed)?.body {
+        Body::Event(event) => Some(event),
+        _ => None,
+    }
+}
+/// The control a host event answers, when it is the result of one.
+pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
+    match host_event(observation)?.observation {
         WireObservation::Sdk { kind: SdkEventKind::ControlResult, payload, .. } => {
             let result: ControlResult = serde_json::from_value(payload).ok()?;
             Some(result.command_id().clone())
@@ -206,12 +210,7 @@ pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
 /// Whether the host observed the exit of its Claude. The host outlives it with no session left to
 /// run, so its owner ends the host as one that ended with its Claude.
 pub fn native_exited(observation: &OrderedObservation) -> bool {
-    let Ok(length) = u32::try_from(observation.evidence.len()) else {
-        return false;
-    };
-    let mut framed = length.to_be_bytes().to_vec();
-    framed.extend_from_slice(&observation.evidence);
-    matches!(decoded(&framed).map(|frame| frame.body), Some(Body::Event(event)) if matches!(event.observation, WireObservation::ProcessExited { .. }))
+    matches!(host_event(observation), Some(event) if matches!(event.observation, WireObservation::ProcessExited { .. }))
 }
 struct PreparedDispatch {
     command: PreparedCommand,
