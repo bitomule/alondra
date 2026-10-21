@@ -1,5 +1,5 @@
 use crate::{AuthorityScope, Error, Result, check_epoch, codec};
-use alondra_domain::{InputId, TaskLifecycle};
+use alondra_domain::{Event, InputId, TaskLifecycle};
 use alondra_foundation::{Revision, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
@@ -11,33 +11,49 @@ pub(super) fn load(
 ) -> Result<TaskLifecycle> {
     let (initial, revision) = head(connection, scope, task)?;
     crate::measure::aggregate_loaded();
-    let mut aggregate = TaskLifecycle::planned(task.clone(), InputId::new(initial)?)?;
+    let (aggregate, _) = replay(connection, task, InputId::new(initial)?, revision, |_, _| Ok::<_, Error>(()))?;
+    Ok(aggregate)
+}
+
+/// The aggregate a task's stored events rebuild, checked as `load` checks it, and what `read`
+/// made of each event from the aggregate it applies to.
+pub(super) fn replay<T, E: From<Error>>(
+    connection: &Connection,
+    task: &TaskId,
+    initial: InputId,
+    revision: Revision,
+    mut read: impl FnMut(&TaskLifecycle, &Event) -> std::result::Result<T, E>,
+) -> std::result::Result<(TaskLifecycle, Vec<T>), E> {
+    let mut aggregate = TaskLifecycle::planned(task.clone(), initial).map_err(Error::from)?;
     let mut known = KnownInputs::default();
     known.require(connection, &aggregate)?;
-    let mut statement = connection.prepare(
-        "SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision",
-    )?;
-    let rows = statement.query_map(params![task.0], |row| {
-        Ok((crate::read_number(row, 0)?, row.get::<_, String>(1)?))
-    })?;
+    let mut statement = connection
+        .prepare_cached("SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision")
+        .map_err(Error::from)?;
+    let rows = statement
+        .query_map(params![task.0], |row| Ok((crate::read_number(row, 0)?, row.get::<_, String>(1)?)))
+        .map_err(Error::from)?;
+    let mut entries = vec![];
     for row in rows {
-        let (next, encoded) = row?;
+        let (next, encoded) = row.map_err(Error::from)?;
         if next != aggregate.revision() + 1 || encoded.len() > crate::MAX_PAYLOAD {
-            return Err(Error::CorruptJournal);
+            return Err(Error::CorruptJournal.into());
         }
-        let event: codec::EventRecord = serde_json::from_str(&encoded)?;
+        let event: codec::EventRecord = serde_json::from_str(&encoded).map_err(Error::from)?;
         crate::measure::event_decoded();
         let event = event.decode(&aggregate)?;
+        entries.push(read(&aggregate, &event)?);
+        let named: Vec<InputId> = event.inputs().into_iter().cloned().collect();
         aggregate
             .apply(aggregate.revision(), event)
             .map_err(|_| Error::CorruptJournal)?;
-        known.require(connection, &aggregate)?;
+        known.require_named(connection, &aggregate, &named)?;
     }
     if aggregate.revision() != revision {
-        return Err(Error::CorruptJournal);
+        return Err(Error::CorruptJournal.into());
     }
     verify_relations(connection, &aggregate)?;
-    Ok(aggregate)
+    Ok((aggregate, entries))
 }
 
 /// The checks a replay ends with, for an aggregate this transaction already replayed.
@@ -80,25 +96,38 @@ pub(super) fn require_inputs(connection: &Connection, aggregate: &TaskLifecycle)
 }
 
 /// The inputs of one task a replay already found stored. Its inputs never change once written, so
-/// a replay looks each one up once however many events it stays pending for.
+/// a replay looks each one up once however many events it stays pending for, and after each event
+/// only looks at the inputs that event names: no other can have become pending.
 #[derive(Default)]
 pub(super) struct KnownInputs(BTreeSet<InputId>);
 
 impl KnownInputs {
     pub(super) fn require(&mut self, connection: &Connection, aggregate: &TaskLifecycle) -> Result<()> {
         for input in aggregate.pending_inputs() {
-            if self.0.contains(input) {
+            if !self.0.contains(input) {
+                self.look_up(connection, aggregate, input)?;
+            }
+        }
+        Ok(())
+    }
+    fn require_named(&mut self, connection: &Connection, aggregate: &TaskLifecycle, named: &[InputId]) -> Result<()> {
+        for input in named {
+            if !aggregate.is_pending(input) || self.0.contains(input) {
                 continue;
             }
-            crate::measure::input_checked();
-            let exists: bool = connection
-                .prepare_cached("SELECT EXISTS(SELECT 1 FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2)")?
-                .query_row(params![aggregate.task().0, input.as_str()], |row| row.get(0))?;
-            if !exists {
-                return Err(Error::MissingInput);
-            }
-            self.0.insert(input.clone());
+            self.look_up(connection, aggregate, input)?;
         }
+        Ok(())
+    }
+    fn look_up(&mut self, connection: &Connection, aggregate: &TaskLifecycle, input: &InputId) -> Result<()> {
+        crate::measure::input_checked();
+        let exists: bool = connection
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2)")?
+            .query_row(params![aggregate.task().0, input.as_str()], |row| row.get(0))?;
+        if !exists {
+            return Err(Error::MissingInput);
+        }
+        self.0.insert(input.clone());
         Ok(())
     }
 }

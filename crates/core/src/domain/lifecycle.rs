@@ -747,16 +747,25 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
 pub fn records_from_events(task: &TaskId, initial: &InputId, events: &[Event], texts: &BTreeMap<InputId, String>) -> Result<Vec<LifecycleRecord>> {
     let mut lifecycle = TaskLifecycle::planned(task.clone(), initial.clone()).map_err(|r| corrupt(task, format!("{r:?}")))?;
     let mut records = vec![LifecycleRecord::Planned { input: initial.as_str().into() }];
-    for (n, stored) in events.iter().enumerate() {
-        let record = record_of(task, stored, texts, &lifecycle)?;
-        let derived = event(task, &record, &lifecycle)?;
-        if derived != *stored {
-            return Err(corrupt(task, format!("event {} {stored:?} is not the one its record stands for ({derived:?})", n + 1)));
-        }
-        lifecycle.apply(lifecycle.revision(), derived).map_err(|refusal| corrupt(task, format!("event {} refused: {refusal:?}", n + 1)))?;
+    for stored in events {
+        let record = record_for(&lifecycle, stored, texts)?;
+        let n = lifecycle.revision() + 1;
+        lifecycle.apply(lifecycle.revision(), stored.clone()).map_err(|refusal| corrupt(task, format!("event {n} refused: {refusal:?}")))?;
         records.push(record);
     }
     Ok(records)
+}
+
+/// The record a stored event stands for, read from the lifecycle it applies to. The record must
+/// give back exactly that event, identities and cursors included, or the journal cannot be read.
+pub fn record_for(lifecycle: &TaskLifecycle, stored: &Event, texts: &BTreeMap<InputId, String>) -> Result<LifecycleRecord> {
+    let task = lifecycle.task();
+    let record = record_of(task, stored, texts, lifecycle)?;
+    let derived = event(task, &record, lifecycle)?;
+    if derived != *stored {
+        return Err(corrupt(task, format!("event {} {stored:?} is not the one its record stands for ({derived:?})", lifecycle.revision() + 1)));
+    }
+    Ok(record)
 }
 
 /// A journal kept while an execution's instance was its node's id: the same decisions, each
@@ -896,18 +905,57 @@ impl DomainState {
         let tasks: Vec<TaskId> = self.lifecycle_journal.keys().cloned().collect();
         for task in tasks {
             let lifecycle = replay(&task, &self.lifecycle_journal[&task])?;
-            let t = self.tasks.get_mut(&task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
-            t.ending = ending_of(&lifecycle);
+            self.read_ending(&task, &lifecycle)?;
+        }
+        Ok(())
+    }
+
+    fn read_ending(&mut self, task: &TaskId, lifecycle: &TaskLifecycle) -> Result<()> {
+        let t = self.tasks.get_mut(task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
+        t.ending = ending_of(lifecycle);
+        Ok(())
+    }
+
+    /// The journals the store read, each with the lifecycle its replay left: every task's ending
+    /// is read from it and every task is checked against it, as `read_endings` and
+    /// `validate_journal` do, without replaying any journal again. The lifecycles are kept for
+    /// `validate_loaded`.
+    pub fn load_journal(&mut self, journals: impl IntoIterator<Item = (TaskId, Vec<LifecycleRecord>, TaskLifecycle)>) -> Result<Lifecycles> {
+        let mut lifecycles = Lifecycles::new();
+        for (task, records, lifecycle) in journals {
+            self.lifecycle_journal.insert(task.clone(), records);
+            lifecycles.replayed.insert(task, lifecycle);
+        }
+        for (task, lifecycle) in &lifecycles.replayed {
+            self.read_ending(task, lifecycle)?;
+        }
+        self.validate_loaded(&lifecycles)?;
+        Ok(lifecycles)
+    }
+
+    /// `validate_journal`, with the lifecycles `load_journal` kept.
+    pub fn validate_loaded(&self, lifecycles: &Lifecycles) -> Result<()> {
+        self.every_task_journaled()?;
+        for (task, journal) in &self.lifecycle_journal {
+            match lifecycles.replayed.get(task) {
+                Some(lifecycle) => self.validate_lifecycle(task, lifecycle)?,
+                None => self.validate_lifecycle(task, &replay(task, journal)?)?,
+            }
         }
         Ok(())
     }
 
     /// Every task has a journal and agrees with it: what a loaded state proves before it is used.
     pub fn validate_journal(&self) -> Result<()> {
-        if let Some(task) = self.tasks.keys().find(|task| !self.lifecycle_journal.contains_key(*task)) {
-            return Err(DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")));
-        }
+        self.every_task_journaled()?;
         self.validate_lifecycles(self.lifecycle_journal.keys())
+    }
+
+    fn every_task_journaled(&self) -> Result<()> {
+        match self.tasks.keys().find(|task| !self.lifecycle_journal.contains_key(*task)) {
+            Some(task) => Err(DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal"))),
+            None => Ok(()),
+        }
     }
 
     /// The aggregate rules: a task's DTO agrees with the replay of its journal, or the transition
@@ -915,13 +963,17 @@ impl DomainState {
     pub(super) fn validate_lifecycles<'a>(&self, tasks: impl Iterator<Item = &'a TaskId>) -> Result<()> {
         for task in tasks {
             let journal = self.lifecycle_journal.get(task).ok_or_else(|| DomainError::new("lifecycle_journal", format!("Task {task} has no lifecycle journal")))?;
-            let lifecycle = replay(task, journal)?;
-            let t = self.tasks.get(task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
-            if let Err(detail) = self.agrees(t, &lifecycle) {
-                return Err(DomainError::new("lifecycle_mismatch", format!(
-                    "the aggregate rules: task {task} reads {:?} (started {}, node {:?}, ending {:?}) while its lifecycle is {:?}: {detail}",
-                    t.state, t.started, t.agent_id, t.ending, lifecycle.phase())));
-            }
+            self.validate_lifecycle(task, &replay(task, journal)?)?;
+        }
+        Ok(())
+    }
+
+    fn validate_lifecycle(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Result<()> {
+        let t = self.tasks.get(task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
+        if let Err(detail) = self.agrees(t, lifecycle) {
+            return Err(DomainError::new("lifecycle_mismatch", format!(
+                "the aggregate rules: task {task} reads {:?} (started {}, node {:?}, ending {:?}) while its lifecycle is {:?}: {detail}",
+                t.state, t.started, t.agent_id, t.ending, lifecycle.phase())));
         }
         Ok(())
     }

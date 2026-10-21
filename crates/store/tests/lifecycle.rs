@@ -2,8 +2,9 @@ use alondra_domain::*;
 use alondra_foundation::{InteractionId, Revision, TaskId};
 use alondra_provider_contract::{Capability, Placement, ProviderBinding};
 use alondra_store::*;
+use alondra_store::measure;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[path = "../../test_support.rs"]
 mod test_support;
 
@@ -2629,6 +2630,10 @@ fn an_input_without_text_is_given_its_text_once_before_any_sdk_dispatch() {
     assert!(fixture.connection.execute("UPDATE lifecycle_inputs SET body='Changed' WHERE task_id='task'", []).is_err(), "a text is never changed");
 }
 
+fn read_events(connection: &Connection) -> BTreeMap<TaskId, alondra_store::JournalTask<Event>> {
+    alondra_store::read_journal(connection, &scope(), |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap()
+}
+
 /// What the daemon reads: every task's journal, with its events in order.
 #[test]
 fn the_journal_reads_every_task_with_its_events() {
@@ -2639,11 +2644,11 @@ fn the_journal_reads_every_task_with_its_events() {
     tx.create_without_text(&"task".into(), id("initial")).unwrap();
     tx.apply(&"task".into(), 0, "admit", claude_bg("task")).unwrap();
     tx.commit().unwrap();
-    let journal = alondra_store::read_journal(&fixture.connection, &scope()).unwrap();
+    let journal = read_events(&fixture.connection);
     assert_eq!(journal.len(), 1);
     let task = &journal[&"task".into()];
     assert_eq!(task.initial, id("initial"));
-    assert_eq!(task.events, vec![claude_bg("task")]);
+    assert_eq!(task.entries, vec![claude_bg("task")]);
     assert!(task.texts.is_empty(), "the claude --bg input has no text");
 }
 
@@ -2826,9 +2831,9 @@ fn a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending() {
     let stored = u64::try_from(TOLD + 1).unwrap();
 
     let before = measure::counts();
-    let journal = read_journal(&fixture.connection, &scope()).unwrap();
+    let journal = read_events(&fixture.connection);
     let read = measure::counts() - before;
-    assert_eq!(journal[&task].events.len(), TOLD + 1);
+    assert_eq!(journal[&task].entries.len(), TOLD + 1);
     assert!(
         read.input_checks <= stored,
         "reading the journal at startup looked up {} inputs for {stored} stored ones",

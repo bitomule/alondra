@@ -6,7 +6,8 @@ pub use alondra_foundation::{
     CallbackId, ContinuationId, ConversationId, ExecutionStamp, HostId, IdentityError, InputId,
     InstanceId, OperationId, TurnId, WorkId,
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use rpds::RedBlackTreeMapSync;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The host of every execution of the `claude --bg` backend: Alondra delivers its inputs itself,
 /// so nothing dispatches to it through the SDK.
@@ -44,6 +45,102 @@ impl<T: Ord> NonEmpty<T> {
 impl<T: Ord + Clone> NonEmpty<T> {
     fn values(&self) -> BTreeSet<T> {
         self.iter().cloned().collect()
+    }
+}
+
+/// Inputs in the order they wait. Every copy of the aggregate shares their storage, so `apply`
+/// copies a long queue for nothing, and each change or lookup costs the logarithm of its length.
+#[derive(Clone)]
+struct Inputs {
+    order: RedBlackTreeMapSync<i64, InputId>,
+    members: RedBlackTreeMapSync<InputId, usize>,
+}
+impl Inputs {
+    fn new() -> Self {
+        Self {
+            order: RedBlackTreeMapSync::new_sync(),
+            members: RedBlackTreeMapSync::new_sync(),
+        }
+    }
+    fn one(input: InputId) -> Self {
+        let mut inputs = Self::new();
+        inputs.push_back(input);
+        inputs
+    }
+    fn push_back(&mut self, input: InputId) {
+        let next = self.order.last().map_or(0, |(position, _)| position + 1);
+        self.enter(next, input);
+    }
+    fn push_front(&mut self, input: InputId) {
+        let next = self.order.first().map_or(0, |(position, _)| position - 1);
+        self.enter(next, input);
+    }
+    fn enter(&mut self, position: i64, input: InputId) {
+        let count = self.members.get(&input).copied().unwrap_or(0);
+        self.members.insert_mut(input.clone(), count + 1);
+        self.order.insert_mut(position, input);
+    }
+    fn pop_front(&mut self) -> Option<InputId> {
+        let (position, input) = self.order.first().map(|(position, input)| (*position, input.clone()))?;
+        self.leave(position, &input);
+        Some(input)
+    }
+    /// Puts `with` in the place of the first `input`, or takes `input` out without it: false if
+    /// `input` does not wait here.
+    fn replace(&mut self, input: &InputId, with: Option<InputId>) -> bool {
+        if !self.contains(input) {
+            return false;
+        }
+        let Some(position) = self.order.iter().find(|(_, held)| *held == input).map(|(position, _)| *position) else {
+            return false;
+        };
+        self.leave(position, input);
+        if let Some(with) = with {
+            self.enter(position, with);
+        }
+        true
+    }
+    fn leave(&mut self, position: i64, input: &InputId) {
+        self.order.remove_mut(&position);
+        match self.members.get(input).copied() {
+            Some(1) => {
+                self.members.remove_mut(input);
+            }
+            Some(count) => self.members.insert_mut(input.clone(), count - 1),
+            None => {}
+        }
+    }
+    fn front(&self) -> Option<&InputId> {
+        self.order.first().map(|(_, input)| input)
+    }
+    fn contains(&self, input: &InputId) -> bool {
+        self.members.contains_key(input)
+    }
+    fn iter(&self) -> impl Iterator<Item = &InputId> {
+        self.order.values()
+    }
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
+impl FromIterator<InputId> for Inputs {
+    fn from_iter<I: IntoIterator<Item = InputId>>(inputs: I) -> Self {
+        let mut queue = Self::new();
+        for input in inputs {
+            queue.push_back(input);
+        }
+        queue
+    }
+}
+impl PartialEq for Inputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.order.size() == other.order.size() && self.iter().eq(other.iter())
+    }
+}
+impl Eq for Inputs {}
+impl std::fmt::Debug for Inputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -417,6 +514,50 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// The inputs the event names: an input only becomes pending through an event that names it.
+    pub fn inputs(&self) -> Vec<&InputId> {
+        match self {
+            Self::Answer { input, .. }
+            | Self::HandBack { input, .. }
+            | Self::Tell { input }
+            | Self::DependenciesResolved { input }
+            | Self::Resume { input, .. }
+            | Self::RetireReleasedExecution { input, .. }
+            | Self::ExecutionReleased { input }
+            | Self::Reopen { input }
+            | Self::DoubtHandoff { input, .. }
+            | Self::Compact { input }
+            | Self::Runtime {
+                fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input },
+                ..
+            } => vec![input],
+            Self::ResendUntaken { input, resend } => vec![input, resend],
+            Self::SettleHandoff { resend, .. } => resend.iter().collect(),
+            Self::Admit { .. }
+            | Self::Runtime { .. }
+            | Self::Ask { .. }
+            | Self::Decide { .. }
+            | Self::MoveCard { .. }
+            | Self::PlanApproved
+            | Self::BlockDelivery { .. }
+            | Self::DeliveryUnblocked { .. }
+            | Self::Present { .. }
+            | Self::Accept { .. }
+            | Self::MergeObserved { .. }
+            | Self::WaitForDependencies { .. }
+            | Self::Pause { .. }
+            | Self::Finish { .. }
+            | Self::DrainObserved { .. }
+            | Self::PostMergeDeclared { .. }
+            | Self::PostMergeEnded { .. }
+            | Self::HoldForPlanReview { .. }
+            | Self::PlanReviewSettled { .. }
+            | Self::RequestControl { .. } => vec![],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeFact {
     Ask {
@@ -580,7 +721,7 @@ struct Execution {
     activity: Activity,
     callbacks: Vec<CallbackState>,
     effects: BTreeSet<OperationId>,
-    inbox: VecDeque<InputId>,
+    inbox: Inputs,
 }
 impl Execution {
     fn holds_slot(&self) -> bool {
@@ -612,7 +753,7 @@ impl ActiveExecution {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Session {
-    Absent(VecDeque<InputId>),
+    Absent(Inputs),
     Present(Execution),
 }
 impl Session {
@@ -635,7 +776,7 @@ enum Progress {
     Queued {
         stage: WorkStage,
         input: InputId,
-        remaining: VecDeque<InputId>,
+        remaining: Inputs,
     },
     Executing {
         stage: WorkStage,
@@ -876,25 +1017,38 @@ impl TaskLifecycle {
         }
     }
     pub fn pending_inputs(&self) -> Vec<&InputId> {
+        let (first, queue) = self.waiting();
+        first.into_iter().chain(queue.into_iter().flat_map(Inputs::iter)).collect()
+    }
+    /// Whether `input` is one of `pending_inputs`, without listing them.
+    pub fn is_pending(&self, input: &InputId) -> bool {
+        let (first, queue) = self.waiting();
+        first == Some(input) || queue.is_some_and(|queue| queue.contains(input))
+    }
+    fn has_pending(&self) -> bool {
+        let (first, queue) = self.waiting();
+        first.is_some() || queue.is_some_and(|queue| !queue.is_empty())
+    }
+    /// The pending inputs: the one the task starts or resumes with, then the queue behind it.
+    fn waiting(&self) -> (Option<&InputId>, Option<&Inputs>) {
         let session = match &self.state {
-            State::Unstarted(input) => return vec![input],
+            State::Unstarted(input) => return (Some(input), None),
             State::InProgress(Progress::Queued {
                 input, remaining, ..
-            }) => return std::iter::once(input).chain(remaining).collect(),
+            }) => return (Some(input), Some(remaining)),
             State::InProgress(
                 Progress::Waiting { session, .. } | Progress::Dependency { session, .. },
-            ) => Some(session),
-            State::Delivered(delivered) => Some(&delivered.session),
-            State::Finishing(finishing) => Some(&finishing.session),
+            ) => session,
+            State::Delivered(delivered) => &delivered.session,
+            State::Finishing(finishing) => &finishing.session,
             State::InProgress(Progress::Executing { execution, .. }) => {
-                return execution_pending(&execution.0);
+                return execution_waiting(&execution.0);
             }
-            State::Completed | State::Cancelled => None,
+            State::Completed | State::Cancelled => return (None, None),
         };
         match session {
-            Some(Session::Absent(pending)) => pending.iter().collect(),
-            Some(Session::Present(execution)) => execution_pending(execution),
-            None => vec![],
+            Session::Absent(pending) => (None, Some(pending)),
+            Session::Present(execution) => execution_waiting(execution),
         }
     }
     pub fn delivery(&self) -> Option<&InteractionId> {
@@ -944,6 +1098,7 @@ impl TaskLifecycle {
         if expected_revision != self.revision {
             return Err(Refusal::StaleRevision);
         }
+        crate::measure::event_applied();
         if self.revision >= MAX_REVISION {
             return Err(Refusal::RevisionExhausted);
         }
@@ -1070,10 +1225,19 @@ fn remove_callback_wake(activity: &mut Activity, callback: &CallbackId) -> Resul
     Ok(())
 }
 
-fn execution_pending(execution: &Execution) -> Vec<&InputId> {
-    let pending = match &execution.activity {
+fn execution_waiting(execution: &Execution) -> (Option<&InputId>, Option<&Inputs>) {
+    let first = match &execution.activity {
         Activity::Launching(input) | Activity::InputPending(input) => Some(input),
         _ => None,
     };
-    pending.into_iter().chain(execution.inbox.iter()).collect()
+    (first, Some(&execution.inbox))
+}
+
+/// What the execution has not consumed, in the order it waits.
+fn execution_pending(execution: &Execution) -> Inputs {
+    let mut pending = execution.inbox.clone();
+    if let Activity::Launching(input) | Activity::InputPending(input) = &execution.activity {
+        pending.push_front(input.clone());
+    }
+    pending
 }

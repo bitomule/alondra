@@ -182,14 +182,21 @@ from:
 - the lifecycle journal of every task: `lifecycle_tasks`, `lifecycle_events` replayed in order,
   `lifecycle_inputs` (each input a task holds pending is looked up once, `persistence::KnownInputs`)
   and the relations a replay checks (`lifecycle_cards`, `lifecycle_dependencies`,
-  `lifecycle_delivery`, `lifecycle_current_execution`);
+  `lifecycle_delivery`, `lifecycle_current_execution`). Each journal is replayed once
+  (`alondra_store::read_journal`): the domain's records are read from each event as it is
+  applied (`record_for`), and the lifecycle the replay leaves gives the endings and both journal
+  validations (`DomainState::load_journal`, `validate_loaded`);
 - `PRAGMA integrity_check` and `foreign_key_check`, which walk every page (66 ms on 64 MB).
 
 Beyond those checks it reads no row of `provider_observations`, `provider_commands`,
 `command_audit` or `semantic_receipts`: the SDK owners read their own rows when they adopt an
 execution. What a start
 costs grows with the journal's events and inputs, and only linearly; `store_test`
-`a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending` holds it.
+`a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending` and `alondrad_test`
+`opening_the_domain_replays_a_long_inbox_once_in_linear_memory` hold it. An event costs the
+logarithm of the inputs its task holds pending, not their number: the aggregate keeps them in a
+persistent queue (`Inputs`, `rpds`), so `apply` copies the state for nothing, and after each event
+the replay only looks at the inputs that event names (`Event::inputs`).
 
 ### How long raw SDK observations keep their bytes
 
@@ -209,6 +216,10 @@ said, read its host's `sdk/<instance>/outbox`.
 1568 pending inputs, 1563 of them the same closer message): preflight 5.15 s → 0.48 s. Before, each
 event looked up every pending input again with a freshly prepared statement (1.2 M lookups per
 open, the domain opened twice), 81 % of the time.
+
+Later the same day, the same copy (1916 events in that task): loading the domain took 375 ms →
+54 ms (median of 20, test build). Before, each open replayed every journal five times, and every
+event copied the task's whole queue of pending inputs.
 
 ## Rules for new work
 

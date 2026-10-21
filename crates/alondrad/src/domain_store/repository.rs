@@ -928,16 +928,19 @@ pub(super) fn save_journal(
 pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = load_rows(c)?;
     let scope = alondra_store::AuthorityScope::new(state.data_epoch.clone())?;
-    for (task, stored) in alondra_store::read_journal(c, &scope)? {
+    let journal = alondra_store::read_journal(c, &scope, |lifecycle, event, texts| anyhow::Ok(record_for(lifecycle, event, texts)?))?;
+    let mut journals = Vec::with_capacity(journal.len());
+    for (task, stored) in journal {
         ensure!(state.tasks.contains_key(&task), "the lifecycle journal of task {task} has no task");
-        let records = records_from_events(&task, &stored.initial, &stored.events, &stored.texts)?;
-        state.lifecycle_journal.insert(task, records);
+        let mut records = Vec::with_capacity(stored.entries.len() + 1);
+        records.push(LifecycleRecord::Planned { input: stored.initial.as_str().into() });
+        records.extend(stored.entries);
+        journals.push((task, records, stored.lifecycle));
     }
-    state.read_endings()?;
-    state.validate_journal()?;
+    let lifecycles = state.load_journal(journals)?;
     state.derive_states();
     state.validate()?;
-    state.validate_journal()?;
+    state.validate_loaded(&lifecycles)?;
     Ok(state)
 }
 /// The domain's rows as its tables keep them, without the journal: what a migration reads to

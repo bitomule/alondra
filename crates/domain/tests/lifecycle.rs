@@ -2323,3 +2323,63 @@ fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_
     assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
     assert_eq!(asking.pending_inputs(), [&input("aside")]);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x1a9b_7),
+        ..ProptestConfig::default()
+    })]
+    /// What lets a replay look up only the inputs each event names: an input becomes pending only
+    /// through an event that names it, and `is_pending` answers what `pending_inputs` lists.
+    #[test]
+    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..26, 0u8..6), 1..200)) {
+        let pool: Vec<InputId> = ["initial", "a", "b", "c", "d", "e"].iter().map(|name| input(name)).collect();
+        let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+        for (action, pick) in actions {
+            let named = pool[usize::from(pick)].clone();
+            let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
+            let first = task.pending_inputs().first().map(|input| (*input).clone()).unwrap_or_else(|| named.clone());
+            let event = match action {
+                0 => Some(Event::Admit { node: "node".into(), conversation: ConversationId::new("conversation").unwrap(), instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap() }),
+                1 => runtime(RuntimeFact::ResourceAvailable),
+                2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(first) }),
+                3 => runtime(RuntimeFact::InputConsumed { input: first }),
+                4 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() }),
+                5..=8 => Some(Event::Tell { input: named }),
+                9 => Some(Event::ExecutionReleased { input: named }),
+                10 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into() }),
+                11 => Some(Event::DoubtHandoff { card: "doubt".into(), input: named }),
+                12 => Some(Event::SettleHandoff { card: "doubt".into(), resend: Some(named), unheard_card: "settled".into() }),
+                13 => Some(Event::SettleHandoff { card: "doubt".into(), resend: None, unheard_card: "settled".into() }),
+                14 => Some(Event::ResendUntaken { input: first, resend: named }),
+                15 => runtime(RuntimeFact::ResourceReleased { problem_card: "recovery".into() }),
+                16 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: named }),
+                17 => Some(Event::WaitForDependencies { dependencies: vec![TaskId::from("dependency")] }),
+                18 => Some(Event::DependenciesResolved { input: named }),
+                19 => Some(Event::Pause { card: "pause".into() }),
+                20 => Some(Event::Resume { card: "pause".into(), input: named }),
+                21 => Some(Event::Present { delivery: "result".into() }),
+                22 => Some(Event::HandBack { delivery: "result".into(), input: named }),
+                23 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
+                24 => Some(Event::Reopen { input: named }),
+                _ => Some(Event::Compact { input: named }),
+            };
+            let Some(event) = event else { continue };
+            let before: Vec<InputId> = task.pending_inputs().into_iter().cloned().collect();
+            let debug = format!("{task:?}");
+            let names: Vec<InputId> = event.inputs().into_iter().cloned().collect();
+            if task.apply(task.revision(), event).is_err() {
+                prop_assert_eq!(format!("{task:?}"), debug, "a refused event leaves no trace");
+                continue;
+            }
+            for pending in task.pending_inputs() {
+                prop_assert!(before.contains(pending) || names.contains(pending), "{:?} became pending through an event that does not name it", pending);
+            }
+            for candidate in &pool {
+                prop_assert_eq!(task.is_pending(candidate), task.pending_inputs().contains(&candidate));
+            }
+        }
+    }
+}

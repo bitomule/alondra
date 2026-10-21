@@ -8,7 +8,7 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
-    deps = ["//crates/foundation:foundation"],
+    deps = ["//crates/foundation:foundation"] + all_crate_deps(normal = True),
 )
 
 rust_test(

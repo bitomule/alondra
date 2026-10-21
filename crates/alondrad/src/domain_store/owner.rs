@@ -455,7 +455,7 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// Lifecycle fixtures for states no typed owner step produces yet.
     #[cfg(test)]
-    fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
+    pub(super) fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
         &mut self.journal
     }
 
@@ -521,7 +521,7 @@ impl DomainStore {
 
 #[cfg(test)]
 #[path = "owner_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 fn mcp_server(report: &McpServerReport) -> McpServerState {
     McpServerState {

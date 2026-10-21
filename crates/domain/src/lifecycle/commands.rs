@@ -74,8 +74,12 @@ impl TaskLifecycle {
                         | State::InProgress(Progress::Waiting {
                             session: Session::Absent(pending),
                             ..
-                        }) => pending.iter().skip(1).cloned().collect(),
-                        _ => VecDeque::new(),
+                        }) => {
+                            let mut inbox = pending.clone();
+                            inbox.pop_front();
+                            inbox
+                        }
+                        _ => Inputs::new(),
                     },
                 };
                 if let State::Delivered(delivered) = &mut self.state {
@@ -112,7 +116,7 @@ impl TaskLifecycle {
                 if self.doubts.contains_key(&card) || self.doubts.values().any(|held| held == &input) {
                     return Err(Refusal::DuplicateObligation);
                 }
-                if self.session().is_none() || !self.pending_inputs().contains(&&input) {
+                if self.session().is_none() || !self.is_pending(&input) {
                     return Err(Refusal::UnknownObligation);
                 }
                 self.wait_on_card(card.clone(), WaitReason::Doubt)?;
@@ -123,7 +127,7 @@ impl TaskLifecycle {
                 if self.doubts.values().any(|held| held == &input) {
                     return Err(Refusal::InvalidState);
                 }
-                if self.pending_inputs().contains(&&resend) || self.settled.contains(&resend) {
+                if self.is_pending(&resend) || self.settled.contains(&resend) {
                     return Err(Refusal::DuplicateObligation);
                 }
                 let execution = match &mut self.state {
@@ -137,7 +141,7 @@ impl TaskLifecycle {
                 replace_handoff(execution, &input, Some(resend))?;
             }
             Event::Tell { input } => {
-                if self.pending_inputs().contains(&&input) || self.settled.contains(&input) {
+                if self.is_pending(&input) || self.settled.contains(&input) {
                     return Err(Refusal::DuplicateObligation);
                 }
                 match &mut self.state {
@@ -296,21 +300,17 @@ impl TaskLifecycle {
                     State::Unstarted(input) => (
                         WorkStage::Plan,
                         BTreeMap::new(),
-                        Session::Absent(VecDeque::from([input.clone()])),
+                        Session::Absent(Inputs::one(input.clone())),
                     ),
                     State::InProgress(Progress::Queued {
                         stage,
                         input,
                         remaining,
-                    }) => (
-                        *stage,
-                        BTreeMap::new(),
-                        Session::Absent(
-                            std::iter::once(input.clone())
-                                .chain(remaining.iter().cloned())
-                                .collect(),
-                        ),
-                    ),
+                    }) => (*stage, BTreeMap::new(), {
+                        let mut pending = remaining.clone();
+                        pending.push_front(input.clone());
+                        Session::Absent(pending)
+                    }),
                     State::InProgress(Progress::Executing { stage, execution }) => (
                         *stage,
                         BTreeMap::new(),
@@ -443,26 +443,26 @@ impl TaskLifecycle {
                         delivery: delivered.delivery.clone(),
                         gate: delivered.gate.clone(),
                         decisions: cards,
-                        session: Session::Absent(VecDeque::from([input])),
+                        session: Session::Absent(Inputs::one(input)),
                     })
                 } else if let Some(tasks) = dependencies {
                     State::InProgress(Progress::Dependency {
                         stage,
                         tasks,
                         decisions: cards,
-                        session: Session::Absent(VecDeque::from([input])),
+                        session: Session::Absent(Inputs::one(input)),
                     })
                 } else if cards.is_empty() {
                     State::InProgress(Progress::Queued {
                         stage,
                         input,
-                        remaining: VecDeque::new(),
+                        remaining: Inputs::new(),
                     })
                 } else {
                     State::InProgress(Progress::Waiting {
                         stage,
                         cards: Decisions::new(cards)?,
-                        session: Session::Absent(VecDeque::from([input])),
+                        session: Session::Absent(Inputs::one(input)),
                     })
                 };
             }
@@ -474,8 +474,7 @@ impl TaskLifecycle {
                 {
                     return Err(Refusal::InvalidState);
                 }
-                let mut pending: VecDeque<InputId> =
-                    execution_pending(execution).into_iter().cloned().collect();
+                let mut pending = execution_pending(execution);
                 if pending.is_empty() {
                     pending.push_back(input);
                 }
@@ -522,7 +521,7 @@ impl TaskLifecycle {
                 self.state = State::InProgress(Progress::Queued {
                     stage: WorkStage::Implement,
                     input,
-                    remaining: VecDeque::new(),
+                    remaining: Inputs::new(),
                 });
             }
             Event::HoldForPlanReview { review } => {
@@ -604,21 +603,17 @@ impl TaskLifecycle {
             State::Unstarted(input) => (
                 WorkStage::Plan,
                 BTreeMap::new(),
-                Session::Absent(VecDeque::from([input.clone()])),
+                Session::Absent(Inputs::one(input.clone())),
             ),
             State::InProgress(Progress::Queued {
                 stage,
                 input,
                 remaining,
-            }) => (
-                *stage,
-                BTreeMap::new(),
-                Session::Absent(
-                    std::iter::once(input.clone())
-                        .chain(remaining.iter().cloned())
-                        .collect(),
-                ),
-            ),
+            }) => (*stage, BTreeMap::new(), {
+                let mut pending = remaining.clone();
+                pending.push_front(input.clone());
+                Session::Absent(pending)
+            }),
             State::InProgress(Progress::Executing { stage, execution }) => (
                 *stage,
                 BTreeMap::new(),
@@ -802,7 +797,7 @@ impl TaskLifecycle {
     fn settle_handoff(&mut self, id: InteractionId, resend: Option<InputId>, unheard: InteractionId) -> Result<(), Refusal> {
         valid_id(&unheard.0)?;
         let input = self.doubts.get(&id).cloned().ok_or(Refusal::CorrelationMismatch)?;
-        if resend.as_ref().is_some_and(|resend| self.pending_inputs().contains(&resend) || self.settled.contains(resend)) {
+        if resend.as_ref().is_some_and(|resend| self.is_pending(resend) || self.settled.contains(resend)) {
             return Err(Refusal::DuplicateObligation);
         }
         let (stage, mut cards, mut session) = match &self.state {
@@ -817,12 +812,8 @@ impl TaskLifecycle {
         match &mut session {
             Session::Present(execution) => replace_handoff(execution, &input, resend)?,
             Session::Absent(pending) => {
-                let at = pending.iter().position(|held| held == &input).ok_or(Refusal::UnknownObligation)?;
-                match resend {
-                    Some(resend) => pending[at] = resend,
-                    None => {
-                        pending.remove(at);
-                    }
+                if !pending.replace(&input, resend) {
+                    return Err(Refusal::UnknownObligation);
                 }
             }
         }
@@ -948,14 +939,14 @@ impl TaskLifecycle {
         }
         if intent == FinishIntent::Complete
             && self.session().is_some()
-            && !self.pending_inputs().is_empty()
+            && self.has_pending()
         {
             return Err(Refusal::InvalidState);
         }
         let session = self
             .session()
             .cloned()
-            .map_or(Session::Absent(VecDeque::new()), Session::Present);
+            .map_or(Session::Absent(Inputs::new()), Session::Present);
         if intent == FinishIntent::Cancel {
             let doubted = std::mem::take(&mut self.doubts);
             self.settled.extend(doubted.into_values());
@@ -1017,12 +1008,8 @@ fn replace_handoff(execution: &mut Execution, input: &InputId, resend: Option<In
             };
         }
         (_, resend) => {
-            let at = execution.inbox.iter().position(|held| held == input).ok_or(Refusal::UnknownObligation)?;
-            match resend {
-                Some(resend) => execution.inbox[at] = resend,
-                None => {
-                    execution.inbox.remove(at);
-                }
+            if !execution.inbox.replace(input, resend) {
+                return Err(Refusal::UnknownObligation);
             }
         }
     }

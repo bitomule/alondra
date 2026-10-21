@@ -105,7 +105,7 @@ fn batch(execution: &ExecutionStamp, cursor: u64) -> OrderedObservation {
         evidence: format!("raw observation {cursor}").into_bytes(),
     }
 }
-fn scope_of(state: &DomainState) -> AuthorityScope {
+pub(in crate::domain_store) fn scope_of(state: &DomainState) -> AuthorityScope {
     AuthorityScope::new(state.data_epoch.clone()).unwrap()
 }
 
@@ -165,7 +165,7 @@ fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<Execu
 
 /// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
 /// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.
-fn running() -> (Fixture, DomainStore, ExecutionStamp) {
+pub(in crate::domain_store) fn running() -> (Fixture, DomainStore, ExecutionStamp) {
     let (fixture, mut store) = installed();
     let state = store.load().unwrap();
     let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into() };

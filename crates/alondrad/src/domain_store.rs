@@ -1668,6 +1668,9 @@ mod tests;
 #[path = "domain_store/load_bench.rs"]
 mod load_bench;
 #[cfg(test)]
+#[path = "domain_store/load_tests.rs"]
+mod load_tests;
+#[cfg(test)]
 #[path = "domain_store/acceptance_tests.rs"]
 mod acceptance_tests;
 #[cfg(test)]

@@ -2,4 +2,5 @@
 //! Task-owned execution algebra. Persistence and authenticated adapters validate external facts.
 //! No SDK, process, storage or view implementation belongs to this crate.
 mod lifecycle;
+pub mod measure;
 pub use lifecycle::*;
