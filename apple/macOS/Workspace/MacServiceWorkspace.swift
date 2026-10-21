@@ -10,6 +10,12 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
     let accountContent: AccountContent
     var isActive = true
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
+    private var mcpNoticeText: String? {
+        switch store.macPresentation.mcpNotice {
+        case .actionCompleted(let text)?, .failure(let text)?: text
+        case nil: nil
+        }
+    }
     @FocusState private var searchFocused: Bool
 
     private var indicators: ConnectionIndicators {
@@ -83,6 +89,15 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             accountContent.frame(minWidth: 600, minHeight: 520)
         }
+        .sheet(item: $store.scope(state: \.macPresentation.mcpSignIn, action: \.macPresentation.mcpSignIn)) { signIn in
+            McpSignInSheet(store: signIn).frame(minWidth: 460, minHeight: 280)
+        }
+        .alert(Text(verbatim: mcpNoticeText ?? ""), isPresented: Binding(get: { mcpNoticeText != nil },
+                                                                        set: { if !$0 { presentation.send(.mcpNoticeDismissed) } })) {
+            Button("OK") { presentation.send(.mcpNoticeDismissed) }
+        }
+        .environment(\.mcpLinks, McpLinks(signIn: { presentation.send(.mcpSignInRequested(card: $0, server: $1)) },
+                                          reconnect: { presentation.send(.mcpReconnectRequested(card: $0)) }))
         .task { guard isActive else { return }; await store.send(.appeared).finish(); presentation.send(.appeared) }
         .onDisappear {
             presentation.send(.disappeared)
@@ -242,6 +257,7 @@ private func sectionTint(_ id: String) -> Color {
 public struct MacServiceDetail: View {
     let presentation: StoreOf<MacPresentationFeature>
     @Environment(\.openURL) private var openURL
+    @Environment(\.mcpLinks) private var mcpLinks
     @Environment(\.connectionState) private var connection
     @Environment(\.connectionRecovery) private var recovery
     public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
@@ -353,6 +369,8 @@ public struct MacServiceDetail: View {
         case let .local(local):
             if case let .attach(session) = local {
                 presentation.send(.select(.viewKey("card:\(session)")))
+            } else {
+                mcpLinks(link)
             }
         }
     }

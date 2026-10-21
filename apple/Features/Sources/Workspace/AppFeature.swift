@@ -30,6 +30,7 @@ public struct AppFeature: Sendable {
         public var tasksPath = StackState<DetailRoute.State>()
         public var fleetPath = StackState<DetailRoute.State>()
         public var newRequestPath = StackState<DetailRoute.State>()
+        @Presents public var mcpSignIn: McpSignInFeature.State?
     }
 
     public enum Action {
@@ -55,10 +56,16 @@ public struct AppFeature: Sendable {
         case connectionChanged(ConnectionState)
         case handOffAnswered(ActionRequest, ActionResponse)
         case handOffFailed(ActionRequest, SendFailure)
+        /// Connect on the card of the tasks that wait for an MCP server.
+        case mcpSignInRequested(card: String, server: String)
+        case mcpReconnectRequested(card: String)
+        case mcpReconnected(McpSignInFeature.Failure?)
+        case mcpSignIn(PresentationAction<McpSignInFeature.Action>)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.mcpSignIn) var mcpSignIn
     private enum CancelID { case feed, queue, notice, connection }
 
     public var body: some ReducerOf<Self> {
@@ -79,6 +86,7 @@ public struct AppFeature: Sendable {
         .forEach(\.tasksPath, action: \.tasksPath)
         .forEach(\.fleetPath, action: \.fleetPath)
         .forEach(\.newRequestPath, action: \.newRequestPath)
+        .ifLet(\.$mcpSignIn, action: \.mcpSignIn) { McpSignInFeature() }
     }
 
     private func reduce(_ state: inout State, _ action: Action) -> Effect<Action> {
@@ -177,7 +185,17 @@ public struct AppFeature: Sendable {
         case .handOffFailed(let request, let failure):
             return .merge(.send(.triage(.handOffUndelivered(request, failure))),
                           .send(.fleet(.handOffSettled(request, applied: false))))
-        case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
+        case let .mcpSignInRequested(card, server):
+            state.mcpSignIn = McpSignInFeature.State(card: card, server: server)
+            return .none
+        case .mcpReconnectRequested(let card):
+            return .run { [mcpSignIn] send in
+                do {
+                    try await mcpSignIn.reconnect(card)
+                    await send(.mcpReconnected(nil))
+                } catch { await send(.mcpReconnected(McpSignInFeature.failure(of: error, opening: true))) }
+            }
+        case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath, .mcpReconnected, .mcpSignIn:
             return .none
         }
     }
@@ -242,6 +260,8 @@ public struct AppFeature: Sendable {
             }
         case .handOffFailed(_, let failure):
             return .failure(failure.message)
+        case .mcpReconnected(let failure):
+            return McpSignInFeature.reconnectNotice(failure)
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
              .fleetPath(.element(id: _, action: let route)),

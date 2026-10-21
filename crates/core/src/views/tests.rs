@@ -7077,6 +7077,20 @@ fn mcp_card(client: Client, lang: Lang) -> (DomainState, Card) {
 }
 
 #[test]
+fn the_mcp_sign_in_card_matches_goldens() {
+    for (filename, client, lang, expected) in [
+        ("card-mcp-sign-in.json", Client::Ios, Lang::En, include_str!("../../../../fixtures/views/cards/card-mcp-sign-in.json")),
+        ("card-mcp-sign-in-es.json", Client::Ios, Lang::Es, include_str!("../../../../fixtures/views/cards/card-mcp-sign-in-es.json")),
+        ("card-mcp-sign-in-mac.json", Client::Mac, Lang::En, include_str!("../../../../fixtures/views/cards/card-mcp-sign-in-mac.json")),
+    ] {
+        let state = crate::domain::mcp_wait_tests::waiting_for_linear();
+        let card = state.mcp_waiting()[0].card.clone();
+        let actual = render(&state, &LiveSnapshot::default(), client, lang, &format!("card:{card}"), "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
 fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
     let (state, card) = mcp_card(Client::Tui, Lang::Es);
     assert_eq!(card.need.as_deref(), Some("Inicia sesión en linear: esperan 2 tareas"));
@@ -7090,9 +7104,12 @@ fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
     assert_eq!(card.actions[1].option_id.as_deref(), Some(crate::domain::MCP_GO_ON_WITHOUT));
     assert_eq!(card.actions[1].stamp.as_deref(), Some("Las tareas siguen sin linear"));
     assert!(card.reply.is_none(), "nothing written on the card would send the tasks on");
-    let (_, ios) = mcp_card(Client::Ios, Lang::En);
-    let labels: Vec<&str> = ios.actions.iter().map(|action| action.label.as_str()).collect();
-    assert_eq!(labels, ["Go on without linear"], "the apps sign in from their own release");
+    for client in [Client::Ios, Client::Mac] {
+        let (_, app) = mcp_card(client, Lang::En);
+        let labels: Vec<&str> = app.actions.iter().map(|action| action.label.as_str()).collect();
+        assert_eq!(labels, ["Connect", "Go on without linear", "Reconnect"], "{client:?} signs in from the card");
+        assert!(matches!(&app.actions[0].link, Some(Link::Local { local: LocalLink::McpSignIn { card, server } }) if *card == wait && server == "linear"));
+    }
     let waiting: Vec<String> = inbox_items(&state).into_iter().filter(|item| item.pending).map(|item| item.id).collect();
     assert_eq!(waiting.iter().filter(|id| id.contains(crate::domain::MCP_WAIT_PREFIX)).count(), 1, "{waiting:?}");
     let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:u", "");

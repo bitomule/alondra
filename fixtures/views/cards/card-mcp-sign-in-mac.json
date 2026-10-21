@@ -1,0 +1,160 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:mcp-sign-in-t-18",
+  "client": "mac",
+  "version": "vd2a92d41961f0b5e",
+  "cursor": "cursor-1",
+  "title": "Sign in to linear: 2 tasks wait for it",
+  "status": {
+    "version": "veced79ec6d756f7c",
+    "summary": "1 question · 3 nodes working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 3
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 3
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "mcp-sign-in-t-18",
+          "kind": "problem",
+          "need": "Sign in to linear: 2 tasks wait for it",
+          "why": "Claude cannot use the MCP server linear until you sign in. Connect opens the sign-in; once it is done, every waiting task goes on by itself. Waiting: “Task t” and “Task u”.",
+          "meta": "Alondra",
+          "link": {
+            "kind": "view",
+            "key": "card:mcp-sign-in-t-18"
+          },
+          "icon": "warning",
+          "eyebrow": {
+            "text": "Problem",
+            "tone": "critical"
+          },
+          "title": "Sign in to linear: 2 tasks wait for it",
+          "subtitle": "Claude cannot use the MCP server linear until you sign in. Connect opens the sign-in; once it is done, every waiting task goes on by itself. Waiting: “Task t” and “Task u”.",
+          "state": {
+            "text": "Blocks this node",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "",
+              "label": "Connect",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "1",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-sign-in-t-18",
+                  "server": "linear"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "ans:mcp-sign-in-t-18@18",
+              "label": "Go on without linear",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "go_on_without",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "The tasks go on without linear",
+              "key": "2",
+              "resolves_card": true
+            },
+            {
+              "id": "",
+              "label": "Reconnect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "3",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-sign-in-t-18"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Task t",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

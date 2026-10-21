@@ -893,10 +893,11 @@ fn mcp_wait_text(interaction: &Interaction, domain: &DomainState, lang: Lang) ->
     Some((clip(&need, CardSpec::NEED_MAX), format!("{why}{who}")))
 }
 
-/// Connect and Reconnect of an MCP wait's card: the TUI runs them itself, through the daemon.
+/// Connect and Reconnect of an MCP wait's card: every client runs them itself, through the daemon,
+/// and brings back where the browser came back to when it signs in on another device.
 fn mcp_actions(interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Action> {
     let Some((server, way)) = mcp_way(interaction, context.domain) else { return vec![] };
-    if context.client != Client::Tui || way == McpWay::Off {
+    if way == McpWay::Off {
         return vec![];
     }
     let lang = context.lang;
@@ -904,9 +905,11 @@ fn mcp_actions(interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Ac
     let mut connect = local_action(t!(lang, "Connect", "Conectar"), "1", LocalLink::McpSignIn { card: card.clone(), server: server.name.clone() });
     connect.style = Style::Primary;
     connect.role = Some(Role::Advance);
-    connect.description = Some(t!(lang, "Opens the sign-in in the browser", "Abre el inicio de sesión en el navegador").into());
     let mut reconnect = local_action(t!(lang, "Reconnect", "Reconectar"), "2", LocalLink::McpReconnect { card });
-    reconnect.description = Some(t!(lang, "The waiting tasks read their sign-in again", "Las tareas que esperan vuelven a leer su sesión").into());
+    if context.client == Client::Tui {
+        connect.description = Some(t!(lang, "Opens the sign-in in the browser", "Abre el inicio de sesión en el navegador").into());
+        reconnect.description = Some(t!(lang, "The waiting tasks read their sign-in again", "Las tareas que esperan vuelven a leer su sesión").into());
+    }
     vec![connect, reconnect]
 }
 

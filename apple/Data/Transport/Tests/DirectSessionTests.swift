@@ -176,6 +176,26 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         await session.deactivate()
     }
 
+    @Test func whereAnMcpSignInCameBackToGoesSealedAndNothingOfItStaysOnDisk() async throws {
+        let fixture = try await Fixture()
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-1",
+            deviceID: "phone-1", credentialRevision: "approved")
+        let directory = try TestFiles.directory()
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: fixture.mac.device,
+            agreement: fixture.mac.deviceAgreement, macSigning: fixture.mac.macSigning.publicKey,
+            macAgreement: fixture.mac.macAgreement.publicKey, router: fixture.router,
+            http: DirectHTTP(transport: fixture.mac),
+            journal: try EnvelopeJournal(scope: scope, directory: directory), pause: { _ in })
+        let address = #"{"address":"http://localhost:53682/callback?code=one-time-code&state=s1"}"#
+        let request = try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["mcp-sign-ins", "mcp-sign-in-t-7", "return"],
+            body: Data(address.utf8)), operationID: "mcp-return-1")
+        #expect(try await session.perform(request) == answered)
+        let sent = try #require(await fixture.mac.requestBodies.last)
+        #expect(!String(decoding: sent, as: UTF8.self).contains("one-time-code"), "the code travels sealed")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty, "the return is not an action: nothing is journaled")
+        await session.deactivate()
+    }
+
     @Test func aLostAnswerIsResentAsTheSameBytesAndRunsOnce() async throws {
         let f = try await Fixture()
         await f.mac.failRequests(1)

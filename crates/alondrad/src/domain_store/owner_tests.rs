@@ -1012,7 +1012,7 @@ fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_
     observe(vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Browser {
         url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: Some(port), state: Some("s1".into()),
     } }]);
-    let page = Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), returns_to_claude: true };
+    let page = Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), port: Some(port) };
     assert_eq!(tokio.block_on(opening).unwrap(), Ok(page.clone()));
     assert_eq!(tokio.block_on(connect(&runtime, &card)), Ok(page), "another device gets the same page while Claude waits for it");
     assert_eq!(controls("StartMcpSignIn"), 1, "one sign-in for every device");

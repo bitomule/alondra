@@ -99,6 +99,7 @@ private struct DemoAccountView: View {
         guard !Task.isCancelled else { return }
         store = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
+            $0.mcpSignIn = services.mcpSignInClient(browser: McpSignInBrowser())
             $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
@@ -226,6 +227,11 @@ struct RootView<AccountContent: View>: View {
             if $0 == nil { store.send(.dismissCloseRefusal) }
         }))
         .tabBarMinimizeBehavior(.onScrollDown)
+        .environment(\.mcpLinks, McpLinks(signIn: { store.send(.mcpSignInRequested(card: $0, server: $1)) },
+                                          reconnect: { store.send(.mcpReconnectRequested(card: $0)) }))
+        .sheet(item: $store.scope(state: \.mcpSignIn, action: \.mcpSignIn)) { signIn in
+            McpSignInSheet(store: signIn).presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             NavigationStack {
                 accountContent.toolbar { ToolbarItem(placement: .cancellationAction) {

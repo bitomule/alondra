@@ -27,9 +27,10 @@ const RECONNECTS: u32 = 3;
 /// What Connect hands the user.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Opened {
-    /// The user signs in at `url`; with `returns_to_claude` the browser then comes back to
-    /// Claude's listener on the Mac, and elsewhere the user pastes where it came back to.
-    Browser { server: String, url: String, returns_to_claude: bool },
+    /// The user signs in at `url`; with a `port` the browser then comes back to
+    /// `http://localhost:<port>/callback`, Claude's listener on the Mac, and on another device the
+    /// client listens on that port of its own or the user pastes where it came back to.
+    Browser { server: String, url: String, port: Option<u16> },
     /// Claude's stored sign-in works: nothing to do in a browser.
     Connected { server: String },
 }
@@ -91,7 +92,7 @@ fn still_open(open: &OpenSignIn) -> bool {
 }
 
 fn browser(server: &str, open: &OpenSignIn) -> Opened {
-    Opened::Browser { server: server.into(), url: open.url.clone(), returns_to_claude: open.callback_port.is_some() }
+    Opened::Browser { server: server.into(), url: open.url.clone(), port: open.callback_port }
 }
 
 /// Waits until `outcome` says something of the domain, for at most `ANSWER`.

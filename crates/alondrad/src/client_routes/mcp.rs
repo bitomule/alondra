@@ -66,8 +66,8 @@ impl Client {
         authorize()?;
         Ok(match step {
             Step::Connect => match crate::mcp_waits::connect(&self.domain, &card).await {
-                Ok(Opened::Browser { server, url, returns_to_claude }) => {
-                    Reply::ok(json!({"server": server, "url": url, "returns_to_claude": returns_to_claude}))
+                Ok(Opened::Browser { server, url, port }) => {
+                    Reply::ok(json!({"server": server, "url": url, "returns_to_claude": port.is_some(), "port": port}))
                 }
                 Ok(Opened::Connected { server }) => Reply::ok(json!({"server": server, "connected": true})),
                 Err(error) => Reply::error(error),

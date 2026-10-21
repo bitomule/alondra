@@ -13,6 +13,7 @@ struct CardButtons: View {
     @State private var choosing: AlondraContract.Action?
     @State private var showsMore = false
     @Environment(\.openURL) private var openURL
+    @Environment(\.mcpLinks) private var mcpLinks
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
@@ -48,7 +49,7 @@ struct CardButtons: View {
                         }
                     }
             } else {
-                Button { store.perform(action, openURL: openURL) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
+                Button { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
                     .glassRole(action.cardRole)
                     .accessibilityIdentifier(identifier(action))
             }
@@ -66,7 +67,7 @@ struct CardButtons: View {
             .accessibilityLabel("More actions")
             .confirmationDialog("More actions", isPresented: $showsMore, titleVisibility: .hidden) {
                 ForEach(Array(store.menu.enumerated()), id: \.offset) { _, action in
-                    Button(action.label) { store.perform(action, openURL: openURL) }
+                    Button(action.label) { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) }
                 }
             }
     }

@@ -74,7 +74,7 @@ fn sign_in_card(report: &mut Report, user: &User, server: &str, waiting: usize) 
 fn connect(report: &mut Report, user: &User, card: &str) -> Result<String> {
     report.step("Connect opens the sign-in on a waiting node and hands back its page", || {
         let (status, body) = user.send("POST", &format!("/mcp-sign-ins/{card}/connect"), Some(json!({})))?;
-        if status != 200 || body["returns_to_claude"] != json!(true) {
+        if status != 200 || body["returns_to_claude"] != json!(true) || !body["port"].is_u64() {
             bail!("connect answered {status}: {body}");
         }
         body["url"].as_str().map(str::to_owned).context("a sign-in page")

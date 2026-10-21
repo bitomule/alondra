@@ -11,6 +11,7 @@ import SwiftUI
 public struct CardDetailView: View {
     @Bindable var store: StoreOf<CardDetailFeature>
     @Environment(\.openURL) private var openURL
+    @Environment(\.mcpLinks) private var mcpLinks
     @FocusState private var replyFocused: Bool
     @State private var methodChoice: AlondraContract.Action?
 
@@ -388,6 +389,7 @@ public struct CardDetailView: View {
     }
 
     private func perform(_ action: AlondraContract.Action) {
+        if mcpLinks(action.link) { return }
         if case .url(let url) = action.link, let destination = URL(string: url) {
             openURL(destination)
         } else {

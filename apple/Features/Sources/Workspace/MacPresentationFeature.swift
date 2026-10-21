@@ -70,6 +70,9 @@ public struct MacPresentationFeature: Sendable {
         public var contentDigest: String?
         public var diffComments: [String: ActionComment] = [:]
         public var newRequest = NewRequestFeature.State(client: .mac)
+        @Presents public var mcpSignIn: McpSignInFeature.State?
+        /// Why Reconnect on a card did not go, until the person reads it.
+        public var mcpNotice: WorkspaceNotice.Event?
 
         private var terms: [Substring] { query.lowercased().split(separator: " ") }
         public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
@@ -124,8 +127,15 @@ public struct MacPresentationFeature: Sendable {
         /// An answer has not reached the daemon in time, so its card waits again: the sentence to show.
         case answerNotConfirmed(String)
         case newRequest(NewRequestFeature.Action)
+        /// Connect on the card of the tasks that wait for an MCP server.
+        case mcpSignInRequested(card: String, server: String)
+        case mcpReconnectRequested(card: String)
+        case mcpReconnected(McpSignInFeature.Failure?)
+        case mcpNoticeDismissed
+        case mcpSignIn(PresentationAction<McpSignInFeature.Action>)
     }
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.mcpSignIn) var mcpSignIn
     @Dependency(\.viewsClient) var viewsClient
     private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String) }
     public var body: some ReducerOf<Self> {
@@ -444,7 +454,7 @@ public struct MacPresentationFeature: Sendable {
                     }
                 } else { state.viewError = nil }
             case let .viewFailed(_, message): state.viewError = message
-            case .settled, .newRequest: break
+            case .settled, .newRequest, .mcpSignInRequested, .mcpReconnectRequested, .mcpReconnected, .mcpNoticeDismissed, .mcpSignIn: break
             case .queryChanged(let query):
                 state.query = query
                 state.smartMatches = nil
@@ -500,6 +510,29 @@ public struct MacPresentationFeature: Sendable {
         }
         Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
+        Reduce { state, action in
+            switch action {
+            case let .mcpSignInRequested(card, server):
+                state.mcpSignIn = McpSignInFeature.State(card: card, server: server)
+                return .none
+            case .mcpReconnectRequested(let card):
+                return .run { [mcpSignIn] send in
+                    do {
+                        try await mcpSignIn.reconnect(card)
+                        await send(.mcpReconnected(nil))
+                    } catch { await send(.mcpReconnected(McpSignInFeature.failure(of: error, opening: true))) }
+                }
+            case .mcpReconnected(let failure):
+                state.mcpNotice = McpSignInFeature.reconnectNotice(failure)
+                return .none
+            case .mcpNoticeDismissed:
+                state.mcpNotice = nil
+                return .none
+            default:
+                return .none
+            }
+        }
+        .ifLet(\.$mcpSignIn, action: \.mcpSignIn) { McpSignInFeature() }
     }
 
     /// The daemon asks about an answer again: its card is shown, unless the person is already

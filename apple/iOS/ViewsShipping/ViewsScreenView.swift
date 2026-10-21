@@ -11,6 +11,7 @@ struct ViewsScreenView: View {
     @Bindable var store: StoreOf<ViewsScreenFeature>
     let openView: (ViewKey) -> Void
     @Environment(\.openURL) private var openURL
+    @Environment(\.mcpLinks) private var mcpLinks
     @State private var diffComments: [String: ActionComment] = [:]
     @State private var nodeMessageDraft = ""
 
@@ -247,7 +248,7 @@ struct ViewsScreenView: View {
                   let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
             openURL(url)
         case .local(let local):
-            if case let .attach(session) = local { open(.card(session)) }
+            if case let .attach(session) = local { open(.card(session)) } else { mcpLinks(link) }
         }
     }
 

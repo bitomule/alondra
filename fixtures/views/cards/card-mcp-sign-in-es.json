@@ -1,0 +1,159 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:mcp-sign-in-t-18",
+  "client": "ios",
+  "version": "vfdd67b67e4133dcf",
+  "cursor": "cursor-1",
+  "title": "Inicia sesión en linear: esperan 2 tareas",
+  "status": {
+    "version": "v7e35045c9d88fd6b",
+    "summary": "1 pregunta · 3 nodos trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 3
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 3
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "mcp-sign-in-t-18",
+          "kind": "problem",
+          "need": "Inicia sesión en linear: esperan 2 tareas",
+          "why": "Claude no puede usar el servidor MCP linear hasta que inicies sesión. Conectar abre el inicio de sesión; al terminar, las tareas que esperan siguen solas. Esperan: «Task t» y «Task u».",
+          "meta": "Alondra",
+          "link": {
+            "kind": "view",
+            "key": "card:mcp-sign-in-t-18"
+          },
+          "icon": "warning",
+          "eyebrow": {
+            "text": "Problema",
+            "tone": "critical"
+          },
+          "title": "Inicia sesión en linear: esperan 2 tareas",
+          "subtitle": "Claude no puede usar el servidor MCP linear hasta que inicies sesión. Conectar abre el inicio de sesión; al terminar, las tareas que esperan siguen solas. Esperan: «Task t» y «Task u».",
+          "state": {
+            "text": "Bloquea a este nodo",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "",
+              "label": "Conectar",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "1",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-sign-in-t-18",
+                  "server": "linear"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "ans:mcp-sign-in-t-18@18",
+              "label": "Seguir sin linear",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "go_on_without",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Las tareas siguen sin linear",
+              "resolves_card": true
+            },
+            {
+              "id": "",
+              "label": "Reconectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "2",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-sign-in-t-18"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Task t",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

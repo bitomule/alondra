@@ -124,6 +124,7 @@ private final class MacServiceWindowContext {
         guard !Task.isCancelled else { return }
         store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender, monitor: services.monitor)
+            $0.mcpSignIn = services.mcpSignInClient(browser: McpSignInBrowser())
             $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)

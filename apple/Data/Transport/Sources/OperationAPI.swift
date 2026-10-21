@@ -104,6 +104,9 @@ public struct APIRequest: Sendable, Equatable {
         if method == .get, path.count == 2, path[0] == "operation-results" {
             return validOperationID(path[1])
         }
+        if method == .post, path.count == 3, path[0] == "mcp-sign-ins", path[1].hasPrefix("mcp-sign-in-"),
+           path[1].utf8.count <= 256, path[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
+           ["connect", "return", "reconnect", "without"].contains(path[2]) { return true }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),

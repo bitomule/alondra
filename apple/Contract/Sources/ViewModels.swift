@@ -490,13 +490,19 @@ public enum Link: Codable, Equatable, Sendable {
 }
 public enum LocalLink: Codable, Equatable, Sendable {
     case attach(session: String), reviewClone(repo: String, branch: String, pr: UInt64), openPath(path: String)
-    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path }
+    /// Opens the sign-in to the MCP server the card's tasks wait for.
+    case mcpSignIn(card: String, server: String)
+    /// Has the nodes that wait for the card's MCP server read their sign-in again.
+    case mcpReconnect(card: String)
+    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .kind) {
         case "attach": self = .attach(session: try c.decode(String.self, forKey: .session))
         case "review_clone": self = .reviewClone(repo: try c.decode(String.self, forKey: .repo), branch: try c.decode(String.self, forKey: .branch), pr: try c.decode(UInt64.self, forKey: .pr))
         case "open_path": self = .openPath(path: try c.decode(String.self, forKey: .path))
+        case "mcp_sign_in": self = .mcpSignIn(card: try c.decode(String.self, forKey: .card), server: try c.decode(String.self, forKey: .server))
+        case "mcp_reconnect": self = .mcpReconnect(card: try c.decode(String.self, forKey: .card))
         case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown local link kind: \(kind)")
         }
     }
@@ -506,6 +512,8 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case let .attach(v): try c.encode("attach", forKey: .kind); try c.encode(v, forKey: .session)
         case let .reviewClone(repo, branch, pr): try c.encode("review_clone", forKey: .kind); try c.encode(repo, forKey: .repo); try c.encode(branch, forKey: .branch); try c.encode(pr, forKey: .pr)
         case let .openPath(v): try c.encode("open_path", forKey: .kind); try c.encode(v, forKey: .path)
+        case let .mcpSignIn(card, server): try c.encode("mcp_sign_in", forKey: .kind); try c.encode(card, forKey: .card); try c.encode(server, forKey: .server)
+        case let .mcpReconnect(card): try c.encode("mcp_reconnect", forKey: .kind); try c.encode(card, forKey: .card)
         }
     }
 }

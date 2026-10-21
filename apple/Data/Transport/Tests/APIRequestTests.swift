@@ -36,6 +36,19 @@ final class APIRequestTests: XCTestCase {
     }
 }
 
+final class McpSignInRouteTests: XCTestCase {
+    func testOnlyTheStepsOfAnMcpWaitsCardAreSentToTheMac() {
+        for step in ["connect", "return", "reconnect", "without"] {
+            XCTAssertTrue(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "mcp-sign-in-t-7-12", step]), step)
+        }
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .get, path: ["mcp-sign-ins", "mcp-sign-in-t-7", "connect"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "mcp-sign-in-t-7", "open"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "card-1", "connect"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "mcp-sign-in-t.7", "connect"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "mcp-sign-in-t-7"]))
+    }
+}
+
 final class OperationErrorTests: XCTestCase {
     func testEveryCaseReadsAsASentenceNotATypeName() {
         let cases: [OperationError] = [.operationIdentityRequired, .invalidConfiguration, .invalidEndpoint, .outcomeUnknown]
