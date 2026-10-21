@@ -8,8 +8,13 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// them gets them all, and one that has only some is refused like any other changed schema.
 const ADDITIONS: &str = include_str!("controls.sql");
 /// The definitions of the addition tables whose checks later controls widened, as journals
-/// installed before each of them still hold them: before the MCP controls, and before force stop.
-const EARLIER: [&str; 2] = [include_str!("controls_before_mcp.sql"), include_str!("controls_before_force_stop.sql")];
+/// installed before each of them still hold them: before the MCP controls, before force stop, and
+/// before clearing an MCP sign-in.
+const EARLIER: [&str; 3] = [
+    include_str!("controls_before_mcp.sql"),
+    include_str!("controls_before_force_stop.sql"),
+    include_str!("controls_before_clear_auth.sql"),
+];
 /// The observation triggers journals installed before the retention of normalized evidence hold:
 /// they refused every update and delete.
 const BEFORE_RETENTION: &str = include_str!("observations_before_retention.sql");

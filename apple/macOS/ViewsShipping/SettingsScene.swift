@@ -81,6 +81,7 @@ struct MacServiceSettingsScene: View {
         state.showsSignOutWithMacs = owner == nil && account.macs.contains { !$0.local }
         state.nodeLimit = NodeLimitFeature.State(client: .mac)
         state.allowedRules = AllowedRulesFeature.State(client: .mac)
+        state.mcpServers = ServerSettingsFeature.State(key: .mcpServers, client: .mac)
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
                 $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)

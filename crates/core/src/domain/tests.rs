@@ -2974,9 +2974,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordDroppedInput { .. } => 92,
         Command::RecordAccounts { .. } => 93,
         Command::RefuseDecisionRequest { .. } => 94,
+        Command::ClearMcpSignIn { .. } => 95,
     }
 }
-const COMMAND_KINDS: usize = 95;
+const COMMAND_KINDS: usize = 96;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3117,6 +3118,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ReadMcpStatus { task_id: ids.task.into() }, false),
         (Command::ReconnectMcp { task_id: ids.task.into(), server: "linear".into() }, false),
         (Command::StartMcpSignIn { task_id: ids.task.into(), server: "linear".into() }, false),
+        (Command::ClearMcpSignIn { task_id: ids.task.into(), server: "linear".into() }, false),
         (Command::RecordMcpServers { task_id: ids.task.into(), generation: 1, servers: vec![] }, false),
         (Command::RecordMcpSignIn { task_id: ids.task.into(), generation: 1, server: "linear".into(), sign_in: McpSignIn::Connected }, false),
         (Command::CompleteMcpSignIn { task_id: ids.task.into(), server: "linear".into(), state: "s".into() }, false),
@@ -4387,8 +4389,8 @@ fn guards_refuse_what_the_commands_refuse() {
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
     let mut mcp = sdk.clone();
     exec(&mut mcp, Actor::System, Command::RecordMcpServers { task_id: "sdk".into(), generation: 1, servers: vec![
-        McpServerState { name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: None, transport: None, url: None },
-        McpServerState { name: "files".into(), status: McpStatus::Connected, error: None, source: None, transport: None, url: None },
+        McpServerState { name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: None, transport: None, url: None, traits: Default::default() },
+        McpServerState { name: "files".into(), status: McpStatus::Connected, error: None, source: None, transport: None, url: None, traits: Default::default() },
     ] }).unwrap();
     let mut waiting_mcp = mcp.clone();
     exec(&mut waiting_mcp, Actor::Agent { agent_id: "s".into() }, Command::WaitForMcp { task_id: "sdk".into(), server: "linear".into() }).unwrap();

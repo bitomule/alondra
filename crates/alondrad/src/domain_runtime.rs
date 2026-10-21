@@ -731,6 +731,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ReadMcpStatus { task_id }
         | Command::ReconnectMcp { task_id, .. }
         | Command::StartMcpSignIn { task_id, .. }
+        | Command::ClearMcpSignIn { task_id, .. }
         | Command::RecordMcpServers { task_id, .. }
         | Command::RecordMcpSignIn { task_id, .. }
         | Command::CompleteMcpSignIn { task_id, .. }

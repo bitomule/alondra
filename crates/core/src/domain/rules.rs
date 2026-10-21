@@ -10,8 +10,8 @@ mod decisions;
 mod mcp;
 #[path = "mcp_wait.rs"]
 mod mcp_wait;
-pub use mcp::{MAX_MCP_SERVERS, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
-pub use mcp_wait::{MCP_GO_ON_WITHOUT, MCP_WAIT_PREFIX, McpServerKey, McpWaiting};
+pub use mcp::{MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
+pub use mcp_wait::{MCP_GO_ON_WITHOUT, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpWaiting};
 pub use decisions::{ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy};
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
@@ -2013,6 +2013,7 @@ impl DomainState {
             | Command::ReadMcpStatus { task_id }
             | Command::ReconnectMcp { task_id, .. }
             | Command::StartMcpSignIn { task_id, .. }
+            | Command::ClearMcpSignIn { task_id, .. }
             | Command::RecordMcpServers { task_id, .. }
             | Command::RecordMcpSignIn { task_id, .. }
             | Command::CompleteMcpSignIn { task_id, .. }
@@ -4217,6 +4218,10 @@ impl DomainState {
             }
             Command::StartMcpSignIn { task_id, server } => {
                 let record = self.mcp_sign_in_guard(actor, task_id, server)?;
+                self.decide(lifecycles, task_id, record)?;
+            }
+            Command::ClearMcpSignIn { task_id, server } => {
+                let record = self.mcp_sign_out_guard(actor, task_id, server)?;
                 self.decide(lifecycles, task_id, record)?;
             }
             Command::RecordMcpServers { task_id, generation, servers } => {

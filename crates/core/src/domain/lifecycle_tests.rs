@@ -1047,7 +1047,7 @@ fn compacting_a_resting_conversation_keeps_the_card_it_waits_on() {
 }
 
 fn mcp_server(name: &str, status: McpStatus) -> McpServerState {
-    McpServerState { name: name.into(), status, error: None, source: None, transport: None, url: None }
+    McpServerState { name: name.into(), status, error: None, source: None, transport: None, url: None, traits: Default::default() }
 }
 
 #[test]
@@ -1069,6 +1069,32 @@ fn a_node_keeps_how_its_mcp_servers_are_as_its_claude_reports_them() {
     let linear = &s.mcp[&AgentId::from("a")].servers;
     assert_eq!((linear.len(), linear[0].status, linear[0].error.clone(), linear[0].url.clone()), (1, McpStatus::NeedsAuth, None, remote.url.clone()), "a changed status drops the old error");
     assert_eq!(McpStatus::of("a-status-from-a-later-claude"), McpStatus::Unknown);
+}
+
+#[test]
+fn claude_forgets_only_a_sign_in_it_keeps_to_a_remote_server() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let sign_out = |server: &str| Command::ClearMcpSignIn { task_id: "t".into(), server: server.into() };
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_out("linear")), "not_found", "a server Claude never reported");
+    let remote = |name: &str, status: McpStatus, transport: &str, source: &str| McpServerState {
+        transport: Some(transport.into()), source: Some(source.into()),
+        traits: alondra_foundation::McpTraits { sign_out: matches!(transport, "http" | "sse") && source != "claudeai", ..Default::default() },
+        ..mcp_server(name, status)
+    };
+    must(&mut s, Actor::System, Command::RecordMcpServers { task_id: "t".into(), generation: 1, servers: vec![
+        remote("linear", McpStatus::Connected, "http", "user"), remote("events", McpStatus::NeedsAuth, "sse", "project"),
+        remote("files", McpStatus::Connected, "stdio", "project"), remote("claude.ai Gmail", McpStatus::Connected, "claudeai-proxy", "claudeai"),
+        remote("off", McpStatus::Disabled, "http", "user"),
+    ] });
+    assert_eq!(refused_unchanged(&mut s, user(), sign_out("linear")), "forbidden");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_out("files")), "conflict", "a local server keeps no sign-in");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_out("claude.ai Gmail")), "conflict", "a claude.ai connector is signed out on claude.ai");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_out("off")), "conflict", "turned off");
+    must(&mut s, Actor::System, sign_out("linear"));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::ClearMcpSignIn { server }, .. } if server == "linear"));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, sign_out("events")), "conflict", "no sign-in to clear while it needs one");
+    assert_aggregate_rules(&s);
 }
 
 #[test]

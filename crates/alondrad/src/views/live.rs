@@ -131,7 +131,7 @@ impl LiveSnapshots {
 
 /// Keys whose live data also comes from files or GitHub, which no fact announces.
 fn reads_unwatched_sources(key: &str) -> bool {
-    ["machine", "new_request", "issue_picker"].iter()
+    ["machine", "new_request", "issue_picker", "mcp_servers"].iter()
         .any(|unwatched| key == *unwatched || key.strip_prefix(unwatched).is_some_and(|rest| rest.starts_with('?')))
 }
 
@@ -593,6 +593,7 @@ async fn gather_inner(
         pacing: client.domain.live.gate.live(&client.domain, now),
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
+        mcp_probes: keyed.mcp_probes,
     }
 }
 
@@ -609,6 +610,7 @@ struct Keyed {
     search_matches: Option<Vec<String>>,
     allowed_rules: Vec<alondra_core::views::LiveAllowedRule>,
     allow_always_missing: Vec<String>,
+    mcp_probes: BTreeMap<String, alondra_core::views::LiveMcpProbe>,
 }
 
 impl Keyed {
@@ -623,6 +625,7 @@ impl Keyed {
         live.search_matches = self.search_matches;
         live.allowed_rules = self.allowed_rules;
         live.allow_always_missing = self.allow_always_missing;
+        live.mcp_probes = self.mcp_probes;
     }
 }
 
@@ -635,7 +638,13 @@ async fn gather_keyed(
     let wants_new = keys
         .iter()
         .any(|key| key.as_str() == "new_request" || key.starts_with("new_request?"));
+    let wants_mcp = keys.iter().any(|key| key == alondra_core::views::mcp_servers::KEY);
     let mut projects = Vec::new();
+    if wants_mcp && !wants_new
+        && let Some(data) = read_json(client, "/projects").await
+    {
+        projects = serde_json::from_value(data["projects"].clone()).unwrap_or_default();
+    }
     let mut options = Vec::new();
     let mut project_options = BTreeMap::new();
     if wants_new {
@@ -727,7 +736,8 @@ async fn gather_keyed(
         }
     }
     let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
-    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing }
+    let mcp_probes = if wants_mcp { client.mcp_probes.snapshot() } else { BTreeMap::new() };
+    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes }
 }
 
 /// This Mac's rules «allow always», checked against their files only when its settings are on

@@ -3502,11 +3502,31 @@ fn a_journal_from_before_force_stop_keeps_every_control_and_takes_force_stops() 
 }
 
 #[test]
+fn a_journal_from_before_clearing_mcp_sign_ins_keeps_every_control_and_takes_the_sign_outs() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    request(&mut fixture, "mcp", Control::ReadMcpStatus).unwrap();
+    narrow_to(&mut fixture, include_str!("../src/controls_before_clear_auth.sql"));
+    let sign_out = |id: &str| format!("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,argument,status) VALUES('task',1,'{id}','mcp_clear_auth','linear','prepared')");
+    assert!(fixture.connection.execute(&sign_out("raw-before"), []).is_err(), "the narrower check refuses a sign-out");
+    let before = controls_rows(&fixture);
+    let mut tx = fixture.connection.transaction().unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(controls_rows(&fixture), before, "every row is kept");
+    fixture.transaction().commit().unwrap();
+    fixture.connection.execute(&sign_out("raw-after"), []).unwrap();
+    assert!(fixture.connection.execute("INSERT INTO lifecycle_controls(task_id,generation,control_id,kind,status) VALUES('task',1,'raw-serverless','mcp_clear_auth','prepared')", []).is_err(),
+        "a sign-out always names its server");
+}
+
+#[test]
 fn a_binding_with_every_control_signs_in_and_reconnects_its_mcp_servers() {
-    for (name, kind) in [("reconnect", Control::ReconnectMcp { server: "linear".into() }), ("sign-in", Control::StartMcpSignIn { server: "linear".into() })] {
+    for (name, kind) in [("reconnect", Control::ReconnectMcp { server: "linear".into() }), ("sign-in", Control::StartMcpSignIn { server: "linear".into() }),
+        ("sign-out", Control::ClearMcpSignIn { server: "linear".into() })] {
         let mut fixture = Fixture::new();
         let mut capabilities = every_control().to_vec();
-        capabilities.extend([Capability::Decisions, Capability::McpReconnect, Capability::McpSignIn]);
+        capabilities.extend([Capability::Decisions, Capability::McpReconnect, Capability::McpSignIn, Capability::McpClearAuth]);
         let binding = control_binding(capabilities);
         running_sdk(&mut fixture, &binding);
         let permit = request(&mut fixture, name, kind.clone()).unwrap().control_permits.pop().unwrap();

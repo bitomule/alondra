@@ -225,6 +225,7 @@ enum LocalActionResource {
     OrchestratorDecision,
     NodeLimitSettings,
     AllowedRules,
+    Mcp(String),
 }
 enum LocalResourceGuard {
     Read { _guard: tokio::sync::OwnedRwLockReadGuard<()> },
@@ -281,6 +282,7 @@ impl LocalActionResource {
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
+            Verb::McpSignOut | Verb::McpCheck => add(Self::Mcp(action.subject.clone()), true),
             _ => {},
         }
         keys.into_iter().collect()
@@ -349,7 +351,8 @@ pub(crate) fn external_request(body: &Value) -> bool {
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule)
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
+        Verb::McpSignOut | Verb::McpCheck)
 }
 
 pub(crate) async fn execute_action(
@@ -465,6 +468,8 @@ async fn execute_external(
         Verb::Resume => "Resumed",
         Verb::SetLimit => "Limit updated",
         Verb::RemoveRule => "Removed",
+        Verb::McpSignOut => "Signed out",
+        Verb::McpCheck => "Checking",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -475,7 +480,8 @@ async fn execute_external(
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
-        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado", _ => stamp,
+        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado",
+        Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -699,6 +705,32 @@ async fn execute_external(
                     Ok(error_value_lang(lang, "conflict", "Alondra could not change the repo's settings file"))
                 }
             }
+        }
+        Verb::McpSignOut => {
+            let Some(target @ crate::mcp_waits::Target::Server(_)) = crate::mcp_waits::Target::of(&action.subject) else {
+                return Ok(no_longer_available(lang, "No running task uses this MCP server any more"));
+            };
+            match crate::mcp_waits::sign_out(domain, &target) {
+                Ok(server) => Ok(to_applied(200, json!({"signed_out": server}))),
+                Err(error) if error.code == "not_found" => Ok(no_longer_available(lang, "No running task uses this MCP server any more")),
+                Err(error) => Ok(error_value(&error.code, &error.message)),
+            }
+        }
+        Verb::McpCheck => {
+            let (_, projects, _) = client.project_list();
+            let Some(project) = projects.into_iter().find(|entry| alondra_core::views::mcp_servers::project_target(&entry.name) == action.subject) else {
+                return Ok(no_longer_available(lang, "This project is no longer listed"));
+            };
+            let Some((backend, _)) = domain.sdk() else {
+                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
+            };
+            let shared = std::sync::Arc::downgrade(&client.shared());
+            let woken = move || if let Some(client) = shared.upgrade() { client.feeds.wake() };
+            let started = crate::mcp_probe::check(client.mcp_probes.clone(), backend.clone(), project.name.clone(), project.path, woken);
+            if started {
+                client.feeds.wake();
+            }
+            Ok(to_applied(200, json!({"checking": project.name})))
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
             let runtime = crate::domain_orchestrator::load(home)?;
@@ -1825,6 +1857,9 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "command_id must be a supported operation ID" => "El identificador del comando no es válido",
         "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
         "Choose an option" => "Elige una opción",
+        "No running task uses this MCP server any more" => "Ya ninguna tarea en marcha usa este servidor MCP",
+        "This project is no longer listed" => "Este proyecto ya no aparece",
+        "This Alondra has no Agent SDK host to check with" => "Este Alondra no tiene el host del Agent SDK para comprobarlo",
         "This item is no longer available" => "Este elemento ya no está disponible",
         "This node has no open task" => "Este nodo no tiene ninguna tarea abierta",
         "This task is not queued" => "Esta tarea no está en cola",

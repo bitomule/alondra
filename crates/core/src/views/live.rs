@@ -67,6 +67,20 @@ pub struct LiveSnapshot {
     /// Permission cards whose «allow always» Claude Code never wrote.
     #[serde(default)]
     pub allow_always_missing: Vec<String>,
+    /// What the last check of each project without a live node found of its MCP servers, by
+    /// project name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_probes: BTreeMap<String, LiveMcpProbe>,
+}
+
+/// A check of a project's MCP servers: Claude started in the project, asked for nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum LiveMcpProbe {
+    Checking,
+    /// As Claude listed them, at this local ISO time.
+    Checked { at: String, servers: Vec<crate::domain::McpServerState> },
+    Failed { at: String, error: String },
 }
 
 /// A rule «allow always» added on this Mac: what it lets through, in which repo, and from where.

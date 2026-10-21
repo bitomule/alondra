@@ -589,6 +589,11 @@ pub enum Command {
         task_id: TaskId,
         server: String,
     },
+    /// Claude forgets and revokes its stored sign-in to the Task's MCP server.
+    ClearMcpSignIn {
+        task_id: TaskId,
+        server: String,
+    },
     /// The MCP servers the Task's SDK execution of `generation` reported, and how they are.
     RecordMcpServers {
         task_id: TaskId,

@@ -224,6 +224,7 @@ pub(super) enum ControlRecord {
     ReadMcpStatus,
     ReconnectMcp { server: String },
     StartMcpSignIn { server: String },
+    ClearMcpSignIn { server: String },
 }
 impl From<&Control> for ControlRecord {
     fn from(control: &Control) -> Self {
@@ -247,6 +248,7 @@ impl From<&Control> for ControlRecord {
             Control::ReadMcpStatus => Self::ReadMcpStatus,
             Control::ReconnectMcp { server } => Self::ReconnectMcp { server: server.clone() },
             Control::StartMcpSignIn { server } => Self::StartMcpSignIn { server: server.clone() },
+            Control::ClearMcpSignIn { server } => Self::ClearMcpSignIn { server: server.clone() },
         }
     }
 }
@@ -272,6 +274,7 @@ impl ControlRecord {
             ControlRecord::ReadMcpStatus => Control::ReadMcpStatus,
             ControlRecord::ReconnectMcp { server } => Control::ReconnectMcp { server },
             ControlRecord::StartMcpSignIn { server } => Control::StartMcpSignIn { server },
+            ControlRecord::ClearMcpSignIn { server } => Control::ClearMcpSignIn { server },
         })
     }
 }

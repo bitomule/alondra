@@ -3,7 +3,8 @@
 //! user signs in once, which every session shares, as Claude's keychain is
 //! (`fakes/mcp-signed-in/<name>`); a running session sees it only once it connects the server again.
 //! A sign-in listens on loopback as Claude's own listener does: its page sends the browser straight
-//! back to `/callback` with a code, and the return signs the server in.
+//! back to `/callback` with a code, and the return signs the server in. Clearing the sign-in forgets it
+//! for every session, and the session that cleared it reports the server failed until it connects again.
 use std::{
     collections::BTreeSet,
     fs,
@@ -29,6 +30,7 @@ pub struct Servers {
     servers: Vec<Server>,
     signed_in: PathBuf,
     connected: Mutex<BTreeSet<String>>,
+    cleared: Mutex<BTreeSet<String>>,
 }
 
 impl Servers {
@@ -37,7 +39,7 @@ impl Servers {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         let signed_in = fakes.dir.join("mcp-signed-in");
         let connected = servers.iter().filter(|server| signed_in.join(&server.name).exists()).map(|server| server.name.clone()).collect();
-        Arc::new(Self { servers, signed_in, connected: Mutex::new(connected) })
+        Arc::new(Self { servers, signed_in, connected: Mutex::new(connected), cleared: Mutex::default() })
     }
 
     fn connected(&self, name: &str) -> bool {
@@ -48,8 +50,13 @@ impl Servers {
     pub fn statuses(&self) -> Vec<Value> {
         let mut listed = vec![json!({"name": "plugin:alondra:alondra", "status": "connected"})];
         for server in &self.servers {
+            let config = json!({"type": "http", "url": server.url});
+            if self.cleared.lock().is_ok_and(|cleared| cleared.contains(&server.name)) {
+                listed.push(json!({"name": server.name, "status": "failed", "error": "Authentication cleared", "scope": "user", "source": "user", "config": config}));
+                continue;
+            }
             let status = if self.connected(&server.name) { "connected" } else { "needs-auth" };
-            listed.push(json!({"name": server.name, "status": status, "scope": "user", "config": {"type": "http", "url": server.url}}));
+            listed.push(json!({"name": server.name, "status": status, "scope": "user", "source": "user", "config": config}));
         }
         listed
     }
@@ -59,11 +66,32 @@ impl Servers {
         if !self.servers.iter().any(|server| server.name == name) {
             return Err(format!("Server not found: {name}"));
         }
+        if let Ok(mut cleared) = self.cleared.lock() {
+            cleared.remove(name);
+        }
         if !self.signed_in.join(name).exists() {
+            if let Ok(mut connected) = self.connected.lock() {
+                connected.remove(name);
+            }
             return Err("Server status: needs-auth".into());
         }
         if let Ok(mut connected) = self.connected.lock() {
             connected.insert(name.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Forgets the sign-in to `name` for every session, as Claude revokes and deletes it.
+    pub fn clear(&self, name: &str) -> std::result::Result<(), String> {
+        if !self.servers.iter().any(|server| server.name == name) {
+            return Err(format!("Server not found: {name}"));
+        }
+        let _ = fs::remove_file(self.signed_in.join(name));
+        if let Ok(mut connected) = self.connected.lock() {
+            connected.remove(name);
+        }
+        if let Ok(mut cleared) = self.cleared.lock() {
+            cleared.insert(name.to_owned());
         }
         Ok(())
     }

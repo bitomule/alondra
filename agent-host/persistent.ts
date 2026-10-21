@@ -8,13 +8,13 @@ import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in'] as const;
+export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in', 'mcp_clear_auth'] as const;
 export type Capability = typeof HOST_CAPABILITIES[number];
 type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
 const REQUIRED: Record<Action['type'], Capability | undefined> = {
   start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', force_stop: 'force_stop', close: undefined,
   set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
-  mcp_reconnect: 'mcp_reconnect', mcp_authenticate: 'mcp_sign_in',
+  mcp_reconnect: 'mcp_reconnect', mcp_authenticate: 'mcp_sign_in', mcp_clear_auth: 'mcp_clear_auth',
 };
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
@@ -41,7 +41,7 @@ function address(value: unknown): string | undefined {
   } catch { return undefined; }
 }
 type NativeServer = { name?: unknown; status?: unknown; error?: unknown; source?: unknown; config?: { type?: unknown; command?: unknown; url?: unknown } };
-function listed(servers: readonly NativeServer[]): McpServer[] {
+export function listed(servers: readonly NativeServer[]): McpServer[] {
   return servers.flatMap((server) => {
     const name = bounded(server.name); const status = bounded(server.status);
     if (!name || !status) return [];
@@ -270,6 +270,16 @@ export class PersistentHost {
           const sign_in = await session.mcpAuthenticate(server).then(signIn, (error): SignIn => ({ outcome: 'refused', error: failure(error) }));
           this.current(lane);
           this.answer(record, { control: 'mcp_authenticate', command_id: command.command_id, server, sign_in }); break;
+        }
+        case 'mcp_clear_auth': {
+          const session = this.controlled(record); if (!session) break;
+          this.current(lane);
+          const server = command.action.server;
+          const error = await session.mcpClearAuth(server).then(() => undefined, failure);
+          this.current(lane);
+          const servers = listed(await session.mcpServerStatus());
+          this.current(lane);
+          this.answer(record, { control: 'mcp_clear_auth', command_id: command.command_id, server, ...(error ? { error } : {}), servers }); break;
         }
       }
     } catch (error) {

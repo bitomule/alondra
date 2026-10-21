@@ -72,6 +72,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_reader(f, app, body);
     } else if app.rules.is_some() {
         draw_rules(f, app, body);
+    } else if app.mcp_servers.is_some() {
+        draw_mcp_servers(f, app, body);
     } else if let Some(view) = app.shown_home().map(std::borrow::Cow::into_owned) {
         draw_views_inbox(f, app, &view, body);
     } else {
@@ -809,6 +811,51 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines).scroll((rules.scroll as u16, 0)), inner);
     highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, selected.0..selected.1, rules.scroll);
     scrollbar(f, inner, total, rules.scroll);
+}
+
+fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(screen) = app.mcp_servers.as_mut() else { return };
+    let title = format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP")));
+    let block = panel(Line::from(format!(" {title} ").bold()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let width = inner.width.saturating_sub(1) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected = (0, 0);
+    let mut index = 0;
+    for entry in screen.entries() {
+        match entry {
+            super::mcp_servers::Entry::Heading(title) => {
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                lines.push(Line::from(title.to_owned().bold().fg(DIM)));
+            }
+            super::mcp_servers::Entry::Note(text) => lines.push(Line::from(text.to_owned().fg(DIM))),
+            super::mcp_servers::Entry::Row(row) => {
+                let start = lines.len();
+                lines.extend(super::mcp_servers::row_lines(row, width, index == screen.sel));
+                if index == screen.sel {
+                    selected = (start, lines.len());
+                }
+                index += 1;
+            }
+        }
+    }
+    if lines.is_empty() {
+        let message = match (&screen.view, &screen.failed) {
+            (Some(view), _) => view.empty.as_ref().map_or_else(String::new, |notice| notice.text.clone()),
+            (None, Some(error)) => error.clone(),
+            (None, None) => tr!("Loading…", "Cargando…").to_owned(),
+        };
+        centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+        return;
+    }
+    let total = lines.len();
+    keep_visible(&mut screen.scroll, selected, inner.height as usize, total);
+    f.render_widget(Paragraph::new(lines).scroll((screen.scroll as u16, 0)), inner);
+    highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, selected.0..selected.1, screen.scroll);
+    scrollbar(f, inner, total, screen.scroll);
 }
 
 /// What a row says first: a child's own text, a root's name.

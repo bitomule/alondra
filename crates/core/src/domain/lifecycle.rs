@@ -111,6 +111,7 @@ pub enum ControlRecord {
     ReadMcpStatus,
     ReconnectMcp { server: String },
     StartMcpSignIn { server: String },
+    ClearMcpSignIn { server: String },
 }
 
 /// What answers a decision Claude asked for through the task's SDK execution, as the journal
@@ -395,6 +396,7 @@ fn control_of(task: &TaskId, record: &ControlRecord) -> Result<Control> {
         ControlRecord::ReadMcpStatus => Control::ReadMcpStatus,
         ControlRecord::ReconnectMcp { server } => Control::ReconnectMcp { server: server.clone() },
         ControlRecord::StartMcpSignIn { server } => Control::StartMcpSignIn { server: server.clone() },
+        ControlRecord::ClearMcpSignIn { server } => Control::ClearMcpSignIn { server: server.clone() },
     })
 }
 fn record_of_control(control: &Control) -> ControlRecord {
@@ -412,6 +414,7 @@ fn record_of_control(control: &Control) -> ControlRecord {
         Control::ReadMcpStatus => ControlRecord::ReadMcpStatus,
         Control::ReconnectMcp { server } => ControlRecord::ReconnectMcp { server: server.clone() },
         Control::StartMcpSignIn { server } => ControlRecord::StartMcpSignIn { server: server.clone() },
+        Control::ClearMcpSignIn { server } => ControlRecord::ClearMcpSignIn { server: server.clone() },
     }
 }
 

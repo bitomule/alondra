@@ -1,0 +1,439 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "mcp_servers",
+  "key": "mcp_servers",
+  "client": "mac",
+  "version": "v9211c51237a33798",
+  "cursor": "cursor-1",
+  "title": "MCP servers",
+  "status": {
+    "version": "ve4008980d1dbc4ce",
+    "summary": "2 questions · 3 to read · 2 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 4
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 4
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 2
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "yours",
+      "title": "Your servers",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-efa5e530ba40245c",
+          "icon": "machine",
+          "title": "claude.ai Gmail",
+          "subtitle": "Account connector\nUsed by «Build the importer»",
+          "badges": [
+            {
+              "text": "Connected",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconnect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-efa5e530ba40245c"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-261a33ad2940f5cd",
+          "icon": "machine",
+          "title": "github",
+          "subtitle": "Your settings\nUsed by «Wire the badge after the review»",
+          "badges": [
+            {
+              "text": "Connected",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconnect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-261a33ad2940f5cd"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "mcp_sign_out:mcp-server-261a33ad2940f5cd@6",
+              "label": "Sign out",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Sign out of github?",
+                "message": "The agent forgets and revokes its sign-in to github. Every task that uses it loses it until you connect again.",
+                "button": "Sign out"
+              },
+              "enabled": true,
+              "stamp": "Signed out",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-2696df8ba5973213",
+          "icon": "machine",
+          "title": "linear",
+          "subtitle": "Your settings\nUsed by «Build the importer»",
+          "badges": [
+            {
+              "text": "Needs sign-in",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Connect",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-server-2696df8ba5973213",
+                  "server": "linear"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-d70fca280fdb7759",
+          "icon": "machine",
+          "title": "notion",
+          "subtitle": "Your settings\nUsed by «Build the importer»",
+          "badges": [
+            {
+              "text": "Signing in",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "probe-mcp-server-b8475db4bb355e28",
+          "icon": "machine",
+          "title": "revenuecat",
+          "subtitle": "Your settings\nNo task uses it now: you can connect it once one does",
+          "badges": [
+            {
+              "text": "Needs sign-in",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "project:alondra",
+      "title": "alondra",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-5c883d9f229f3464",
+          "icon": "machine",
+          "title": "files",
+          "subtitle": "Project settings\nUsed by «Build the importer»",
+          "badges": [
+            {
+              "text": "Connected",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconnect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-5c883d9f229f3464"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-c0ca250c3c4b212d",
+          "icon": "machine",
+          "title": "sentry",
+          "subtitle": "Project settings · 401 Unauthorized\nUsed by «Build the importer»",
+          "badges": [
+            {
+              "text": "Sign-in failed",
+              "tone": "critical"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Connect",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-server-c0ca250c3c4b212d",
+                  "server": "sentry"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "project:quill",
+      "title": "quill",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-6a1eff41a1ccc3b6",
+          "icon": "machine",
+          "title": "db",
+          "subtitle": "Project settings\nUsed by «Wire the badge after the review»",
+          "badges": [
+            {
+              "text": "Connected",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconnect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-6a1eff41a1ccc3b6"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "idle_projects",
+      "title": "Other projects",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "notice",
+          "text": "Check reads the state of their servers without starting a task.",
+          "tone": "neutral"
+        },
+        {
+          "type": "row",
+          "id": "mcp-project-f8136fccd88b6688",
+          "icon": "project",
+          "title": "lumo",
+          "subtitle": "Checked at 09:40",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "probe-mcp-server-f270f5da8846162a",
+              "icon": "machine",
+              "title": "supabase",
+              "subtitle": "Project settings",
+              "badges": [
+                {
+                  "text": "Needs sign-in",
+                  "tone": "your_turn"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            }
+          ],
+          "actions": [
+            {
+              "id": "mcp_check:mcp-project-f8136fccd88b6688@6",
+              "label": "Check again",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "Starts the agent in the project without asking it anything",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-project-cc473e0a88a8efd3",
+          "icon": "project",
+          "title": "blurcamera",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_check:mcp-project-cc473e0a88a8efd3@6",
+              "label": "Check",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "Starts the agent in the project without asking it anything",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    }
+  ]
+}

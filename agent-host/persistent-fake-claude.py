@@ -21,7 +21,7 @@ def flag(name):
 resumed = flag('--resume')
 session_id = resumed or flag('--session-id')
 # Like the native Claude, a session keeps its transcript on disk: a resumed one starts with it.
-transcript = capture + '.transcript-' + session_id
+transcript = capture + '.transcript-' + (session_id or 'unsaved')
 history = sum(1 for _ in open(transcript)) if os.path.exists(transcript) else 0
 if resumed and not history:
     raise RuntimeError('No conversation found with session ID: ' + resumed)
@@ -44,6 +44,8 @@ refused = None
 # Like a Claude whose turn never stops: it accepts the interrupt and keeps going, and only SIGKILL
 # ends it.
 stubborn = False
+# Servers still connecting for this many status reads, as the native Claude reports them right after it starts.
+connecting = int(os.environ.get('FIXTURE_MCP_CONNECTING', '0'))
 
 def send(value):
     sys.stdout.write(json.dumps(value, ensure_ascii=False) + '\n')
@@ -311,12 +313,19 @@ for raw in sys.stdin:
         elif subtype in ('set_model', 'set_permission_mode'):
             control(message, {})
         elif subtype == 'mcp_status':
-            control(message, dict(mcpServers=[dict(name='fixture', status='connected')]))
+            remote = dict(name='linear', status='pending' if connecting > 0 else 'needs-auth', scope='user', config=dict(type='http', url='https://mcp.linear.app/mcp?token=secret'))
+            connecting -= 1
+            control(message, dict(mcpServers=[dict(name='fixture', status='connected')] + ([remote] if 'FIXTURE_MCP_CONNECTING' in os.environ else [])))
         elif subtype == 'mcp_reconnect':
             if message['request'].get('serverName') == 'fixture':
                 control(message, {})
             else:
                 control_error(message, 'Server not found: ' + str(message['request'].get('serverName')))
+        elif subtype == 'mcp_clear_auth':
+            if message['request'].get('serverName') == 'linear':
+                control(message, {})
+            else:
+                control_error(message, 'Cannot clear auth for server type "stdio"')
         elif subtype == 'mcp_authenticate':
             server = message['request'].get('serverName')
             if server == 'fixture':

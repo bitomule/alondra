@@ -1,5 +1,6 @@
-//! The routes of the card that tasks waiting for an MCP server wait on: Connect, where the browser
-//! came back to, Reconnect and Go on without it. They reach the daemon on this Mac or inside the
+//! The routes of the card that tasks waiting for an MCP server wait on, and of a server the MCP
+//! servers screen lists: Connect, where the browser came back to, Reconnect and, for the card, Go
+//! on without it. They reach the daemon on this Mac or inside the
 //! relay's end-to-end envelope, like every write. Where the browser came back to carries a
 //! one-time code: it is handed to Claude in memory and never kept, logged or echoed back.
 use super::{Client, Reply};
@@ -51,11 +52,12 @@ impl Client {
         body: &Value,
         authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> anyhow::Result<Reply> {
+        let Some(target) = crate::mcp_waits::Target::of(card) else { return Ok(invalid()) };
         let card = InteractionId::from(card);
         if step == Step::Return {
             let Ok(back) = serde_json::from_value::<Return>(body.clone()) else { return Ok(invalid()) };
             authorize()?;
-            return Ok(match crate::mcp_waits::give_back(&self.domain, &card, back.address).await {
+            return Ok(match crate::mcp_waits::give_back(&self.domain, &target, back.address).await {
                 Ok(()) => Reply::ok(json!({"ok": true})),
                 Err(error) => Reply::error(error),
             });
@@ -65,14 +67,14 @@ impl Client {
         }
         authorize()?;
         Ok(match step {
-            Step::Connect => match crate::mcp_waits::connect(&self.domain, &card).await {
+            Step::Connect => match crate::mcp_waits::connect(&self.domain, &target).await {
                 Ok(Opened::Browser { server, url, port }) => {
                     Reply::ok(json!({"server": server, "url": url, "returns_to_claude": port.is_some(), "port": port}))
                 }
                 Ok(Opened::Connected { server }) => Reply::ok(json!({"server": server, "connected": true})),
                 Err(error) => Reply::error(error),
             },
-            Step::Reconnect => match crate::mcp_waits::reconnect(&self.domain, &card) {
+            Step::Reconnect => match crate::mcp_waits::reconnect(&self.domain, &target) {
                 Ok(reconnecting) => Reply::ok(json!({"reconnecting": reconnecting})),
                 Err(error) => Reply::error(error),
             },

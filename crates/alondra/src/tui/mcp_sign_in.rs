@@ -45,7 +45,7 @@ impl App {
 
     pub(super) fn mcp_reconnect(&mut self, card: &str) {
         self.op(None, path(card, "reconnect"), json!({}),
-            tr!("The waiting tasks read their sign-in again", "Las tareas que esperan vuelven a leer su sesión").into());
+            tr!("Its nodes read their sign-in again", "Sus nodos vuelven a leer su sesión").into());
     }
 
     pub(super) fn mcp_opened(&mut self, card: String, server: String, result: Result<Value, String>) {

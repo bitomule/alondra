@@ -11,7 +11,7 @@ const CAPABILITIES: [Capability; 4] = [
     Capability::DurableResume,
 ];
 /// Capabilities the snapshot's own column has no bits for: kept beside it, only when one is held.
-const CONTROLS: [Capability; 8] = [
+const CONTROLS: [Capability; 9] = [
     Capability::SetModel,
     Capability::SetPermissionMode,
     Capability::Compact,
@@ -20,6 +20,7 @@ const CONTROLS: [Capability; 8] = [
     Capability::McpReconnect,
     Capability::McpSignIn,
     Capability::ForceStop,
+    Capability::McpClearAuth,
 ];
 fn mask(binding: &ProviderBinding, capabilities: &[Capability]) -> i64 {
     capabilities

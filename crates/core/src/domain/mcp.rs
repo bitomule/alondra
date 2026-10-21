@@ -45,6 +45,16 @@ pub struct McpServerState {
     /// A remote server's address, without credentials, query or fragment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Whose it is, where the provider found it and how the user connects it, as the provider says.
+    #[serde(default)]
+    pub traits: alondra_foundation::McpTraits,
+}
+
+impl McpServerState {
+    /// The agent keeps a sign-in to it that it can forget.
+    pub fn signs_in(&self) -> bool {
+        self.traits.sign_out
+    }
 }
 
 /// How a sign-in Claude opened goes on, as its execution answered.
@@ -105,6 +115,9 @@ impl NodeMcp {
                     merged.source = merged.source.or_else(|| previous.source.clone());
                     merged.transport = merged.transport.or_else(|| previous.transport.clone());
                     merged.url = merged.url.or_else(|| previous.url.clone());
+                    if server.transport.is_none() && previous.transport.is_some() {
+                        merged.traits = previous.traits;
+                    }
                     if previous.status == server.status {
                         merged.error = merged.error.or_else(|| previous.error.clone());
                     }
@@ -113,6 +126,15 @@ impl NodeMcp {
             })
             .collect()
     }
+}
+
+/// What an open task's node reported of its MCP servers, and the sign-ins it has open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpNodeReading {
+    pub task: TaskId,
+    pub agent: AgentId,
+    pub servers: Vec<McpServerState>,
+    pub signing_in: Vec<String>,
 }
 
 fn bounded(field: &str, value: &str, max: usize) -> Result<()> {
@@ -164,6 +186,15 @@ fn valid_sign_in(sign_in: &McpSignIn) -> Result<()> {
 }
 
 impl DomainState {
+    /// The MCP servers each open task's node reported, by task.
+    pub fn mcp_nodes(&self) -> Vec<McpNodeReading> {
+        self.tasks.values().filter(|task| !task.over()).filter_map(|task| {
+            let agent = task.agent_id.clone()?;
+            let node = self.mcp.get(&agent)?;
+            Some(McpNodeReading { task: task.id.clone(), agent, servers: node.servers.clone(), signing_in: node.sign_ins.keys().cloned().collect() })
+        }).collect()
+    }
+
     /// The node of the task's current SDK execution of `generation`.
     fn mcp_node(&self, task_id: &TaskId, generation: u64) -> Result<AgentId> {
         self.sdk_lifecycle_at(task_id, generation)?;
@@ -192,6 +223,21 @@ impl DomainState {
         match self.mcp_server(task_id, server)?.status {
             McpStatus::Connected => fail("conflict", &format!("{server} is already connected")),
             McpStatus::Disabled => fail("conflict", &format!("{server} is turned off in Claude Code")),
+            _ => Ok(record),
+        }
+    }
+
+    /// Claude forgets its sign-in to a server it reaches over HTTP: only those keep one Alondra
+    /// can clear. A server Claude reaches through claude.ai is signed out on claude.ai.
+    pub(super) fn mcp_sign_out_guard(&self, actor: &Actor, task_id: &TaskId, server: &str) -> Result<LifecycleRecord> {
+        let record = self.control_guard(actor, task_id, ControlRecord::ClearMcpSignIn { server: server.into() })?;
+        let reported = self.mcp_server(task_id, server)?;
+        if !reported.signs_in() {
+            return fail("conflict", &format!("{server} keeps no sign-in Alondra can clear"));
+        }
+        match reported.status {
+            McpStatus::Disabled => fail("conflict", &format!("{server} is turned off in Claude Code")),
+            McpStatus::NeedsAuth => fail("conflict", &format!("{server} has no sign-in to clear")),
             _ => Ok(record),
         }
     }

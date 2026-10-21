@@ -162,7 +162,10 @@ public struct ViewSection: Codable, Equatable, Sendable {
     public let items: [ViewItem]; public let cardIds: [String]?; public let more: More?
     /// What each card in `cardIds` waits for, at the same index: "question" or "read".
     public let cardWaits: [String]?
-    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more; case cardWaits = "card_waits" }
+    /// How to lay the rows out; "list" is a settings list (`ListRowView`). Unknown styles fall back
+    /// to each screen's own layout.
+    public let style: String?
+    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more; case cardWaits = "card_waits"; case style }
 }
 public struct More: Codable, Equatable, Sendable { public let key: String; public let remaining: UInt32 }
 

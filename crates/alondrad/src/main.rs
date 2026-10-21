@@ -53,6 +53,7 @@ mod local_network;
 mod local_network_card;
 mod reachability;
 mod machine;
+mod mcp_probe;
 mod mcp_sign_in;
 mod mcp_waits;
 mod machine_state;

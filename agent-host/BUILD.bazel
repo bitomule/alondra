@@ -9,7 +9,7 @@ exports_files(["pnpm-lock.yaml", "package.json"])
 
 ts_project(
     name = "host_lib",
-    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-main.ts", "persistent-fixture-main.ts"],
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts"],
     tsconfig = "tsconfig.json",
     declaration = True,
     transpiler = "tsc",
@@ -199,4 +199,9 @@ js_test(
     name = "sdk_worker_test",
     entry_point = "session-worker.test.mjs",
     data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
+    name = "probe_test",
+    entry_point = "probe.test.mjs",
+    data = [":host_lib", "persistent-fake-claude.py", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )

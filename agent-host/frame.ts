@@ -51,6 +51,7 @@ const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('mcp_status') }),
   z.strictObject({ type: z.literal('mcp_reconnect'), server: text() }),
   z.strictObject({ type: z.literal('mcp_authenticate'), server: text() }),
+  z.strictObject({ type: z.literal('mcp_clear_auth'), server: text() }),
 ]);
 export type Action = z.infer<typeof action>;
 export const MAX_MCP_URL_BYTES = 2048;
@@ -71,6 +72,7 @@ const controlResult = z.discriminatedUnion('control', [
   z.strictObject({ control: z.literal('mcp_status'), command_id: text(), servers: mcpServers }),
   z.strictObject({ control: z.literal('mcp_reconnect'), command_id: text(), server: text(), error: text().optional(), servers: mcpServers }),
   z.strictObject({ control: z.literal('mcp_authenticate'), command_id: text(), server: text(), sign_in: signIn }),
+  z.strictObject({ control: z.literal('mcp_clear_auth'), command_id: text(), server: text(), error: text().optional(), servers: mcpServers }),
 ]);
 export type ControlResult = z.infer<typeof controlResult>;
 const native = z.strictObject({ message_id: text().optional(), turn_id: text().optional(), tool_use_id: text().optional(), parent_tool_use_id: text().optional(), task_id: text().optional(), run_id: text().optional() });

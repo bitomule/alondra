@@ -139,6 +139,15 @@ impl Fakes {
         Ok(self.all_sessions()?.into_iter().filter(|session| session.task_id.as_deref() == Some(task_id)).next_back())
     }
 
+    /// How many inputs every session the sandbox's Claude started in `cwd` received.
+    pub fn inputs_in(&self, cwd: &Path) -> Result<usize> {
+        let mut inputs = 0;
+        for session in self.all_sessions()?.into_iter().filter(|session| session.cwd == cwd) {
+            inputs += self.received(&session.short)?.len();
+        }
+        Ok(inputs)
+    }
+
     pub fn received(&self, short: &str) -> Result<Vec<Received>> {
         read_lines(&self.session_dir(short).join("received.jsonl"))
     }
@@ -282,9 +291,13 @@ fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, servers: &
                     }
                     Some("set_model" | "set_permission_mode") => out.control(request, json!({}))?,
                     Some("mcp_status") => out.control(request, json!({"mcpServers": servers.statuses()}))?,
-                    Some(subtype @ ("mcp_reconnect" | "mcp_authenticate")) => {
+                    Some(subtype @ ("mcp_reconnect" | "mcp_authenticate" | "mcp_clear_auth")) => {
                         let name = message["request"]["serverName"].as_str().unwrap_or_default();
-                        let answer = if subtype == "mcp_reconnect" { servers.reconnect(name).map(|()| json!({})) } else { servers.authenticate(name) };
+                        let answer = match subtype {
+                            "mcp_reconnect" => servers.reconnect(name).map(|()| json!({})),
+                            "mcp_clear_auth" => servers.clear(name).map(|()| json!({})),
+                            _ => servers.authenticate(name),
+                        };
                         note(log, &format!("{subtype} {name}: {}", if answer.is_ok() { "ok" } else { "refused" }));
                         match answer {
                             Ok(response) => out.control(request, response)?,
@@ -348,7 +361,10 @@ fn note(log: &Path, text: &str) {
 
 fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let resume = flag(args, "--resume").map(str::to_lowercase);
-    let session_id = resume.clone().or_else(|| flag(args, "--session-id").map(str::to_lowercase)).context("the SDK named no session")?;
+    // A check of a project's MCP servers keeps no session, so the SDK names none: it gets one of its own.
+    let unsaved = || args.iter().any(|arg| arg == "--no-session-persistence")
+        .then(|| crate::sandbox::random::<16>().ok().map(|bytes| crate::sandbox::hex(&bytes))).flatten();
+    let session_id = resume.clone().or_else(|| flag(args, "--session-id").map(str::to_lowercase)).or_else(unsaved).context("the SDK named no session")?;
     let short = session_id.get(..8).context("a session id is a UUID")?.to_owned();
     let dir = fakes.session_dir(&short);
     fs::create_dir_all(&dir)?;

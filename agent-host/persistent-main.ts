@@ -2,7 +2,7 @@ import { fstatSync } from 'node:fs';
 import { loadBootstrap } from './bootstrap.js';
 import { PersistentHost } from './persistent.js';
 import { boundDiagnostics, listeningHint } from './diagnostics.js';
-boundDiagnostics();
+import { PROBE_FLAG, runProbe } from './probe.js';
 
 async function main(): Promise<void> {
   const config = loadBootstrap(__filename);
@@ -22,4 +22,8 @@ async function main(): Promise<void> {
   unadoptable.unref();
   await listeningHint();
 }
-main().catch(() => { process.stderr.write('Alondra host startup refused\n'); process.exitCode = 1; });
+if (process.argv.includes(PROBE_FLAG)) void runProbe().then(() => process.exit());
+else {
+  boundDiagnostics();
+  main().catch(() => { process.stderr.write('Alondra host startup refused\n'); process.exitCode = 1; });
+}

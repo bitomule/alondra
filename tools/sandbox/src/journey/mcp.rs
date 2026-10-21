@@ -26,6 +26,22 @@ fn wait_for(task: &str, server: &str) -> Step {
     Step::Call { tool: "wait_for_mcp".into(), arguments: json!({"task_id": task, "server": server}) }
 }
 
+/// The node waits for `server` once its Claude has reported it: a node that starts acts before
+/// Alondra has recorded what its Claude listed, and is told it has no such server until then.
+fn waits(report: &mut Report, fakes: &Fakes, session: &Session, what: &str, task: &str, server: &str) -> Result<()> {
+    wait(report, what, || {
+        let outcome = crate::fake::native::order(fakes, session, &crate::fake::native::Order { steps: vec![wait_for(task, server)], end_turn: false })?
+            .pop().context("no outcome")?;
+        if outcome.ok {
+            return Ok((Some(()), String::new()));
+        }
+        if outcome.text.contains("[not_found]") {
+            return Ok((None, outcome.text));
+        }
+        bail!("refused: {}", outcome.text)
+    })
+}
+
 /// A GET to this Mac, as a browser on it makes: the status and the `Location` it answers with.
 fn browse(url: &str) -> Result<(u16, Option<String>)> {
     let rest = url.strip_prefix("http://localhost:").context("a sign-in page on this Mac")?;
@@ -115,8 +131,8 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let first = launched(report, fakes, "t-m1a")?;
         request(report, fakes, &user, &task_script("req-m1b", "t-m1b", "Close the stale Linear issues"), "Close the stale Linear issues")?;
         let second = launched(report, fakes, "t-m1b")?;
-        act(report, fakes, &first, "the first node waits for Linear", &[wait_for("t-m1a", "linear")])?;
-        act(report, fakes, &second, "the second node waits for Linear", &[wait_for("t-m1b", "linear")])?;
+        waits(report, fakes, &first, "the first node waits for Linear", "t-m1a", "linear")?;
+        waits(report, fakes, &second, "the second node waits for Linear", "t-m1b", "linear")?;
         let (card, _) = sign_in_card(report, &user, "linear", 2)?;
         let page = connect(report, &user, &card)?;
         let again = connect(report, &user, &card)?;
@@ -145,7 +161,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     report.case("M2", "Away from the Mac, where the browser came back to reaches Claude through the relay", |report| {
         request(report, fakes, &user, &task_script("req-m2", "t-m2", "Summarise the Notion roadmap"), "Summarise the Notion roadmap")?;
         let node = launched(report, fakes, "t-m2")?;
-        act(report, fakes, &node, "the node waits for Notion", &[wait_for("t-m2", "notion")])?;
+        waits(report, fakes, &node, "the node waits for Notion", "t-m2", "notion")?;
         let (card, _) = sign_in_card(report, &user, "notion", 1)?;
         let page = connect(report, &user, &card)?;
         let back = report.step("the browser away from the Mac comes back to a page that does not load", || {
@@ -183,7 +199,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     report.case("M3", "Go on without the server sends the waiting task on without it", |report| {
         request(report, fakes, &user, &task_script("req-m3", "t-m3", "Tidy the shared files"), "Tidy the shared files")?;
         let node = launched(report, fakes, "t-m3")?;
-        act(report, fakes, &node, "the node waits for files", &[wait_for("t-m3", "files")])?;
+        waits(report, fakes, &node, "the node waits for files", "t-m3", "files")?;
         let (card, _) = sign_in_card(report, &user, "files", 1)?;
         report.step("the user goes on without it", || {
             let (status, body) = user.send("POST", &format!("/mcp-sign-ins/{card}/without"), Some(json!({})))?;
@@ -193,5 +209,94 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })?;
         went_on(report, fakes, &[&node], "files is not available")
+    });
+    report.case("M4", "The MCP servers screen signs in to a server no task waits for, then signs out of it", |report| {
+        request(report, fakes, &user, &task_script("req-m4", "t-m4", "Sort the shared files"), "Sort the shared files")?;
+        launched(report, fakes, "t-m4")?;
+        let row = |view: &Value, name: &str| -> Option<Value> {
+            view["sections"].as_array()?.iter().flat_map(|section| section["items"].as_array().cloned().unwrap_or_default())
+                .find(|item| item["type"] == "row" && item["title"] == name)
+        };
+        let badge = |row: &Value| row["badges"][0]["text"].as_str().unwrap_or_default().to_owned();
+        let target = wait(report, "the screen lists files, which needs a sign-in, with Connect", || {
+            let view = user.view("mcp_servers")?;
+            let files = row(&view, "files");
+            let target = files.as_ref().filter(|files| badge(files) == "Needs sign-in")
+                .and_then(|files| files["actions"].as_array()?.iter().find(|action| action["label"] == "Connect")?["link"]["local"]["card"].as_str().map(str::to_owned));
+            Ok((target, format!("{files:?}")))
+        })?;
+        report.snapshot("mcp-servers-needs-sign-in", &user.view("mcp_servers")?)?;
+        let page = report.step("Connect from the screen opens the sign-in on a node that uses it", || {
+            let (status, body) = user.send("POST", &format!("/mcp-sign-ins/{target}/connect"), Some(json!({})))?;
+            if status != 200 || body["returns_to_claude"] != json!(true) {
+                bail!("connect answered {status}: {body}");
+            }
+            body["url"].as_str().map(str::to_owned).context("a sign-in page")
+        })?;
+        report.step("a server of the screen has no Go on without it", || {
+            match user.send("POST", &format!("/mcp-sign-ins/{target}/without"), Some(json!({}))) {
+                Ok((200, _)) => bail!("going on without a server no task waits for was taken"),
+                _ => Ok(()),
+            }
+        })?;
+        report.step("the browser on the Mac signs in and comes back to Claude", || {
+            let back = browse(&page)?.1.context("no way back")?;
+            match browse(&back)? {
+                (200, _) => Ok(()),
+                (status, _) => bail!("the return answered {status}"),
+            }
+        })?;
+        let sign_out = wait(report, "the screen shows files connected, with Sign out", || {
+            let view = user.view("mcp_servers")?;
+            let files = row(&view, "files");
+            let action = files.as_ref().filter(|files| badge(files) == "Connected")
+                .and_then(|files| files["actions"].as_array()?.iter().find(|action| action["label"] == "Sign out").cloned());
+            Ok((action, format!("{files:?}")))
+        })?;
+        report.snapshot("mcp-servers-connected", &user.view("mcp_servers")?)?;
+        report.step("the user signs out of files from the screen", || {
+            user.press(sign_out["id"].as_str().unwrap_or_default(), None, None).map(drop)
+        })?;
+        wait(report, "Claude forgot the sign-in, and the screen offers Connect for files again", || {
+            let view = user.view("mcp_servers")?;
+            let files = row(&view, "files");
+            let again = files.as_ref().is_some_and(|files| files["actions"].as_array().is_some_and(|actions| actions.iter().any(|action| action["label"] == "Connect")));
+            let forgotten = !fakes.dir.join("mcp-signed-in/files").exists();
+            Ok(((again && forgotten).then_some(()), format!("forgotten {forgotten}: {files:?}")))
+        })?;
+        report.snapshot("mcp-servers-signed-out", &user.view("mcp_servers")?)
+    });
+    report.case("M5", "Settings checks the MCP servers of a project no node runs in, through the SDK host and without a turn", |report| {
+        let root = sandbox.dir.join("mcp-projects");
+        report.step("the Mac's projects folder holds one checkout no node runs in", || {
+            std::fs::create_dir_all(root.join("notes/.git"))?;
+            Ok(std::fs::write(sandbox.mac(1)?.mac.home.join("options.toml"), format!("projects_root = {:?}\n", root.display().to_string()))?)
+        })?;
+        let row = |view: &Value| -> Option<Value> {
+            view["sections"].as_array()?.iter().find(|section| section["id"] == "idle_projects")?["items"].as_array()?
+                .iter().find(|item| item["title"] == "notes").cloned()
+        };
+        let check = wait(report, "Settings lists the project with Check", || {
+            let view = user.view("mcp_servers")?;
+            let check = row(&view).and_then(|notes| notes["actions"].as_array()?.iter().find(|action| action["label"] == "Check").cloned());
+            Ok((check, format!("{:?}", row(&view))))
+        })?;
+        report.step("the user presses Check", || {
+            let reply = user.press(check["id"].as_str().unwrap_or_default(), None, None)?;
+            if reply["outcome"] != "applied" { bail!("the Mac answered {reply}") } else { Ok(()) }
+        })?;
+        let notes = wait(report, "the project says when it was checked: the sandbox's Claude has only the user's servers there", || {
+            let notes = row(&user.view("mcp_servers")?);
+            let checked = notes.as_ref().and_then(|notes| notes["subtitle"].as_str()).is_some_and(|subtitle| subtitle.to_lowercase().contains("checked at"));
+            Ok((checked.then(|| notes.clone()).flatten(), format!("{notes:?}")))
+        })?;
+        report.snapshot("mcp-servers-checked", &notes)?;
+        report.step("the check sent Claude no message: no session of the sandbox's Claude got an input in the project", || {
+            let notes = root.join("notes").canonicalize()?;
+            let started = fakes.all_sessions()?.into_iter().any(|session| session.cwd == notes);
+            if !started { bail!("no Claude started in the project") }
+            let inputs = fakes.inputs_in(&notes)?;
+            if inputs == 0 { Ok(()) } else { bail!("{inputs} inputs reached Claude") }
+        })
     });
 }

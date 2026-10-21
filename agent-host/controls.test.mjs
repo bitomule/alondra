@@ -15,7 +15,7 @@ try {
     const host = startHost('full');
     const owner = await own(host);
     assert.deepEqual(owner.hello.capabilities, [...HOST_CAPABILITIES]);
-    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in']);
+    assert.deepEqual(owner.hello.capabilities, ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in', 'mcp_clear_auth']);
 
     assert.deepEqual((await owner.command({ type: 'mcp_status' })).outcome, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' }, 'a control before the launch is refused');
     assert.deepEqual(controls(host), [], 'and never reaches Claude');
@@ -64,6 +64,12 @@ try {
     assert.deepEqual(await signIn('fixture'), { outcome: 'connected' });
     assert.deepEqual(await signIn('plain'), { outcome: 'refused', error: 'Claude gave no sign-in address Alondra can open' }, 'a plain-http sign-in page is never handed to the user');
     assert.deepEqual(await signIn('missing'), { outcome: 'refused', error: 'Server not found: missing' });
+
+    const { command_id: __, ...cleared } = await answered({ type: 'mcp_clear_auth', server: 'linear' });
+    assert.deepEqual(cleared, { control: 'mcp_clear_auth', server: 'linear', servers: fixture });
+    assert.deepEqual(controls(host).slice(-2), [{ subtype: 'mcp_clear_auth', serverName: 'linear' }, { subtype: 'mcp_status' }], 'the servers are read after the sign-out');
+    const local = await answered({ type: 'mcp_clear_auth', server: 'fixture' });
+    assert.equal(local.error, 'Cannot clear auth for server type "stdio"', 'a refused sign-out is a result, never an uncertain control');
 
     const held = await owner.command({ type: 'offer', input_id: input(2), prompt: 'consume-and-hold' });
     assert.deepEqual(held.outcome, { status: 'accepted', phase: 'offered' });

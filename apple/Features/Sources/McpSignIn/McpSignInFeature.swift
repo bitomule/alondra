@@ -4,7 +4,8 @@ import AlondraTransport
 import ComposableArchitecture
 import Foundation
 
-/// Signing in to the MCP server the tasks of a card wait for, from this device. Connect asks the
+/// Signing in to an MCP server from this device: the one the tasks of a card wait for, or one the
+/// MCP servers screen lists, which `card` then names by its `mcp-server-` target. Connect asks the
 /// Mac for the sign-in page and opens it; the browser then comes back to `localhost:<port>`.
 /// On the daemon's Mac that is Claude's own listener; anywhere else this device listens on that
 /// port, or the user pastes the address of the page that did not load. Either way the address goes
@@ -79,7 +80,8 @@ public struct McpSignInFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .appeared:
-                return .merge(state.phase == .opening ? connect(&state) : .none, watchCard(state.card))
+                let watch = state.card.hasPrefix(Self.serverPrefix) ? watchServer(state.card) : watchCard(state.card)
+                return .merge(state.phase == .opening ? connect(&state) : .none, watch)
             case .binding(\.pasted):
                 state.pasteRefused = false
                 return .none
@@ -185,12 +187,30 @@ public struct McpSignInFeature: Sendable {
         } catch: { _, _ in }.cancellable(id: CancelID.settled, cancelInFlight: true)
     }
 
+    static let serverPrefix = "mcp-server-"
+
+    /// A server of the MCP servers screen needs no sign-in once no row of it offers Connect.
+    private func watchServer(_ target: String) -> Effect<Action> {
+        .run { [viewsClient] send in
+            for try await fetch in viewsClient.observe(.mcpServers) {
+                guard case .document(let document) = fetch else { continue }
+                let rows = document.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in
+                    if case .row(let row) = item { return row } else { return nil }
+                }.filter { $0.id == target }
+                let connecting = rows.contains { row in
+                    row.actions.contains { if case .local(.mcpSignIn)? = $0.link { true } else { false } }
+                }
+                if !rows.isEmpty, !connecting { return await send(.cardSettled) }
+            }
+        } catch: { _, _ in }.cancellable(id: CancelID.settled, cancelInFlight: true)
+    }
+
     /// The toast after Reconnect on the card itself.
     public static func reconnectNotice(_ failure: Failure?) -> WorkspaceNotice.Event {
         switch failure {
-        case nil: .actionCompleted(String(localized: "The waiting tasks read their sign-in again"))
+        case nil: .actionCompleted(String(localized: "Its nodes read their sign-in again"))
         case .unreachable?: .failure(String(localized: "Alondra could not reach your Mac. Try again."))
-        case _?: .failure(String(localized: "No task that waits for this server runs now. Try again in a moment."))
+        case _?: .failure(String(localized: "No task that uses this server runs now. Try again in a moment."))
         }
     }
 

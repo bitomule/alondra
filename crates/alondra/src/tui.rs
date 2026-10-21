@@ -11,6 +11,7 @@ mod md;
 mod optimistic;
 mod restore;
 mod rules;
+mod mcp_servers;
 mod tasks;
 mod updated;
 mod usage_banner;
@@ -676,6 +677,8 @@ pub struct App {
     pub schedules_open: bool,
     /// This Mac's permissions allowed always, open over the Fleet.
     pub rules: Option<rules::Rules>,
+    /// The MCP servers of the nodes and projects, open over the Fleet.
+    pub mcp_servers: Option<mcp_servers::McpServers>,
     pub sel: Option<Key>,
     sel_idx: usize,
     pub list_scroll: usize,
@@ -1131,6 +1134,7 @@ impl App {
             screen: Screen::Inbox,
             schedules_open: false,
             rules: None,
+            mcp_servers: None,
             sel: None,
             sel_idx: 0,
             list_scroll: 0,
@@ -1419,6 +1423,9 @@ impl App {
             open.insert(card.key.clone(), card.version.clone());
         }
         if let Some(view) = self.rules.as_ref().and_then(|rules| rules.view.as_ref()) {
+            open.insert(view.key.clone(), view.version.clone());
+        }
+        if let Some(view) = self.mcp_servers.as_ref().and_then(|screen| screen.view.as_ref()) {
             open.insert(view.key.clone(), view.version.clone());
         }
     }
@@ -1962,6 +1969,9 @@ impl App {
                 if key == rules::VIEW {
                     self.rules_loaded(Ok(&view));
                 }
+                if key == mcp_servers::VIEW {
+                    self.mcp_servers_loaded(Ok(&view));
+                }
                 if view.view == alondra_core::views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {
                         self.close_settled_card(&key, view);
@@ -1996,6 +2006,9 @@ impl App {
             } => {
                 if key == rules::VIEW {
                     self.rules_loaded(Err(&error));
+                }
+                if key == mcp_servers::VIEW {
+                    self.mcp_servers_loaded(Err(&error));
                 }
                 if self.card_view_asked.as_deref() == Some(&key) {
                     if key.starts_with("search") {
@@ -2513,6 +2526,7 @@ impl App {
         self.reader_after_view = None;
         self.schedules_open = false;
         self.rules = None;
+        self.mcp_servers = None;
         self.focus = Pane::List;
         self.agent_zoom = false;
         self.task_zoom = false;
@@ -2591,13 +2605,17 @@ impl App {
                 self.reader = None;
                 self.show(Screen::Fleet);
             }
+            "settings" | "ajustes" | "mcp" => {
+                self.reader = None;
+                self.open_mcp_servers();
+            }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;
                 self.move_inbox(i);
             }
             other => self.fail(trf!(
-                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :<number>)",
-                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :agents, :<número>)"
+                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :settings, :<number>)",
+                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :agents, :ajustes, :<número>)"
             )),
         }
         Flow::Go

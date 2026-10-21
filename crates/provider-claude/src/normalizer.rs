@@ -293,7 +293,7 @@ fn fold(
         }
         let result = ControlResult::deserialize(payload).map_err(|_| AdapterError::InvalidObservation)?;
         return Ok(vec![match result {
-            ControlResult::McpStatus { servers, .. } | ControlResult::McpReconnect { servers, .. } => Observation::McpServers {
+            ControlResult::McpStatus { servers, .. } | ControlResult::McpReconnect { servers, .. } | ControlResult::McpClearAuth { servers, .. } => Observation::McpServers {
                 servers: servers.into_iter().map(report).collect(),
             },
             ControlResult::McpAuthenticate { server, sign_in, .. } => Observation::McpSignIn {
@@ -655,7 +655,9 @@ fn take(state: &mut Checkpoint, input: MessageUuid) {
     state.taken.push(input);
 }
 fn report(server: McpServer) -> McpServerReport {
+    let traits = crate::mcp::mcp_traits(server.source.as_deref(), server.transport.as_deref(), &server.status);
     McpServerReport {
+        traits,
         name: server.name,
         status: server.status,
         error: server.error,
@@ -674,14 +676,9 @@ fn listed_servers(payload: &Value) -> Option<Observation> {
     let servers = listed
         .iter()
         .filter_map(|server| {
-            Some(McpServerReport {
-                name: bounded(server.get("name"))?,
-                status: bounded(server.get("status"))?,
-                error: None,
-                source: bounded(server.get("source")),
-                transport: None,
-                url: None,
-            })
+            let (name, status, source) = (bounded(server.get("name"))?, bounded(server.get("status"))?, bounded(server.get("source")));
+            let traits = crate::mcp::mcp_traits(source.as_deref(), None, &status);
+            Some(McpServerReport { name, status, error: None, source, transport: None, url: None, traits })
         })
         .take(MAX_MCP_SERVERS)
         .collect();
@@ -1264,7 +1261,8 @@ mod tests {
         payload.as_object_mut().unwrap().remove("session_id");
         result.validate_for_application().unwrap();
         let mut state = state();
-        let fixture = McpServerReport { name: "fixture".into(), status: "connected".into(), error: None, source: None, transport: None, url: None };
+        let fixture = McpServerReport { name: "fixture".into(), status: "connected".into(), error: None, source: None, transport: None, url: None,
+            traits: crate::mcp::mcp_traits(None, None, "connected") };
         assert_eq!(fold(&result, &session(), &mut state, |_| panic!("a control result consumes no input")).unwrap(), vec![Observation::McpServers { servers: vec![fixture] }]);
         let WireObservation::Sdk { failures, .. } = &mut result.observation else { unreachable!() };
         failures.push(alondra_agent_protocol::SdkFailure { surface: alondra_agent_protocol::FailureSurface::Result, code: "error_during_execution".into(), details: json!({}) });
@@ -1283,8 +1281,10 @@ mod tests {
             {"status":"connected"},
         ]}));
         let listed = |status: &str| vec![
-            McpServerReport { name: "linear".into(), status: status.into(), error: None, source: Some("user".into()), transport: None, url: None },
-            McpServerReport { name: "files".into(), status: "connected".into(), error: None, source: None, transport: None, url: None },
+            McpServerReport { name: "linear".into(), status: status.into(), error: None, source: Some("user".into()), transport: None, url: None,
+                traits: crate::mcp::mcp_traits(Some("user"), None, status) },
+            McpServerReport { name: "files".into(), status: "connected".into(), error: None, source: None, transport: None, url: None,
+                traits: crate::mcp::mcp_traits(None, None, "connected") },
         ];
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![Observation::Available, Observation::McpServers { servers: listed("needs-auth") }]);
         let started = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":SECOND}));
@@ -1303,6 +1303,7 @@ mod tests {
         let reconnected = control(json!({"control":"mcp_reconnect","command_id":"c","server":"linear","error":"Server not found","servers":[{"name":"linear","status":"failed","transport":"http","url":"https://mcp.linear.app/mcp"}]}));
         assert_eq!(fold(&reconnected, &session(), &mut state, input).unwrap(), vec![Observation::McpServers { servers: vec![McpServerReport {
             name: "linear".into(), status: "failed".into(), error: None, source: None, transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+            traits: crate::mcp::mcp_traits(None, Some("http"), "failed"),
         }] }]);
         let browser = control(json!({"control":"mcp_authenticate","command_id":"c","server":"linear","sign_in":{"outcome":"browser","url":"https://linear.app/oauth/authorize?state=s","callback_port":49200,"state":"s"}}));
         assert_eq!(fold(&browser, &session(), &mut state, input).unwrap(), vec![Observation::McpSignIn {

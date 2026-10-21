@@ -7,6 +7,7 @@ mod adapter;
 mod batch;
 mod context;
 mod elicitation;
+mod mcp;
 mod ended;
 mod normalizer;
 mod records;
@@ -16,6 +17,7 @@ pub use adapter::{
     ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited,
 };
 pub use context::{ContextEvent, context_event};
+pub use mcp::mcp_traits;
 pub use elicitation::{elicitation_content, elicitation_fields};
 pub use ended::{EndedJournal, Retained};
 pub use batch::{BatchHost, HostEvent, McpServer, OrchestratorProfile};

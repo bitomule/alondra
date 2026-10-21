@@ -126,6 +126,7 @@ fn control_action(operation: &ControlOperation) -> Result<Action, AdapterError> 
         Control::ReadMcpStatus => Action::McpStatus,
         Control::ReconnectMcp { server } => Action::McpReconnect { server: server.clone() },
         Control::StartMcpSignIn { server } => Action::McpAuthenticate { server: server.clone() },
+        Control::ClearMcpSignIn { server } => Action::McpClearAuth { server: server.clone() },
     })
 }
 /// The answer Claude gets for the request the host persisted at the response's epoch, built from
@@ -185,7 +186,7 @@ fn decoded(bytes: &[u8]) -> Option<alondra_agent_protocol::Frame> {
 /// staged.
 pub fn answered_by_event(command: &[u8]) -> Option<CommandId> {
     match decoded(command)?.body {
-        Body::Command(Command { command_id, action: Action::McpStatus | Action::McpReconnect { .. } | Action::McpAuthenticate { .. }, .. }) => Some(command_id),
+        Body::Command(Command { command_id, action: Action::McpStatus | Action::McpReconnect { .. } | Action::McpAuthenticate { .. } | Action::McpClearAuth { .. }, .. }) => Some(command_id),
         _ => None,
     }
 }

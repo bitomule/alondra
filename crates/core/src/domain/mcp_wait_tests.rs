@@ -3,7 +3,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 fn server(name: &str, status: McpStatus) -> McpServerState {
-    McpServerState { name: name.into(), status, error: None, source: None, transport: Some("http".into()), url: Some(format!("https://mcp.{name}.app/mcp")) }
+    McpServerState { name: name.into(), status, error: None, source: None, transport: Some("http".into()), url: Some(format!("https://mcp.{name}.app/mcp")), traits: Default::default() }
 }
 fn report(task: &str, servers: Vec<McpServerState>) -> Command {
     Command::RecordMcpServers { task_id: task.into(), generation: 1, servers }

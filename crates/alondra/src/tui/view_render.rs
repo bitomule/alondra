@@ -133,7 +133,7 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             items: block.children.into_iter().map(Item::Row).collect(),
             card_ids: vec![],
             card_waits: vec![],
-            more: None,
+            more: None, style: None,
         }
     });
     sections.splice(at..at, blocks);

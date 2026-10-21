@@ -200,6 +200,31 @@
     "accepted": false
   },
   {
+    "name": "mcp_clear_auth",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_clear_auth\",\"server\":\"linear\"}}}",
+    "accepted": true
+  },
+  {
+    "name": "mcp_clear_auth_without_server",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"command-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"mcp_clear_auth\"}}}",
+    "accepted": false
+  },
+  {
+    "name": "control_result_clear_auth",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_clear_auth\",\"command_id\":\"command-test\",\"server\":\"linear\",\"servers\":[{\"name\":\"linear\",\"status\":\"failed\",\"error\":\"Authentication cleared\"}]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_clear_auth_refused",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_clear_auth\",\"command_id\":\"command-test\",\"server\":\"files\",\"error\":\"Cannot clear auth for server type \\\"stdio\\\"\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": true
+  },
+  {
+    "name": "control_result_clear_auth_without_server",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_clear_auth\",\"command_id\":\"command-test\",\"servers\":[]},\"failures\":[]}}}",
+    "accepted": false
+  },
+  {
     "name": "control_result_with_origin",
     "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"control_result\",\"native\":{},\"payload\":{\"control\":\"mcp_status\",\"command_id\":\"command-test\",\"servers\":[{\"name\":\"linear\",\"status\":\"needs-auth\",\"source\":\"user\",\"transport\":\"http\",\"url\":\"https://mcp.linear.app/mcp\"},{\"name\":\"files\",\"status\":\"connected\",\"source\":\"project\",\"transport\":\"stdio\"}]},\"failures\":[]}}}",
     "accepted": true

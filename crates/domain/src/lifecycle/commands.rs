@@ -554,7 +554,7 @@ impl TaskLifecycle {
                     (Control::Interrupt { .. }, _) => return Err(Refusal::InvalidState),
                     (Control::SetModel { model }, _) => valid_model(model)?,
                     (Control::SetPermissionMode { .. } | Control::ReadMcpStatus, _) => {}
-                    (Control::ReconnectMcp { server } | Control::StartMcpSignIn { server }, _) => valid_mcp_server(server)?,
+                    (Control::ReconnectMcp { server } | Control::StartMcpSignIn { server } | Control::ClearMcpSignIn { server }, _) => valid_mcp_server(server)?,
                     (Control::ForceStop { turn }, Activity::Turn { id, stop, .. }) if turn == id => match stop {
                         TurnStop::InterruptAccepted => {}
                         TurnStop::Running => return Err(Refusal::InvalidState),

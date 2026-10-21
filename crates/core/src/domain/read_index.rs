@@ -83,6 +83,7 @@ pub struct ReadIndex {
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
     mcp_waiting: Vec<McpWaiting>,
+    mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
 }
 
@@ -215,6 +216,10 @@ impl ReadIndex {
     pub fn mcp_waiting_for<'a>(&'a self, server: &'a McpServerKey) -> impl Iterator<Item = &'a McpWaiting> + 'a {
         self.mcp_waiting.iter().filter(move |waiting| waiting.server == *server)
     }
+    /// The MCP servers each open task's node reported, by task.
+    pub fn mcp_nodes(&self) -> &[McpNodeReading] {
+        &self.mcp_nodes
+    }
     /// What a task waits for, when it waits for an MCP server.
     pub fn mcp_wait_of_task(&self, task: &TaskId) -> Option<&McpWaiting> {
         self.mcp_waiting.iter().find(|waiting| waiting.task == *task)
@@ -329,6 +334,7 @@ impl<'a> Builder<'a> {
         }
         Self::schedules(state, &mut index);
         index.mcp_waiting = state.mcp_waiting();
+        index.mcp_nodes = state.mcp_nodes();
         index.accounts = state.accounts.clone();
         self.cards(&mut index);
         self.blockers();
@@ -680,6 +686,10 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
+    let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())
+        .filter_map(|task| Some((task.id.clone(), state.mcp.get(task.agent_id.as_ref()?)?.servers.clone()))).collect();
+    let indexed: Vec<(TaskId, Vec<McpServerState>)> = index.mcp_nodes().iter().map(|node| (node.task.clone(), node.servers.clone())).collect();
+    assert_eq!(indexed, reported, "the MCP servers each open task's node reported");
     assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");

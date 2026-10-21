@@ -25,6 +25,9 @@ pub(super) enum Act {
     Rules,
     CloseRules,
     RemoveRule,
+    McpServers,
+    CloseMcpServers,
+    McpAction(usize),
     Search,
     Quit,
     Help,
@@ -243,6 +246,8 @@ impl App {
             self.reader_bindings(&mut t);
         } else if self.rules.is_some() {
             self.rules_bindings(&mut t);
+        } else if self.mcp_servers.is_some() {
+            self.mcp_servers_bindings(&mut t);
         } else if self.schedules_open {
             self.schedule_bindings(&mut t);
         } else {
@@ -395,6 +400,22 @@ impl App {
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
     }
 
+    fn mcp_servers_bindings(&self, t: &mut Table) {
+        let Some(screen) = self.mcp_servers.as_ref() else { return };
+        if screen.rows().len() > 1 {
+            t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+        }
+        for (index, action) in screen.selected().map(super::mcp_servers::actions).unwrap_or_default().into_iter().enumerate() {
+            let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
+            if index == 0 {
+                keys.push(plain(KeyCode::Enter));
+            }
+            t.add(keys, &(index + 1).to_string(), action.label.clone(), Act::McpAction(index));
+        }
+        t.add(vec![plain(KeyCode::Esc), char(',')], "Esc", tr!("back", "volver"), Act::CloseMcpServers);
+        t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
+    }
+
     fn screen_action_bindings(&self, t: &mut Table) {
         let Some(home) = self.home_view.as_ref() else { return };
         for action in super::draw::screen_actions(home) {
@@ -467,6 +488,7 @@ impl App {
                 t.add(vec![char('a')], "a", tr!("allowed always", "permitidos siempre"), Act::Rules);
             }
         }
+        t.add(vec![char(',')], ",", tr!("settings", "ajustes"), Act::McpServers);
         let next = match self.screen {
             Screen::Inbox => tr!("tasks", "tareas"),
             Screen::Tasks => tr!("fleet", "flota"),
@@ -499,6 +521,8 @@ impl App {
                     self.reader_cmd(Cmd::Move(motion));
                 } else if let Some(rules) = self.rules.as_mut() {
                     rules.step(motion);
+                } else if let Some(screen) = self.mcp_servers.as_mut() {
+                    screen.step(motion);
                 } else {
                     self.inbox_cmd(Cmd::Move(motion));
                 }
@@ -540,6 +564,9 @@ impl App {
             Act::Rules => self.open_rules(),
             Act::CloseRules => self.close_rules(),
             Act::RemoveRule => self.remove_rule(),
+            Act::McpServers => self.open_mcp_servers(),
+            Act::CloseMcpServers => self.close_mcp_servers(),
+            Act::McpAction(index) => self.mcp_server_action(index),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

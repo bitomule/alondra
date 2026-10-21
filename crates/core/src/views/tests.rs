@@ -7206,3 +7206,153 @@ fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
     let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:u", "");
     assert!(serde_json::to_string(&task).unwrap().contains("Espera a que inicies sesión en linear"));
 }
+
+const MCP_SERVERS_GOLDENS: [(&str, Client, Lang); 3] = [
+    ("mcp-servers-ios.json", Client::Ios, Lang::En),
+    ("mcp-servers-ios-es.json", Client::Ios, Lang::Es),
+    ("mcp-servers-mac.json", Client::Mac, Lang::En),
+];
+
+/// Your servers: Linear needs a sign-in, Notion's sign-in is open, GitHub and a connector work.
+/// Two projects with tasks: alondra's Sentry failed its last sign-in though one is still open and
+/// its local files server works; quill's own database works. Lumo was checked without a task and
+/// Blurcamera never was. Lumo was
+/// checked without a node and Blurcamera never was.
+fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
+    use crate::domain::{McpServerState, McpStatus, NodeMcp, OpenSignIn};
+    let (mut state, mut live) = fleet_fixture();
+    use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
+    let server = |name: &str, status: McpStatus, transport: &str, source: &str, url: Option<&str>, error: Option<&str>| {
+        let (scope, origin, connect) = match source {
+            "claudeai" => (McpScope::User, McpOrigin::Connector, McpConnect::Connector),
+            "user" => (McpScope::User, McpOrigin::UserSettings, McpConnect::None),
+            "plugin" => (McpScope::User, McpOrigin::Plugin, McpConnect::None),
+            _ => (McpScope::Project, McpOrigin::ProjectSettings, McpConnect::None),
+        };
+        let remote = matches!(transport, "http" | "sse");
+        let connect = if remote { McpConnect::SignIn } else { connect };
+        McpServerState {
+            name: name.into(), status, error: error.map(Into::into), source: Some(source.into()), transport: Some(transport.into()),
+            url: url.map(Into::into), traits: McpTraits { scope, origin, connect, reconnect: true, sign_out: remote && source != "claudeai" },
+        }
+    };
+    let linear = |status| server("linear", status, "http", "user", Some("https://mcp.linear.app/mcp"), None);
+    state.mcp.insert("zeta-worker".into(), NodeMcp {
+        generation: 1,
+        servers: vec![
+            linear(McpStatus::NeedsAuth),
+            server("sentry", McpStatus::Failed, "http", "project", Some("https://mcp.sentry.dev/mcp"), Some("401 Unauthorized")),
+            server("notion", McpStatus::NeedsAuth, "http", "user", Some("https://mcp.notion.com/mcp"), None),
+            server("files", McpStatus::Connected, "stdio", "project", None, None),
+            server("claude.ai Gmail", McpStatus::Connected, "claudeai-proxy", "claudeai", None, None),
+            server(crate::domain::ALONDRA_MCP_SERVER, McpStatus::Connected, "stdio", "plugin", None, None),
+        ],
+        sign_ins: [
+            ("sentry".to_owned(), OpenSignIn { url: "https://sentry.io/oauth/authorize".into(), callback_port: Some(49200), state: Some("s".into()) }),
+            ("notion".to_owned(), OpenSignIn { url: "https://notion.so/oauth/authorize".into(), callback_port: Some(49201), state: Some("n".into()) }),
+        ].into(),
+        refused: BTreeMap::new(),
+    });
+    state.mcp.insert("queued".into(), NodeMcp { generation: 1, servers: vec![
+        server("github", McpStatus::Connected, "http", "user", Some("https://api.githubcopilot.com/mcp"), None),
+        server("db", McpStatus::Connected, "stdio", "local", None, None),
+    ], ..NodeMcp::default() });
+    for (task, project) in [("t-zeta-worker", "alondra"), ("t-queued", "quill")] {
+        live.task_options.insert(task.into(), crate::views::live::LiveTaskOptions { project: Some(project.into()), effort: None });
+    }
+    live.projects = ["alondra", "quill", "lumo", "blurcamera"].into_iter().map(|name| crate::options::ProjectEntry {
+        name: name.into(), path: format!("/Users/someone/Projects/{name}").into(), last_used: None, nodes: 0,
+    }).collect();
+    live.mcp_probes.insert("lumo".into(), LiveMcpProbe::Checked {
+        at: "2026-09-30T09:40:00".into(),
+        servers: vec![
+            server("revenuecat", McpStatus::NeedsAuth, "http", "user", Some("https://mcp.revenuecat.ai/mcp"), None),
+            server("supabase", McpStatus::NeedsAuth, "http", "project", Some("https://mcp.supabase.com/mcp"), None),
+        ],
+    });
+    (state, live)
+}
+
+#[test]
+fn mcp_servers_views_match_goldens() {
+    let (state, live) = mcp_servers_fixture();
+    for (filename, client, lang) in MCP_SERVERS_GOLDENS {
+        let expected = match filename {
+            "mcp-servers-ios.json" => include_str!("../../../../fixtures/views/cards/mcp-servers-ios.json"),
+            "mcp-servers-ios-es.json" => include_str!("../../../../fixtures/views/cards/mcp-servers-ios-es.json"),
+            _ => include_str!("../../../../fixtures/views/cards/mcp-servers-mac.json"),
+        };
+        let actual = render(&state, &live, client, lang, "mcp_servers", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
+    use crate::domain::McpServerKey;
+    let (state, live) = mcp_servers_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::Es, "mcp_servers", "");
+    assert_eq!(view.title.as_deref(), Some("Servidores MCP"));
+    assert_eq!(view.sections.iter().map(|section| (section.id.as_str(), section.title.as_deref().unwrap_or(""))).collect::<Vec<_>>(),
+        [("yours", "Tus servidores"), ("project:alondra", "alondra"), ("project:quill", "quill"), ("idle_projects", "Otros proyectos")]);
+    let rows = |section: &str| -> Vec<Row> {
+        view.sections.iter().find(|s| s.id == section).unwrap().items.iter().filter_map(|item| match item { Item::Row(row) => Some(row.clone()), _ => None }).collect()
+    };
+    let titles = |section: &str| rows(section).into_iter().map(|row| row.title).collect::<Vec<_>>();
+    let row = |section: &str, title: &str| rows(section).into_iter().find(|row| row.title == title).expect(title);
+    let labels = |row: &Row| row.actions.iter().map(|a| a.label.clone()).collect::<Vec<_>>();
+    let target = McpServerKey { name: "linear".into(), url: Some("https://mcp.linear.app/mcp".into()) }.target();
+
+    assert_eq!(titles("yours"), ["claude.ai Gmail", "github", "linear", "notion", "revenuecat"],
+        "the user's own servers once, whichever task or check reported them");
+    assert_eq!(titles("project:alondra"), ["files", "sentry"], "a project lists only its own servers, never Alondra's");
+    assert_eq!(titles("project:quill"), ["db"]);
+
+    let linear = row("yours", "linear");
+    assert_eq!(linear.badges[0].text, "Necesita iniciar sesión");
+    assert_eq!(linear.subtitle.as_deref(), Some("Tu configuración\nLo usa «Build the importer»"), "where it comes from, then who uses it");
+    assert_eq!(linear.actions.iter().map(|a| format!("{:?}", a.link)).collect::<Vec<_>>(),
+        [format!("Some(Local {{ local: McpSignIn {{ card: \"{target}\", server: \"linear\" }} }})")],
+        "a server that needs a sign-in has one thing to do: connect it");
+    assert_eq!((row("yours", "notion").badges[0].text.clone(), labels(&row("yours", "notion"))), ("Iniciando sesión".to_owned(), vec![]),
+        "a sign-in in progress offers nothing else to do");
+    let sentry = row("project:alondra", "sentry");
+    assert_eq!(sentry.badges[0].text, "No se pudo iniciar sesión", "a failed attempt reads as failed, even with a sign-in open");
+    assert_eq!(sentry.subtitle.as_deref(), Some("Configuración del proyecto · 401 Unauthorized\nLo usa «Build the importer»"));
+    assert_eq!(labels(&sentry), ["Conectar"], "Connect tries again");
+    assert_eq!(labels(&row("project:alondra", "files")), ["Reconectar"], "a server on this machine keeps no sign-in to forget");
+    assert_eq!(labels(&row("yours", "claude.ai Gmail")), ["Reconectar"], "a connector is signed out on the provider's website");
+    assert_eq!(row("yours", "claude.ai Gmail").subtitle.as_deref(), Some("Conector de tu cuenta\nLo usa «Build the importer»"));
+
+    let github = row("yours", "github");
+    assert_eq!((github.badges[0].text.as_str(), labels(&github)), ("Conectado", vec!["Reconectar".to_owned(), "Cerrar sesión".to_owned()]));
+    let sign_out = github.actions.iter().find(|a| a.label == "Cerrar sesión").unwrap();
+    let github_target = McpServerKey { name: "github".into(), url: Some("https://api.githubcopilot.com/mcp".into()) }.target();
+    assert_eq!(sign_out.id, format!("mcp_sign_out:{github_target}@{}", state.revision));
+    assert_eq!(sign_out.confirm.as_ref().map(|c| c.title.as_str()), Some("¿Cerrar sesión en github?"));
+    let revenuecat = row("yours", "revenuecat");
+    assert!(revenuecat.actions.is_empty(), "found by a check, with no task to act through: only its state");
+    assert_eq!(revenuecat.subtitle.as_deref(), Some("Tu configuración\nAhora no lo usa ninguna tarea: podrás conectarlo cuando alguna lo use"),
+        "a server that cannot be connected from here says why and what to do");
+    assert!(view.sections.iter().all(|section| section.style == Some(SectionStyle::List)), "every section is a settings list");
+
+    let others = view.sections.iter().find(|s| s.id == "idle_projects").unwrap();
+    assert_eq!(others.title.as_deref(), Some("Otros proyectos"));
+    assert!(matches!(&others.items[0], Item::Notice(notice) if notice.text == "Comprobar lee el estado de sus servidores sin empezar ninguna tarea."));
+    let lumo = row("idle_projects", "lumo");
+    assert_eq!(lumo.children.iter().map(|child| (child.title.as_str(), child.badges[0].text.as_str())).collect::<Vec<_>>(), [("supabase", "Necesita iniciar sesión")],
+        "a checked project lists only its own servers");
+    assert_eq!(lumo.actions.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["Comprobar otra vez"]);
+    let blurcamera = row("idle_projects", "blurcamera");
+    assert_eq!(blurcamera.actions[0].id, format!("mcp_check:{}@{}", mcp_servers::project_target("blurcamera"), state.revision));
+    assert!(rows("idle_projects").iter().all(|row| row.title != "alondra" && row.title != "quill"), "a project a task runs in is not checked");
+
+    let mut checking = live.clone();
+    checking.mcp_probes.insert("blurcamera".into(), LiveMcpProbe::Checking);
+    let view = render(&state, &checking, Client::Ios, Lang::En, "mcp_servers", "");
+    let Item::Row(blurcamera) = view.sections.last().unwrap().items.iter().find(|item| matches!(item, Item::Row(row) if row.title == "blurcamera")).unwrap() else { unreachable!() };
+    assert_eq!((blurcamera.subtitle.as_deref(), blurcamera.actions.len()), (Some("Checking…"), 0), "no second check while one runs");
+
+    let empty = render(&DomainState::new("test-epoch"), &LiveSnapshot::default(), Client::Tui, Lang::En, "mcp_servers", "");
+    assert_eq!(empty.empty.map(|notice| notice.text), Some("No task uses an MCP server now".into()));
+}

@@ -259,6 +259,7 @@ fn required_by(kind: &Control) -> Capability {
         Control::ReadMcpStatus => Capability::McpStatus,
         Control::ReconnectMcp { .. } => Capability::McpReconnect,
         Control::StartMcpSignIn { .. } => Capability::McpSignIn,
+        Control::ClearMcpSignIn { .. } => Capability::McpClearAuth,
     }
 }
 fn required(operation: &ControlOperation) -> Capability {
@@ -280,6 +281,7 @@ fn columns(kind: &Control) -> (&'static str, Option<&str>) {
         Control::ReadMcpStatus => ("mcp_status", None),
         Control::ReconnectMcp { server } => ("mcp_reconnect", Some(server.as_str())),
         Control::StartMcpSignIn { server } => ("mcp_sign_in", Some(server.as_str())),
+        Control::ClearMcpSignIn { server } => ("mcp_clear_auth", Some(server.as_str())),
     }
 }
 fn control_of(kind: &str, argument: Option<String>) -> Result<Control> {
@@ -298,6 +300,7 @@ fn control_of(kind: &str, argument: Option<String>) -> Result<Control> {
         ("mcp_status", None) => Control::ReadMcpStatus,
         ("mcp_reconnect", Some(server)) => Control::ReconnectMcp { server },
         ("mcp_sign_in", Some(server)) => Control::StartMcpSignIn { server },
+        ("mcp_clear_auth", Some(server)) => Control::ClearMcpSignIn { server },
         _ => return Err(Error::CorruptJournal),
     })
 }

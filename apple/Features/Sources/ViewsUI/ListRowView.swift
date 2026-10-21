@@ -1,0 +1,138 @@
+import AlondraContract
+import AlondraDesign
+import SwiftUI
+
+/// A row of a section the daemon styles "list", as a settings list shows it: a symbol in the tone
+/// of its first label, the title, that label as a chip, the subtitle line by line, its children
+/// below, and its first action as a button with the rest in a menu. What each row offers is the
+/// daemon's: this view only lays it out.
+public struct ListRowView: View {
+    public let row: AlondraContract.Row
+    public var busy: Set<String>
+    public var onAction: (Action) -> Void
+    public var onLink: (Link) -> Void
+
+    public init(row: AlondraContract.Row, busy: Set<String> = [], onAction: @escaping (Action) -> Void, onLink: @escaping (Link) -> Void) {
+        self.row = row; self.busy = busy; self.onAction = onAction; self.onLink = onLink
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                ListToneSymbol(icon: row.icon, tone: row.badges.first?.tone)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(verbatim: row.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                    if let badge = row.badges.first { ListToneChip(label: badge) }
+                    if let subtitle = row.subtitle {
+                        Text(verbatim: subtitle).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                actions
+            }
+            ForEach(row.children, id: \.id) { child in
+                HStack(spacing: 8) {
+                    Circle().fill(ListTone.tint(child.badges.first?.tone)).frame(width: 7, height: 7)
+                    Text(verbatim: child.title).font(.subheadline).foregroundStyle(Palette.ink).lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let badge = child.badges.first { ListToneChip(label: badge) }
+                }
+                .padding(.leading, 44)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("list.row.\(row.id)")
+    }
+
+    private func run(_ action: Action) {
+        if let link = action.link { onLink(link) } else { onAction(action) }
+    }
+
+    @ViewBuilder private var actions: some View {
+        let shown = row.actions.filter(\.enabled)
+        HStack(spacing: 6) {
+            if let first = shown.first { button(first) }
+            if shown.count > 1 {
+                Menu {
+                    ForEach(Array(shown.dropFirst().enumerated()), id: \.offset) { _, action in
+                        Button(role: action.style == .destructive ? .destructive : nil) { run(action) } label: { Text(verbatim: action.label) }
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).font(.title3)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+                .fixedSize()
+            }
+        }
+        .disabled(shown.contains { $0.id.map(busy.contains) == true })
+    }
+
+    @ViewBuilder private func button(_ action: Action) -> some View {
+        if action.style == .primary {
+            Button { run(action) } label: {
+                Text(verbatim: action.label).font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 7)
+            }
+            .buttonStyle(FilledStyle(tint: Palette.dawn)).fixedSize()
+        } else {
+            Button(role: action.style == .destructive ? .destructive : nil) { run(action) } label: { Text(verbatim: action.label) }
+                .buttonStyle(.bordered).controlSize(.small).fixedSize()
+        }
+    }
+}
+
+enum ListTone {
+    static func tint(_ tone: Tone?) -> Color {
+        switch tone {
+        case .success: Palette.sage
+        case .critical: Palette.rose
+        case .yourTurn, .warning: Palette.ember
+        case .info, .accent: Palette.sky
+        case .neutral, nil: Palette.slate
+        }
+    }
+
+    static func symbol(_ tone: Tone?) -> String {
+        switch tone {
+        case .success: "checkmark"
+        case .critical: "exclamationmark"
+        case .yourTurn, .warning: "key.fill"
+        case .info, .accent: "arrow.triangle.2.circlepath"
+        case .neutral, nil: "pause.fill"
+        }
+    }
+}
+
+/// The row's state as a symbol in a tinted circle; a project row shows a folder.
+struct ListToneSymbol: View {
+    let icon: Icon
+    let tone: Tone?
+
+    var body: some View {
+        let project = icon == .project
+        let tint = project ? Palette.slate : ListTone.tint(tone)
+        Image(systemName: project ? "folder.fill" : ListTone.symbol(tone))
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(tint)
+            .frame(width: 32, height: 32)
+            .background(tint.opacity(0.15), in: .circle)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A label in its tone, as the app's state chips read.
+struct ListToneChip: View {
+    let label: AlondraContract.Label
+
+    var body: some View {
+        Text(verbatim: label.text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ListTone.tint(label.tone))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(ListTone.tint(label.tone).opacity(0.14), in: .capsule)
+            .lineLimit(1)
+            .fixedSize()
+    }
+}

@@ -1,5 +1,7 @@
 mod execution;
+mod mcp;
 pub use execution::*;
+pub use mcp::*;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

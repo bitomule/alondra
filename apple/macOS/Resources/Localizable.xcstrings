@@ -1,6 +1,17 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Your Mac could not do it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. Vuelve a intentarlo."}}}},
+    "MCP servers": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Servidores MCP"
+          }
+        }
+      }
+    },
     "Waiting to send": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando para enviar"}}}},
     "Uploading attachments…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subiendo adjuntos…"}}}},
     "Sending…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviando…"}}}},
@@ -3825,8 +3836,8 @@
     "Reconnect": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reconectar"}}}},
     "Connect again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectar otra vez"}}}},
     "Open the sign-in again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir el inicio de sesión otra vez"}}}},
-    "The waiting tasks read their sign-in again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las tareas que esperan vuelven a leer su sesión"}}}},
-    "No task that waits for this server runs now. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ninguna tarea que espera a este servidor está en marcha ahora. Vuelve a intentarlo en un momento."}}}},
+    "Its nodes read their sign-in again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sus nodos vuelven a leer su sesión"}}}},
+    "No task that uses this server runs now. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no está en marcha ninguna tarea que use este servidor. Vuelve a intentarlo en un momento."}}}},
     "Alondra has the sign-in": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra tiene el inicio de sesión"}}}},
     "You can close this page and go back to Alondra.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes cerrar esta página y volver a Alondra."}}}}
   },

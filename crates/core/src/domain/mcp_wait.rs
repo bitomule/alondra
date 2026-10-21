@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MCP_WAIT_PREFIX: &str = "mcp-sign-in-";
 /// The answer that sends every task waiting for the server on without it.
 pub const MCP_GO_ON_WITHOUT: &str = "go_on_without";
+/// What the MCP servers screen names a server by, for its actions and its sign-in.
+pub const MCP_SERVER_PREFIX: &str = "mcp-server-";
 
 /// A server as Alondra tells it apart: by its name and, for a remote one, its address. Two
 /// projects with a server of the same name at different addresses wait on two cards.
@@ -32,6 +34,14 @@ impl McpServerKey {
             return None;
         }
         serde_json::from_str(&card.body).ok()
+    }
+
+    /// The opaque id the MCP servers screen names it by: its name and address may hold anything.
+    pub fn target(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(serde_json::to_vec(self).expect("a server key serializes"));
+        let hex: String = digest[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("{MCP_SERVER_PREFIX}{hex}")
     }
 
     /// Whether a node reports this server: the same name, and the same address when both know it.

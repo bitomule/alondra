@@ -1473,6 +1473,10 @@ fn control_actions_have_one_wire_spelling() {
         serde_json::to_value(Action::McpAuthenticate { server: "linear".into() }).unwrap(),
         json!({"type":"mcp_authenticate","server":"linear"})
     );
+    assert_eq!(
+        serde_json::to_value(Action::McpClearAuth { server: "linear".into() }).unwrap(),
+        json!({"type":"mcp_clear_auth","server":"linear"})
+    );
     set_model.validate().unwrap();
     for model in ["", " \t", "fixture\u{7}", &"m".repeat(MAX_MODEL_BYTES + 1)] {
         set_model.action = Action::SetModel {

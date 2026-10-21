@@ -119,7 +119,7 @@ fn unit(shape: Shape) -> DomainState {
         ] });
         seed.run(Actor::System, Command::RecordMcpServers { task_id: task.as_str().into(), generation: 1, servers: vec![McpServerState {
             name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: Some("user".into()),
-            transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+            transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_core::domain::McpTraits { scope: alondra_core::domain::McpScope::User, origin: alondra_core::domain::McpOrigin::UserSettings, connect: alondra_core::domain::McpConnect::SignIn, reconnect: true, sign_out: true },
         }] });
         seed.run(node, Command::WaitForMcp { task_id: task.as_str().into(), server: "linear".into() });
         return seed.0;
@@ -353,6 +353,8 @@ fn keys() -> Vec<(String, Client)> {
         ("issue_picker".to_owned(), Client::Ios),
         ("search?q=node".to_owned(), Client::Ios),
         ("machine".to_owned(), Client::Mac),
+        ("mcp_servers".to_owned(), Client::Ios),
+        ("mcp_servers".to_owned(), Client::Tui),
         ("accounts".to_owned(), Client::Tui),
     ]
     .into_iter()

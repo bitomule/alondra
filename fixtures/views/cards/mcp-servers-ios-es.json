@@ -1,0 +1,439 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "mcp_servers",
+  "key": "mcp_servers",
+  "client": "ios",
+  "version": "vccfab32c3ceca22e",
+  "cursor": "cursor-1",
+  "title": "Servidores MCP",
+  "status": {
+    "version": "vcd5734cedae79f4a",
+    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 4
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 4
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 2
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "yours",
+      "title": "Tus servidores",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-efa5e530ba40245c",
+          "icon": "machine",
+          "title": "claude.ai Gmail",
+          "subtitle": "Conector de tu cuenta\nLo usa «Build the importer»",
+          "badges": [
+            {
+              "text": "Conectado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-efa5e530ba40245c"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-261a33ad2940f5cd",
+          "icon": "machine",
+          "title": "github",
+          "subtitle": "Tu configuración\nLo usa «Wire the badge after the review»",
+          "badges": [
+            {
+              "text": "Conectado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-261a33ad2940f5cd"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "mcp_sign_out:mcp-server-261a33ad2940f5cd@6",
+              "label": "Cerrar sesión",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar sesión en github?",
+                "message": "El agente olvida y revoca su sesión en github. Las tareas que lo usan lo pierden hasta que vuelvas a conectar.",
+                "button": "Cerrar sesión"
+              },
+              "enabled": true,
+              "stamp": "Sesión cerrada",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-2696df8ba5973213",
+          "icon": "machine",
+          "title": "linear",
+          "subtitle": "Tu configuración\nLo usa «Build the importer»",
+          "badges": [
+            {
+              "text": "Necesita iniciar sesión",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Conectar",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-server-2696df8ba5973213",
+                  "server": "linear"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-d70fca280fdb7759",
+          "icon": "machine",
+          "title": "notion",
+          "subtitle": "Tu configuración\nLo usa «Build the importer»",
+          "badges": [
+            {
+              "text": "Iniciando sesión",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "probe-mcp-server-b8475db4bb355e28",
+          "icon": "machine",
+          "title": "revenuecat",
+          "subtitle": "Tu configuración\nAhora no lo usa ninguna tarea: podrás conectarlo cuando alguna lo use",
+          "badges": [
+            {
+              "text": "Necesita iniciar sesión",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "project:alondra",
+      "title": "alondra",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-5c883d9f229f3464",
+          "icon": "machine",
+          "title": "files",
+          "subtitle": "Configuración del proyecto\nLo usa «Build the importer»",
+          "badges": [
+            {
+              "text": "Conectado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-5c883d9f229f3464"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-server-c0ca250c3c4b212d",
+          "icon": "machine",
+          "title": "sentry",
+          "subtitle": "Configuración del proyecto · 401 Unauthorized\nLo usa «Build the importer»",
+          "badges": [
+            {
+              "text": "No se pudo iniciar sesión",
+              "tone": "critical"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Conectar",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_sign_in",
+                  "card": "mcp-server-c0ca250c3c4b212d",
+                  "server": "sentry"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "project:quill",
+      "title": "quill",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "mcp-server-6a1eff41a1ccc3b6",
+          "icon": "machine",
+          "title": "db",
+          "subtitle": "Configuración del proyecto\nLo usa «Wire the badge after the review»",
+          "badges": [
+            {
+              "text": "Conectado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Reconectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "mcp_reconnect",
+                  "card": "mcp-server-6a1eff41a1ccc3b6"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "idle_projects",
+      "title": "Otros proyectos",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "notice",
+          "text": "Comprobar lee el estado de sus servidores sin empezar ninguna tarea.",
+          "tone": "neutral"
+        },
+        {
+          "type": "row",
+          "id": "mcp-project-f8136fccd88b6688",
+          "icon": "project",
+          "title": "lumo",
+          "subtitle": "Comprobado a las 09:40",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "probe-mcp-server-f270f5da8846162a",
+              "icon": "machine",
+              "title": "supabase",
+              "subtitle": "Configuración del proyecto",
+              "badges": [
+                {
+                  "text": "Necesita iniciar sesión",
+                  "tone": "your_turn"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            }
+          ],
+          "actions": [
+            {
+              "id": "mcp_check:mcp-project-f8136fccd88b6688@6",
+              "label": "Comprobar otra vez",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "Arranca el agente en el proyecto sin pedirle nada",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "mcp-project-cc473e0a88a8efd3",
+          "icon": "project",
+          "title": "blurcamera",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_check:mcp-project-cc473e0a88a8efd3@6",
+              "label": "Comprobar",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "Arranca el agente en el proyecto sin pedirle nada",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    }
+  ]
+}

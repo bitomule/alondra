@@ -8,6 +8,9 @@ its redirect, and hands that redirect to Claude's own listener the way the daemo
 (crates/alondrad/src/mcp_sign_in.rs). It then measures what the Agent SDK MCP plan left open:
 PKCE, where the credential is kept, whether another session sees it, the refresh ahead of expiry,
 and what a credential the server no longer accepts leaves.
+
+Before that, Alondra's own host checks the project as it checks one no node runs in
+(agent-host/probe.ts): it lists the server as signed out, and nothing reaches the Messages API.
 """
 import base64
 import hashlib
@@ -17,7 +20,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -239,10 +244,36 @@ def profile(runtime, server_port, callback_port):
     ])
 
 
+def probe(runtime, env, server):
+    """Alondra's host checks the project without a turn: the server is listed, signed out, and the
+    model double behind ANTHROPIC_BASE_URL gets no request."""
+    config = json.dumps({'executable': str(runtime / 'claude'), 'cwd': str(runtime / 'work'), 'env': env}).encode()
+    command = ['/usr/bin/sandbox-exec', '-f', str(runtime / 'sandbox.sb'), str(runtime / 'node'), str(runtime / 'host.cjs'), '--mcp-probe']
+    host_env = {'HOME': env['HOME'], 'PATH': '/usr/bin:/bin'}
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=host_env, start_new_session=True)
+    try:
+        output, errors = child.communicate(config, timeout=120)
+    finally:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+    lines = output.decode().splitlines()
+    assert lines, 'The check wrote nothing: ' + errors.decode()[-2000:]
+    answer = json.loads(lines[0])
+    servers = answer.get('servers')
+    assert servers is not None, answer
+    assert [server_['status'] for server_ in servers if server_['name'] == 'fixture'] == ['needs-auth'], servers
+    asked = [entry for entry in server.log if 'messages' in json.dumps(entry)]
+    assert not asked, 'The check asked the model: ' + json.dumps(asked)
+    return {'servers': servers, 'model_requests': len(asked), 'exit': child.returncode}
+
+
 def main(fixture, interruptions):
     assert sys.platform == 'darwin' and os.uname().machine == 'arm64'
     assert Path('/usr/bin/sandbox-exec').is_file(), 'No isolation fallback'
-    node, archive, client, metadata = [Path(p).resolve(strict=True) for p in sys.argv[1:]]
+    node, archive, client, metadata, host = [Path(p).resolve(strict=True) for p in sys.argv[1:]]
     parent = Path(os.environ['TEST_TMPDIR']).resolve(strict=True)
     assert not str(parent).startswith(('/Users/', '/home/')), 'Fixture must be outside real user homes'
     root = Path(tempfile.mkdtemp(prefix='claude-mcp-', dir=parent))
@@ -259,6 +290,7 @@ def main(fixture, interruptions):
             'node_sha256': fixture.copy_verified(node, runtime / 'node', True),
             'native_sha256': fixture.native_from_archive(archive, runtime / 'claude'),
             'client_sha256': fixture.copy_verified(client, runtime / 'client.cjs'),
+            'host_sha256': fixture.copy_verified(host, runtime / 'host.cjs'),
             'bundle_metadata_sha256': fixture.checksum(metadata),
         }
         security = runtime / 'bin/security'
@@ -279,6 +311,7 @@ def main(fixture, interruptions):
                   'keychain': str(runtime / 'home/keychain'), 'report': str(runtime / 'report.json')}
         (runtime / 'config.json').write_text(json.dumps(config))
         (runtime / 'sandbox.sb').write_text(profile(runtime, server.server_port, callback_port))
+        evidence['probe'] = probe(runtime, env, server)
         command = ['/usr/bin/sandbox-exec', '-f', str(runtime / 'sandbox.sb'), str(runtime / 'node'), str(runtime / 'client.cjs'), str(runtime / 'config.json')]
         with (runtime / 'sign-in.stdout').open('wb') as stdout, (runtime / 'sign-in.stderr').open('wb') as stderr:
             code = fixture._owned_client(command, config, stdout, stderr, interruptions, observed)

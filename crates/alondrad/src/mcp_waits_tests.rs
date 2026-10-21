@@ -3,7 +3,7 @@ use super::*;
 const LINEAR: &str = "https://mcp.linear.app/mcp";
 
 fn server(name: &str, status: McpStatus, url: &str) -> McpServerState {
-    McpServerState { name: name.into(), status, error: None, source: None, transport: Some("http".into()), url: Some(url.into()) }
+    McpServerState { name: name.into(), status, error: None, source: None, transport: Some("http".into()), url: Some(url.into()), traits: Default::default() }
 }
 
 // One node signed in to Linear: every other node that reports it signed out connects it again at

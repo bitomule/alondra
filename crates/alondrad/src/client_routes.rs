@@ -50,6 +50,7 @@ pub(crate) struct Client {
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
+    pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
     device_languages_path: PathBuf,
 }
@@ -103,9 +104,12 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
         return Some(Write::OrchestratorMessage);
     }
     if let Some((card, step)) = path.strip_prefix("/mcp-sign-ins/").and_then(|rest| rest.split_once('/')) {
-        return (plain_id(card) && card.starts_with(alondra_core::domain::MCP_WAIT_PREFIX))
-            .then(|| mcp::Step::of(step).map(|step| Write::McpSignIn { card: card.to_owned(), step }))
-            .flatten();
+        let step = mcp::Step::of(step)?;
+        let target = crate::mcp_waits::Target::of(card).filter(|_| plain_id(card))?;
+        if matches!(target, crate::mcp_waits::Target::Server(_)) && step == mcp::Step::Without {
+            return None;
+        }
+        return Some(Write::McpSignIn { card: card.to_owned(), step });
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
         return crate::domain_api::decoded_pull_request_id(id).map(Write::ResolveConflicts);
@@ -273,6 +277,7 @@ impl Client {
             issue_cache: Default::default(),
             live_reads: Default::default(),
             live_snapshots: Default::default(),
+            mcp_probes: Default::default(),
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
         });

@@ -236,6 +236,11 @@ pub enum Action {
     McpAuthenticate {
         server: String,
     },
+    /// Claude forgets and revokes its stored sign-in to the MCP server; the server is then signed
+    /// out on this execution.
+    McpClearAuth {
+        server: String,
+    },
 }
 
 /// The only permission modes Alondra can ask for: none of them grants a permission by itself.
@@ -399,6 +404,19 @@ pub enum ControlResult {
         server: String,
         sign_in: SignIn,
     },
+    /// The servers as Claude lists them after forgetting its sign-in to `server`, with why it
+    /// could not when it could not.
+    McpClearAuth {
+        command_id: CommandId,
+        server: String,
+        #[serde(
+            default,
+            deserialize_with = "present_string",
+            skip_serializing_if = "Option::is_none"
+        )]
+        error: Option<String>,
+        servers: Vec<McpServer>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,7 +511,8 @@ impl ControlResult {
         match self {
             Self::McpStatus { command_id, .. }
             | Self::McpReconnect { command_id, .. }
-            | Self::McpAuthenticate { command_id, .. } => command_id,
+            | Self::McpAuthenticate { command_id, .. }
+            | Self::McpClearAuth { command_id, .. } => command_id,
         }
     }
 
@@ -502,6 +521,12 @@ impl ControlResult {
         match self {
             Self::McpStatus { servers: listed, .. } => servers(listed)?,
             Self::McpReconnect {
+                server,
+                error,
+                servers: listed,
+                ..
+            }
+            | Self::McpClearAuth {
                 server,
                 error,
                 servers: listed,
@@ -890,7 +915,9 @@ impl Command {
                     return Err(Error::Invalid("model"));
                 }
             }
-            Action::McpReconnect { server } | Action::McpAuthenticate { server } => {
+            Action::McpReconnect { server }
+            | Action::McpAuthenticate { server }
+            | Action::McpClearAuth { server } => {
                 text(server, 256)?;
             }
             Action::Interrupt

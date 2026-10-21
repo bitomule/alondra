@@ -34,6 +34,8 @@ pub enum Capability {
     McpSignIn,
     /// Ends Claude's process when a turn stays open after it accepted the interrupt.
     ForceStop,
+    /// Has Claude forget, and revoke, its stored sign-in to an MCP server.
+    McpClearAuth,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBinding {
@@ -230,7 +232,7 @@ pub enum Observation {
     /// A call to an MCP server's tool failed: how its server is may have changed.
     McpToolFailed,
 }
-/// An MCP server as Claude reported it; its status verbatim.
+/// An MCP server as the provider reported it; its status verbatim.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpServerReport {
     pub name: String,
@@ -240,6 +242,8 @@ pub struct McpServerReport {
     pub transport: Option<String>,
     /// A remote server's address, without credentials, query or fragment.
     pub url: Option<String>,
+    /// Whose it is, where the provider found it and how the user connects it.
+    pub traits: alondra_foundation::McpTraits,
 }
 /// How a sign-in Claude opened goes on: where the user signs in, and the port and state of
 /// Claude's own listener the browser comes back to.

@@ -46,9 +46,13 @@ pub enum Verb {
     RemoveRule,
     /// End Claude's process for a node whose turn stayed open after Claude accepted its interrupt.
     ForceStop,
+    /// Have Claude forget, and revoke, its sign-in to an MCP server, named by its target.
+    McpSignOut,
+    /// Check the MCP servers of a project no node runs in, named by its target.
+    McpCheck,
 }
 impl Verb {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 38] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -85,6 +89,8 @@ impl Verb {
         Self::SetPriority,
         Self::RemoveRule,
         Self::ForceStop,
+        Self::McpSignOut,
+        Self::McpCheck,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -124,6 +130,8 @@ impl Verb {
             Self::SetPriority => "set_priority",
             Self::RemoveRule => "remove_rule",
             Self::ForceStop => "force_stop",
+            Self::McpSignOut => "mcp_sign_out",
+            Self::McpCheck => "mcp_check",
         }
     }
     fn parse(value: &str) -> Option<Self> {

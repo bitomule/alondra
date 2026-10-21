@@ -318,6 +318,12 @@ export class Session {
     if (typeof authenticate !== 'function') return Promise.reject(new Error('This Agent SDK cannot sign in to MCP servers'));
     return authenticate.call(this.query, server);
   }
+  /** The SDK sends `mcp_clear_auth` through this method, which its published types leave out. */
+  mcpClearAuth(server: string): Promise<unknown> {
+    const clear = (this.query as unknown as { mcpClearAuth?: (server: string) => Promise<unknown> }).mcpClearAuth;
+    if (typeof clear !== 'function') return Promise.reject(new Error('This Agent SDK cannot sign out of MCP servers'));
+    return clear.call(this.query, server);
+  }
   close(): void {
     this.closing = true;
     this.input.close();

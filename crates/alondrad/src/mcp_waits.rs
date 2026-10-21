@@ -7,8 +7,8 @@
 //! reports it signed out connects it again.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
-    Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, McpServerKey, McpServerState, McpStatus, McpWaiting, Millis,
-    OpenSignIn, PROTOCOL_VERSION, TaskId,
+    Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpServerState,
+    McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -64,15 +64,45 @@ fn allowed(state: &DomainState, command: Command) -> bool {
     state.guard(&Actor::System, &envelope(state, command)).is_ok()
 }
 
-/// The server a card waits for, while some task still waits for it.
-fn waited(state: &DomainState, card: &InteractionId) -> Result<(McpServerKey, Vec<McpWaiting>), DomainError> {
-    let key = state.interactions.get(card).and_then(McpServerKey::of_card)
-        .ok_or_else(|| DomainError::new("not_found", "This card does not wait for an MCP server"))?;
-    let waiting = state.mcp_waiting_for(&key);
-    if waiting.is_empty() {
-        return Err(DomainError::new("conflict", format!("No task waits for {} any more", key.name)));
+/// What Connect, Reconnect and Sign out act on: the card the tasks that wait for a server wait
+/// on, or a server the MCP servers screen names by its target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    Card(InteractionId),
+    Server(String),
+}
+
+impl Target {
+    pub(crate) fn of(id: &str) -> Option<Self> {
+        if id.starts_with(MCP_WAIT_PREFIX) {
+            Some(Self::Card(InteractionId::from(id)))
+        } else {
+            id.starts_with(MCP_SERVER_PREFIX).then(|| Self::Server(id.to_owned()))
+        }
     }
-    Ok((key, waiting))
+}
+
+/// The server a target names and the open tasks whose nodes act for it, oldest first: for a
+/// card, the tasks that still wait for it; for a server, every open task whose node reports it.
+fn acting(state: &DomainState, target: &Target) -> Result<(McpServerKey, Vec<TaskId>), DomainError> {
+    match target {
+        Target::Card(card) => {
+            let key = state.interactions.get(card).and_then(McpServerKey::of_card)
+                .ok_or_else(|| DomainError::new("not_found", "This card does not wait for an MCP server"))?;
+            let waiting: Vec<TaskId> = state.mcp_waiting_for(&key).into_iter().map(|waiting| waiting.task).collect();
+            if waiting.is_empty() {
+                return Err(DomainError::new("conflict", format!("No task waits for {} any more", key.name)));
+            }
+            Ok((key, waiting))
+        }
+        Target::Server(target) => {
+            let nodes = state.mcp_nodes();
+            let key = nodes.iter().flat_map(|node| &node.servers).map(McpServerKey::of).find(|key| key.target() == *target)
+                .ok_or_else(|| DomainError::new("not_found", "No running task uses this MCP server any more"))?;
+            let tasks = nodes.into_iter().filter(|node| node.servers.iter().any(|server| key.names(server))).map(|node| node.task).collect();
+            Ok((key, tasks))
+        }
+    }
 }
 
 fn open_sign_in<'a>(state: &'a DomainState, task: &TaskId, server: &str) -> Option<&'a OpenSignIn> {
@@ -111,9 +141,9 @@ async fn answered<T>(domain: &DomainRuntime, mut outcome: impl FnMut(&DomainStat
 }
 
 /// How the sign-in Connect asked `task`'s node for goes on, once it is known.
-fn opened(state: &DomainState, task: &TaskId, server: &McpServerKey, since: u64) -> Option<Result<Opened, DomainError>> {
+fn opened(state: &DomainState, target: &Target, task: &TaskId, server: &McpServerKey, since: u64) -> Option<Result<Opened, DomainError>> {
     let name = server.name.as_str();
-    if !state.mcp_waiting_for(server).iter().any(|waiting| waiting.task == *task) {
+    if matches!(target, Target::Card(_)) && !state.mcp_waiting_for(server).iter().any(|waiting| waiting.task == *task) {
         return Some(Ok(Opened::Connected { server: name.into() }));
     }
     if let Some(open) = open_sign_in(state, task, name) {
@@ -131,27 +161,31 @@ fn opened(state: &DomainState, task: &TaskId, server: &McpServerKey, since: u64)
 /// Connect: the open sign-in of a waiting node whose Claude still waits for it, or a new one on
 /// the node of the oldest waiting task that can open it. A node that has not said how its
 /// servers are since the daemon started is asked first.
-pub(crate) async fn connect(domain: &DomainRuntime, card: &InteractionId) -> Result<Opened, DomainError> {
+pub(crate) async fn connect(domain: &DomainRuntime, target: &Target) -> Result<Opened, DomainError> {
+    let mut name = String::new();
     for asked in [false, true] {
         let snapshot = domain.read();
         let state = snapshot.state();
-        let (key, waiting) = waited(state, card)?;
-        let name = key.name.clone();
-        for task in waiting.iter().map(|waiting| &waiting.task) {
+        let (key, waiting) = acting(state, target)?;
+        name.clone_from(&key.name);
+        if matches!(target, Target::Server(_)) && waiting.iter().all(|task| state.mcp_server_of(task, &key).is_some_and(|server| server.status == McpStatus::Connected)) {
+            return Ok(Opened::Connected { server: name });
+        }
+        for task in &waiting {
             if let Some(open) = open_sign_in(state, task, &name).filter(|open| still_open(open)) {
                 return Ok(browser(&name, open));
             }
         }
         let start = |task: &TaskId| Command::StartMcpSignIn { task_id: task.clone(), server: name.clone() };
-        if let Some(task) = waiting.iter().map(|waiting| &waiting.task).find(|task| allowed(state, start(task))).cloned() {
+        if let Some(task) = waiting.iter().find(|task| allowed(state, start(task))).cloned() {
             drop(snapshot);
             let since = system(domain, start(&task))?;
-            return answered(domain, |state| opened(state, &task, &key, since)).await.unwrap_or_else(|| {
+            return answered(domain, |state| opened(state, target, &task, &key, since)).await.unwrap_or_else(|| {
                 Err(DomainError::new("unavailable", format!("Claude did not open the sign-in to {name}: press Connect again")))
             });
         }
         let read = |task: &TaskId| Command::ReadMcpStatus { task_id: task.clone() };
-        let unread: Vec<TaskId> = waiting.iter().map(|waiting| waiting.task.clone())
+        let unread: Vec<TaskId> = waiting.iter().cloned()
             .filter(|task| state.mcp_server_of(task, &key).is_none() && allowed(state, read(task))).collect();
         drop(snapshot);
         if asked || unread.is_empty() {
@@ -162,17 +196,19 @@ pub(crate) async fn connect(domain: &DomainRuntime, card: &InteractionId) -> Res
         }
         answered(domain, |state| unread.iter().any(|task| state.mcp_server_of(task, &key).is_some()).then_some(())).await;
     }
-    let name = domain.read().state().interactions.get(card).and_then(McpServerKey::of_card).map(|key| key.name).unwrap_or_default();
-    Err(DomainError::new("conflict", format!("No node that waits for {name} can open its sign-in now: go on without it, or try again once one runs")))
+    Err(DomainError::new("conflict", match target {
+        Target::Card(_) => format!("No node that waits for {name} can open its sign-in now: go on without it, or try again once one runs"),
+        Target::Server(_) => format!("No running task can open the sign-in to {name} now: try again once one runs"),
+    }))
 }
 
 /// Where the browser came back to after the user signed in on another device: it reaches the
 /// node's Claude in memory, never written down, and the node then says how its servers are.
-pub(crate) async fn give_back(domain: &Arc<DomainRuntime>, card: &InteractionId, address: String) -> Result<(), DomainError> {
+pub(crate) async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: String) -> Result<(), DomainError> {
     let state = domain.read();
-    let (key, waiting) = waited(state.state(), card)?;
+    let (key, waiting) = acting(state.state(), target)?;
     let name = key.name.clone();
-    let task = waiting.iter().map(|waiting| &waiting.task)
+    let task = waiting.iter()
         .find(|task| open_sign_in(state.state(), task, &name).is_some_and(|open| open.callback_port.is_some()))
         .cloned()
         .ok_or_else(|| DomainError::new("not_found", format!("No sign-in to {name} is open: press Connect again")))?;
@@ -195,16 +231,33 @@ pub(crate) async fn give_back(domain: &Arc<DomainRuntime>, card: &InteractionId,
     Ok(())
 }
 
-/// Reconnect: every waiting node that can reads its sign-in to the server again.
-pub(crate) fn reconnect(domain: &DomainRuntime, card: &InteractionId) -> Result<usize, DomainError> {
-    let (key, waiting) = waited(domain.read().state(), card)?;
-    let reconnected = waiting.iter()
-        .filter(|waiting| system(domain, Command::ReconnectMcp { task_id: waiting.task.clone(), server: key.name.clone() }).is_ok())
+/// Reconnect: every acting node that can reads its sign-in to the server again.
+pub(crate) fn reconnect(domain: &DomainRuntime, target: &Target) -> Result<usize, DomainError> {
+    let (key, tasks) = acting(domain.read().state(), target)?;
+    let reconnected = tasks.iter()
+        .filter(|task| system(domain, Command::ReconnectMcp { task_id: (*task).clone(), server: key.name.clone() }).is_ok())
         .count();
     if reconnected == 0 {
-        return Err(DomainError::new("conflict", format!("No node that waits for {} runs now: try again once one does", key.name)));
+        return Err(DomainError::new("conflict", format!("No node that uses {} runs now: try again once one does", key.name)));
     }
     Ok(reconnected)
+}
+
+/// Sign out: the first node that can has its Claude forget and revoke its sign-in to the server,
+/// and every other node that uses it connects it again, so none keeps using a revoked sign-in.
+pub(crate) fn sign_out(domain: &DomainRuntime, target: &Target) -> Result<String, DomainError> {
+    let (key, tasks) = acting(domain.read().state(), target)?;
+    let clear = |task: &TaskId| Command::ClearMcpSignIn { task_id: task.clone(), server: key.name.clone() };
+    let Some(cleared) = tasks.iter().find(|task| allowed(domain.read().state(), clear(task))).cloned() else {
+        return Err(DomainError::new("conflict", format!("No running task can sign out of {} now: try again once one runs", key.name)));
+    };
+    system(domain, clear(&cleared))?;
+    for task in tasks.iter().filter(|task| **task != cleared) {
+        if let Err(error) = system(domain, Command::ReconnectMcp { task_id: task.clone(), server: key.name.clone() }) {
+            log!("could not connect {} again for task {task} after signing out: {}", key.name, error.message);
+        }
+    }
+    Ok(key.name)
 }
 
 /// The reconnects owed to nodes that report signed out a server another node reports connected:
@@ -259,11 +312,14 @@ fn nodes(state: &DomainState) -> Vec<(TaskId, &[McpServerState])> {
     }).collect()
 }
 
-/// The open sign-ins that come back to Claude's listener, by the task whose node opened them.
+/// The open sign-ins that come back to Claude's listener, by the task whose node opened them:
+/// those of a card's waiting tasks and those the MCP servers screen opened alike.
 fn returning(state: &DomainState) -> Vec<(TaskId, u16, String)> {
-    state.mcp_waiting().into_iter().filter_map(|waiting| {
-        let open = open_sign_in(state, &waiting.task, &waiting.server.name)?;
-        Some((waiting.task, open.callback_port?, open.state.clone()?))
+    state.mcp_nodes().into_iter().flat_map(|node| {
+        node.signing_in.into_iter().filter_map(|server| {
+            let open = open_sign_in(state, &node.task, &server)?;
+            Some((node.task.clone(), open.callback_port?, open.state.clone()?))
+        }).collect::<Vec<_>>()
     }).collect()
 }
 

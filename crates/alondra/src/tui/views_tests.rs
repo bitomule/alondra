@@ -366,3 +366,42 @@ fn connect_away_from_the_mac_asks_for_where_the_browser_came_back_to_and_keeps_i
     app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(false));
     assert!(app.composer.is_none(), "a claude.ai connector is connected on claude.ai, then reconnected");
 }
+
+fn mcp_servers_open() -> App {
+    let mut app = app();
+    app.screen = Screen::Inbox;
+    press(&mut app, KeyCode::Char(','));
+    assert!(app.mcp_servers.is_some(), ", opens Settings › MCP servers from any screen");
+    let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("mcp-servers-ios.json")).unwrap();
+    app.on_msg(Msg::ViewCard { key: "mcp_servers".into(), result: Ok(view) });
+    app
+}
+
+#[test]
+fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one_s_buttons() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = mcp_servers_open();
+    let screen = app.mcp_servers.as_mut().unwrap();
+    screen.sel = screen.rows().iter().position(|row| row.title == "linear").expect("linear");
+    let screen = drawn(&mut app, 140, 60);
+    for shown in ["Settings › MCP servers", "alondra", "quill", "Other projects", "Check reads the state of their servers without starting a task.",
+        "linear  Needs sign-in", "notion  Signing in", "sentry  Sign-in failed", "revenuecat  Needs sign-in", "1 Connect"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    let target = app.mcp_servers.as_ref().unwrap().selected().unwrap().id.clone();
+    assert!(target.starts_with("mcp-server-"), "{target}");
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.posted.borrow().last().map(|(path, _)| path.clone()), Some(format!("/mcp-sign-ins/{target}/connect")));
+    assert!(!screen.contains("1 Connect   2 Reconnect"), "one thing to do per server: {screen}");
+
+    let screen = app.mcp_servers.as_mut().unwrap();
+    screen.sel = screen.rows().iter().position(|row| row.actions.iter().any(|action| action.label == "Sign out")).expect("a server to sign out of");
+    let sign_out = app.mcp_servers.as_ref().unwrap().selected().unwrap().clone();
+    let index = super::mcp_servers::actions(&sign_out).iter().position(|action| action.label == "Sign out").unwrap();
+    press(&mut app, KeyCode::Char(char::from_digit(index as u32 + 1, 10).unwrap()));
+    assert_eq!(app.modal.as_ref().map(|modal| modal.title.as_str()), Some("Sign out of github?"), "signing out asks first");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.mcp_servers.is_some());
+    press(&mut app, KeyCode::Esc);
+    assert!(app.mcp_servers.is_none());
+}

@@ -114,6 +114,12 @@ impl Client {
     }
 
     pub(super) fn projects_answer(&self) -> Response {
+        let (root, list, error) = self.project_list();
+        Json(json!({"root": root, "projects": list, "error": error})).into_response()
+    }
+
+    /// The checkouts under the projects folder, most recently used first.
+    pub(crate) fn project_list(&self) -> (std::path::PathBuf, Vec<alondra_core::options::ProjectEntry>, Option<String>) {
         let loaded = crate::options::load_in(&self.home, &self.options);
         let root = loaded.file.projects_root(&crate::options::user_home());
         let mut used: BTreeMap<String, Vec<i64>> = BTreeMap::new();
@@ -121,7 +127,7 @@ impl Client {
             used.entry(node.project()).or_default().push(node.created_at);
         }
         let list = alondra_core::options::ranked(alondra_core::options::projects(&root), &used);
-        Json(json!({"root": root, "projects": list, "error": loaded.error})).into_response()
+        (root, list, loaded.error)
     }
 
     pub(super) async fn issues_answer(&self, refresh: bool) -> Response {

@@ -877,7 +877,7 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
 fn mcp_report(status: &str) -> Observation {
     Observation::McpServers { servers: vec![alondra_provider_contract::McpServerReport {
         name: "linear".into(), status: status.into(), error: None, source: Some("user".into()),
-        transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()),
+        transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_foundation::McpTraits { scope: alondra_foundation::McpScope::User, origin: alondra_foundation::McpOrigin::UserSettings, connect: alondra_foundation::McpConnect::SignIn, reconnect: true, sign_out: true },
     }] }
 }
 /// Every byte under `root`, for whether something was ever written there.
@@ -996,7 +996,7 @@ fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_
     let state = runtime.read().state().clone();
     let wait = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "wait-linear", Command::WaitForMcp { task_id: task(), server: "linear".into() }) };
     runtime.execute(&agent(), &wait, None, || Ok(())).unwrap();
-    let card = runtime.read().state().mcp_waiting()[0].card.clone();
+    let card = crate::mcp_waits::Target::Card(runtime.read().state().mcp_waiting()[0].card.clone());
     let tokio = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1044,6 +1044,57 @@ fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_
     for kept in [CODE, address.as_str(), "callback?code"] {
         assert_eq!(written_anywhere(&fixture.0, kept.as_bytes()), Vec::<PathBuf>::new(), "{kept} is written nowhere");
     }
+}
+
+// The MCP servers screen acts on a server no task waits for: Connect opens its sign-in on the
+// node that uses it, and Sign out has Claude forget its sign-in to it. A server only Alondra's
+// screen names, by an opaque target, is the one the node reported.
+#[test]
+fn the_servers_screen_signs_in_to_and_out_of_a_server_no_task_waits_for() {
+    use crate::mcp_waits::{Opened, Target, connect, reconnect, sign_out};
+    use alondra_core::domain::McpServerKey;
+    use alondra_provider_contract::McpSignInReport;
+    let mcp = binding_with(BTreeSet::from([Capability::OfferInput, Capability::McpStatus, Capability::McpReconnect, Capability::McpSignIn,
+        Capability::McpClearAuth]));
+    let (fixture, store, execution) = running_with(&mcp);
+    let runtime = Arc::new(runtime(&fixture, store));
+    let cursor = std::sync::atomic::AtomicU64::new(0);
+    let observe = |facts: Vec<Observation>| {
+        let state = Arc::clone(runtime.read().state());
+        let at = cursor.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&mcp, 1, &batch(&execution, at), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+    };
+    let controls = |kind: &str| -> usize {
+        runtime.read().state().lifecycle_journal[&task()].iter().filter(|record| matches!(record,
+            LifecycleRecord::ControlRequested { operation, .. } if format!("{operation:?}").starts_with(kind))).count()
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let unknown = Target::of("mcp-server-0000000000000000").unwrap();
+    assert_eq!(tokio.block_on(connect(&runtime, &unknown)).unwrap_err().code, "not_found", "a server no node reported");
+    observe(vec![Observation::Available, mcp_report("needs-auth")]);
+    assert!(runtime.read().state().mcp_waiting().is_empty(), "no task waits for it");
+    let server = Target::of(&runtime.read().state().mcp_nodes()[0].servers.iter().map(McpServerKey::of).next().unwrap().target()).unwrap();
+    assert_eq!(sign_out(&runtime, &server).unwrap_err().code, "conflict", "no sign-in to forget while it needs one");
+
+    let opening = tokio.spawn({
+        let (runtime, server) = (runtime.clone(), server.clone());
+        async move { connect(&runtime, &server).await }
+    });
+    while controls("StartMcpSignIn") == 0 {
+        assert!(!opening.is_finished(), "Connect asked for no sign-in: {:?}", tokio.block_on(opening));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    observe(vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Browser {
+        url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: None, state: None,
+    } }]);
+    assert_eq!(tokio.block_on(opening).unwrap(), Ok(Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), port: None }));
+    observe(vec![mcp_report("connected")]);
+    assert_eq!(tokio.block_on(connect(&runtime, &server)), Ok(Opened::Connected { server: "linear".into() }), "nothing to open once it is connected");
+    assert_eq!(reconnect(&runtime, &server), Ok(1));
+
+    assert_eq!(sign_out(&runtime, &server), Ok("linear".into()));
+    assert!(matches!(runtime.read().state().lifecycle_journal[&task()].last(),
+        Some(LifecycleRecord::ControlRequested { operation: alondra_core::domain::ControlRecord::ClearMcpSignIn { server }, .. }) if server == "linear"));
 }
 
 // 21 Oct, in the sandbox: a node said it waits for Linear and was told its Claude had no such

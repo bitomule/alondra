@@ -686,5 +686,6 @@ fn mcp_server(report: &McpServerReport) -> McpServerState {
         source: report.source.clone(),
         transport: report.transport.clone(),
         url: report.url.clone(),
+        traits: report.traits,
     }
 }

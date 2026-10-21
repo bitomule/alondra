@@ -40,7 +40,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     items: vec![],
                     card_ids,
                     card_waits,
-                    more: None,
+                    more: None, style: None,
                 }],
                 (count == 0).then(|| Notice {
                     text: t!(
@@ -67,7 +67,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 items,
                 card_ids: vec![],
                 card_waits: vec![],
-                more: None,
+                more: None, style: None,
             }];
             sections.retain(|section| !section.items.is_empty());
             let detail = match roots.first() {
@@ -83,7 +83,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     items: vec![Item::Card(detail)],
                     card_ids: vec![],
                     card_waits: vec![],
-                    more: None,
+                    more: None, style: None,
                 });
             }
             (

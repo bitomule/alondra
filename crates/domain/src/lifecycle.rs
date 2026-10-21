@@ -312,6 +312,8 @@ pub enum Control {
     ReconnectMcp { server: String },
     /// Claude opens a sign-in to the MCP server; the user finishes it in a browser.
     StartMcpSignIn { server: String },
+    /// Claude forgets its stored sign-in to the MCP server, which it revokes.
+    ClearMcpSignIn { server: String },
 }
 
 /// What an SDK decision of the execution is answered with. Nothing is granted by default: a

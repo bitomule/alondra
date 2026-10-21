@@ -214,6 +214,17 @@ pub struct Section {
     pub card_waits: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub more: Option<More>,
+    /// How a client lays its rows out; without one, as each screen lays them out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<SectionStyle>,
+}
+/// A section of rows a client lays out as a settings list: each row a status symbol in its first
+/// label's tone, the label as a chip, its subtitle, its first action as a button and the rest in a
+/// menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionStyle {
+    List,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct More {

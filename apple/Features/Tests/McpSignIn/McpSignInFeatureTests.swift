@@ -126,6 +126,37 @@ final class McpSignInFeatureTests: XCTestCase {
         XCTAssertEqual(dismissed.value, 1)
     }
 
+    /// A server of the MCP servers screen: the sheet closes once no row of it offers Connect.
+    @MainActor
+    func testASheetOpenedFromTheServersScreenClosesOnceTheServerNeedsNoSignIn() async throws {
+        let servers = try Fixtures.document("mcp-servers-ios")
+        let rows = servers.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in
+            if case .row(let row) = item { row } else { nil }
+        }
+        let target = { (title: String) in try XCTUnwrap(rows.first { $0.title == title }?.id) }
+        for (title, closes) in [("linear", false), ("claude.ai Gmail", true)] {
+            let dismissed = LockIsolated(0)
+            let observed = LockIsolated<[String]>([])
+            let card = try target(title)
+            let store = TestStore(initialState: McpSignInFeature.State(card: card, server: title)) { McpSignInFeature() } withDependencies: {
+                $0.mcpSignIn.connect = { _ in .connected }
+                $0.viewsClient.observe = { key in
+                    observed.withValue { $0.append(key.rawValue) }
+                    return AsyncThrowingStream { continuation in
+                        continuation.yield(.document(servers))
+                        continuation.finish()
+                    }
+                }
+                $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
+            }
+            store.exhaustivity = .off
+            await store.send(.appeared)
+            await store.finish()
+            XCTAssertEqual(observed.value, ["mcp_servers"], "the screen's server is watched on the screen, never as a card")
+            XCTAssertEqual(dismissed.value, closes ? 1 : 0, "\(title) closes the sheet only once no project needs its sign-in")
+        }
+    }
+
     func testTheDaemonsReplyOpensOnlyHttpsOrThisDevicesLocalhost() {
         let reply = { (object: [String: Any]) in McpSignInPage(daemonReply: try! JSONSerialization.data(withJSONObject: object)) }
         XCTAssertEqual(reply(["url": page.absoluteString, "returns_to_claude": true, "port": 53682]), .browser(url: page, port: 53682))

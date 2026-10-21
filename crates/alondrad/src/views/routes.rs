@@ -427,6 +427,7 @@ fn normalize_key(raw: &str) -> Option<String> {
             | "issue_picker"
             | "search"
             | "machine"
+            | "mcp_servers"
     ) {
         return Some(raw.into());
     }
@@ -496,6 +497,20 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_family_of_views_is_reached_by_a_device() {
+        let keys = ["home", "sidebar", "tasks", "fleet", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers",
+            "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "node:a-1", "schedule:s-1"];
+        for key in keys {
+            assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
+        }
+        let reached: std::collections::HashSet<_> = keys.into_iter().filter_map(alondra_core::views::Family::of).collect();
+        let unserved = [alondra_core::views::Family::Accounts];
+        let missing: Vec<_> = alondra_core::views::Family::ALL.iter().filter(|family| !reached.contains(family) && !unserved.contains(family)).collect();
+        assert!(missing.is_empty(), "a family no device can open: {missing:?}");
+        assert!(normalize_key("accounts").is_none(), "the accounts view is not served to devices yet; serve it and list it above");
+    }
 
     #[test]
     fn a_view_over_budget_leaves_out_its_last_cards_first() {

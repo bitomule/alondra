@@ -7,6 +7,7 @@ pub mod components;
 mod details;
 mod fleet;
 mod home;
+pub mod mcp_servers;
 pub mod id;
 pub mod live;
 pub mod resolves;
@@ -141,7 +142,7 @@ macro_rules! families {
     };
 }
 families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine, Accounts);
+    IssuePicker, Search, Machine, McpServers, Accounts);
 
 impl Family {
     /// The family a key belongs to, or none for a key no view answers.
@@ -181,6 +182,8 @@ impl Family {
             Family::Search
         } else if key == "machine" {
             Family::Machine
+        } else if key == mcp_servers::KEY {
+            Family::McpServers
         } else if key == "accounts" {
             Family::Accounts
         } else {
@@ -209,6 +212,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::IssuePicker => misc::issue_picker(key, &context)?,
         Family::Search => misc::search(key, &context)?,
         Family::Machine => misc::machine(&context),
+        Family::McpServers => mcp_servers::build(&context),
         Family::Accounts => accounts::list(&context),
     };
     view.version = version(&view);

@@ -43,6 +43,7 @@ fn capabilities() -> BTreeSet<Capability> {
         Capability::McpReconnect,
         Capability::McpSignIn,
         Capability::ForceStop,
+        Capability::McpClearAuth,
     ])
 }
 
