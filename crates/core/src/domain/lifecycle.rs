@@ -601,8 +601,8 @@ fn epoch_of(task: &TaskId, lifecycle: &TaskLifecycle, id: &str) -> Result<u64> {
 
 /// The aggregate a journal yields. A record the aggregate refuses makes the whole journal
 /// unreadable: nothing repairs it from the DTO.
-pub fn replay(task: &TaskId, journal: &[LifecycleRecord]) -> Result<TaskLifecycle> {
-    let mut records = journal.iter();
+pub fn replay<'a>(task: &TaskId, journal: impl IntoIterator<Item = &'a LifecycleRecord>) -> Result<TaskLifecycle> {
+    let mut records = journal.into_iter();
     let Some(LifecycleRecord::Planned { input }) = records.next() else {
         return Err(corrupt(task, "it does not start with the planned record"));
     };
@@ -649,27 +649,45 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
 
 /// The store's writes for a task's journal from record `from` on. The first record creates the
 /// task with its initial input and has no event.
-pub fn journal_writes(task: &TaskId, journal: &[LifecycleRecord], from: usize) -> Result<Vec<JournalWrite>> {
-    let mut records = journal.iter();
-    let Some(LifecycleRecord::Planned { input }) = records.next() else {
-        return Err(corrupt(task, "it does not start with the planned record"));
-    };
-    let mut lifecycle = TaskLifecycle::planned(task.clone(), input_id(task, input)?).map_err(|r| corrupt(task, format!("{r:?}")))?;
-    let mut writes = vec![];
+pub fn journal_writes<'a>(task: &TaskId, journal: impl IntoIterator<Item = &'a LifecycleRecord>, from: usize) -> Result<Vec<JournalWrite>> {
+    let mut records = journal.into_iter();
     if from == 0 {
-        writes.push(JournalWrite { revision: 0, event: None, input: Some(input_id(task, input)?), text: None });
+        return journal_writes_after(task, None, records);
     }
-    for (n, record) in records.enumerate() {
-        let event = event(task, record, &lifecycle)?;
-        let revision = lifecycle.revision();
-        if n + 1 >= from {
-            let (input, text) = match introduced(record) {
-                Some((input, text)) => (Some(input_id(task, input)?), text.map(str::to_owned)),
-                None => (None, None),
+    let known = replay(task, records.by_ref().take(from))?;
+    journal_writes_after(task, Some(&known), records)
+}
+
+/// The store's writes for `records`, the ones a journal adds after the lifecycle `known` its
+/// earlier records lead to; with no `known`, `records` is the whole journal. Only `records` are
+/// applied.
+pub fn journal_writes_after<'a>(task: &TaskId, known: Option<&TaskLifecycle>, records: impl IntoIterator<Item = &'a LifecycleRecord>) -> Result<Vec<JournalWrite>> {
+    let mut records = records.into_iter();
+    let mut writes = vec![];
+    let planned;
+    let base = match known {
+        Some(known) => known,
+        None => {
+            let Some(LifecycleRecord::Planned { input }) = records.next() else {
+                return Err(corrupt(task, "it does not start with the planned record"));
             };
-            writes.push(JournalWrite { revision, event: Some(event.clone()), input, text });
+            planned = TaskLifecycle::planned(task.clone(), input_id(task, input)?).map_err(|r| corrupt(task, format!("{r:?}")))?;
+            writes.push(JournalWrite { revision: 0, event: None, input: Some(input_id(task, input)?), text: None });
+            &planned
         }
-        lifecycle.apply(revision, event).map_err(|refusal| corrupt(task, format!("record {} {record:?} refused: {refusal:?}", n + 1)))?;
+    };
+    let mut lifecycle: Option<TaskLifecycle> = None;
+    for record in records {
+        let current = lifecycle.as_ref().unwrap_or(base);
+        let event = event(task, record, current)?;
+        let revision = current.revision();
+        let (input, text) = match introduced(record) {
+            Some((input, text)) => (Some(input_id(task, input)?), text.map(str::to_owned)),
+            None => (None, None),
+        };
+        writes.push(JournalWrite { revision, event: Some(event.clone()), input, text });
+        let next = current.advanced(revision, event).map_err(|refusal| corrupt(task, format!("record {} {record:?} refused: {refusal:?}", revision + 1)))?;
+        lifecycle = Some(next);
     }
     Ok(writes)
 }
@@ -1047,7 +1065,7 @@ impl DomainState {
     /// is read from it and every task is checked against it, as `read_endings` and
     /// `validate_journal` do, without replaying any journal again. The lifecycles are kept for
     /// `validate_loaded`.
-    pub fn load_journal(&mut self, journals: impl IntoIterator<Item = (TaskId, Vec<LifecycleRecord>, TaskLifecycle)>) -> Result<Lifecycles> {
+    pub fn load_journal<R: Into<Journal>>(&mut self, journals: impl IntoIterator<Item = (TaskId, R, TaskLifecycle)>) -> Result<Lifecycles> {
         let mut lifecycles = Lifecycles::new();
         for (task, records, lifecycle) in journals {
             self.lifecycle_journal.insert(task.clone(), records);
@@ -1345,7 +1363,7 @@ impl DomainState {
         let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let available = lifecycle.resource() == Some(ResourceEvidence::Available);
-        let looped = resumes && resumed_without_progress(&self.lifecycle_journal[task]);
+        let looped = resumes && resumed_without_progress(self.lifecycle_journal[task].iter());
         let after_merge = self.work_after_merge(task, lifecycle);
         let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction);
         let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
@@ -1401,7 +1419,7 @@ impl DomainState {
         }
         let journal = &self.lifecycle_journal[task];
         let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
-        if resumes && !resumed_without_progress(&journal[..before_end]) {
+        if resumes && !resumed_without_progress(journal.iter().take(before_end)) {
             let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(format!("{RESENT_NOTE}\n\n{text}")) };
             return self.decide(lifecycles, task, record);
         }
@@ -1977,7 +1995,7 @@ enum TurnEnd<'a> {
 }
 
 /// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
-fn interrupted(journal: &[LifecycleRecord], turn: &str) -> bool {
+fn interrupted(journal: &Journal, turn: &str) -> bool {
     journal.iter().rev()
         .take_while(|record| !matches!(record, LifecycleRecord::TurnStarted { turn: started, .. } | LifecycleRecord::TurnResumed { turn: started, .. } | LifecycleRecord::TurnUnprompted { turn: started } if started == turn))
         .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: Some(stopped) }, .. } if stopped == turn))
@@ -2047,9 +2065,8 @@ fn handoff_doubt_card_id(task: &TaskId, generation: u64, input: &str) -> Interac
 /// Whether Alondra already resumed the task's session by itself after its host ended, and no turn
 /// of it has ended since: resuming it once more would only end the same way. Read from the
 /// journal's facts.
-fn resumed_without_progress(journal: &[LifecycleRecord]) -> bool {
+fn resumed_without_progress<'a>(journal: impl DoubleEndedIterator<Item = &'a LifecycleRecord>) -> bool {
     journal
-        .iter()
         .rev()
         .find_map(|record| match record {
             LifecycleRecord::TurnEnded { .. } => Some(false),

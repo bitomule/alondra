@@ -1905,7 +1905,7 @@ impl DomainState {
     /// deliveries, PR, authorizations, stack readiness, reviews or linked
     /// document versions differ in `next`. Information neither blocks nor dates
     /// a decision (R07), so it never moves a Task's revision.
-    fn touched_tasks(&self, next: &DomainState) -> BTreeSet<TaskId> {
+    pub(super) fn touched_tasks(&self, next: &DomainState) -> BTreeSet<TaskId> {
         let mut touched = BTreeSet::new();
         for (id, task) in &next.tasks {
             if self.tasks.get(id) != Some(task) {
@@ -1942,11 +1942,7 @@ impl DomainState {
                 touched.insert(review.task_id.clone());
             }
         }
-        for (id, journal) in &next.lifecycle_journal {
-            if self.lifecycle_journal.get(id) != Some(journal) {
-                touched.insert(id.clone());
-            }
-        }
+        touched.extend(self.lifecycle_journal.grown(&next.lifecycle_journal).map(|(id, _)| id.clone()));
         for (id, review) in &next.plan_reviews {
             let before = self.plan_reviews.get(id);
             touched.extend(review.dependents.iter()

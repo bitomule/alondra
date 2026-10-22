@@ -63,7 +63,7 @@ fn deliver(s: &mut DomainState, task: &str, agent: &str, id: &str) {
 }
 
 /// The texts the store keeps for a journal's inputs.
-fn writes_texts(id: &TaskId, records: &[LifecycleRecord]) -> BTreeMap<alondra_domain::InputId, String> {
+fn writes_texts(id: &TaskId, records: &Journal) -> BTreeMap<alondra_domain::InputId, String> {
     journal_writes(id, records, 0).unwrap().into_iter()
         .filter_map(|write| Some((write.input?, write.text?)))
         .collect()

@@ -139,6 +139,7 @@ dependencies = [
  "alondra-foundation",
  "libc",
  "proptest",
+ "rpds",
  "serde",
  "serde_json",
  "sha2 0.10.9",

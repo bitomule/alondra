@@ -110,7 +110,7 @@ impl ClaudeHold {
 }
 
 /// A task's last pause (true) or resume (false) on a Claude hold, and whether a turn ended after it.
-fn last_hold(journal: &[LifecycleRecord]) -> Option<(&InteractionId, bool, bool)> {
+fn last_hold(journal: &Journal) -> Option<(&InteractionId, bool, bool)> {
     let mut ended_since = false;
     for record in journal.iter().rev() {
         match record {

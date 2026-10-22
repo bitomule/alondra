@@ -1,4 +1,4 @@
-use super::{Checklist, ChecklistMark, LifecycleCache, LifecycleRecord, NodeMcp, ScheduleState, TaskEnding};
+use super::{Checklist, ChecklistMark, Journals, LifecycleCache, NodeMcp, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1088,8 +1088,8 @@ pub struct DomainState {
     /// The decisions that moved each Task's lifecycle, in order, for the Tasks created since the
     /// journal exists. Replaying them is the only way to its lifecycle; the Task's state, node and
     /// start are read from that replay.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub lifecycle_journal: BTreeMap<TaskId, Vec<LifecycleRecord>>,
+    #[serde(default, skip_serializing_if = "Journals::is_empty")]
+    pub lifecycle_journal: Journals,
     #[serde(skip)]
     pub(super) lifecycles: LifecycleCache,
     /// The MCP servers each node's current SDK execution reported, and the sign-ins it opened.
@@ -1129,7 +1129,7 @@ impl DomainState {
             last_words: BTreeMap::new(),
             request_plans: BTreeMap::new(),
             plan_reviews: BTreeMap::new(),
-            lifecycle_journal: BTreeMap::new(),
+            lifecycle_journal: Journals::new(),
             lifecycles: LifecycleCache::default(),
             mcp: BTreeMap::new(),
             accounts: Vec::new(),

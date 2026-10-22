@@ -6,6 +6,7 @@ mod command;
 mod model;
 mod api_failure;
 mod claude_access;
+mod journal;
 mod lifecycle;
 mod node_machine;
 mod ownership;
@@ -53,6 +54,8 @@ mod lifecycle_tests;
 #[cfg(test)]
 mod lifecycle_cache_tests;
 #[cfg(test)]
+mod journal_tests;
+#[cfg(test)]
 pub(crate) mod mcp_wait_tests;
 #[cfg(test)]
 mod decision_tests;
@@ -67,6 +70,7 @@ pub use command::*;
 pub use model::*;
 pub use api_failure::*;
 pub use claude_access::*;
+pub use journal::*;
 pub use lifecycle::*;
 pub use node_machine::*;
 pub use ownership::*;

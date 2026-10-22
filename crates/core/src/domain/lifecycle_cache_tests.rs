@@ -11,7 +11,7 @@ const TASKS: [&str; 2] = ["a-task", "b-task"];
 const SDK: &str = "s-task";
 
 #[derive(Clone, Debug)]
-enum Step {
+pub(super) enum Step {
     Start(usize),
     Ask(usize),
     Answer(usize),
@@ -27,7 +27,7 @@ enum Step {
     Stale,
 }
 
-fn step() -> impl Strategy<Value = Step> {
+pub(super) fn step() -> impl Strategy<Value = Step> {
     let any_task = 0..TASKS.len() + 1;
     prop_oneof![
         any_task.clone().prop_map(Step::Start),
@@ -47,7 +47,7 @@ fn step() -> impl Strategy<Value = Step> {
 }
 
 /// Two `claude --bg` tasks with their nodes and one task whose SDK execution runs a turn.
-fn fleet() -> DomainState {
+pub(super) fn fleet() -> DomainState {
     let mut s = world();
     task(&mut s, TASKS[0], Some("a"));
     task(&mut s, TASKS[1], Some("b"));
@@ -76,7 +76,7 @@ fn last_delivery(s: &DomainState, task: &str) -> Option<InteractionId> {
     s.interactions.values().filter(|i| i.id.0.starts_with(&format!("delivery-{task}-"))).max_by_key(|i| i.order).map(|i| i.id.clone())
 }
 
-fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandOutcome, DomainError> {
+pub(super) fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandOutcome, DomainError> {
     let options = || vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
     match *step {
         Step::Start(at) => exec(s, node(of(at).1), Command::StartTask { task_id: of(at).0.into() }),

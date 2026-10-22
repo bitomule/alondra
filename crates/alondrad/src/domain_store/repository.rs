@@ -685,9 +685,11 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("node's last words", &before.last_words, &after.last_words)?;
     kept("approved plan request", &before.request_plans, &after.request_plans)?;
     kept("plan review", &before.plan_reviews, &after.plan_reviews)?;
-    kept("lifecycle journal", &before.lifecycle_journal, &after.lifecycle_journal)?;
+    if let Some(lost) = before.lifecycle_journal.keys().find(|task| !after.lifecycle_journal.contains_key(task)) {
+        anyhow::bail!("domain persistence cannot remove lifecycle journal {lost:?}");
+    }
     for (task, journal) in &before.lifecycle_journal {
-        ensure!(after.lifecycle_journal[task].starts_with(journal), "the lifecycle journal of task {task} is append-only");
+        ensure!(after.lifecycle_journal[task].len() >= journal.len(), "the lifecycle journal of task {task} is append-only");
     }
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
@@ -862,9 +864,10 @@ pub(super) fn save_changes(
     for (id, review) in after.plan_reviews.iter().filter(|(id, r)| before.plan_reviews.get(*id) != Some(*r)) {
         upsert(c, "plan_reviews", &["interaction_id"], object(&json!({"interaction_id": id, "review": review}))?)?;
     }
-    for (task, records) in after.lifecycle_journal.iter().filter(|(id, j)| before.lifecycle_journal.get(*id) != Some(*j)) {
-        let known = before.lifecycle_journal.get(task).map_or(0, Vec::len);
-        save_journal(journal, task, records, known)?;
+    for (task, records) in before.lifecycle_journal.grown(&after.lifecycle_journal) {
+        let known = before.lifecycle_journal.records(task);
+        let lifecycle = if known == 0 { None } else { Some(before.lifecycle_of(task)?) };
+        save_new_records(journal, task, lifecycle.as_deref(), records.since(known))?;
     }
     for (i, prior) in interactions.iter().filter(|(_, prior)| prior.is_some()) {
         upsert(c, "interactions", &["id"], interaction_row(i)?)?;
@@ -894,13 +897,28 @@ pub(super) fn save_changes(
 /// it replays the task and checks each event before keeping it. What a user tells an SDK
 /// execution, and each decision Claude waits on, leaves with its dispatch or response prepared in
 /// the same transaction, for its owner to claim.
-pub(super) fn save_journal(
+pub(super) fn save_journal<'a>(
     journal: &mut alondra_store::LifecycleTransaction<'_>,
     task: &TaskId,
-    records: &[LifecycleRecord],
+    records: impl IntoIterator<Item = &'a LifecycleRecord>,
     known: usize,
 ) -> Result<()> {
-    for write in journal_writes(task, records, known)? {
+    save_writes(journal, task, journal_writes(task, records, known)?)
+}
+
+/// `save_journal` for the records a task's journal adds after the lifecycle `known` its earlier
+/// records lead to: only the new records are replayed.
+pub(super) fn save_new_records<'a>(
+    journal: &mut alondra_store::LifecycleTransaction<'_>,
+    task: &TaskId,
+    known: Option<&alondra_domain::TaskLifecycle>,
+    records: impl IntoIterator<Item = &'a LifecycleRecord>,
+) -> Result<()> {
+    save_writes(journal, task, journal_writes_after(task, known, records)?)
+}
+
+fn save_writes(journal: &mut alondra_store::LifecycleTransaction<'_>, task: &TaskId, writes: Vec<JournalWrite>) -> Result<()> {
+    for write in writes {
         match write.event {
             None => journal.create_without_text(task, write.input.context("a new journal names its initial input")?)?,
             Some(event) => {
