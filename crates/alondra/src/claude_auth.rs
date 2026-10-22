@@ -56,14 +56,24 @@ pub(crate) fn effective_username() -> Result<String> {
     Ok(name.to_owned())
 }
 
+/// The Claude profile the installed daemon runs its nodes' default account with, read from its
+/// launchd job: `None` for Claude's default profile, or with no daemon installed.
+pub fn installed_profile(user_home: &Path) -> Option<PathBuf> {
+    let label = alondra_core::config::Config::load().map(|c| c.service_label).unwrap_or_else(|_| alondra_core::config::Config::defaults().service_label);
+    let job = crate::setup::read_plist(&user_home.join("Library/LaunchAgents").join(format!("{label}.plist"))).ok()?;
+    job_profile(&job)
+}
+
+/// The profile a launchd job's environment names, as the daemon reads its own.
+pub(crate) fn job_profile(job: &serde_json::Value) -> Option<PathBuf> {
+    let vars = job.get("EnvironmentVariables")?;
+    alondra_core::claude_account::configured_profile(&|key| vars.get(key)?.as_str().map(str::to_owned))
+}
+
 impl ContextEnv {
     pub fn for_setup(home: &Path, bin: &Path) -> Self {
-        let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
-            .or_else(|_| std::env::var("CLAUDE_HOME"))
-            .ok()
-            .filter(|p| !p.is_empty())
+        let config_dir = alondra_core::claude_account::configured_profile(&|key| std::env::var(key).ok())
             .map(|p| {
-                let p = PathBuf::from(p);
                 if p.is_absolute() {
                     p
                 } else {
@@ -97,10 +107,8 @@ impl ContextEnv {
                 .get("PATH")
                 .context("daemon plist has no PATH; run alondra doctor --fix")?
                 .clone(),
-            config_dir: vars
-                .get("CLAUDE_CONFIG_DIR")
-                .or_else(|| vars.get("CLAUDE_HOME"))
-                .cloned(),
+            config_dir: alondra_core::claude_account::configured_profile(&|key| vars.get(key).cloned())
+                .map(|p| p.to_string_lossy().into_owned()),
         })
     }
 
@@ -412,5 +420,24 @@ fi
         assert_eq!(context.home, Path::new("/Users/other"));
         assert_eq!(context.config_dir.as_deref(), Some("/Users/other/custom"));
         assert_eq!(context.path, "/opt/homebrew/bin");
+    }
+
+    // The daemon's nodes run with `claude_account::configured_profile` of this same environment:
+    // setup and doctor check the sign-in of exactly that profile.
+    #[test]
+    fn setup_and_doctor_check_the_profile_the_daemons_nodes_run_with() {
+        let job = |vars: &[(&str, &str)]| {
+            let vars: BTreeMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).chain([("PATH".into(), "/bin".into())]).collect();
+            let nodes = alondra_core::claude_account::configured_profile(&|key| vars.get(key).cloned());
+            let checked = ContextEnv::from_environment(Path::new("/Users/ana"), &vars).unwrap().config_dir.map(PathBuf::from);
+            assert_eq!(job_profile(&serde_json::json!({"EnvironmentVariables": vars})), nodes, "{vars:?}");
+            assert_eq!(checked, nodes, "{vars:?}");
+            checked
+        };
+        assert_eq!(job(&[]), None);
+        assert_eq!(job(&[("CLAUDE_CONFIG_DIR", "")]), None);
+        let work = Some(PathBuf::from("/Users/ana/.claude-work"));
+        assert_eq!(job(&[("CLAUDE_CONFIG_DIR", "/Users/ana/.claude-work"), ("CLAUDE_HOME", "/Users/ana/.claude-work")]), work);
+        assert_eq!(job(&[("CLAUDE_HOME", "/Users/ana/.claude-work")]), work);
     }
 }

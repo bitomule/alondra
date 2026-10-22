@@ -129,6 +129,21 @@ fn each_account_is_seen_with_its_own_sign_in_email_and_plan() {
 }
 
 #[test]
+fn the_default_account_is_the_profile_the_daemon_was_set_up_with() {
+    let mut f = fixture();
+    let profile = f.user_home.join(".claude-work");
+    std::fs::create_dir_all(profile.join("skills")).unwrap();
+    f.claude.environment = BTreeMap::from([("CLAUDE_CONFIG_DIR".into(), profile.display().to_string())]);
+    let config = with(vec![work()]);
+    f.store(&config).unwrap();
+    let default = |f: &Fixture| observe(&f.home, Some(&f.claude), &config)[0].clone();
+    assert_eq!(default(&f).state, AccountState::SignedOut, "~/.claude's sign-in is not the one nodes run with");
+    std::fs::write(profile.join("signed-in"), "work-profile@example.org").unwrap();
+    assert_eq!(default(&f).email.as_deref(), Some("work-profile@example.org"));
+    assert_eq!(std::fs::read_link(f.home.join("accounts/work/skills")).unwrap(), profile.join("skills"), "an added account shares what that profile has");
+}
+
+#[test]
 fn an_account_is_checked_with_the_environment_its_nodes_run_claude_with() {
     let mut f = fixture();
     std::fs::remove_file(f.user_home.join(".claude/signed-in")).unwrap();

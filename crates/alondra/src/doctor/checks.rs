@@ -420,14 +420,14 @@ pub fn claude_version_check(out: Option<&str>) -> Outcome {
     }
 }
 
-/// The Claude profile the daemon runs with, shown without any account data.
+/// The Claude profile the daemon's nodes run with, shown without any account data.
 pub fn profile_check(profile: Result<Option<String>, String>, home: &Path) -> Outcome {
     match profile {
-        Ok(None) => outcome("claude.profile", "profile", Group::Claude, Status::Pass, tr!("Claude profile: default", "Perfil de Claude: por defecto"), None),
+        Ok(None) => outcome("claude.profile", "profile", Group::Claude, Status::Pass, tr!("Claude profile for nodes: default", "Perfil de Claude de los nodos: por defecto"), None),
         Ok(Some(dir)) => {
             let shown = Path::new(&dir).strip_prefix(home).map_or(dir.clone(), |rest| format!("~/{}", rest.display()));
             outcome("claude.profile", "profile", Group::Claude, Status::Pass,
-                trf!("Claude profile: {shown} (CLAUDE_CONFIG_DIR)", "Perfil de Claude: {shown} (CLAUDE_CONFIG_DIR)"), None)
+                trf!("Claude profile for nodes: {shown} (CLAUDE_CONFIG_DIR)", "Perfil de Claude de los nodos: {shown} (CLAUDE_CONFIG_DIR)"), None)
         }
         Err(e) => outcome("claude.profile", "profile", Group::Claude, Status::Fail, e,
             manual(tr!("give CLAUDE_CONFIG_DIR and CLAUDE_HOME the same folder, or unset one", "pon la misma carpeta en CLAUDE_CONFIG_DIR y CLAUDE_HOME, o quita una"))),

@@ -112,14 +112,9 @@ fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv 
     // A setup retry from another shell must not silently switch an installed Claude profile.
     if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() && std::env::var_os("CLAUDE_HOME").is_none() {
         context.config_dir = read_plist(&paths.plist(label)).ok()
-            .and_then(|v| persisted_claude_profile(&v, &paths.home));
+            .and_then(|v| crate::claude_auth::job_profile(&v)).map(|p| p.to_string_lossy().into_owned());
     }
     context
-}
-
-fn persisted_claude_profile(plist: &serde_json::Value, _home: &Path) -> Option<String> {
-    let vars = plist.get("EnvironmentVariables")?;
-    vars.get("CLAUDE_CONFIG_DIR").or_else(|| vars.get("CLAUDE_HOME"))?.as_str().map(str::to_owned)
 }
 
 fn legacy_default_profile(plist: &serde_json::Value, home: &Path) -> bool {

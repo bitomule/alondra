@@ -153,12 +153,13 @@ fn user_home() -> PathBuf {
     alondra_core::config::home_dir(&|key| std::env::var(key).ok())
 }
 
-/// Claude Code as this terminal runs it for the account: its own folder, or none for the default.
-fn claude_for(home: &Path, id: &AccountId) -> crate::claude_auth::ContextEnv {
+/// Claude Code as this terminal runs it for the account: with the profile the daemon's nodes run
+/// it with, `default_profile` being the default account's.
+fn claude_for(home: &Path, id: &AccountId, default_profile: Option<&Path>) -> crate::claude_auth::ContextEnv {
     crate::claude_auth::ContextEnv {
         home: user_home(),
         path: std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
-        config_dir: alondra_core::accounts::folder(home, id).map(|folder| folder.to_string_lossy().into_owned()),
+        config_dir: alondra_core::claude_account::profile(home, id, default_profile).map(|folder| folder.to_string_lossy().into_owned()),
     }
 }
 
@@ -166,11 +167,12 @@ fn claude_for(home: &Path, id: &AccountId) -> crate::claude_auth::ContextEnv {
 /// refused.
 fn sign_in(client: &Client, id: &AccountId) -> Result<Listing> {
     let home = client::config().home.clone();
+    let profile = crate::claude_auth::installed_profile(&user_home());
     if !id.is_default() {
-        alondra_core::claude_account::prepare(&home, id, &alondra_core::claude_account::default_folder(&user_home()))
+        alondra_core::claude_account::prepare(&home, id, &alondra_core::claude_account::config_folder(profile.as_deref(), &user_home()))
             .context(tr!("The account's folder could not be prepared", "No se pudo preparar la carpeta de la cuenta"))?;
     }
-    claude_for(&home, id).sign_in()?;
+    claude_for(&home, id, profile.as_deref()).sign_in()?;
     let listing = check(client)?;
     let row = listing.accounts.iter().find(|row| &row.id == id).context("the account is gone")?;
     if row.state != AccountState::SignedIn {
@@ -231,7 +233,7 @@ pub fn login(name: &str, no_input: bool) -> Result<()> {
         let (other, name) = (shown_name(other), shown_name(&row));
         if !row.id.is_default() {
             let home = client::config().home.clone();
-            claude_for(&home, &row.id).sign_out()?;
+            claude_for(&home, &row.id, None).sign_out()?;
             check(&client)?;
         }
         bail!(trf!(

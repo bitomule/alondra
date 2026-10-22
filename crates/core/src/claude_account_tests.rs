@@ -111,3 +111,30 @@ fn a_claude_that_does_not_answer_is_stopped() {
     command.current_dir(scratch.join("bin"));
     assert!(output(command, Duration::from_millis(100)).unwrap_err().contains("did not answer"));
 }
+
+#[test]
+fn the_profile_an_environment_names_is_claude_config_dir_else_claude_home_else_none() {
+    let of = |pairs: &[(&str, &str)]| {
+        let pairs: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        configured_profile(&|key: &str| pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()))
+    };
+    assert_eq!(of(&[]), None);
+    assert_eq!(of(&[("CLAUDE_CONFIG_DIR", " ")]), None, "an empty variable is Claude's default profile");
+    assert_eq!(of(&[("CLAUDE_CONFIG_DIR", "/u/.claude-work"), ("CLAUDE_HOME", "/u/.claude-work")]), Some(PathBuf::from("/u/.claude-work")));
+    assert_eq!(of(&[("CLAUDE_HOME", "/u/.claude-work")]), Some(PathBuf::from("/u/.claude-work")));
+}
+
+#[test]
+fn the_default_account_runs_with_the_configured_profile_and_an_added_one_with_its_own_folder() {
+    let home = Path::new("/u/.alondra");
+    let user_home = Path::new("/u");
+    let work = AccountId::parse("work").unwrap();
+    let explicit = Path::new("/u/.claude-work");
+    assert_eq!(profile(home, &AccountId::default_account(), None), None);
+    assert_eq!(profile(home, &AccountId::default_account(), Some(explicit)).as_deref(), Some(explicit));
+    assert_eq!(profile(home, &work, Some(explicit)), Some(home.join("accounts/work")));
+    assert_eq!(config_folder(None, user_home), PathBuf::from("/u/.claude"));
+    assert_eq!(config_folder(Some(explicit), user_home), explicit);
+    assert_eq!(settings_file(None, user_home), PathBuf::from("/u/.claude.json"));
+    assert_eq!(settings_file(Some(explicit), user_home), PathBuf::from("/u/.claude-work/.claude.json"));
+}

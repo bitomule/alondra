@@ -2,8 +2,9 @@
 //! environments they get. A release runs the host it installed beside its binaries with the
 //! Claude Code the user installed; a configuration file in the home replaces both (a sandbox, the
 //! upgrade rehearsal). Outside a sandbox the native Claude runs as the user's own: in their real
-//! HOME and with their default profile, so it signs in as the user does; Seatbelt confinement
-//! stays optional.
+//! HOME and with the Claude profile the daemon was set up with (`claude_account::configured_profile`),
+//! so it signs in as the user does and as setup and doctor check; Seatbelt confinement stays
+//! optional.
 use alondra_core::accounts::AccountId;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ pub(crate) const FILE: &str = "sdk-backend.json";
 /// The release's host: one executable, Node and the bundle together, in `libexec/alondra/sdk`.
 pub(crate) const HOST: &str = "alondra-host";
 /// Setting either selects another credential namespace than the user's default profile, even when
-/// it names the default folder.
+/// it names the default folder: they come only from the profile the daemon was set up with.
 const DEFAULT_PROFILE: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"];
 /// The host's socket is `<state root>/<execution UUID>/s`, and a Unix socket path holds 103 bytes.
 const SOCKET_PATH_LIMIT: usize = 103;
@@ -75,6 +76,11 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     native_environment.insert("HOME".into(), user_home.display().to_string());
+    if let Some(profile) = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned()) {
+        for key in DEFAULT_PROFILE {
+            native_environment.insert(key.into(), profile.display().to_string());
+        }
+    }
     let state_root = home.join("sdk");
     ensure!(state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT,
         "{} is too long a path for the Agent SDK host's socket: move ALONDRA_HOME to a shorter one", state_root.display());
@@ -154,8 +160,8 @@ impl SdkBackend {
 }
 
 impl SdkBackend {
-    /// The backend an execution on `account` runs with. The default account is the user's own
-    /// profile, with no `CLAUDE_CONFIG_DIR`; any other runs Claude with its folder inside
+    /// The backend an execution on `account` runs with. The default account runs with the profile
+    /// the daemon was set up with, none for Claude's default one; any other runs Claude with its folder inside
     /// `home`, which Alondra made when the user added it. An account `registered` does not name,
     /// or whose folder is missing or a link, is refused: no other folder is ever handed to Claude.
     pub(crate) fn for_account(&self, home: &Path, account: &AccountId, registered: &[AccountId]) -> Result<SdkBackend> {
@@ -167,7 +173,9 @@ impl SdkBackend {
         let meta = std::fs::symlink_metadata(&folder).with_context(|| format!("the folder of the Claude account {account} is missing"))?;
         ensure!(meta.is_dir(), "the folder of the Claude account {account} is not a folder Alondra made");
         let mut backend = self.clone();
-        backend.native_environment.insert(DEFAULT_PROFILE[0].into(), folder.display().to_string());
+        for key in DEFAULT_PROFILE {
+            backend.native_environment.insert(key.into(), folder.display().to_string());
+        }
         Ok(backend)
     }
 }
@@ -329,8 +337,7 @@ mod tests {
         let (daemon, tools) = release(&root, "2.1.300");
         let environment = BTreeMap::from([
             ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display())), ("LANG".to_owned(), "es_ES.UTF-8".to_owned()),
-            ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDE_CONFIG_DIR".to_owned(), user.join(".claude").display().to_string()),
-            ("CLAUDECODE".to_owned(), "1".to_owned()),
+            ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDECODE".to_owned(), "1".to_owned()),
         ]);
         let backend = resolve(&home, false, &user, &daemon, &environment).expect("a release runs the host it installed");
         let host = root.join("opt/alondra/libexec/alondra/sdk").join(HOST);
@@ -344,13 +351,47 @@ mod tests {
         assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
         assert_eq!(started.native_environment.get("HOME").map(String::as_str), Some(user.to_str().unwrap()));
         assert_eq!(started.native_environment.get("LANG").map(String::as_str), Some("es_ES.UTF-8"), "the user's environment");
-        for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDECODE"] {
+        for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CLAUDECODE"] {
             assert!(!started.native_environment.contains_key(private), "{private} is not the user's Claude's");
         }
         claude_code(&tools, "2.1.301");
         let updated = backend.for_start().unwrap();
         assert_ne!(updated.native_sha256, started.native_sha256, "Claude Code updated itself: the next host takes the new one");
         assert_ne!(updated.configuration_digest(), started.configuration_digest(), "and binds its executions to it");
+    }
+
+    // Setup and doctor check the sign-in of the profile in the daemon's environment: nodes run with
+    // that same one, also when it names the default folder, whose sign-in is another one.
+    #[test]
+    fn nodes_run_with_the_claude_profile_the_daemon_was_set_up_with() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let user = root.join("user");
+        let (daemon, tools) = release(&root, "2.1.300");
+        let path = ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()));
+        let work = user.join(".claude-work").display().to_string();
+        for set_up in [
+            BTreeMap::from([path.clone(), ("CLAUDE_CONFIG_DIR".to_owned(), work.clone()), ("CLAUDE_HOME".to_owned(), work.clone())]),
+            BTreeMap::from([path.clone(), ("CLAUDE_CONFIG_DIR".to_owned(), work.clone())]),
+            BTreeMap::from([path.clone(), ("CLAUDE_HOME".to_owned(), work.clone())]),
+        ] {
+            let started = resolve(&home, false, &user, &daemon, &set_up).unwrap().for_start().unwrap();
+            for key in DEFAULT_PROFILE {
+                assert_eq!(started.native_environment.get(key), Some(&work), "{key} with {set_up:?}");
+            }
+        }
+        let default = resolve(&home, false, &user, &daemon, &BTreeMap::from([path])).unwrap().for_start().unwrap();
+        for key in DEFAULT_PROFILE {
+            assert!(!default.native_environment.contains_key(key), "no profile set up: Claude's default one, without {key}");
+        }
+        let (account, registered) = (AccountId::parse("other").unwrap(), [AccountId::default_account(), AccountId::parse("other").unwrap()]);
+        std::fs::create_dir_all(home.join("accounts/other")).unwrap();
+        let explicit = resolve(&home, false, &user, &daemon, &BTreeMap::from([("CLAUDE_CONFIG_DIR".to_owned(), work.clone())])).unwrap();
+        let other = explicit.for_account(&home, &account, &registered).unwrap();
+        for key in DEFAULT_PROFILE {
+            assert_eq!(other.native_environment.get(key).map(String::as_str), home.join("accounts/other").to_str(), "an added account runs only on its folder");
+        }
     }
 
     #[test]

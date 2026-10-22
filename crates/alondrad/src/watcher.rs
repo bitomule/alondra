@@ -6,9 +6,13 @@ use std::path::PathBuf;
 
 #[cfg(not(test))]
 pub fn claude_home() -> PathBuf {
-    std::env::var("CLAUDE_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
-    })
+    claude_home_in(&|key: &str| std::env::var(key).ok())
+}
+
+/// The Claude folder of the profile the daemon's nodes run with by default.
+fn claude_home_in(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
+    use alondra_core::claude_account::{config_folder, configured_profile};
+    config_folder(configured_profile(env).as_deref(), &alondra_core::config::home_dir(env))
 }
 
 /// A unit test never reads the Mac's own Claude home: it gets the one it set on its thread with
@@ -51,6 +55,17 @@ pub(crate) fn parse_rfc3339_millis(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_claude_home_is_the_folder_of_the_profile_nodes_run_with() {
+        let set_up = |profile: Option<&'static str>| move |key: &str| match key {
+            "HOME" => Some("/Users/ana".to_owned()),
+            "CLAUDE_CONFIG_DIR" => profile.map(str::to_owned),
+            _ => None,
+        };
+        assert_eq!(claude_home_in(&set_up(None)), PathBuf::from("/Users/ana/.claude"));
+        assert_eq!(claude_home_in(&set_up(Some("/Users/ana/.claude-work"))), PathBuf::from("/Users/ana/.claude-work"));
+    }
 
     #[test]
     fn parses_claude_timestamps() {

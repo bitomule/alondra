@@ -25,6 +25,30 @@ pub fn default_folder(user_home: &Path) -> PathBuf {
     user_home.join(".claude")
 }
 
+/// The Claude profile an environment names: `CLAUDE_CONFIG_DIR`, else `CLAUDE_HOME`; `None` is
+/// Claude's own default profile. The daemon's environment names the default account's profile:
+/// the one the user set Alondra up with, which nodes, setup, doctor, trust and the watcher share.
+pub fn configured_profile(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"].into_iter().find_map(|key| env(key).filter(|value| !value.trim().is_empty())).map(PathBuf::from)
+}
+
+/// The `CLAUDE_CONFIG_DIR` Claude runs with for `account`: the folder Alondra keeps for an added
+/// account, `default_profile` for the default one.
+pub fn profile(home: &Path, account: &AccountId, default_profile: Option<&Path>) -> Option<PathBuf> {
+    accounts::folder(home, account).or_else(|| default_profile.map(Path::to_path_buf))
+}
+
+/// The folder Claude keeps its jobs, sessions and plugins in for `profile`.
+pub fn config_folder(profile: Option<&Path>, user_home: &Path) -> PathBuf {
+    profile.map_or_else(|| default_folder(user_home), Path::to_path_buf)
+}
+
+/// The `.claude.json` Claude keeps its trust and account settings in for `profile`: inside the
+/// profile's folder, or in HOME for the default one.
+pub fn settings_file(profile: Option<&Path>, user_home: &Path) -> PathBuf {
+    profile.unwrap_or(user_home).join(".claude.json")
+}
+
 /// Creates the account's folder, private to the user, with a link to each of `SHARED` that
 /// `shared_from` has. A name already in the folder is left as it is, so running it again only
 /// adds what `shared_from` gained since.

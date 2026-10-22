@@ -46,6 +46,11 @@ impl Claude {
         Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
     }
 
+    /// The profile the default account runs with: the one the daemon was set up with.
+    fn default_profile(&self) -> Option<PathBuf> {
+        claude_account::configured_profile(&|key: &str| self.environment.get(key).cloned())
+    }
+
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
         claude_account::status(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
     }
@@ -91,7 +96,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
             let folder = alondra_core::accounts::folder(home, &account.id);
             let seen = match (claude, &folder) {
                 (_, Some(folder)) if !folder.is_dir() => Ok(claude_account::AuthStatus::default()),
-                (Some(claude), folder) => claude.status(folder.as_deref()),
+                (Some(claude), _) => claude.status(claude_account::profile(home, &account.id, claude.default_profile().as_deref()).as_deref()),
                 (None, _) => Err("no Claude Code to ask".to_owned()),
             };
             match seen {
@@ -297,7 +302,7 @@ pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen
     }
     let ids = |config: &AccountsConfig| -> Vec<AccountId> { config.listed(Provider::Claude).iter().map(|a| a.id.clone()).filter(|id| !id.is_default()).collect() };
     let (before, after) = (ids(&current), ids(next));
-    let shared = claude_account::default_folder(user_home);
+    let shared = claude_account::config_folder(claude.and_then(Claude::default_profile).as_deref(), user_home);
     for id in after.iter().filter(|id| !before.contains(id)) {
         claude_account::prepare(home, id, &shared).map_err(|e| Refused::Folder(e.to_string()))?;
     }

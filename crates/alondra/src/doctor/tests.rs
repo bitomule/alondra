@@ -390,8 +390,8 @@ fn claude_sign_in_is_a_question_and_the_profile_is_shown_without_account_data() 
     assert_eq!(instead, "claude auth login, then alondra doctor --fix");
     assert!(matches!(signin_check(Err(anyhow!("timed out"))).fix, Some(Fix::Manual(_))));
     let home = Path::new("/Users/ana");
-    assert_eq!(profile_check(Ok(None), home).detail, "Claude profile: default");
-    assert_eq!(profile_check(Ok(Some("/Users/ana/.claude-work".into())), home).detail, "Claude profile: ~/.claude-work (CLAUDE_CONFIG_DIR)");
+    assert_eq!(profile_check(Ok(None), home).detail, "Claude profile for nodes: default");
+    assert_eq!(profile_check(Ok(Some("/Users/ana/.claude-work".into())), home).detail, "Claude profile for nodes: ~/.claude-work (CLAUDE_CONFIG_DIR)");
     assert_eq!(profile_check(Err("disagree".into()), home).status, Status::Fail);
 }
 
@@ -896,7 +896,7 @@ fn the_wizard_asks_for_the_folder_and_the_relay_in_the_order_of_the_screens() {
     in_order(&ui.lines, &[
         "✓ This Mac: macOS 26.1 · Apple Silicon · Homebrew",
         "✓ Claude Code: 2.1.291",
-        "✓ Claude profile: default",
+        "✓ Claude profile for nodes: default",
         "✓ Claude Code sign-in: signed in",
         "select Projects folder — where your git repos live. You can change it later in the app.",
         "✓ Projects folder: ",

@@ -58,16 +58,19 @@ fn the_daemons_listing_is_read_with_the_file_section_as_it_is() {
 }
 
 #[test]
-fn claude_runs_for_an_account_with_its_folder_and_for_the_default_without_one() {
+fn claude_runs_for_an_account_with_its_folder_and_for_the_default_with_the_daemons_profile() {
     let scratch = Directory::new();
     let bin = scratch.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("claude"), "#!/bin/sh\nprintf '%s' \"${CLAUDE_CONFIG_DIR:-none}\" > \"$HOME/seen\"\n").unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o700)).unwrap();
     let home = scratch.join("alondra");
-    let work = claude_for(&home, &AccountId::parse("work").unwrap());
+    let explicit = scratch.join("user/.claude-work");
+    let work = claude_for(&home, &AccountId::parse("work").unwrap(), Some(&explicit));
     assert_eq!(work.config_dir.as_deref(), Some(home.join("accounts/work").to_str().unwrap()));
-    assert_eq!(claude_for(&home, &AccountId::default_account()).config_dir, None, "the default account never names a folder");
+    assert_eq!(claude_for(&home, &AccountId::default_account(), None).config_dir, None, "Claude's default profile names no folder");
+    assert_eq!(claude_for(&home, &AccountId::default_account(), Some(&explicit)).config_dir.as_deref(), explicit.to_str(),
+        "the default account signs in to the profile the daemon's nodes run with");
     let context = crate::claude_auth::ContextEnv { home: scratch.join("user"), path: bin.display().to_string(), config_dir: work.config_dir.clone() };
     std::fs::create_dir_all(&context.home).unwrap();
     context.sign_out().unwrap();

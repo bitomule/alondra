@@ -53,9 +53,13 @@ fn config_of(profile: Option<&Path>) -> Option<PathBuf> {
 
 #[cfg(not(test))]
 fn config_path() -> Option<PathBuf> {
-    let env = |key: &str| std::env::var(key).ok();
-    let dir = env("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from);
-    Some(dir.unwrap_or_else(|| alondra_core::config::home_dir(&env)).join(".claude.json"))
+    Some(config_in(&|key: &str| std::env::var(key).ok()))
+}
+
+/// The settings file of the profile the daemon's nodes run with by default.
+fn config_in(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
+    use alondra_core::claude_account::{configured_profile, settings_file};
+    settings_file(configured_profile(env).as_deref(), &alondra_core::config::home_dir(env))
 }
 
 #[cfg(test)]
@@ -221,6 +225,17 @@ pub fn instructions(repository: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_is_read_from_the_settings_of_the_profile_nodes_run_with() {
+        let set_up = |profile: Option<&'static str>| move |key: &str| match key {
+            "HOME" => Some("/Users/ana".to_owned()),
+            "CLAUDE_CONFIG_DIR" | "CLAUDE_HOME" => profile.map(str::to_owned),
+            _ => None,
+        };
+        assert_eq!(config_in(&set_up(None)), PathBuf::from("/Users/ana/.claude.json"));
+        assert_eq!(config_in(&set_up(Some("/Users/ana/.claude-work"))), PathBuf::from("/Users/ana/.claude-work/.claude.json"));
+    }
 
     struct Fixture {
         dir: crate::test_support::Directory,
