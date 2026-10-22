@@ -52,7 +52,7 @@ fn accepted(work_after_merge: bool) -> DomainState {
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
     if work_after_merge {
-        must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()) });
+        must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()), waits_for: vec![] });
     }
     must(&mut s, node(), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
@@ -107,7 +107,7 @@ fn apply(s: &mut DomainState, step: &Step, at: Millis) {
         }
         Step::WorkAfterMerge(declared) => {
             let reason = declared.then(|| "publish the release".to_owned());
-            let _ = exec(s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason });
+            let _ = exec(s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason, waits_for: vec![] });
         }
         Step::CleanedUp => {
             let _ = exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });

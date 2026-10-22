@@ -248,7 +248,7 @@ fn a_turn_of_the_work_after_the_merge_ends_without_a_card() {
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
-    must(&mut s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()) });
+    must(&mut s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()), waits_for: vec![] });
     must(&mut s, node("a"), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
         targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),

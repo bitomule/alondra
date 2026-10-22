@@ -1287,7 +1287,7 @@ impl DomainState {
         } else if waits_on(&Recipient::Orchestrator) {
             Some(RecordedWait::Orchestrator)
         } else if self.tasks.get(task).is_some_and(|t| !self.unmet_dependencies(t).is_empty()
-            || t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| dep.state == TaskState::Done && dep.revision > revision)) {
+            || t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| self.landed(dep) && dep.revision > revision)) {
             Some(RecordedWait::Tasks)
         } else {
             None
@@ -1809,13 +1809,36 @@ impl DomainState {
         Ok(())
     }
 
+    /// A task whose PR merged: its node still works on what comes after, or waits for what that
+    /// work needs from other Tasks, until its session is over.
+    fn after_merge_state(&self, t: &Task) -> TaskState {
+        if t.wrap_up.post_merge_work.is_none() || self.node_session_closed(t) {
+            TaskState::Closing
+        } else if self.waiting_after_merge(t).is_some() {
+            TaskState::WaitingDependency
+        } else {
+            TaskState::Running
+        }
+    }
+
+    /// Its PR merged and its node still works on what it declared comes after.
+    pub fn works_after_merge(&self, t: &Task) -> bool {
+        t.wrap_up.post_merge_work.is_some() && (t.ending == Some(TaskEnding::Completing) || self.finished(t))
+    }
+
+    /// The first Task a task's work after the merge still waits for: one that has not landed and
+    /// was not cancelled, since a cancelled one never will and its node decides how to go on.
+    pub fn waiting_after_merge(&self, t: &Task) -> Option<TaskId> {
+        t.dependencies.iter().find(|dep| self.tasks.get(*dep).is_some_and(|d| !self.landed(d) && !d.cancelled())).cloned()
+    }
+
     /// The state of a task within the phase its lifecycle materialized: what it waits for
     /// or who has to act. Never a phase change: no Done, Cancelled or Closing comes from here.
     pub(super) fn state_within_phase(&self, t: &Task) -> TaskState {
         match t.ending {
             Some(TaskEnding::Cancelling) => return TaskState::Closing,
             Some(TaskEnding::Completing) => {
-                return if t.wrap_up.post_merge_work.is_some() && !self.node_session_closed(t) { TaskState::Running } else { TaskState::Closing };
+                return self.after_merge_state(t);
             }
             None => {}
         }
@@ -1830,7 +1853,7 @@ impl DomainState {
             if (self.settled(t, p) || self.accepted(p)) && self.unanswered(&t.id) {
                 TaskState::NeedsYou
             } else if self.settled(t, p) {
-                if t.wrap_up.post_merge_work.is_some() && !self.node_session_closed(t) { TaskState::Running } else { TaskState::Closing }
+                self.after_merge_state(t)
             } else if self.accepted(p) {
                 TaskState::WaitingDependency
             } else if self.handed_back(p).is_some() || !t.blocks.is_empty() {

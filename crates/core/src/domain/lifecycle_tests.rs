@@ -1624,7 +1624,7 @@ fn working_after_the_merge(s: &mut DomainState) {
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
-    must(s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("release.sh publishes 0.3.0".into()) });
+    must(s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("release.sh publishes 0.3.0".into()), waits_for: vec![] });
     let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
     must(s, node("a"), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),

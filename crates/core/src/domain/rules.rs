@@ -307,11 +307,40 @@ post_merge_work with task_id {task} without reason, then remove what you generat
 the worktree (build caches, temporary files) with the project's own tools, never files or links inside the \
 worktree, and call cleanup_done with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
 }
+/// One Task a node waited on, as the node is told once the wait is over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub title: String,
+    pub cancelled: bool,
+    pub result: Option<String>,
+    pub merged_pr: Option<String>,
+}
+impl Landed {
+    fn describe(&self) -> String {
+        if self.cancelled {
+            return format!("### “{}”\nIt was cancelled: nothing of it landed.", self.title);
+        }
+        let mut entry = format!("### “{}”\n{}", self.title, self.result.as_deref().unwrap_or("No final result was recorded for it."));
+        if let Some(pr) = &self.merged_pr {
+            entry.push_str(&format!("\nMerged pull request: {pr}"));
+        }
+        entry
+    }
+}
 /// What a node that waited on other Tasks is told when they are done.
-pub fn dependencies_done_notice(titles: &[&str]) -> String {
-    let names: Vec<String> = titles.iter().map(|title| format!("“{title}”")).collect();
+pub fn dependencies_done_notice(landed: &[Landed]) -> String {
+    let names: Vec<String> = landed.iter().map(|l| format!("“{}”", l.title)).collect();
+    let details: Vec<String> = landed.iter().map(Landed::describe).collect();
     format!("What you were waiting for is done: {}. Go on with your task; update your branch from the default branch \
-first if you need what it changed.", names.join(", "))
+first if you need what it changed.\n\n{}", names.join(", "), details.join("\n\n"))
+}
+/// What a node whose work after the merge waited on other Tasks is told when that wait is over.
+pub fn post_merge_wait_over_notice(task: &TaskId, reason: &str, landed: &[Landed]) -> String {
+    let details: Vec<String> = landed.iter().map(Landed::describe).collect();
+    format!("What your work after the merge waited for is over. Go on with it now: {reason}. Update from the default \
+branch first if you need what landed. When that work ends, call post_merge_work with task_id {task} without reason; \
+if what landed is not what you needed, wait again with post_merge_work and waits_for naming the task or pull request.\n\n{}",
+        details.join("\n\n"), task = task.0)
 }
 /// What a node is told when it presents a plan while its Task waits for others.
 pub fn plan_while_waiting_notice(titles: &[String]) -> String {
@@ -1236,16 +1265,88 @@ impl DomainState {
     }
     /// A node that waited on other Tasks goes on by itself once they are done: nobody has to
     /// tell it, and it is told once, by the command that ended the wait.
-    fn resume_waiting_nodes(&self, before: &DomainState, effects: &mut Vec<DomainEffect>) {
+    fn resume_waiting_nodes(&mut self, before: &DomainState, effects: &mut Vec<DomainEffect>) {
+        let revision = self.revision + 1;
+        let mut restamped = vec![];
         for t in self.tasks.values() {
             let waited = before.tasks.get(&t.id).is_some_and(|b| b.state == TaskState::WaitingDependency);
-            if !waited || !matches!(t.state, TaskState::Running | TaskState::NeedsYou) || t.dependencies.is_empty() || t.final_presentation.is_some() {
+            if !waited || t.dependencies.is_empty() {
                 continue;
             }
-            let titles: Vec<&str> = t.dependencies.iter()
-                .filter_map(|dep| self.tasks.get(dep).map(|d| d.title.as_str())).collect();
-            let _ = self.notify(&t.id, None, &dependencies_done_notice(&titles), effects);
+            let landed = self.landed_dependencies(t);
+            let message = match &t.wrap_up.post_merge_work {
+                Some(work) if self.works_after_merge(t) => {
+                    if t.state != TaskState::Running {
+                        continue;
+                    }
+                    restamped.push(t.id.clone());
+                    post_merge_wait_over_notice(&t.id, &work.reason, &landed)
+                }
+                _ if matches!(t.state, TaskState::Running | TaskState::NeedsYou) && t.final_presentation.is_none() =>
+                    dependencies_done_notice(&landed),
+                _ => continue,
+            };
+            let _ = self.notify(&t.id, None, &message, effects);
         }
+        for id in restamped {
+            if let Some(work) = self.tasks.get_mut(&id).and_then(|t| t.wrap_up.post_merge_work.as_mut()) {
+                work.declared_at = revision;
+            }
+        }
+    }
+    /// The Tasks a node's work after its merge waits on, from the Tasks or pull requests it named.
+    fn wait_targets(&self, task: &TaskId, targets: &[WaitTarget], with_reason: bool) -> Result<BTreeSet<TaskId>> {
+        if targets.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        if !with_reason {
+            return refuse("invalid_input", "reason",
+                "waits_for needs reason: say in one line what you will do once what you wait for lands");
+        }
+        if self.merged_pr(self.task(task)?).is_none() {
+            return refuse("invalid_input", "waits_for",
+                "waits_for is for work after your pull request merged; before that, ask the orchestrator to make your task depend on the other one");
+        }
+        let mut waited = BTreeSet::new();
+        for target in targets {
+            let other = match target {
+                WaitTarget::Task { task_id } => match self.tasks.get(task_id) {
+                    Some(t) => t,
+                    None => return refuse("invalid_input", "waits_for",
+                        &format!("No Alondra task is called {task_id}: name the task by its id, or its pull request by repository and number")),
+                },
+                WaitTarget::PullRequest { repository, number } => {
+                    let pr = self.pull_requests.values().find(|pr| pr.repository.eq_ignore_ascii_case(repository) && pr.number == *number);
+                    match pr.and_then(|pr| self.tasks.get(&pr.task_id)) {
+                        Some(t) => t,
+                        None => return refuse("invalid_input", "waits_for", &format!(
+                            "No Alondra task registered {repository}#{number}, so Alondra cannot see when it lands: ask the orchestrator for a task that delivers it, then wait on that task")),
+                    }
+                }
+            };
+            if other.id == *task {
+                return refuse("invalid_input", "waits_for", "Your task cannot wait on itself: name the other task or its pull request");
+            }
+            if other.cancelled() {
+                return refuse("invalid_input", "waits_for",
+                    &format!("“{}” was cancelled, so it never lands: ask the orchestrator what replaces it", other.title));
+            }
+            if self.landed(other) {
+                return refuse("invalid_input", "waits_for",
+                    &format!("“{}” has already landed: go on with your work without waiting for it", other.title));
+            }
+            waited.insert(other.id.clone());
+        }
+        Ok(waited)
+    }
+    /// Each Task `t` depends on, with what it left: its final result and its merged PR.
+    fn landed_dependencies(&self, t: &Task) -> Vec<Landed> {
+        t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).map(|dep| Landed {
+            title: dep.title.clone(),
+            cancelled: dep.cancelled(),
+            result: dep.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).map(|p| result_excerpt(&p.body)),
+            merged_pr: self.merged_pr(dep).map(|pr| format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)),
+        }).collect()
     }
     /// Moves one phase of an approved plan to a new Task: the points leave the Task that held
     /// them, so each point of the plan stays with exactly one Task.
@@ -1353,9 +1454,18 @@ impl DomainState {
     /// What a Task waits for before it starts or goes on: its dependencies done and its
     /// delivered dependencies delivered. A wait never holds back the merge of a PR the user
     /// accepted; only `stack` orders merges.
+    /// What a Task waited on is in: it is done, or its PR merged with no work left after the merge.
+    pub fn landed(&self, dep: &Task) -> bool {
+        dep.state == TaskState::Done
+            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.merged_pr(dep).is_some())
+    }
+    /// The Task's PR, once it merged.
+    pub fn merged_pr(&self, t: &Task) -> Option<&PullRequest> {
+        t.pr_id.as_ref().and_then(|pr| self.pull_requests.get(pr)).filter(|pr| pr.state == PrState::Merged)
+    }
     pub(super) fn waits_are_over(&self, t: &Task) -> Result<()> {
         for dep in &t.dependencies {
-            if self.task(dep)?.state != TaskState::Done {
+            if !self.landed(self.task(dep)?) {
                 return fail("dependency_not_done", "Objective dependency is not done");
             }
         }
@@ -1377,7 +1487,7 @@ impl DomainState {
     }
     /// The titles of the Tasks `t` depends on that are not done yet, whatever its state says.
     pub fn unmet_dependencies(&self, t: &Task) -> Vec<String> {
-        let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.state != TaskState::Done));
+        let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| !self.landed(d)));
         let undelivered = t.delivered_dependencies.iter()
             .filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.final_presentation.is_none() || d.state == TaskState::Cancelled));
         let upstream = t.stack.iter().map(|s| &s.upstream_task).filter(|_| self.stack_ready(t).is_err());
@@ -4074,14 +4184,20 @@ impl DomainState {
                 self.end_post_merge(task_id, PostMergeEnd::Cleanup, lifecycles)?;
                 self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. }))?;
             }
-            Command::DeclarePostMergeWork { task_id, reason } => {
+            Command::DeclarePostMergeWork { task_id, reason, waits_for } => {
                 self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
                     .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at });
+                let waited = self.wait_targets(task_id, waits_for, work.is_some())?;
                 match work {
                     Some(work) => self.declare_post_merge(task_id, work, lifecycles)?,
                     None => self.end_post_merge(task_id, PostMergeEnd::NodeDeclaredEnd, lifecycles)?,
+                }
+                if !waited.is_empty() {
+                    self.invalidate(task_id);
+                    self.tasks.get_mut(task_id).unwrap().dependencies.extend(waited);
+                    self.dependency_graph()?;
                 }
             }
             Command::RecordNodeEnd { task_id, end, agent_id } => {

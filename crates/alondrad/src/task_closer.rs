@@ -542,11 +542,15 @@ fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<(
 /// `post_merge_ask` Alondra asks the node whether it still runs; a node that is not working and
 /// does not answer within `post_merge_answer` gets a card in front of the user, who closes it or
 /// leaves it for another round. Declaring again, even with the same reason, is the answer.
+/// Work that waits for another Task to land is never asked about: Alondra wakes it when it lands.
 #[allow(clippy::too_many_arguments)]
 fn watch_post_merge_work(
     domain: &DomainRuntime, state: &DomainState, timing: &Timing, now: i64, task: &Task, agent: &AgentId, work: &PostMergeWork,
     working: bool, ask: Option<&dyn Fn(&str)>,
 ) -> Result<Watch> {
+    if state.waiting_after_merge(task).is_some() {
+        return Ok(Watch::Hold);
+    }
     let declared_at = work.declared_at as i64;
     let stored = domain.store.lock().expect("domain store poisoned").post_merge_check(&task.id)?;
     let mut check = match stored {

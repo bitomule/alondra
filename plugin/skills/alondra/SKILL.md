@@ -187,6 +187,12 @@ Pick the tool by what you need:
   before you present the PR as final. Accepting and merging the PR then does not close the task:
   it stays in progress, Alondra tells you to do that work once the PR merges, and the task closes
   only after you call `post_merge_work` without `reason` (or `cleanup_done`) when it is done.
+- When that work, after your PR merged, has to wait for other work to land (another task's fix
+  on the default branch), call `post_merge_work` with its `reason` (what you will do then) and
+  `waits_for` naming what you wait for: an Alondra task id (`t-…`) or a pull request an Alondra
+  task registered (`owner/repo#123`). End your turn: Alondra wakes you with its result and merged
+  pull request when it lands. A wait written only in `reason` has nothing that wakes you. If no
+  Alondra task delivers what you wait for, `ask` the orchestrator for one, then wait on it.
 - Do not end your turn while your task is open with no result and no question: Alondra sends you
   back to work with the reason, and after three times it tells the user you cannot deliver.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
@@ -303,10 +309,12 @@ Pick the tool by what you need:
 
 When you cannot go on until another task is done (its fix is on the default branch, main is
 green again), `ask` the orchestrator (recipient kind `orchestrator`) to make your task depend on
-that task, naming it, and end your turn without writing anything else. When the orchestrator
+that task, naming it (or asking it for a task that fixes it), and end your turn without writing
+anything else. After your PR merged, wait with `post_merge_work` and `waits_for` instead, as
+above. Always name the task or pull request you wait for: a wait in words wakes nobody. When the orchestrator
 answers that your task now depends on it, end your turn again at once and write nothing: no
 summary of the wait, no "nothing to do until then". The task already shows the user what it waits
-for, and words written then reach no one. Alondra tells you when that task is done and you go on;
+for, and words written then reach no one. Alondra tells you when that task is done (or its pull request merged), with its result, and you go on;
 never ask the user to tell you, with a card or a `request_action` ("tell me when it is on main").
 If the orchestrator answers that you should go on without it, go on. A wait only holds back your
 work: it never holds back the merge of a PR you already presented.

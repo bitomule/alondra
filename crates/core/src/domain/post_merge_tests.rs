@@ -50,7 +50,7 @@ fn merged() -> DomainState {
         task_id: TASK.into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
-    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()) });
+    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()), waits_for: vec![] });
     must(&mut s, node(), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
         targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
@@ -96,7 +96,7 @@ fn step() -> impl Strategy<Value = Step> {
 fn apply(s: &mut DomainState, step: &Step, n: usize) {
     let _ = match step {
         Step::Declare(declared) => exec(s, node(), Command::DeclarePostMergeWork {
-            task_id: TASK.into(), reason: declared.then(|| "publish the release".to_owned()),
+            task_id: TASK.into(), reason: declared.then(|| "publish the release".to_owned()), waits_for: vec![],
         }),
         Step::CleanedUp => exec(s, node(), Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() }),
         Step::Card(option) => answer_card(s, option, n),
@@ -170,7 +170,7 @@ fn cancelling_a_task_owes_its_work_after_the_merge_until_its_node_ends() {
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     must(&mut s, node(), Command::StartTask { task_id: TASK.into() });
-    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()) });
+    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()), waits_for: vec![] });
     must(&mut s, user(), Command::CancelTask { task_id: TASK.into() });
     assert!(lifecycle_owes(&s), "the cancelled task's ending owes the work after the merge");
     assert_ne!(s.tasks[&TASK.into()].state, TaskState::Cancelled);

@@ -133,6 +133,8 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         },
         NodePhase::NoTask => (t!(lang, "No task", "Sin tarea"), Tone::Neutral),
         NodePhase::Closing => match post_merge_work(agent, context) {
+            Some(_) if let Some(title) = awaited_title(agent, context) =>
+                return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
             Some(reason) => return super::Label {
                 text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras el merge: {reason}", reason = reason),
                 tone: Tone::Info,
@@ -157,7 +159,7 @@ fn awaited_title(agent: &AgentId, context: &RenderContext<'_>) -> Option<String>
     let task = common::current_task(context, agent).filter(|task| task.state == TaskState::WaitingDependency)?;
     let upstream = task.dependencies.iter().chain(task.stack.iter().map(|stack| &stack.upstream_task))
         .filter_map(|id| context.domain.tasks.get(id))
-        .find(|dependency| !dependency.state.terminal())?;
+        .find(|dependency| !dependency.state.terminal() && !context.domain.landed(dependency))?;
     let mut title: String = upstream.title.chars().take(40).collect();
     if upstream.title.chars().count() > 40 {
         title.push('…');

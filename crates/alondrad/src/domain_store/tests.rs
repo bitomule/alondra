@@ -814,7 +814,7 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
     present(&mut store);
     let accept = acceptance(&mut store);
     store.execute_authenticated(&user(), &accept, None).unwrap();
-    let declare = |reason: Option<&str>| Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: reason.map(str::to_owned) };
+    let declare = |reason: Option<&str>| Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: reason.map(str::to_owned), waits_for: vec![] };
     execute(&mut store, &agent(), "declare", declare(Some("release.sh publishes 0.2.54")));
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();

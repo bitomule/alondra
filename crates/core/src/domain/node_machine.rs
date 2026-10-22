@@ -488,6 +488,9 @@ impl DomainState {
         }
         let agent = task.agent_id.as_ref()?;
         if self.node_phase(agent) == Some(&NodePhase::Closing) && let Some(work) = &task.wrap_up.post_merge_work {
+            if task.state == TaskState::WaitingDependency {
+                return Some(TaskActivity::WaitingDependency);
+            }
             return Some(TaskActivity::AfterMerge { reason: work.reason.clone() });
         }
         Some(match self.node_phase(agent) {

@@ -179,6 +179,9 @@ impl DomainState {
         if let Some(card) = self.open_user_card(&t.id) {
             return Ok(Holder::User(UserCause::Card(card.id.clone())));
         }
+        if t.state == TaskState::WaitingDependency && self.works_after_merge(t) {
+            return self.waiting_after_merge(t).map_or_else(|| ownerless("waits after its merge on nothing"), |dependency| Ok(Holder::Task(dependency)));
+        }
         if t.final_presentation.is_some() {
             match self.attention(t) {
                 Attention::Act(_) => return Ok(Holder::User(UserCause::Review)),
@@ -236,7 +239,7 @@ impl DomainState {
     /// task it is stacked on.
     pub fn pending_dependency(&self, t: &Task) -> Option<TaskId> {
         let stacked = t.stack.as_ref().map(|stack| &stack.upstream_task);
-        t.dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.state != TaskState::Done))
+        t.dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| !self.landed(d)))
             .chain(t.delivered_dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.cancelled() || d.final_presentation.is_none())))
             .chain(stacked.filter(|_| self.stack_ready(t).is_err()))
             .next()

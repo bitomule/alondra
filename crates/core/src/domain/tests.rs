@@ -3160,7 +3160,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
-        (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
+        (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()), waits_for: vec![] }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
         (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
             instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }, false),
@@ -3697,7 +3697,7 @@ fn only_the_tasks_node_confirms_its_cleanup_and_only_while_it_closes() {
     reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }, "task_not_active");
 }
 fn post_merge_work(reason: Option<&str>) -> Command {
-    Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned) }
+    Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned), waits_for: vec![] }
 }
 #[test]
 fn only_the_tasks_node_declares_work_after_the_merge_and_cleanup_done_ends_it() {
@@ -4315,7 +4315,9 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
         DomainEffect::NotifyAgent { agent_id, task_id, message, .. } if agent_id.0 == "b" => Some((task_id.clone(), message.clone())),
         _ => None,
     }).collect();
-    assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&["Result"]))]);
+    let result = s.interactions[s.tasks[&"t".into()].final_presentation.as_ref().unwrap()].body.clone();
+    let landed = Landed { title: "Result".into(), cancelled: false, result: Some(result_excerpt(&result)), merged_pr: None };
+    assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&[landed]))]);
     let later = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }

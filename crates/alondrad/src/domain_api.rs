@@ -1415,9 +1415,9 @@ mod tests {
         let mut declare = meta.clone();
         declare["reason"] = json!("release.sh");
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", declare).unwrap();
-        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: Some("release.sh".into()) });
+        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: Some("release.sh".into()), waits_for: vec![] });
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", meta.clone()).unwrap();
-        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: None });
+        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: None, waits_for: vec![] });
         let mut mismatched = meta.clone();
         mismatched["task_id"] = json!("other-task");
         mismatched["title"] = json!("Build");

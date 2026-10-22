@@ -5068,6 +5068,21 @@ fn a_node_working_after_the_merge_says_what_it_does_in_fleet() {
     state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
     assert_eq!(state_of(&state, Lang::En), "Finishing after the merge: release.sh publishes 0.2.54");
     assert_eq!(state_of(&state, Lang::Es), "Terminando tras el merge: release.sh publishes 0.2.54");
+
+    let mut fix = state.tasks[&task].clone();
+    fix.id = "t-fix".into();
+    fix.title = "Fix the Mac package".into();
+    fix.agent_id = None;
+    fix.state = TaskState::Running;
+    fix.wrap_up = Default::default();
+    state.tasks.insert(fix.id.clone(), fix);
+    let waiting = state.tasks.get_mut(&task).unwrap();
+    waiting.state = TaskState::WaitingDependency;
+    waiting.dependencies = BTreeSet::from(["t-fix".into()]);
+    waiting.wrap_up.asked_at = Some(1);
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = crate::domain::NodePhase::Closing;
+    assert_eq!(state_of(&state, Lang::En), "Waiting for Fix the Mac package", "a wait after the merge names what it waits for");
+    assert_eq!(state_of(&state, Lang::Es), "Esperando a Fix the Mac package");
 }
 
 #[test]

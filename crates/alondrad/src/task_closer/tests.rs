@@ -584,7 +584,7 @@ async fn when_closing_the_session_fails_inside_alondra_the_started_remove_is_for
 impl Rig {
     fn declare_post_merge_work(&self, reason: Option<&str>) {
         let id = format!("post-merge-{}", crate::auth::random_hex(6));
-        command(&self.domain, agent(), &id, Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned) });
+        command(&self.domain, agent(), &id, Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned), waits_for: vec![] });
     }
 }
 

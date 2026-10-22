@@ -826,3 +826,52 @@ async fn a_draft_pr_is_marked_ready_before_it_is_merged() {
     now().merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.calls.lock().unwrap(), vec!["ready 7".to_owned(), "merge 7".to_owned()]);
 }
+
+/// The release of beta 59 waited after its merge on the Mac package fix with only a reason in
+/// words, and nothing woke its node when the fix merged. A wait that names the fix's pull request
+/// holds the release on the fix, and Alondra's merge of that pull request wakes the release's
+/// node with the fix's result.
+#[tokio::test]
+async fn work_after_the_merge_that_waits_on_another_tasks_pr_wakes_when_alondra_merges_it() {
+    let (_home, domain, github) = presented("release", false);
+    let node = |agent: &str| Actor::Agent { agent_id: agent.into() };
+    command(&domain, node("a"), "declare", Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish beta 59".into()), waits_for: vec![] });
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Running, "its PR merged and its work after the merge goes on");
+
+    command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Beta 59".into() });
+    command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "B".into(), at: 0 });
+    command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { plan_items: None,
+        task_id: "fix".into(), request_id: "r".into(), title: "Fix the Mac package".into(), agent_id: Some("b".into()),
+        review_prs: true, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+    });
+    command(&domain, node("b"), "fix-pr", Command::RegisterPr {
+        task_id: "fix".into(), pr_id: "fix-pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 8, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    command(&domain, node("a"), "wait", Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish beta 59".into()),
+        waits_for: vec![WaitTarget::parse("owner/repo#8")] });
+    assert_eq!(task(&domain), TaskState::WaitingDependency);
+    let before = told(&domain).len();
+
+    let fix_targets = vec![DeliveryTarget::PullRequest { pr_id: "fix-pr".into(), head: HEAD.into() }];
+    command(&domain, node("b"), "fix-present", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "fix".into(), interaction_id: "fix-d".into(),
+        body: "The Mac package no longer ships ._ entries".into(), targets: fix_targets.clone(), is_final: true,
+        nothing_to_review: false, card: CardSpec::delivery("Review the fix", &[], true),
+    });
+    assert_eq!(told(&domain).len(), before, "nothing landed yet");
+    command(&domain, user(), "fix-accept", Command::AcceptDelivery { presentation_id: "fix-d".into(), targets: fix_targets });
+    github.open(8, HEAD, Checks::Passed);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().iter().any(|(number, ..)| *number == 8));
+
+    assert_eq!(task(&domain), TaskState::Running);
+    let woken = told(&domain)[before..].to_vec();
+    assert_eq!(woken.len(), 1, "{woken:?}");
+    assert!(woken[0].contains("publish beta 59") && woken[0].contains("The Mac package no longer ships ._ entries")
+        && woken[0].contains("https://github.com/owner/repo/pull/8"), "{}", woken[0]);
+}

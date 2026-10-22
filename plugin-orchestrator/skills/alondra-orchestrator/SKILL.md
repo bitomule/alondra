@@ -75,6 +75,9 @@ user follows tasks, not nodes.
 - A node that has to wait for another task (its fix on main, main green again) asks you. Add that
   task to its `dependencies` with `set_dependencies`, keeping the ones it has, then answer it:
   Alondra tells the node to go on when the wait is over. Never ask the user to tell the node.
+  When it asks for a task that fixes what blocks it, create that task and, in the same batch,
+  add it to the asker's `dependencies` with `set_dependencies`, keeping the ones it has: that
+  also holds a task whose work after its merge waits, and wakes its node when the fix lands.
 - `set_relations` adds two relations: `delivered_dependencies` (starts at the other task's final
   delivery, not at its completion) and `blocks` (the blocked task has no card for the user while
   this one is open). An adversarial review is a task B with `delivered_dependencies: [A]` and

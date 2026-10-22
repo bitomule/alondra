@@ -436,11 +436,14 @@ pub enum Command {
         end: WorktreeEnd,
     },
     /// The node says it is still working on something after its PR merged (a deploy, a release);
-    /// Alondra does not close its session while it says so. No reason ends it.
+    /// Alondra does not close its session while it says so. No reason ends it. `waits_for` names
+    /// what that work waits on: Alondra wakes the node when it lands.
     DeclarePostMergeWork {
         task_id: TaskId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waits_for: Vec<WaitTarget>,
     },
     /// Alondra records what became of a Task's node; a closing Task is done with it.
     RecordNodeEnd {
@@ -867,3 +870,28 @@ impl std::fmt::Display for DomainError {
     }
 }
 impl std::error::Error for DomainError {}
+/// Work of another Task a node waits on: the Task itself, or the pull request it registered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WaitTarget {
+    Task { task_id: TaskId },
+    PullRequest { repository: String, number: u64 },
+}
+impl WaitTarget {
+    /// What a node names: `owner/repo#12`, a pull request's URL, or else a task id.
+    pub fn parse(text: &str) -> Self {
+        let text = text.trim();
+        let url = text.split_once("://").map_or(text, |(_, rest)| rest);
+        let pull = url.split_once('/').and_then(|(_, path)| {
+            let mut parts = path.trim_end_matches('/').splitn(4, '/');
+            let (owner, repo, pull, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            (pull == "pull").then(|| (format!("{owner}/{repo}"), number.parse().ok())).and_then(|(r, n)| Some((r, n?)))
+        });
+        let short = text.rsplit_once('#').filter(|(repo, _)| repo.contains('/'))
+            .and_then(|(repo, number)| Some((repo.to_owned(), number.parse().ok()?)));
+        match pull.or(short) {
+            Some((repository, number)) => Self::PullRequest { repository: normalize_pr_repository(&repository), number },
+            None => Self::Task { task_id: text.into() },
+        }
+    }
+}
