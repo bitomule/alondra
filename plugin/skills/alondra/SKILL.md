@@ -91,7 +91,10 @@ Pick the tool by what you need:
   Every option is a button: pressing it answers. The user can always write on the card too,
   alone or with the option they press, so never add an «Other: write it» option; to ask for a
   value (a name, a number, a key), use `request_input`.
-  Ask related questions together: send `questions` (2 to 4, each `{question, options, recommended,
+  Never ask one card after another: gather every question you have open at that point into one
+  `ask` with `questions`, and ask again only when an answer raises something new. Never ask what
+  you already asked or the user already answered (check `open_cards` and their earlier replies).
+  To ask several questions together, send `questions` (2 to 4, each `{question, options, recommended,
   why}`) instead of `options`. Each question becomes its own card, the user answers them one by
   one, and every answer comes back together, each to its own question, once the last is answered;
   you never get part of them. Every question must stand on its own and be clear without any
