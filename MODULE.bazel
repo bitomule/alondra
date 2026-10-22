@@ -14,7 +14,7 @@ bazel_dep(name = "simpool", version = "0.3.1")
 git_override(
     module_name = "simpool",
     remote = "https://github.com/bitomule/simpool.git",
-    commit = "6cc9ab608bff593eb558c454663361506855cdbb",
+    commit = "4b06c56133e6fbf03fc8958a50932c1d540c8bc0",
     strip_prefix = "bazel",
 )
 
