@@ -216,6 +216,11 @@ impl AccountsConfig {
         accounts
     }
 
+    /// Whether some account of `provider` is on: new work needs one.
+    pub fn any_enabled(&self, provider: Provider) -> bool {
+        self.accounts(provider).iter().any(|a| a.enabled)
+    }
+
     /// The account `name` names: its name, regardless of case, or its id.
     pub fn find(&self, provider: Provider, name: &str) -> Option<ProviderAccount> {
         let name = name.trim();

@@ -195,3 +195,15 @@ fn an_account_open_tasks_run_on_is_not_removed() {
     assert!(f.home.join("accounts/work/signed-in").exists(), "still signed in, its folder kept");
     assert!(!f.user_home.join("logouts").exists(), "never signed out");
 }
+
+#[test]
+fn the_default_account_can_be_disabled_while_another_stays_on_but_never_the_last_one() {
+    let f = fixture();
+    let default_off = ProviderAccount { enabled: false, ..ProviderAccount::implicit_default() };
+    let only_work = with(vec![default_off.clone(), work()]);
+    f.store(&only_work).unwrap();
+    assert_eq!(config(&f.home).unwrap(), only_work);
+    let none_on = with(vec![default_off, ProviderAccount { enabled: false, ..work() }]);
+    assert_eq!(f.store(&none_on), Err(Refused::Invalid("at least one Claude account stays on, or no node could start".into())));
+    assert_eq!(config(&f.home).unwrap(), only_work, "the section is as it was");
+}

@@ -249,17 +249,17 @@ pub fn set_enabled(name: &str, enabled: bool) -> Result<()> {
     let client = daemon();
     let seen = listing(&client)?;
     let row = seen.find(name)?.clone();
-    if row.default && !enabled {
-        let name = shown_name(&row);
-        bail!(trf!(
-            "{name} is Claude's own sign-in on this Mac, which nodes still run on: it can't be disabled",
-            "{name} es la sesión propia de Claude en este Mac, con la que aún trabajan los nodos: no se puede desactivar"
-        ));
-    }
     let mut next = seen.config.clone();
     match next.claude.iter_mut().find(|account| account.id == row.id) {
         Some(account) => account.enabled = enabled,
         None => next.claude.insert(0, ProviderAccount { enabled, ..ProviderAccount::implicit_default() }),
+    }
+    if !next.any_enabled(Provider::Claude) {
+        let name = shown_name(&row);
+        bail!(trf!(
+            "{name} is the only Claude account still on: with it off no node could start. Enable another one first",
+            "{name} es la única cuenta de Claude activa: sin ella no arrancaría ningún nodo. Activa antes otra"
+        ));
     }
     let listing = save(&client, &seen, &next)?;
     print_row(&listing, &row.id);

@@ -316,6 +316,9 @@ impl Refused {
 /// account open tasks still run on (`working`) is not taken away.
 pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig, working: &[AccountId]) -> Result<(), Refused> {
     next.check().map_err(Refused::Invalid)?;
+    if !next.any_enabled(Provider::Claude) {
+        return Err(Refused::Invalid("at least one Claude account stays on, or no node could start".into()));
+    }
     let current = config(home).map_err(Refused::Invalid)?;
     if version(&current) != seen {
         return Err(Refused::Stale);
