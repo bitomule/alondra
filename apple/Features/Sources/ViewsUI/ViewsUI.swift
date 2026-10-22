@@ -156,6 +156,7 @@ public struct ViewItemRenderer: View {
         case let .form(value): FormView(form: value, onSubmit: onAction, onOpenForm: onForm)
         case let .notice(value): NoticeView(notice: value, onAction: onAction)
         case let .actions(value): ActionBarView(bar: value, onAction: onAction, onLink: onLink, excludingActionIDs: excludedActionIDs)
+        case .unsupported: UnsupportedItemView()
         }
     }
 }
@@ -394,7 +395,7 @@ public struct NoticeView: View {
     public let notice: Notice
     public var onAction: (Action) -> Void
     public init(notice: Notice, onAction: @escaping (Action) -> Void = { _ in }) { self.notice = notice; self.onAction = onAction }
-    public var body: some View { HStack(alignment: .top, spacing: 10) { Image(systemName: notice.tone == .critical || notice.tone == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill").foregroundStyle(toneColor(notice.tone)); VStack(alignment: .leading, spacing: 6) { Text(notice.text).font(.callout); if let action = notice.action { Button(action.label) { onAction(action) }.font(.footnote.weight(.semibold)) } } }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(toneColor(notice.tone).opacity(0.10), in: .rect(cornerRadius: 12)) }
+    public var body: some View { HStack(alignment: .top, spacing: 10) { Image(systemName: notice.tone == .critical || notice.tone == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill").foregroundStyle(toneColor(notice.tone)); VStack(alignment: .leading, spacing: 6) { Text(notice.text).font(.callout); if let action = notice.action { Button(action.label) { onAction(action) }.font(.footnote.weight(.semibold)).disabled(!action.enabled); DisabledReason(action).font(.caption).foregroundStyle(.secondary) } } }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(toneColor(notice.tone).opacity(0.10), in: .rect(cornerRadius: 12)) }
 }
 
 public struct ActionBarView: View {
@@ -424,9 +425,7 @@ private struct ActionButtons: View {
             .buttonStyle(.borderedProminent)
             .tint(action.style == .destructive ? ViewPalette.rose : action.style == .primary ? ViewPalette.dawn : ViewPalette.slate)
             .disabled(!action.enabled)
-            if !action.enabled, let reason = action.disabledReason {
-                Text(reason).font(.caption).foregroundStyle(.secondary)
-            }
+            DisabledReason(action).font(.caption).foregroundStyle(.secondary)
         }
     } }
 }
@@ -444,7 +443,7 @@ public struct FormView: View {
     public var onSubmit: (Action) -> Void
     public var onOpenForm: ((WireForm) -> Void)?
     public init(form: WireForm, onSubmit: @escaping (Action) -> Void = { _ in }, onOpenForm: ((WireForm) -> Void)? = nil) { self.form = form; self.onSubmit = onSubmit; self.onOpenForm = onOpenForm }
-    public var body: some View { VStack(alignment: .leading, spacing: 12) { ForEach(form.fields, id: \.id) { field in VStack(alignment: .leading, spacing: 5) { Text(field.label).font(.subheadline.weight(.semibold)); fieldValue(field); if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary) } } }; Button(form.submit.label) { if let onOpenForm { onOpenForm(form) } else { onSubmit(form.submit) } }.buttonStyle(.borderedProminent).disabled(!form.submit.enabled) }.padding(14).background(ViewPalette.card, in: .rect(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(ViewPalette.hairline)) }
+    public var body: some View { VStack(alignment: .leading, spacing: 12) { ForEach(form.fields, id: \.id) { field in VStack(alignment: .leading, spacing: 5) { Text(field.label).font(.subheadline.weight(.semibold)); fieldValue(field); if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary) } } }; Button(form.submit.label) { if let onOpenForm { onOpenForm(form) } else { onSubmit(form.submit) } }.buttonStyle(.borderedProminent).disabled(!form.submit.enabled); DisabledReason(form.submit).font(.caption).foregroundStyle(.secondary) }.padding(14).background(ViewPalette.card, in: .rect(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(ViewPalette.hairline)) }
     @ViewBuilder private func fieldValue(_ field: Field) -> some View { switch field.kind { case let .text(placeholder), let .multiline(placeholder), let .lines(placeholder): TextField(placeholder ?? "", text: .constant(field.value.stringValue ?? ""), axis: .vertical).textFieldStyle(.roundedBorder); case .toggle: Toggle(field.label, isOn: .constant(field.value.boolValue ?? false)).labelsHidden(); case let .choice(items): VStack(alignment: .leading, spacing: 5) { ForEach(items, id: \.id) { item in Label(item.label, systemImage: "circle") } }; case .attachments: Label("Attachments", systemImage: "paperclip").foregroundStyle(.secondary); case .picker(let source): Text(source).foregroundStyle(.secondary); case .date, .time: Text(field.value.stringValue ?? "").foregroundStyle(.secondary); case let .stepper(min, max): Text("\(field.value.intValue ?? min) (\(min)–\(max))").foregroundStyle(.secondary) } }
 }
 private extension JSONValue {

@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraFeatures
 import SwiftUI
 
 /// The words the server puts under a card's button, such as which commands «Allow always» stops
@@ -15,6 +16,11 @@ struct ButtonCaption: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("card.button.caption")
         }
+        DisabledReason(action)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     static func markdown(_ text: String) -> AttributedString {

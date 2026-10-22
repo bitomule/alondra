@@ -38,23 +38,25 @@ public enum ViewFetch: Decodable, Equatable, Sendable {
     }
 }
 
-public enum Tone: String, Codable, Equatable, Sendable {
+public enum Tone: String, Codable, Equatable, Sendable, FallbackDecodable {
     case neutral, info, accent, success, warning, critical
     case yourTurn = "your_turn"
+    public static let fallback = Tone.neutral
 }
-public enum Level: String, Codable, Equatable, Sendable { case calm, warm, hot }
-public enum Icon: String, Codable, Equatable, Sendable {
+public enum Level: String, Codable, Equatable, Sendable, FallbackDecodable { case calm, warm, hot; public static let fallback = Level.calm }
+public enum Icon: String, Codable, Equatable, Sendable, FallbackDecodable {
     case question, action, document, pullRequest = "pull_request", notice, delivery, task, request
     case node, orchestrator, mission, project, schedule, attachment, check, warning, merge, branch, history, machine
+    public static let fallback = Icon.notice
 }
-public enum Detail: String, Codable, Equatable, Sendable { case included, reference }
-public enum TimeFormat: String, Codable, Equatable, Sendable { case relative, absolute, time }
-public enum ContentKind: String, Codable, Equatable, Sendable { case document, diff, file }
-public enum AttachmentKind: String, Codable, Equatable, Sendable { case image, text, binary }
-public enum CheckState: String, Codable, Equatable, Sendable { case pass, fail, pending }
-public enum Style: String, Codable, Equatable, Sendable { case primary, secondary, destructive, plain }
-public enum Presentation: String, Codable, Equatable, Sendable { case button, options, menu }
-public enum CommentKind: String, Codable, Equatable, Sendable { case blocks, diffLines = "diff_lines" }
+public enum Detail: String, Codable, Equatable, Sendable, FallbackDecodable { case included, reference; public static let fallback = Detail.reference }
+public enum TimeFormat: String, Codable, Equatable, Sendable, FallbackDecodable { case relative, absolute, time; public static let fallback = TimeFormat.relative }
+public enum ContentKind: String, Codable, Equatable, Sendable, FallbackDecodable { case document, diff, file; public static let fallback = ContentKind.file }
+public enum AttachmentKind: String, Codable, Equatable, Sendable, FallbackDecodable { case image, text, binary; public static let fallback = AttachmentKind.binary }
+public enum CheckState: String, Codable, Equatable, Sendable, FallbackDecodable { case pass, fail, pending; public static let fallback = CheckState.pending }
+public enum Style: String, Codable, Equatable, Sendable, FallbackDecodable { case primary, secondary, destructive, plain; public static let fallback = Style.secondary }
+public enum Presentation: String, Codable, Equatable, Sendable, KnownValueDecodable { case button, options, menu }
+public enum CommentKind: String, Codable, Equatable, Sendable, KnownValueDecodable { case blocks, diffLines = "diff_lines" }
 /// What a card asks of the user. The daemon sends the stable string; an unknown one decodes as `nil`.
 public enum CardKind: String, Codable, Equatable, Sendable { case decide, review, authorize, know, provide, test, `do`, problem, propose }
 /// How a button reads: green to advance, red when advancing is risky, grey otherwise.
@@ -172,6 +174,8 @@ public struct More: Codable, Equatable, Sendable { public let key: String; publi
 /// `Item` is internally tagged by the wire's `type` property.
 public enum ViewItem: Codable, Equatable, Sendable {
     case card(Card), row(Row), markdown(Markdown), contentRef(ContentRef), facts(Facts), checks(Checks), timeline(Timeline), form(Form), notice(Notice), actions(ActionBar)
+    /// A kind of item a newer daemon sent: the app asks to be updated to see it.
+    case unsupported
     private enum TagKeys: String, CodingKey { case type }
     public init(from decoder: Decoder) throws {
         let tag = try decoder.container(keyedBy: TagKeys.self)
@@ -187,7 +191,7 @@ public enum ViewItem: Codable, Equatable, Sendable {
         case "form": self = .form(try Form(from: decoder))
         case "notice": self = .notice(try Notice(from: decoder))
         case "actions": self = .actions(try ActionBar(from: decoder))
-        default: throw DecodingError.dataCorruptedError(forKey: .type, in: tag, debugDescription: "Unknown view item type: \(type)")
+        default: self = .unsupported
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -203,6 +207,7 @@ public enum ViewItem: Codable, Equatable, Sendable {
         case let .form(value): try tag.encode("form", forKey: .type); try value.encode(to: encoder)
         case let .notice(value): try tag.encode("notice", forKey: .type); try value.encode(to: encoder)
         case let .actions(value): try tag.encode("actions", forKey: .type); try value.encode(to: encoder)
+        case .unsupported: try tag.encode("unsupported", forKey: .type)
         }
     }
 }
@@ -238,7 +243,7 @@ public struct Card: Codable, Equatable, Sendable {
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id); link = try c.decodeIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
+        id = try c.decode(String.self, forKey: .id); link = try c.decodeKnownIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
         eyebrow = try c.decodeIfPresent(Label.self, forKey: .eyebrow); title = try c.decode(String.self, forKey: .title); subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
         badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; context = try c.decodeIfPresent([ContextLine].self, forKey: .context) ?? []
         timestamps = try c.decodeIfPresent([Stamp].self, forKey: .timestamps) ?? []; state = try c.decodeIfPresent(Label.self, forKey: .state)
@@ -276,9 +281,9 @@ public struct Row: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions, kind, folded }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id); link = try c.decodeIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
+        id = try c.decode(String.self, forKey: .id); link = try c.decodeKnownIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
         title = try c.decode(String.self, forKey: .title); subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
-        badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; trailing = try c.decodeIfPresent(Trailing.self, forKey: .trailing)
+        badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; trailing = try c.decodeKnownIfPresent(Trailing.self, forKey: .trailing)
         depth = try c.decode(UInt8.self, forKey: .depth); struck = try c.decode(Bool.self, forKey: .struck)
         children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
         kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
@@ -331,7 +336,7 @@ public enum Trailing: Codable, Equatable, Sendable {
         case "count": self = .count(value: try c.decode(UInt32.self, forKey: .value))
         case "time": self = .time(at: try c.decode(String.self, forKey: .at), format: try c.decode(TimeFormat.self, forKey: .format))
         case "text": self = .text(text: try c.decode(String.self, forKey: .text))
-        case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown trailing kind: \(kind)")
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -346,7 +351,7 @@ public enum Trailing: Codable, Equatable, Sendable {
 
 public struct Action: Codable, Equatable, Sendable {
     public let id: String?; public let label: String; public let style: Style; public let presentation: Presentation; public let options: [ActionOption]
-    public let input: Input; public let attachments: Bool; public let comments: CommentSpec?; public let confirm: Confirm?; public let enabled: Bool
+    public let input: Input; public let attachments: Bool; public let comments: CommentSpec?; public let confirm: Confirm?; public internal(set) var enabled: Bool
     public let disabledReason: String?; public let stamp: String?; public let key: String?; public let link: Link?
     /// Green to advance, red when risky, grey otherwise.
     public let role: ActionRole?
@@ -356,16 +361,30 @@ public struct Action: Codable, Equatable, Sendable {
     public let description: String?
     /// Whether doing it takes its card out of the queue, as the server decides; absent from a daemon older than the field.
     public let resolvesCard: Bool?
-    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link, role; case optionId = "option_id"; case description; case resolvesCard = "resolves_card" }
+    /// A newer daemon sent a link, presentation or input this app does not know: the button shows
+    /// disabled, asking to update Alondra. Kept on this device only.
+    public internal(set) var needsNewerApp: Bool
+    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link, role; case optionId = "option_id"; case description; case resolvesCard = "resolves_card"; case needsNewerApp = "needs_newer_app" }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id); label = try c.decode(String.self, forKey: .label)
-        style = try c.decode(Style.self, forKey: .style); presentation = try c.decode(Presentation.self, forKey: .presentation)
-        options = try c.decodeIfPresent([ActionOption].self, forKey: .options) ?? []; input = try c.decode(Input.self, forKey: .input)
-        attachments = try c.decode(Bool.self, forKey: .attachments); comments = try c.decodeIfPresent(CommentSpec.self, forKey: .comments)
-        confirm = try c.decodeIfPresent(Confirm.self, forKey: .confirm); enabled = try c.decode(Bool.self, forKey: .enabled)
-        disabledReason = try c.decodeIfPresent(String.self, forKey: .disabledReason); stamp = try c.decodeIfPresent(String.self, forKey: .stamp)
-        key = try c.decodeIfPresent(String.self, forKey: .key); link = try c.decodeIfPresent(Link.self, forKey: .link)
+        var known = true
+        func knownKind<Value>(_ decode: () throws -> Value) throws -> Value? {
+            do { return try decode() } catch is ContractCodec.UnknownValue { known = false; return nil }
+        }
+        let presentation = try knownKind { try c.decode(Presentation.self, forKey: .presentation) }
+        let input = try knownKind { try c.decode(Input.self, forKey: .input) }
+        let link = try knownKind { try c.decodeIfPresent(Link.self, forKey: .link) } ?? nil
+        style = try c.decode(Style.self, forKey: .style); self.presentation = presentation ?? .button
+        options = try c.decodeKnownElementsIfPresent([ActionOption].self, forKey: .options); self.input = input ?? .none
+        attachments = try c.decode(Bool.self, forKey: .attachments); comments = try c.decodeKnownIfPresent(CommentSpec.self, forKey: .comments)
+        confirm = try c.decodeIfPresent(Confirm.self, forKey: .confirm)
+        let flagged = try c.decodeIfPresent(Bool.self, forKey: .needsNewerApp) ?? false
+        needsNewerApp = !known || flagged
+        enabled = try c.decode(Bool.self, forKey: .enabled) && !needsNewerApp
+        disabledReason = try c.decodeIfPresent(String.self, forKey: .disabledReason)
+        stamp = try c.decodeIfPresent(String.self, forKey: .stamp)
+        key = try c.decodeIfPresent(String.self, forKey: .key); self.link = link
         role = (try? c.decodeIfPresent(ActionRole.self, forKey: .role)) ?? nil
         optionId = try c.decodeIfPresent(String.self, forKey: .optionId); description = try c.decodeIfPresent(String.self, forKey: .description)
         resolvesCard = try c.decodeIfPresent(Bool.self, forKey: .resolvesCard)
@@ -379,6 +398,7 @@ public struct Action: Codable, Equatable, Sendable {
         try c.encodeIfPresent(stamp, forKey: .stamp); try c.encodeIfPresent(key, forKey: .key); try c.encodeIfPresent(link, forKey: .link)
         try c.encodeIfPresent(role, forKey: .role); try c.encodeIfPresent(optionId, forKey: .optionId); try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(resolvesCard, forKey: .resolvesCard)
+        if needsNewerApp { try c.encode(needsNewerApp, forKey: .needsNewerApp) }
     }
 }
 public struct ActionOption: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String?; public let style: Style; public let input: Input; public let key: String? }
@@ -422,7 +442,7 @@ public enum Input: Codable, Equatable, Sendable {
         switch try c.decode(String.self, forKey: .kind) {
         case "none": self = .none
         case "text": self = .text(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder), required: try c.decode(Bool.self, forKey: .required), multiline: try c.decode(Bool.self, forKey: .multiline))
-        case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown input kind: \(kind)")
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -450,7 +470,7 @@ public enum FieldKind: Codable, Equatable, Sendable {
         case "time": self = .time
         case "stepper": self = .stepper(min: try c.decode(Int64.self, forKey: .min), max: try c.decode(Int64.self, forKey: .max))
         case "lines": self = .lines(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder))
-        case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown field kind: \(kind)")
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -479,7 +499,7 @@ public enum Link: Codable, Equatable, Sendable {
         case "view": self = .view(key: try c.decode(String.self, forKey: .key))
         case "url": self = .url(url: try c.decode(String.self, forKey: .url))
         case "local": self = .local(local: try c.decode(LocalLink.self, forKey: .local))
-        case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown link kind: \(kind)")
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -506,7 +526,7 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case "open_path": self = .openPath(path: try c.decode(String.self, forKey: .path))
         case "mcp_sign_in": self = .mcpSignIn(card: try c.decode(String.self, forKey: .card), server: try c.decode(String.self, forKey: .server))
         case "mcp_reconnect": self = .mcpReconnect(card: try c.decode(String.self, forKey: .card))
-        case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown local link kind: \(kind)")
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
     public func encode(to encoder: Encoder) throws {
@@ -544,5 +564,59 @@ public enum JSONValue: Codable, Equatable, Sendable {
         case let .array(v): try c.encode(v)
         case let .object(v): try c.encode(v)
         }
+    }
+}
+
+extension Markdown {
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text); truncated = try c.decode(Bool.self, forKey: .truncated)
+        more = try c.decodeKnownIfPresent(Link.self, forKey: .more); commentable = try c.decode(Bool.self, forKey: .commentable)
+    }
+}
+extension Fact {
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        label = try c.decode(String.self, forKey: .label); value = try c.decode(String.self, forKey: .value)
+        tone = try c.decodeIfPresent(Tone.self, forKey: .tone); link = try c.decodeKnownIfPresent(Link.self, forKey: .link)
+    }
+}
+extension Checks {
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decode([Check].self, forKey: .items); link = try c.decodeKnownIfPresent(Link.self, forKey: .link)
+    }
+}
+extension ContextLine {
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        icon = try c.decode(Icon.self, forKey: .icon); text = try c.decode(String.self, forKey: .text)
+        link = try c.decodeKnownIfPresent(Link.self, forKey: .link)
+        chip = try c.decodeIfPresent(Label.self, forKey: .chip); state = try c.decodeIfPresent(Label.self, forKey: .state)
+    }
+}
+extension BlockChip {
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); label = try c.decode(String.self, forKey: .label)
+        link = try c.decodeKnownIfPresent(Link.self, forKey: .link)
+    }
+}
+extension Form {
+    private struct Requirement: Decodable { let required: Bool }
+
+    /// A field of a kind the app does not know is left out; when it was required the form cannot be sent.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        let fields = try c.decode([Known<Field>].self, forKey: .fields)
+        let requirements = try c.decode([Requirement].self, forKey: .fields)
+        self.fields = fields.compactMap(\.value)
+        var submit = try c.decode(Action.self, forKey: .submit)
+        if zip(fields, requirements).contains(where: { $0.value == nil && $1.required }) {
+            submit.enabled = false
+            submit.needsNewerApp = true
+        }
+        self.submit = submit
     }
 }

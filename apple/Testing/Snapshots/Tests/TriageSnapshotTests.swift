@@ -196,6 +196,16 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
+    func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse() throws {
+        let store = try single(try Fixtures.newerDaemonCard())
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse_es() throws {
+        let store = try single(try Fixtures.newerDaemonCard(spanish: true), spanish: true)
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_decideWithMoreOptionsThanButtons() throws {
         let store = try single(try Fixtures.crowdedDecision())
         assertScreen(inWindow: true) { Harness(store: store) }

@@ -1,0 +1,208 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:calendar-sign-in-t-31",
+  "client": "ios",
+  "version": "v1f0a6c2b9d4e7a35",
+  "cursor": "cursor-1",
+  "title": "Inicia sesión en el calendario: 1 tarea lo espera",
+  "status": {
+    "version": "v6dd91deae398bcb5",
+    "summary": "1 pregunta · 1 nodo trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "claude",
+        "label": "Claude",
+        "value": 0.4,
+        "text": "40%",
+        "level": "scorching"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "shimmer"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "calendar-sign-in-t-31",
+          "kind": "sign_in",
+          "need": "Inicia sesión en el calendario: 1 tarea lo espera",
+          "why": "Claude no puede leer el calendario hasta que inicies sesión con una llave de acceso. Espera: «Planificar la semana de publicación».",
+          "meta": "Alondra",
+          "link": {
+            "kind": "view",
+            "key": "card:calendar-sign-in-t-31"
+          },
+          "icon": "calendar",
+          "eyebrow": {
+            "text": "Problema",
+            "tone": "aurora"
+          },
+          "title": "Inicia sesión en el calendario: 1 tarea lo espera",
+          "subtitle": "Claude no puede leer el calendario hasta que inicies sesión con una llave de acceso.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Planificar la semana de publicación",
+              "link": {
+                "kind": "deep_link",
+                "target": "task:t-31"
+              }
+            }
+          ],
+          "detail": "streamed",
+          "actions": [
+            {
+              "id": "",
+              "label": "Iniciar sesión con una llave de acceso",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "1",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "passkey_sign_in",
+                  "card": "calendar-sign-in-t-31"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "ans:calendar-sign-in-t-31@31",
+              "label": "Seguir sin el calendario",
+              "style": "glow",
+              "role": "celebrate",
+              "option_id": "go_on_without",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "La tarea sigue sin el calendario",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:calendar-sign-in-t-31@31",
+              "label": "Elegir una hora",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "pick_time",
+              "presentation": "slider",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Planificar la semana de publicación",
+              "tone": "aurora",
+              "link": {
+                "kind": "view",
+                "key": "task:t-31"
+              }
+            },
+            {
+              "label": "Calendario",
+              "value": "Trabajo",
+              "link": {
+                "kind": "deep_link",
+                "target": "calendar:work"
+              }
+            }
+          ]
+        },
+        {
+          "type": "calendar_strip",
+          "days": [
+            "2026-10-26",
+            "2026-10-27"
+          ]
+        },
+        {
+          "type": "notice",
+          "text": "El calendario pide la llave de acceso una vez por semana.",
+          "tone": "aurora"
+        },
+        {
+          "type": "form",
+          "id": "calendar",
+          "fields": [
+            {
+              "id": "note",
+              "label": "Nota",
+              "kind": {
+                "kind": "text"
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "slot",
+              "label": "Franja",
+              "kind": {
+                "kind": "time_range"
+              },
+              "value": null,
+              "required": true,
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "form:calendar",
+            "label": "Guardar",
+            "style": "primary",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true
+          }
+        }
+      ]
+    }
+  ]
+}

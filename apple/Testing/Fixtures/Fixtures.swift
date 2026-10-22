@@ -17,6 +17,13 @@ enum Fixtures {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    /// A card as a daemon newer than the app sends it: kinds of links, items, fields and values the app does not know.
+    static func newerDaemonCard(spanish: Bool = false) throws -> ViewDocument {
+        let url = try directory().deletingLastPathComponent()
+            .appendingPathComponent("newer-daemon/\(spanish ? "card-es" : "card").json")
+        return try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
+    }
+
     /// A fixture view, optionally pretending to be a later version of itself.
     static func document(_ name: String, version: String? = nil) throws -> ViewDocument {
         let data = try Data(contentsOf: directory().appendingPathComponent("\(name).json"))

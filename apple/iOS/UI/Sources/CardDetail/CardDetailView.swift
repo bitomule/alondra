@@ -179,6 +179,8 @@ public struct CardDetailView: View {
             NoticeView(notice: notice)
         case .timeline(let timeline):
             TimelineView(timeline: timeline)
+        case .unsupported:
+            UnsupportedItemView()
         case .card, .form, .actions:
             EmptyView()
         }
@@ -342,9 +344,6 @@ public struct CardDetailView: View {
             .glassRole(action.cardRole)
             .disabled(disabled)
             ButtonCaption(action: action)
-            if !action.enabled, let reason = action.disabledReason {
-                Text(reason).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
         }
     }
 

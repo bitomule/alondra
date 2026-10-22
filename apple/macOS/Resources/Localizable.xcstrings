@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Update Alondra to use this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esto"}}}},
+    "Update Alondra to see this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para ver esto"}}}},
     "Your Mac could not do it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. Vuelve a intentarlo."}}}},
     "MCP servers": {
       "localizations": {

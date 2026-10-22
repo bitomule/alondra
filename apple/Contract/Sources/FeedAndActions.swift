@@ -65,7 +65,11 @@ public struct ActionRequest: Codable, Equatable, Sendable {
     }
 }
 
-public enum ActionOutcomeKind: String, Codable, Equatable, Sendable { case applied, noLongerAvailable = "no_longer_available", changed, rejected }
+/// An outcome added by a newer daemon reads as `changed`: the view is fetched again and shows what happened.
+public enum ActionOutcomeKind: String, Codable, Equatable, Sendable, FallbackDecodable {
+    case applied, noLongerAvailable = "no_longer_available", changed, rejected
+    public static let fallback = ActionOutcomeKind.changed
+}
 public struct ActionResponse: Codable, Equatable, Sendable {
     public let protocolVersion: UInt32
     public let outcome: ActionOutcomeKind

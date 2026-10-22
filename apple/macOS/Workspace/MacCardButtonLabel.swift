@@ -14,7 +14,7 @@ struct MacCardButtonLabel: View {
             .padding(.horizontal, 36)
             HStack {
                 Spacer()
-                if let key = action.key, key.count == 1 { MacKeyHint(key: key) }
+                if action.enabled, let key = action.key, key.count == 1 { MacKeyHint(key: key) }
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)

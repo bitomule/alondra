@@ -18,3 +18,10 @@ filegroup(
     srcs = glob(["cards/*.json"], exclude = ["cards/*-mac.json", "cards/*-tui.json"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+# Views as a daemon newer than the client sends them: kinds and values the client does not know.
+filegroup(
+    name = "newer_daemon",
+    srcs = glob(["newer-daemon/*.json"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

@@ -87,6 +87,7 @@ ios_unit_test(
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
         "//fixtures/views:cards",
+        "//fixtures/views:newer_daemon",
     ],
     env = {
         "KEEP_XCRESULT_ON_SUCCESS": "0",

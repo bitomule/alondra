@@ -1,0 +1,121 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:calendar-sign-in-t-31",
+  "client": "ios",
+  "version": "v1f0a6c2b9d4e7a35",
+  "cursor": "cursor-1",
+  "title": "Sign in to the calendar: 1 task waits for it",
+  "status": {
+    "version": "v6dd91deae398bcb5",
+    "summary": "1 question · 1 node working",
+    "badge": 1,
+    "counts": [
+      { "id": "inbox", "label": "Inbox", "value": 1 },
+      { "id": "tasks", "label": "Tasks", "value": 1 }
+    ],
+    "gauges": [
+      { "id": "claude", "label": "Claude", "value": 0.4, "text": "40%", "level": "scorching" }
+    ],
+    "orchestrator": { "text": "idle", "tone": "shimmer" }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "calendar-sign-in-t-31",
+          "kind": "sign_in",
+          "need": "Sign in to the calendar: 1 task waits for it",
+          "why": "Claude cannot read the calendar until you sign in with a passkey. Waiting: “Plan the release week”.",
+          "meta": "Alondra",
+          "link": { "kind": "view", "key": "card:calendar-sign-in-t-31" },
+          "icon": "calendar",
+          "eyebrow": { "text": "Problem", "tone": "aurora" },
+          "title": "Sign in to the calendar: 1 task waits for it",
+          "subtitle": "Claude cannot read the calendar until you sign in with a passkey.",
+          "context": [
+            { "icon": "task", "text": "Plan the release week", "link": { "kind": "deep_link", "target": "task:t-31" } }
+          ],
+          "detail": "streamed",
+          "actions": [
+            {
+              "id": "",
+              "label": "Sign in with a passkey",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": { "kind": "none" },
+              "attachments": false,
+              "enabled": true,
+              "key": "1",
+              "link": { "kind": "local", "local": { "kind": "passkey_sign_in", "card": "calendar-sign-in-t-31" } },
+              "resolves_card": false
+            },
+            {
+              "id": "ans:calendar-sign-in-t-31@31",
+              "label": "Go on without the calendar",
+              "style": "glow",
+              "role": "celebrate",
+              "option_id": "go_on_without",
+              "presentation": "button",
+              "input": { "kind": "none" },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "The task goes on without the calendar",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:calendar-sign-in-t-31@31",
+              "label": "Pick a time",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "pick_time",
+              "presentation": "slider",
+              "input": { "kind": "none" },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            { "label": "Task", "value": "Plan the release week", "tone": "aurora", "link": { "kind": "view", "key": "task:t-31" } },
+            { "label": "Calendar", "value": "Work", "link": { "kind": "deep_link", "target": "calendar:work" } }
+          ]
+        },
+        { "type": "calendar_strip", "days": ["2026-10-26", "2026-10-27"] },
+        { "type": "notice", "text": "The calendar asks for a passkey once a week.", "tone": "aurora" },
+        {
+          "type": "form",
+          "id": "calendar",
+          "fields": [
+            { "id": "note", "label": "Note", "kind": { "kind": "text" }, "value": "", "required": false, "reload_on_change": false },
+            { "id": "slot", "label": "Slot", "kind": { "kind": "time_range" }, "value": null, "required": true, "reload_on_change": false }
+          ],
+          "submit": {
+            "id": "form:calendar",
+            "label": "Save",
+            "style": "primary",
+            "presentation": "button",
+            "input": { "kind": "none" },
+            "attachments": false,
+            "enabled": true
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -26,11 +26,11 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         RelativeClock.now = { referenceDate }
     }
 
-    private func document(_ name: String) throws -> ViewDocument {
+    private func document(_ name: String, folder: String = "cards") throws -> ViewDocument {
         let environment = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
-        let url = root.appendingPathComponent("fixtures/views/cards/\(name).json")
+        let url = root.appendingPathComponent("fixtures/views/\(folder)/\(name).json")
         return try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
     }
 
@@ -126,6 +126,25 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     func test_card_questionWithItsAnswers() throws {
         let store = try presentation(detail: "card-question-mac")
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }
+    }
+
+    private func newerDaemonCard(spanish: Bool = false) throws -> StoreOf<MacPresentationFeature> {
+        try presentation(sidebar: spanish ? "sidebar-mac-es" : "sidebar-mac") { state in
+            let card = try? self.document(spanish ? "card-es" : "card", folder: "newer-daemon")
+            state.detailDocument = card
+            state.selection = card.map { .viewKey($0.key) }
+            state.selectedViewKey = card?.key
+        }
+    }
+
+    func test_card_fromANewerDaemonAsksToUpdateForWhatItCannotUse() throws {
+        let store = try newerDaemonCard()
+        assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_fromANewerDaemonAsksToUpdateForWhatItCannotUse_spanish() throws {
+        let store = try newerDaemonCard(spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 760), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
     }
 
     func test_card_questionOfSeveralAskedTogether() throws {

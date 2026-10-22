@@ -11,7 +11,7 @@ struct MacShortcuts: View {
     var body: some View {
         ZStack {
             ForEach(Array((buttons.visible + buttons.more).enumerated()), id: \.offset) { _, action in
-                if let key = action.key, key.count == 1, let character = key.first, !(key == "m" && !buttons.more.isEmpty), !(key == "r" && reply != nil) {
+                if action.enabled, let key = action.key, key.count == 1, let character = key.first, !(key == "m" && !buttons.more.isEmpty), !(key == "r" && reply != nil) {
                     Button(action.label) { onAction(action) }
                         .keyboardShortcut(KeyEquivalent(character), modifiers: [])
                 }

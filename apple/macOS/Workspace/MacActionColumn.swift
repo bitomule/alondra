@@ -14,6 +14,8 @@ struct MacActionColumn: View {
                 VStack(spacing: 4) {
                     Button { onAction(action) } label: { MacCardButtonLabel(action: action) }
                         .buttonStyle(MacCardButtonStyle(role: action.paintedRole))
+                        .disabled(!action.enabled)
+                    DisabledReason(action).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
             }
             if !buttons.more.isEmpty { moreButton }
@@ -48,6 +50,7 @@ struct MacActionColumn: View {
                         .padding(.horizontal, 10).padding(.vertical, 6).contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    .disabled(!action.enabled)
                 }
             }
             .padding(6).frame(minWidth: 220)

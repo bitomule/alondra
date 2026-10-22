@@ -91,6 +91,14 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard()))
+    }
+
+    func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse_es() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard(spanish: true)), language: .spanish)
+    }
+
     func test_decideWithItsHistory() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID).withHistory())
         assertDetail(store)

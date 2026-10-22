@@ -38,6 +38,7 @@ struct CardButtons: View {
             if action.presentation == .menu, !action.options.isEmpty {
                 Button { choosing = action } label: { GlassBarLabel(action.label) }
                     .glassRole(action.cardRole)
+                    .disabled(!action.enabled)
                     .accessibilityIdentifier(identifier(action))
                     .confirmationDialog(
                         action.label,
@@ -51,6 +52,7 @@ struct CardButtons: View {
             } else {
                 Button { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
                     .glassRole(action.cardRole)
+                    .disabled(!action.enabled)
                     .accessibilityIdentifier(identifier(action))
             }
             ButtonCaption(action: action)
@@ -67,7 +69,7 @@ struct CardButtons: View {
             .accessibilityLabel("More actions")
             .confirmationDialog("More actions", isPresented: $showsMore, titleVisibility: .hidden) {
                 ForEach(Array(store.menu.enumerated()), id: \.offset) { _, action in
-                    Button(action.label) { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) }
+                    Button(action.label) { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) }.disabled(!action.enabled)
                 }
             }
     }

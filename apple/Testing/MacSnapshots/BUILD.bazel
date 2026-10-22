@@ -32,6 +32,7 @@ swift_test(
         "//apple:macOS/Resources/Localizable.xcstrings",
         "//apple/Design:Resources/AlondraDesign.xcstrings",
         "//fixtures/views:cards",
+        "//fixtures/views:newer_daemon",
         ":localizations",
     ],
     env = {
