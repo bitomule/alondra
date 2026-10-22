@@ -158,3 +158,45 @@ fn the_readings_and_the_days_start_survive_a_restart() {
     let usage = restarted.read().index().usage(NOW + 120_000, &crate::node_reports::local_day(NOW)).unwrap();
     assert_eq!(usage.today_spent.map(f64::round), Some(18.0), "today still counts from its first reading");
 }
+
+fn two_accounts(domain: &DomainRuntime) {
+    let accounts = ["default", "work"].map(|account| AccountStatus {
+        provider: Provider::Claude, id: id(account), name: account.into(), state: AccountState::SignedIn, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+    }).to_vec();
+    let read = domain.read();
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: "two-accounts".into(),
+        expected_revision: read.state().revision, command: DomainCommand::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() },
+    };
+    drop(read);
+    domain.execute_as_system(envelope).unwrap();
+}
+
+// The Mac waits only when no account can work: one account out of usage leaves new work to the
+// other, both out pause everything until the soonest comes back, and one coming back early ends
+// the wait then, not at the later reset.
+#[test]
+fn the_mac_waits_only_while_no_account_can_work() {
+    let home = Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = DomainRuntime::open(&home).unwrap();
+    two_accounts(&domain);
+    let now = now_millis();
+    record_limit(&domain, &id("default"), Some(now + 3_600_000), now);
+    assert!(!domain.live.usage_pause.is_active(), "the work account can still work");
+    assert!(domain.read().state().account_usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(now) == Some(now + 3_600_000)));
+    record_limit(&domain, &id("work"), Some(now + 7_200_000), now);
+    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 3_600_000), "until the soonest account comes back");
+    record_limit(&domain, &id("work"), Some(now + 1_800_000), now);
+    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 1_800_000), "a reading that moves a reset earlier moves the wait");
+    record(&domain, &id("default"), UsageReading {
+        windows: vec![WindowReading { kind: WindowKind::Session, used: Share::of(0.2), resets_at: Some(now + 3_600_000), exhausted: false }],
+        plan: None, complete: true,
+    }, now + 1_000);
+    follow(&domain, now + 1_000);
+    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 1_000), "the default account works again: the wait ends now");
+    domain.live.usage_pause.resume(now + 1_000);
+    domain.live.usage_pause.exhaust(Some(now + 600_000), now + 2_000);
+    follow(&domain, now + 2_000);
+    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 600_000), "a limit Claude reported that no reading shows yet stands");
+}

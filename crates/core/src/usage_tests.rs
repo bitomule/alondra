@@ -11,7 +11,7 @@ fn id(text: &str) -> AccountId {
 }
 
 fn status(text: &str, state: AccountState, billing: AccountBilling) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, email: None, plan: None, billing }
+    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, email: None, plan: None, billing, sign_ins: 0 }
 }
 
 fn window(kind: WindowKind, used: f64, resets_at: Millis) -> WindowReading {
@@ -207,4 +207,134 @@ proptest! {
         let absolute = |weight: u32| margins(&accounts(weight), &usage, default_reserve(), NOW, TODAY).accounts[0].absolute;
         prop_assert!(absolute(light + extra) > absolute(light));
     }
+}
+
+fn any_state() -> impl Strategy<Value = AccountState> {
+    prop_oneof![state(), Just(AccountState::Disabled)]
+}
+
+fn billing() -> impl Strategy<Value = AccountBilling> {
+    prop_oneof![
+        4 => (1..12u32).prop_map(|weight| AccountBilling::Subscription { plan: None, weight: Some(weight) }),
+        1 => Just(AccountBilling::Subscription { plan: Some("pro".into()), weight: None }),
+        1 => Just(AccountBilling::PayPerUse),
+    ]
+}
+
+/// Up to four accounts in the user's order, each measured or not.
+fn fleet() -> impl Strategy<Value = (Vec<AccountStatus>, Vec<AccountUsage>)> {
+    let account = (any_state(), billing(), proptest::option::of(proptest::collection::vec(arbitrary_reading(), 1..4)));
+    proptest::collection::vec(account, 1..5).prop_map(|accounts| {
+        let mut statuses = vec![];
+        let mut usage = vec![];
+        for (n, (state, billing, readings)) in accounts.into_iter().enumerate() {
+            let name = format!("account-{n}");
+            statuses.push(status(&name, state, billing));
+            if let Some(readings) = readings {
+                let mut measured = usage_after(&readings);
+                measured.account = id(&name);
+                usage.push(measured);
+            }
+        }
+        (statuses, usage)
+    })
+}
+
+fn policy() -> impl Strategy<Value = Policy> {
+    prop_oneof![Just(Policy::Margin), Just(Policy::Chain)]
+}
+
+fn usable(account: &AccountStatus, usage: &[AccountUsage], now: Millis) -> bool {
+    can_work(account, usage.iter().find(|u| u.account == account.id), now)
+}
+
+fn absolute(account: &AccountStatus, usage: &[AccountUsage], reserve: Share, now: Millis) -> f64 {
+    let measured = usage.iter().find(|u| u.account == account.id);
+    let weight = f64::from(weight(&account.billing, None).unwrap());
+    weight * own_margin(account.state, measured, reserve, now, TODAY).unwrap_or(1.0)
+}
+
+proptest! {
+    #[test]
+    fn the_chosen_account_can_work_and_one_is_chosen_whenever_any_can((accounts, usage) in fleet(), policy in policy(), reserve in 0.5..=1.0f64, later in 0..6 * 86_400_000i64) {
+        let (reserve, now) = (Share::of(reserve), NOW + later);
+        let chosen = choose_account(policy, Provider::Claude, &accounts, &usage, reserve, now, TODAY);
+        let any = accounts.iter().any(|account| usable(account, &usage, now));
+        prop_assert_eq!(chosen.is_some(), any);
+        if let Some(chosen) = chosen {
+            let account = accounts.iter().find(|account| account.id == chosen).unwrap();
+            prop_assert!(usable(account, &usage, now), "{account:?}");
+            prop_assert!(!matches!(account.billing, AccountBilling::PayPerUse), "paid per use is never chosen on its own");
+            prop_assert!(!matches!(account.state, AccountState::Disabled | AccountState::SignedOut));
+            prop_assert!(margin_returns_at(Provider::Claude, &accounts, &usage, now).is_none(), "nothing to wait for");
+        }
+    }
+
+    #[test]
+    fn by_margin_the_most_absolute_margin_wins_and_the_first_of_equals((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+        let reserve = Share::of(reserve);
+        let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY) else { return Ok(()) };
+        let position = accounts.iter().position(|account| account.id == chosen).unwrap();
+        let best = absolute(&accounts[position], &usage, reserve, NOW);
+        for (n, other) in accounts.iter().enumerate().filter(|(_, other)| usable(other, &usage, NOW)) {
+            let theirs = absolute(other, &usage, reserve, NOW);
+            prop_assert!(theirs <= best, "{} has {theirs}, more than the chosen {best}", other.id);
+            if n < position && best > 0.0 {
+                prop_assert!(theirs < best, "{} comes first with as much margin", other.id);
+            }
+        }
+    }
+
+    #[test]
+    fn in_a_chain_the_first_account_with_margin_wins((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+        let reserve = Share::of(reserve);
+        let chosen = choose_account(Policy::Chain, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY);
+        let with_margin = accounts.iter().find(|account| usable(account, &usage, NOW) && absolute(account, &usage, reserve, NOW) > 0.0);
+        let first_usable = accounts.iter().find(|account| usable(account, &usage, NOW));
+        prop_assert_eq!(chosen, with_margin.or(first_usable).map(|account| account.id.clone()));
+    }
+
+    #[test]
+    fn when_no_account_can_work_one_can_once_its_limits_reset((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+        let reserve = Share::of(reserve);
+        if choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY).is_some() {
+            return Ok(());
+        }
+        if let Some(back) = margin_returns_at(Provider::Claude, &accounts, &usage, NOW) {
+            prop_assert!(back > NOW);
+            prop_assert!(choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, back, TODAY).is_some(), "at {back} one can work");
+            prop_assert!(choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, back - 1, TODAY).is_none(), "not before");
+        }
+    }
+}
+
+#[test]
+fn without_recorded_accounts_the_default_sign_in_is_chosen() {
+    assert_eq!(choose_account(Policy::Margin, Provider::Claude, &[], &[], default_reserve(), NOW, TODAY), Some(AccountId::default_account()));
+    let out = record(None, Provider::Claude, &AccountId::default_account(), &reading(1.0, 0.5), NOW, TODAY);
+    assert_eq!(choose_account(Policy::Chain, Provider::Claude, &[], &[out.clone()], default_reserve(), NOW, TODAY), None);
+    assert_eq!(margin_returns_at(Provider::Claude, &[], &[out], NOW), Some(SESSION_RESET));
+}
+
+#[test]
+fn margin_spreads_new_work_and_a_chain_fills_the_first_account() {
+    let accounts = [status("main", AccountState::SignedIn, AccountBilling::default()), status("work", AccountState::SignedIn, AccountBilling::default())];
+    let usage = |main: f64, work: f64| [
+        record(None, Provider::Claude, &id("main"), &reading(0.1, main), NOW, TODAY),
+        record(None, Provider::Claude, &id("work"), &reading(0.1, work), NOW, TODAY),
+    ];
+    let choose = |policy, usage: &[AccountUsage]| choose_account(policy, Provider::Claude, &accounts, usage, default_reserve(), NOW, TODAY).map(|id| id.to_string());
+    assert_eq!(choose(Policy::Margin, &usage(0.6, 0.2)), Some("work".into()), "more room");
+    assert_eq!(choose(Policy::Margin, &usage(0.3, 0.3)), Some("main".into()), "as much: the first");
+    assert_eq!(choose(Policy::Chain, &usage(0.6, 0.2)), Some("main".into()), "the first with margin");
+    let mut over = usage(0.2, 0.2);
+    over[0] = record(None, Provider::Claude, &id("main"), &reading(0.95, 0.2), NOW, TODAY);
+    assert_eq!(choose(Policy::Chain, &over), Some("work".into()), "past its reserve, the first has no margin");
+    over[1] = record(None, Provider::Claude, &id("work"), &reading(0.97, 0.2), NOW, TODAY);
+    assert_eq!(choose(Policy::Margin, &over), Some("main".into()), "the reserve never holds work back: both past it, the first");
+    over[0] = record(None, Provider::Claude, &id("main"), &reading(1.0, 0.2), NOW, TODAY);
+    assert_eq!(choose(Policy::Margin, &over), Some("work".into()), "only a limit run out does");
+    let opus = UsageReading { windows: vec![WindowReading { kind: WindowKind::Other("seven_day_opus".into()), used: Share::FULL, resets_at: Some(WEEK_RESET), exhausted: true }], plan: None, complete: false };
+    let only_opus = [record(Some(&usage(0.2, 0.2)[0]), Provider::Claude, &id("main"), &opus, NOW, TODAY), over[1].clone()];
+    assert_eq!(choose(Policy::Chain, &only_opus), Some("main".into()), "one model's week alone leaves the others working");
 }

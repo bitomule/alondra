@@ -129,7 +129,7 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
 async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
     let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
     if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
-        && let Err(error) = crate::claude_trust::grant(Path::new(&folder))
+        && let Err(error) = crate::claude_trust::grant(Path::new(&folder), &crate::accounts::profiles(home))
     {
         log!("could not trust {folder} in Claude Code for {task}: {error}");
         return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());

@@ -157,6 +157,7 @@ fn admit(label: &str) -> Command {
         instance: format!("resource-{label}"),
         host: "fixture-service".into(),
         model: None,
+        account: None,
     }
 }
 fn launch(journal: &mut LifecycleTransaction<'_>) -> alondra_store::Result<ExecutionStamp> {
@@ -852,7 +853,7 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     let state = store.load().unwrap();
-    let admit = Command::AdmitExecution { task_id: task.clone(), agent_id: node, conversation: id("conversation"), instance: id("instance"), host: "fixture-service".into(), model: None };
+    let admit = Command::AdmitExecution { task_id: task.clone(), agent_id: node, conversation: id("conversation"), instance: id("instance"), host: "fixture-service".into(), model: None, account: None };
     let (execution, _) = store
         .own(scope_of(&state), |owner| {
             owner.stage_command(&Actor::System, &envelope(&state, &id("admit"), admit), Attached::None)?;

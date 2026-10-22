@@ -144,7 +144,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
     };
     (request, task)
 }
@@ -3102,10 +3102,10 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
         (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
-            instance: "instance".into(), host: "sdk-host".into(), model: None }, false),
+            instance: "instance".into(), host: "sdk-host".into(), model: None, account: None }, false),
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
-        (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }, false),
+        (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }, false),
         (Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }, true),
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
@@ -4371,7 +4371,7 @@ fn guards_refuse_what_the_commands_refuse() {
         title: "SDK".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
     exec(&mut sdk, Actor::System, Command::AdmitExecution { task_id: "sdk".into(), agent_id: "s".into(),
-        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None }).unwrap();
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None }).unwrap();
     let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
     exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
@@ -4484,7 +4484,7 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
     use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     let account = |id: &str, state| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), state,
-        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(),
+        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     };
     let mut s = DomainState::new("epoch");
     let accounts = vec![account("default", AccountState::SignedIn), account("work", AccountState::SignedOut)];
@@ -4522,7 +4522,7 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     use crate::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = |id: &str| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
-        email: None, plan: None, billing: AccountBilling::default(),
+        email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
     };
     let (now, day) = (1_790_192_202_000, "2026-09-23");
     let reading = |week: f64| UsageReading {

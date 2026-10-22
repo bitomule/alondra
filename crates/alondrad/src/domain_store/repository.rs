@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -767,6 +767,12 @@ pub(super) fn save_changes(
             row.insert("task_id".into(), json!(x.id));
             upsert(c, "task_models", &["task_id"], row)?;
         }
+        if prior.map_or(x.account.is_some(), |p| p.account != x.account) {
+            match &x.account {
+                Some(account) => exec(c, "INSERT INTO task_accounts(task_id,account) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET account=excluded.account", params![x.id.0, account.as_str()])?,
+                None => exec(c, "DELETE FROM task_accounts WHERE task_id=?1", params![x.id.0])?,
+            };
+        }
         if prior.is_none_or(|p| p.wrap_up != x.wrap_up) {
             save_wrap_up(c, x)?;
         }
@@ -1215,6 +1221,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let id: String = row.get(0)?;
         let model = json!({"model": row.get::<_, String>(1)?, "chosen_by": row.get::<_, String>(2)?});
         state.tasks.get_mut(&TaskId::from(id)).context("model task missing")?.model = Some(decode(model)?);
+    }
+    drop(stored);
+    let mut accounts = c.prepare("SELECT task_id, account FROM task_accounts")?;
+    let mut stored = accounts.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let account = alondra_core::accounts::AccountId::parse(&row.get::<_, String>(1)?).map_err(anyhow::Error::msg)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("account task missing")?.account = Some(account);
     }
     drop(stored);
     let mut wrap_ups = c.prepare("SELECT task_id, asked_at, cleaned_at, close_cancelled, node_end FROM task_wrap_ups")?;

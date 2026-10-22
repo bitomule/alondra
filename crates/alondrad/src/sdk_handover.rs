@@ -449,6 +449,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
         plugin,
         options,
         model: None,
+        account: alondra_core::accounts::AccountId::default_account(),
     };
     let continuation = crate::sdk_owner::Continuation { node: handover.node.clone() };
     let driver = tokio::task::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))

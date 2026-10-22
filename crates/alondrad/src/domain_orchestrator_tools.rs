@@ -313,9 +313,10 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
+    let account = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis());
     if let Some(exhausted) = domain.live.usage_pause.current() {
         remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
-        let why = if exhausted.by_user { "The user paused Claude work" } else { "Claude usage ran out on this Mac" };
+        let why = if exhausted.by_user { "The user paused Claude work" } else { "No Claude account on this Mac has usage left" };
         return Err(DomainError::new("usage_exhausted", format!(
             "{why} until {}: {} stays as it is and can be launched after that",
             crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
@@ -328,7 +329,9 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
-    if let Some(repository) = crate::claude_trust::ensure(Path::new(&cwd), projects_root.as_deref()) {
+    let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
+    let profile = alondra_core::accounts::folder(home, &account);
+    if let Some(repository) = crate::claude_trust::ensure_for(profile.as_deref(), Path::new(&cwd), projects_root.as_deref()) {
         remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
@@ -421,7 +424,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
         };
         let name = body.title.clone().unwrap_or(name);
         let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
-            model: resolved.launch_model() })
+            model: resolved.launch_model(), account })
             .await
             .map_err(|error| match &replaced {
                 Some(_) => DomainError { message: format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",

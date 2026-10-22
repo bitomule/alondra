@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Policy, Provider};
 use crate::model::Millis;
 
 const DAY_MILLIS: f64 = 86_400_000.0;
@@ -241,6 +241,28 @@ impl AccountUsage {
             .or_else(|| self.windows.iter().filter_map(|window| window.reading.resets_at.filter(|reset| *reset > now)).min())
     }
 
+    /// Whether the session or the week ran out and has not reset.
+    fn plan_exhausted(&self, now: Millis) -> bool {
+        self.plan_ran_out(now).next().is_some()
+    }
+
+    fn plan_ran_out(&self, now: Millis) -> impl Iterator<Item = &WindowReading> {
+        self.windows.iter().map(|window| &window.reading).filter(move |reading| {
+            matches!(reading.kind, WindowKind::Session | WindowKind::Weekly)
+                && (reading.exhausted || reading.used == Share::FULL)
+                && reading.resets_at.is_none_or(|reset| reset > now)
+        })
+    }
+
+    /// When the session and the week it ran out of have reset: none when one has no known reset.
+    fn can_work_at(&self, now: Millis) -> Option<Millis> {
+        let mut at = now;
+        for reading in self.plan_ran_out(now) {
+            at = at.max(reading.resets_at?);
+        }
+        Some(at)
+    }
+
     fn exhausted(&self, now: Millis) -> bool {
         self.windows.iter().map(|window| &window.reading).any(|reading| {
             (reading.exhausted || reading.used == Share::FULL) && reading.resets_at.is_none_or(|reset| reset > now)
@@ -391,17 +413,18 @@ pub struct Margins {
 }
 
 /// Until the daemon records the accounts, the provider's own sign-in is the one there is.
+fn or_implicit(accounts: &[AccountStatus]) -> std::borrow::Cow<'_, [AccountStatus]> {
+    if !accounts.is_empty() {
+        return std::borrow::Cow::Borrowed(accounts);
+    }
+    let account = crate::accounts::ProviderAccount::implicit_default();
+    std::borrow::Cow::Owned(vec![AccountStatus {
+        provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, email: None, plan: None, billing: account.billing, sign_ins: 0,
+    }])
+}
+
 pub fn margins(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Margins {
-    let implicit;
-    let accounts = if accounts.is_empty() {
-        let account = crate::accounts::ProviderAccount::implicit_default();
-        implicit = [AccountStatus {
-            provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, email: None, plan: None, billing: account.billing,
-        }];
-        &implicit[..]
-    } else {
-        accounts
-    };
+    let accounts = or_implicit(accounts);
     let counted: Vec<AccountMargin> = accounts
         .iter()
         .filter_map(|account| {
@@ -422,6 +445,73 @@ pub fn margins(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Shar
     let weights: f64 = counted.iter().map(|m| f64::from(m.weight)).sum();
     let combined = (weights > 0.0).then(|| counted.iter().map(|m| m.absolute).sum::<f64>() / weights);
     Margins { accounts: counted, combined }
+}
+
+/// Whether the account can take work at `now`: on, paid by subscription, signed in as far as
+/// Alondra knows and with neither its session nor its week run out. A window of one model alone,
+/// its reserve and today's slice only rank it: they never hold work back. An account never measured can, until a reading says otherwise.
+fn can_work(account: &AccountStatus, usage: Option<&AccountUsage>, now: Millis) -> bool {
+    if matches!(account.state, AccountState::Disabled | AccountState::SignedOut) || matches!(account.billing, AccountBilling::PayPerUse) {
+        return false;
+    }
+    usage.is_none_or(|usage| !usage.plan_exhausted(now))
+}
+
+/// The account a new launch of `provider` runs on, as `policy` spreads the work over the
+/// accounts in the user's order. By margin: the one with the most absolute margin, the first of
+/// them when several have as much. In a chain: the first with margin. Today's slice only ranks
+/// them: when every account that can work has no margin left, the one with the most of its week left (by
+/// margin) or the first (in a chain) is chosen. A session window past the reserve leaves the
+/// account no margin, and so ranks it last, but it is still chosen when no other can work. An account paid per use is never chosen here.
+/// None when no account can work: the launch waits until one can.
+pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Option<AccountId> {
+    let accounts = or_implicit(accounts);
+    let candidates: Vec<(&AccountStatus, f64, f64)> = accounts
+        .iter()
+        .filter(|account| account.provider == provider)
+        .filter_map(|account| {
+            let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
+            if !can_work(account, measured, now) {
+                return None;
+            }
+            let weight = f64::from(weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()))?);
+            let own = own_margin(account.state, measured, reserve, now, today).unwrap_or(1.0);
+            let week_left = measured.and_then(|u| u.current(&WindowKind::Weekly, now)).map_or(1.0, |week| 1.0 - week.used.fraction());
+            Some((account, weight * own, weight * week_left))
+        })
+        .collect();
+    let chosen = match policy {
+        Policy::Margin => {
+            let rank = |(_, absolute, week): &(&AccountStatus, f64, f64)| (*absolute, if *absolute > 0.0 { 0.0 } else { *week });
+            candidates.iter().fold(None, |best: Option<&(&AccountStatus, f64, f64)>, candidate| match best {
+                Some(best) if rank(candidate) <= rank(best) => Some(best),
+                _ => Some(candidate),
+            })
+        }
+        Policy::Chain => candidates.iter().find(|(_, absolute, _)| *absolute > 0.0).or(candidates.first()),
+    };
+    chosen.map(|(account, _, _)| account.id.clone())
+}
+
+/// When some account of `provider` can work again by itself, while none can: the soonest moment
+/// the session and week one of them ran out of have reset. None when an account can work now, or none will by waiting (they
+/// are signed out, off or paid per use).
+pub fn margin_returns_at(provider: Provider, accounts: &[AccountStatus], usage: &[AccountUsage], now: Millis) -> Option<Millis> {
+    let accounts = or_implicit(accounts);
+    let mut soonest: Option<Millis> = None;
+    for account in accounts.iter().filter(|account| account.provider == provider) {
+        let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
+        if can_work(account, measured, now) {
+            return None;
+        }
+        if matches!(account.state, AccountState::Disabled | AccountState::SignedOut) || matches!(account.billing, AccountBilling::PayPerUse) {
+            continue;
+        }
+        if let Some(back) = measured.and_then(|measured| measured.can_work_at(now)) {
+            soonest = Some(soonest.map_or(back, |soonest| soonest.min(back)));
+        }
+    }
+    soonest
 }
 
 /// The accounts' usage together, weighted by plan, as the usage gauges and the pace card read it:

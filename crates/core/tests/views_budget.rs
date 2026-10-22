@@ -112,7 +112,7 @@ fn unit(shape: Shape) -> DomainState {
     });
     if through_sdk {
         seed.run(Actor::System, Command::AdmitExecution { task_id: task.as_str().into(), agent_id: agent.as_str().into(),
-            conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None });
+            conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None, account: None });
         let Some(LifecycleRecord::Planned { input }) = seed.0.lifecycle_journal[&task.as_str().into()].first().cloned() else { panic!("planned first") };
         seed.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.as_str().into(), generation: 1, facts: vec![
             RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
@@ -263,7 +263,7 @@ fn real_size() -> DomainState {
     }
     state.accounts = ["default", "work", "team"].into_iter().map(|id| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: format!("Synthetic {id}"), state: AccountState::SignedIn,
-        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(),
+        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     }).collect();
     state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
     state.validate().expect("the synthetic domain is valid");

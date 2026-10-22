@@ -37,6 +37,9 @@ const SCHEMA: &str = concat!(
 /// Created on every open instead of with the schema, so a store made before models were recorded
 /// gains it without being moved aside.
 const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT PRIMARY KEY REFERENCES tasks(id), model TEXT NOT NULL CHECK(length(model)>0), chosen_by TEXT NOT NULL CHECK(chosen_by IN('orchestrator','user')));";
+/// The provider account each Task's current execution runs on, when it is not the provider's own
+/// sign-in; created on every open like task_models.
+const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
 /// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
@@ -565,6 +568,7 @@ impl DomainStore {
             tx.execute_batch(AGENT_PHASES)?;
         }
         tx.execute_batch(TASK_MODELS)?;
+        tx.execute_batch(TASK_ACCOUNTS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;

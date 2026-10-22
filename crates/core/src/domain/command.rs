@@ -476,6 +476,9 @@ pub enum Command {
         host: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<TaskModel>,
+        /// The provider account the execution runs on; none for the provider's own sign-in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<crate::accounts::AccountId>,
     },
     /// What the SDK observed of the Task's execution of `generation`, in order, normalized from
     /// one accepted observation.
@@ -558,9 +561,12 @@ pub enum Command {
         at: Millis,
         day: String,
     },
-    /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again.
+    /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again;
+    /// for a limit, one of `account`'s when it names one.
     ProbeClaudeAccess {
         hold: ClaudeHold,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<crate::accounts::AccountId>,
     },
     /// Stops what the node's SDK task runs now: its root turn, or the work it runs on its own.
     InterruptTurn {

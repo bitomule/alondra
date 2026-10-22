@@ -136,7 +136,10 @@ async fn launch_through_sdk(
     disallowed_tools: &[String],
     home: &Path,
 ) -> Result<String, String> {
-    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home).await.map_err(|(_, reason)| reason)?;
+    let account = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
+        .ok_or_else(|| "no Claude account on this Mac has usage left".to_owned())?;
+    let profile = alondra_core::accounts::folder(home, &account);
+    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
     let options = crate::sdk_owner::LaunchOptions {
         model: resolved.flags.model.clone(),
         effort: resolved.flags.effort.clone(),
@@ -150,6 +153,7 @@ async fn launch_through_sdk(
         plugin,
         options,
         model: resolved.launch_model(),
+        account,
     })
     .await
     .map_err(|error| error.message)?;
@@ -169,6 +173,7 @@ async fn prepare_claimed(
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     home: &Path,
+    profile: Option<&Path>,
 ) -> Result<(Workplace, PathBuf, Resolved), (StatusCode, String)> {
     if !Path::new(&launch.cwd).is_dir() {
         return Err((
@@ -177,7 +182,7 @@ async fn prepare_claimed(
         ));
     }
     let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
-    if let Some(repository) = crate::claude_trust::ensure(Path::new(&launch.cwd), projects_root.as_deref()) {
+    if let Some(repository) = crate::claude_trust::ensure_for(profile, Path::new(&launch.cwd), projects_root.as_deref()) {
         return Err((
             StatusCode::CONFLICT,
             crate::claude_trust::instructions(&repository),
@@ -252,7 +257,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
     };
     (request, task)
 }
@@ -360,10 +365,10 @@ async fn dispatch_pending(
             return Ok(());
         }
     };
-    if domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
+    let now = alondra_core::now_millis();
+    if crate::accounts::choose_for_launch(domain, home, now).is_none() || domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
         return Ok(());
     }
-    let now = alondra_core::now_millis();
     let waiting = crate::fleet_gate::Waiting {
         key: crate::fleet_gate::Key::Run(run_id.0.clone()),
         priority: crate::fleet_gate::run_priority(&state, run),

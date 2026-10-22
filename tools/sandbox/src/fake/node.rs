@@ -254,11 +254,25 @@ fn write_job(node: &Node, state: &str) -> Result<()> {
     write_json(&node.claude_home.join("jobs").join(&node.short).join("state.json"), &job)
 }
 
-pub(super) fn rfc3339(ms: u64) -> String {
+pub(crate) fn rfc3339(ms: u64) -> String {
     let secs = ms / 1000;
     let (days, rest) = (secs / 86_400, secs % 86_400);
     let (y, m, d) = civil(days as i64);
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rest / 3600, rest % 3600 / 60, rest % 60, ms % 1000)
+}
+
+/// The milliseconds of a UTC time as `rfc3339` writes it.
+pub(super) fn parse_rfc3339(text: &str) -> Option<u64> {
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (y, m, d) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (h, min, s) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    let ms = if text.as_bytes().get(19) == Some(&b'.') { number(20..23)? } else { 0 };
+    let (yy, mm) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let doy = (153 * mm + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    u64::try_from(((days * 86_400 + h * 3600 + min * 60 + s) * 1000) + ms).ok()
 }
 
 /// Days since 1970-01-01 as a calendar date (Howard Hinnant's algorithm).
@@ -522,7 +536,7 @@ fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
             kill(fakes, &node.short, State::Dead)?;
             Ok(work::done("killed"))
         }
-        Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn => Err(anyhow!("only a native Claude of the Agent SDK takes this step")),
+        Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::RateLimit { .. } => Err(anyhow!("only a native Claude of the Agent SDK takes this step")),
         _ => unreachable!("work::perform takes every other step"),
     }
 }

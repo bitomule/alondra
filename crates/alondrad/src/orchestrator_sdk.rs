@@ -28,6 +28,8 @@ pub(crate) struct Batch {
     pub(crate) capability: String,
     pub(crate) session: String,
     pub(crate) prompt: String,
+    /// The provider account the batch's Claude runs on.
+    pub(crate) account: alondra_core::accounts::AccountId,
 }
 
 /// Runs the batch's one turn: `spawned` once the host took the prompt, until Claude's process
@@ -113,7 +115,9 @@ fn stop(host: BatchHost<BatchOwner>, directory: &Path) {
 }
 
 fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
-    let backend = &batch.backend.for_start().map_err(|error| format!("{error:#}"))?;
+    let backend = &batch.backend.for_start()
+        .and_then(|backend| backend.for_account(&batch.home, &batch.account, &crate::accounts::registered(&batch.home)))
+        .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
     let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));
     {
@@ -146,7 +150,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
         native_directory: batch.directory.clone(),
         native_environment,
         profile_id: "alondra".into(),
-        account_id: "native-login".into(),
+        account_id: batch.account.to_string(),
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),

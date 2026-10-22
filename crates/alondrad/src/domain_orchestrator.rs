@@ -297,6 +297,7 @@ impl Executor {
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) || self.domain.live.usage_pause.is_active() {
             return Ok(());
         }
+        let Some(account) = crate::accounts::choose_for_launch(&self.domain, &self.home, now) else { return Ok(()) };
         {
             let mut store = self.domain.store.lock().expect("domain store poisoned");
             store.discard_expired_orchestrator_messages(
@@ -374,7 +375,7 @@ impl Executor {
                 owner, backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
                 node_plugin, orchestrator_plugin, projects_root: projects_root.clone(),
                 capability: capability.expose_for_child_environment().to_owned(),
-                session: session.clone(), prompt,
+                session: session.clone(), prompt, account: account.clone(),
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
@@ -397,8 +398,7 @@ impl Executor {
         if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
             && let Some(reset) = output.stream.limit(&output.diagnostic)
         {
-            let reset = reset.or_else(|| output.stream.limited.then(|| self.domain.live.measured.reset_after_limit(now_millis())).flatten());
-            self.domain.live.usage_pause.exhaust(reset, now_millis());
+            crate::usage_probe::record_limit(&self.domain, &account, reset, now_millis());
         }
         let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };
         match end {
@@ -1589,10 +1589,17 @@ mod tests {
 
         f.tick().await;
         assert_eq!(f.starts().len(), 1, "nothing runs until the reset");
+        let usage = domain.read().state().account_usage.clone();
+        assert!(usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(now_millis()) == Some(until)),
+            "the orchestrator's account ran out until the reset: {usage:?}");
 
+        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), alondra_core::usage::UsageReading {
+            windows: vec![alondra_core::usage::WindowReading { kind: alondra_core::usage::WindowKind::Session, used: alondra_core::usage::Share::of(0.1), resets_at: None, exhausted: false }],
+            plan: None, complete: true,
+        }, now_millis());
         domain.live.usage_pause.resume(now_millis());
         f.tick().await;
-        assert_eq!(f.starts().len(), 2, "the same batch is retried");
+        assert_eq!(f.starts().len(), 2, "after the reset the probe finds room: the same batch is retried");
         assert!(unhandled(domain).is_empty());
         assert!(attempts(domain).iter().any(|(_, state, _)| state == "handed"));
     }

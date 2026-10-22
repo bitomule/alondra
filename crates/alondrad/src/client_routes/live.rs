@@ -192,7 +192,7 @@ impl Live {
         view.apply(self.next(), now, &Event::Hook(event));
         drop(view);
         if let Some(details) = limit {
-            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.measured.reset_after_limit(now));
+            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now));
             self.usage_pause.exhaust(until, now);
         }
         self.changed.publish();

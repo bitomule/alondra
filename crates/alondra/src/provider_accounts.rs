@@ -90,7 +90,7 @@ fn check(client: &Client) -> Result<Listing> {
 fn status(row: &Row) -> AccountStatus {
     AccountStatus {
         provider: Provider::Claude, id: row.id.clone(), name: row.name.clone(), state: row.state,
-        email: row.email.clone(), plan: row.plan.clone(), billing: row.billing.clone(),
+        email: row.email.clone(), plan: row.plan.clone(), billing: row.billing.clone(), sign_ins: 0,
     }
 }
 

@@ -268,7 +268,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
+        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
     };
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
     assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");
@@ -310,7 +310,7 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
     let mut s = world();
     task(&mut s, "t", None);
     let admit = |host: &str| Command::AdmitExecution {
-        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None,
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None, account: None,
     };
     assert_eq!(exec(&mut s, Actor::System, admit(alondra_domain::CLAUDE_BG_HOST)).unwrap_err().code, "invalid_input", "the claude --bg node is assigned instead");
     assert_eq!(exec(&mut s, user(), admit("sdk-host")).unwrap_err().code, "forbidden");
@@ -337,9 +337,14 @@ pub(super) fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
     sdk_turn_named(s, id, node, "turn-1")
 }
 fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> String {
+    sdk_turn_on(s, id, node, turn, None)
+}
+/// An SDK task whose observed turn started on `account`.
+fn sdk_turn_on(s: &mut DomainState, id: &str, node: &str, turn: &str, account: Option<&str>) -> String {
     task(s, id, None);
     must(s, Actor::System, Command::AdmitExecution {
         task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(), model: None,
+        account: account.map(|account| crate::accounts::AccountId::parse(account).unwrap()),
     });
     let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(id)][0].clone() else { panic!("planned first") };
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
@@ -754,14 +759,113 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
     let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
     assert_eq!(usage_resets_at(&limit.card), Some(4_102_444_800), "the reset Claude gave");
-    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::SignedOut }).unwrap_err().code, "invalid_input",
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::SignedOut, account: None }).unwrap_err().code, "invalid_input",
         "only the user's answer probes the sign-in");
-    assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { hold: ClaudeHold::Outage }).unwrap_err().code, "forbidden");
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage });
+    assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }).unwrap_err().code, "forbidden");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)], "one probe, the oldest");
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage)]);
-    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage }).unwrap_err().code, "not_found");
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None }).unwrap_err().code, "not_found");
+    assert_aggregate_rules(&s);
+}
+
+fn usage_turn(s: &mut DomainState, id: &str, resets_at: u64) {
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn: "turn-1".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(resets_at) }), failed: None });
+}
+fn accounts_seen(s: &mut DomainState, states: &[(&str, crate::accounts::AccountState)]) {
+    let accounts = states.iter().map(|(id, state)| crate::accounts::AccountStatus {
+        provider: crate::accounts::Provider::Claude, id: crate::accounts::AccountId::parse(id).unwrap(), name: id.to_uppercase(), state: *state,
+        email: None, plan: None, billing: Default::default(), sign_ins: 0,
+    }).collect();
+    must(s, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
+}
+fn account_state(s: &DomainState, id: &str) -> (crate::accounts::AccountState, u64) {
+    let status = s.accounts.iter().find(|status| status.id.as_str() == id).unwrap();
+    (status.state, status.sign_ins)
+}
+
+// Two accounts ran out: Claude answering a task of one says nothing of the other's limit, so only
+// the tasks of the account that answered go on. Before, any answer let every held task go on, and
+// those of an account still out of usage failed again at once.
+#[test]
+fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
+    let mut s = world();
+    for node in ["c", "d"] {
+        must(&mut s, Actor::System, Command::RegisterAgent { agent_id: node.into(), name: node.into(), at: 0 });
+    }
+    sdk_turn_on(&mut s, "t", "a", "turn-1", None);
+    sdk_turn_on(&mut s, "u", "b", "turn-1", None);
+    sdk_turn_on(&mut s, "v", "c", "turn-1", Some("work"));
+    sdk_turn_on(&mut s, "w", "d", "turn-1", Some("work"));
+    for id in ["t", "u"] {
+        usage_turn(&mut s, id, 4_102_444_800);
+    }
+    for id in ["v", "w"] {
+        usage_turn(&mut s, id, 4_102_448_400);
+    }
+    assert_eq!(listed_holds(&s).len(), 2, "one card per account's limit: {:?}", listed_holds(&s));
+    let probed = |s: &DomainState| s.claude_held().into_iter().map(|held| (held.task.0, held.account.to_string())).collect::<Vec<_>>();
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: Some(crate::accounts::AccountId::parse("work").unwrap()) });
+    assert_eq!(probed(&s), [("t".into(), "default".into()), ("u".into(), "default".into()), ("w".into(), "work".into())], "the work account's reset probes one of its own");
+    turn_on_resumed(&mut s, "v", "turn-2");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "v".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage), ("u".into(), ClaudeHold::Usage)], "the default account is still out: its tasks wait");
+    assert_eq!(kinds(&s, "w").last().map(String::as_str), Some("resumed"), "the rest of the work account goes on");
+    assert_eq!(listed_holds(&s).len(), 1, "the default account's card is still listed");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn the_api_answering_on_any_account_lets_every_task_the_outage_held_go_on() {
+    let mut s = world();
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
+    sdk_turn_on(&mut s, "t", "a", "turn-1", None);
+    sdk_turn_on(&mut s, "u", "b", "turn-1", Some("work"));
+    sdk_turn_on(&mut s, "v", "c", "turn-1", Some("work"));
+    fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
+    fail_turn(&mut s, "u", "turn-1", "overloaded", Some(529));
+    usage_turn(&mut s, "v", 4_102_448_400);
+    assert_eq!(listed_holds(&s).len(), 2, "the API is one card for every account: {:?}", listed_holds(&s));
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None });
+    turn_on_resumed(&mut s, "t", "turn-2");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert_eq!(held(&s), [("v".into(), ClaudeHold::Usage)], "the API works for the work account too; its limit still stands");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn an_expired_sign_in_leaves_its_account_signed_out_until_claude_answers_on_it() {
+    use crate::accounts::AccountState::{SignedIn, SignedOut};
+    let mut s = world();
+    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn)]);
+    sdk_turn_on(&mut s, "t", "a", "turn-1", Some("work"));
+    sdk_turn_on(&mut s, "u", "b", "turn-1", None);
+    let expired = fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    assert_eq!(notices(&expired), 1, "the user hears of it");
+    assert_eq!(account_state(&s, "work"), (SignedOut, 0), "no new work starts on it");
+    assert_eq!(account_state(&s, "default"), (SignedIn, 0), "the other account is not touched");
+    let en = turn_end_shown(&s, "t", crate::views::text::Lang::En);
+    assert!(en.contains("Sign in to the Claude account WORK on the Mac"), "{en}");
+    assert!(en.contains(r#"Open Terminal on the Mac, run alondra accounts login \"WORK\", then press I signed in."#), "the command to run: {en}");
+    let es = turn_end_shown(&s, "t", crate::views::text::Lang::Es);
+    assert!(es.contains(r#"ejecuta alondra accounts login \"WORK\""#), "{es}");
+    let other = fail_turn(&mut s, "u", "turn-1", "authentication_failed", Some(401));
+    assert_eq!(notices(&other), 1, "another account's sign-in is news of its own");
+    assert_eq!(listed_holds(&s).len(), 2, "one card per account");
+    let index = super::read_index::ReadIndex::build(&s);
+    assert_eq!(index.accounts().iter().find(|a| a.id.as_str() == "work").map(|a| a.state), Some(SignedOut), "every screen reads it");
+    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn)]);
+    assert_eq!(account_state(&s, "work"), (SignedOut, 0), "its sign-in check does not undo what Claude said while a task waits on it");
+    let card = s.claude_held().into_iter().find(|held| held.task.0 == "t").unwrap().card;
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: SIGNED_IN.into(), inputs: BTreeMap::new() });
+    turn_on_resumed(&mut s, "t", "turn-2");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert_eq!(account_state(&s, "work"), (SignedIn, 1), "signed in again: its credential's next generation");
+    assert_eq!(held(&s), [("u".into(), ClaudeHold::SignedOut)], "the default account's sign-in still waits");
+    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn)]);
+    assert_eq!(account_state(&s, "work"), (SignedIn, 1), "the generation is kept");
     assert_aggregate_rules(&s);
 }
 

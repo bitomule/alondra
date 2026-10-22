@@ -1,6 +1,6 @@
 //! The steps journeys share: waits on what other processes apply, and the milestones of a task. A
 //! task's node is the scripted native Claude of an Agent SDK host (`fake::native`).
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -18,7 +18,12 @@ pub const FINISHED: &str = "Finished";
 pub const CANCELLED: &str = "Cancelled";
 
 /// A step that waits until `probe` finds what it wants; on timeout it says what it saw last.
-pub fn wait<T>(report: &mut Report, what: &str, mut probe: impl FnMut() -> Result<(Option<T>, String)>) -> Result<T> {
+pub fn wait<T>(report: &mut Report, what: &str, probe: impl FnMut() -> Result<(Option<T>, String)>) -> Result<T> {
+    wait_within(report, what, PATIENCE, probe)
+}
+
+/// `wait`, for what another process applies only after a delay of its own on top of `PATIENCE`.
+pub fn wait_within<T>(report: &mut Report, what: &str, limit: Duration, mut probe: impl FnMut() -> Result<(Option<T>, String)>) -> Result<T> {
     report.step(what, || {
         let start = Instant::now();
         loop {
@@ -26,8 +31,8 @@ pub fn wait<T>(report: &mut Report, what: &str, mut probe: impl FnMut() -> Resul
             if let Some(found) = found {
                 return Ok(found);
             }
-            if start.elapsed() > PATIENCE {
-                bail!("not within {} s; last seen: {seen}", PATIENCE.as_secs());
+            if start.elapsed() > limit {
+                bail!("not within {} s; last seen: {seen}", limit.as_secs());
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
         }

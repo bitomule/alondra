@@ -1,7 +1,8 @@
 //! `claude --bg` refuses a git repository the user never trusted (Claude Code 2.1.281+). Claude
 //! Code looks for trust from the folder up to the repository's root and stops there, so a trusted
 //! parent folder does not count, and it keeps it in `~/.claude.json` under the repository's root,
-//! the main checkout for a linked worktree. Alondra reads that trust before it saves a Schedule or
+//! the main checkout for a linked worktree; an account Alondra keeps in a folder of its own keeps it
+//! in that folder's `.claude.json`. Alondra reads that trust before it saves a Schedule or
 //! launches a session, and writes it the way Claude Code's trust dialog does in two cases only: the
 //! user chose to trust the folder on its card, or the repository is inside the projects folder
 //! the user chose at setup.
@@ -20,14 +21,34 @@ pub fn check(cwd: &Path) -> Option<PathBuf> {
 /// Like `check`, but a repository inside `projects_root` is trusted on the spot: choosing that
 /// folder at setup is the user's trust for what is in it. What is still untrusted comes back.
 pub fn ensure(cwd: &Path, projects_root: Option<&Path>) -> Option<PathBuf> {
-    let config = config_path()?;
+    ensure_for(None, cwd, projects_root)
+}
+
+/// `ensure` for the Claude account whose configuration is in `profile`, the folder Alondra keeps
+/// for it; none for the user's own.
+pub fn ensure_for(profile: Option<&Path>, cwd: &Path, projects_root: Option<&Path>) -> Option<PathBuf> {
+    let config = config_of(profile)?;
     ensure_in(&config, cwd, projects_root, &crate::options::user_home())
 }
 
-/// Records that the user trusts `repository`, as Claude Code's trust dialog does.
-pub fn grant(repository: &Path) -> Result<(), String> {
+/// Records that the user trusts `repository`, as Claude Code's trust dialog does: in their own
+/// settings and in those of every account in `profiles`, so a session starts there on any of them.
+pub fn grant(repository: &Path, profiles: &[PathBuf]) -> Result<(), String> {
     let config = config_path().ok_or("Alondra could not find Claude Code's settings file (~/.claude.json)")?;
-    grant_in(&config, repository)
+    grant_in(&config, repository)?;
+    for profile in profiles.iter().filter(|profile| profile.is_dir()) {
+        grant_in(&profile.join(CONFIG), repository)?;
+    }
+    Ok(())
+}
+
+const CONFIG: &str = ".claude.json";
+
+fn config_of(profile: Option<&Path>) -> Option<PathBuf> {
+    match profile {
+        Some(profile) => Some(profile.join(CONFIG)),
+        None => config_path(),
+    }
 }
 
 #[cfg(not(test))]
@@ -459,5 +480,23 @@ mod tests {
         let repository = fixture.repository("BlurCamera");
 
         assert_eq!(untrusted(&fixture.dir.join(".claude.json"), &repository), None);
+    }
+
+    #[test]
+    fn an_accounts_trust_is_read_and_written_in_its_own_folder() {
+        let fixture = Fixture::new();
+        let lumo = fixture.repository("Lumo");
+        let own = fixture.config(serde_json::json!({}));
+        use_config_for_test(&own);
+        let account = fixture.dir.join("accounts/work");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(CONFIG), r#"{"oauthAccount": {}}"#).unwrap();
+        assert_eq!(ensure_for(Some(&account), &lumo, None), Some(lumo.canonicalize().unwrap()), "nothing trusts it yet");
+        assert_eq!(ensure_for(Some(&account), &lumo, Some(&fixture.dir)), None, "inside the projects folder it is trusted on the spot");
+        assert_eq!(untrusted(&account.join(CONFIG), &lumo), None, "in the account's own settings");
+        assert!(untrusted(&own, &lumo).is_some(), "the user's own settings are not touched");
+        let fjord = fixture.repository("Fjord");
+        grant(&fjord, std::slice::from_ref(&account)).unwrap();
+        assert_eq!((untrusted(&own, &fjord), untrusted(&account.join(CONFIG), &fjord)), (None, None), "the user's trust holds on every account");
     }
 }

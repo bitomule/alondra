@@ -2447,7 +2447,7 @@ impl DomainState {
                 if *reserve == crate::usage::Share::NONE {
                     return fail("invalid_input", "An account's reserve is above 0");
                 }
-                self.accounts = accounts.clone();
+                self.record_accounts(accounts);
                 self.account_reserve = *reserve;
                 self.account_usage.retain(|usage| seen.contains(&(usage.provider, usage.account.clone())));
             }
@@ -2630,7 +2630,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
                     },
                 );
                 self.dependency_graph()?;
@@ -4136,7 +4136,7 @@ impl DomainState {
                 }
                 self.release(task_id, lifecycles)?;
             }
-            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model } => {
+            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account } => {
                 system(actor)?;
                 self.not_held_for_plan_review(task_id)?;
                 self.not_ending(task_id)?;
@@ -4151,9 +4151,11 @@ impl DomainState {
                 self.invalidate(task_id);
                 let identity = ExecutionIdentity { conversation: conversation.clone(), instance: instance.clone(), host: host.clone() };
                 self.admit_execution(task_id, agent_id, identity, lifecycles)?;
+                let task = self.tasks.get_mut(task_id).expect("admitted above");
                 if model.is_some() {
-                    self.tasks.get_mut(task_id).expect("admitted above").model = model.clone();
+                    task.model = model.clone();
                 }
+                task.account = account.clone().filter(|account| !account.is_default());
             }
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;
@@ -4201,12 +4203,12 @@ impl DomainState {
                 nonempty(text)?;
                 self.resend_untaken(task_id, *generation, input, text, lifecycles)?;
             }
-            Command::ProbeClaudeAccess { hold } => {
+            Command::ProbeClaudeAccess { hold, account } => {
                 system(actor)?;
                 if *hold == ClaudeHold::SignedOut {
                     return fail("invalid_input", "Only the user's answer probes Claude's sign-in");
                 }
-                if self.probe_claude(*hold, lifecycles)?.is_none() {
+                if self.probe_claude(*hold, account.as_ref(), lifecycles)?.is_none() {
                     return fail("not_found", "No task waits for Claude");
                 }
             }

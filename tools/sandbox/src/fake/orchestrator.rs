@@ -110,7 +110,7 @@ pub fn batch(fakes: &Fakes, args: &[String]) -> Result<i32> {
         }
         let input = message["uuid"].as_str().context("an input without a uuid")?.to_lowercase();
         let prompt = message["message"]["content"].as_str().unwrap_or_default().to_owned();
-        append(&dir.join("batches.jsonl"), &json!({"at": now_ms(), "session": session, "prompt": prompt}))?;
+        append(&dir.join("batches.jsonl"), &json!({"at": now_ms(), "session": session, "account": super::native::account(), "prompt": prompt}))?;
         let lifecycle = |state: &str| -> Result<Value> {
             Ok(json!({"type": "command_lifecycle", "command_uuid": input, "state": state, "session_id": session, "uuid": uuid()?}))
         };

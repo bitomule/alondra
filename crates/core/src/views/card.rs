@@ -933,26 +933,41 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
     if interaction.author != Author::System {
         return None;
     }
-    let hold = ClaudeHold::of(&interaction.id)?;
-    let waiting = domain.claude_waiting(hold).max(1);
-    let need = match (hold, waiting) {
-        (ClaudeHold::SignedOut, _) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
-        (ClaudeHold::Outage, 1) => t!(lang, "Claude's API is not answering: a task waits", "La API de Claude no responde: una tarea espera").to_owned(),
-        (ClaudeHold::Outage, _) => tf!(lang, "Claude's API is not answering: {waiting} tasks wait", "La API de Claude no responde: esperan {waiting} tareas"),
-        (ClaudeHold::Usage, 1) => t!(lang, "Claude's usage limit is reached: a task waits", "Se agotó el límite de uso de Claude: una tarea espera").to_owned(),
-        (ClaudeHold::Usage, _) => tf!(lang, "Claude's usage limit is reached: {waiting} tasks wait", "Se agotó el límite de uso de Claude: esperan {waiting} tareas"),
+    let (hold, account) = domain.claude_card_waits_for(interaction)?;
+    let waiting = domain.claude_waiting(interaction).max(1);
+    let named = account.as_ref().filter(|account| !account.is_default()).map(|account| {
+        domain.accounts.iter().find(|status| status.id == *account).map_or_else(|| account.to_string(), |status| status.name.clone())
+    });
+    let need = match (hold, waiting, &named) {
+        (ClaudeHold::SignedOut, _, None) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
+        (ClaudeHold::SignedOut, _, Some(name)) => tf!(lang, "Sign in to the Claude account {name} on the Mac", "Inicia sesión en la cuenta de Claude {name} en el Mac"),
+        (ClaudeHold::Outage, 1, _) => t!(lang, "Claude's API is not answering: a task waits", "La API de Claude no responde: una tarea espera").to_owned(),
+        (ClaudeHold::Outage, _, _) => tf!(lang, "Claude's API is not answering: {waiting} tasks wait", "La API de Claude no responde: esperan {waiting} tareas"),
+        (ClaudeHold::Usage, 1, None) => t!(lang, "Claude's usage limit is reached: a task waits", "Se agotó el límite de uso de Claude: una tarea espera").to_owned(),
+        (ClaudeHold::Usage, _, None) => tf!(lang, "Claude's usage limit is reached: {waiting} tasks wait", "Se agotó el límite de uso de Claude: esperan {waiting} tareas"),
+        (ClaudeHold::Usage, 1, Some(name)) => tf!(lang, "The Claude account {name} reached its limit: a task waits", "La cuenta de Claude {name} agotó su límite: una tarea espera"),
+        (ClaudeHold::Usage, _, Some(name)) => tf!(lang, "The Claude account {name} reached its limit: {waiting} tasks wait", "La cuenta de Claude {name} agotó su límite: esperan {waiting} tareas"),
     };
-    let how = t!(lang, "Open Terminal, run claude and sign in with /login, then press I signed in.",
-        "Abre Terminal, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.");
-    let why = match (hold, waiting) {
-        (ClaudeHold::SignedOut, 1) => format!("{} {how}", t!(lang, "Claude Code's sign-in expired and a task waits.", "La sesión de Claude Code caducó y una tarea espera.")),
-        (ClaudeHold::SignedOut, _) => format!("{} {how}", tf!(lang, "Claude Code's sign-in expired and {waiting} tasks wait.", "La sesión de Claude Code caducó y esperan {waiting} tareas.")),
-        (ClaudeHold::Outage, _) => t!(lang,
+    let how = match &named {
+        None => t!(lang, "Open Terminal, run claude and sign in with /login, then press I signed in.",
+            "Abre Terminal, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.").to_owned(),
+        Some(name) => tf!(lang, "Open Terminal on the Mac, run alondra accounts login \"{name}\", then press I signed in.",
+            "Abre Terminal en el Mac, ejecuta alondra accounts login \"{name}\"; luego pulsa Ya he iniciado sesión."),
+    };
+    let why = match (hold, waiting, &named) {
+        (ClaudeHold::SignedOut, 1, None) => format!("{} {how}", t!(lang, "Claude Code's sign-in expired and a task waits.", "La sesión de Claude Code caducó y una tarea espera.")),
+        (ClaudeHold::SignedOut, _, None) => format!("{} {how}", tf!(lang, "Claude Code's sign-in expired and {waiting} tasks wait.", "La sesión de Claude Code caducó y esperan {waiting} tareas.")),
+        (ClaudeHold::SignedOut, 1, Some(name)) => format!("{} {how}", tf!(lang, "The sign-in of {name} expired and a task waits. No new work starts on it meanwhile.", "La sesión de {name} caducó y una tarea espera. Mientras, no empieza trabajo nuevo en ella.")),
+        (ClaudeHold::SignedOut, _, Some(name)) => format!("{} {how}", tf!(lang, "The sign-in of {name} expired and {waiting} tasks wait. No new work starts on it meanwhile.", "La sesión de {name} caducó y esperan {waiting} tareas. Mientras, no empieza trabajo nuevo en ella.")),
+        (ClaudeHold::Outage, _, _) => t!(lang,
             "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
             "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.").to_owned(),
-        (ClaudeHold::Usage, _) => t!(lang,
+        (ClaudeHold::Usage, _, None) => t!(lang,
             "The tasks that run through Claude Code wait until the limit resets. Alondra tries one then; when Claude answers, every waiting task goes on.",
             "Las tareas que van por Claude Code esperan a que se reinicie el límite. Entonces Alondra prueba una; cuando Claude responda, siguen todas.").to_owned(),
+        (ClaudeHold::Usage, _, Some(name)) => tf!(lang,
+            "The tasks that run on {name} wait until its limit resets; new work starts on the other accounts meanwhile. Alondra tries one then; when Claude answers, the rest go on.",
+            "Las tareas que van con {name} esperan a que se reinicie su límite; mientras, el trabajo nuevo empieza en las otras cuentas. Entonces Alondra prueba una; cuando Claude responda, siguen las demás."),
     };
     Some((clip(&need, CardSpec::NEED_MAX), why))
 }

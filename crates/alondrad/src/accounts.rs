@@ -2,8 +2,8 @@
 //! `[accounts]` section of `options.toml`, of which the daemon is the only writer, and the daemon
 //! checks each account's sign-in and records what it saw in the domain, where every screen reads
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
-//! out and its folder deleted. `~/.claude` itself is never changed. Nodes still run on the default
-//! account.
+//! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
+//! account the user's distribution picks (`choose_for_launch`).
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +53,7 @@ impl Claude {
     }
 }
 
-fn config(home: &Path) -> Result<AccountsConfig, String> {
+pub(crate) fn config(home: &Path) -> Result<AccountsConfig, String> {
     let path = alondra_core::options::path_in(home);
     match std::fs::read_to_string(&path) {
         Ok(text) => alondra_core::options::OptionsFile::parse(&text).map(|file| file.accounts).map_err(|e| format!("{}: {e}", path.display())),
@@ -81,7 +81,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
             };
             let mut status = AccountStatus {
                 provider: Provider::Claude, id: account.id.clone(), name: account.name.clone(), state: AccountState::Disabled,
-                email: None, plan: configured_plan.clone(), billing: account.billing.clone(),
+                email: None, plan: configured_plan.clone(), billing: account.billing.clone(), sign_ins: 0,
             };
             if !account.enabled {
                 return status;
@@ -109,11 +109,49 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
         .collect()
 }
 
+/// The account a new launch, batch or scheduled run starts on, as the user's distribution picks it
+/// from what the domain knows at `now`. When none can work, the Mac waits until the soonest one can
+/// again: every launch, batch and schedule holds until then, as for a usage limit.
+pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
+    let policy = config(home).map(|config| config.distribution.policy).unwrap_or_default();
+    let read = domain.read();
+    let state = read.state();
+    let day = crate::node_reports::local_day(now);
+    let chosen = alondra_core::usage::choose_account(policy, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
+    if chosen.is_none() {
+        let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
+        drop(read);
+        domain.live.usage_pause.exhaust_for_margin(until, now);
+    }
+    chosen
+}
+
+/// Every account the user registered, on or off: the folders an execution may run Claude with.
+pub(crate) fn registered(home: &Path) -> Vec<AccountId> {
+    config(home).map_or_else(|_| vec![AccountId::default_account()], |config| config.accounts(Provider::Claude).into_iter().map(|account| account.id).collect())
+}
+
+/// The folders of every account but the default one: where each keeps its Claude settings.
+pub(crate) fn profiles(home: &Path) -> Vec<PathBuf> {
+    registered(home).iter().filter_map(|account| alondra_core::accounts::folder(home, account)).collect()
+}
+
+/// The generation of the credential new executions on `account` run with: one more each time it
+/// was signed in again after its sign-in expired.
+pub(crate) fn generation(state: &alondra_core::domain::DomainState, account: &AccountId) -> u64 {
+    state.accounts.iter().find(|status| status.provider == Provider::Claude && status.id == *account).map_or(0, |status| status.sign_ins) + 1
+}
+
+/// What the domain keeps of the accounts but a check never sees: the generations of their credentials.
+fn unchecked(accounts: &[AccountStatus]) -> Vec<AccountStatus> {
+    accounts.iter().cloned().map(|status| AccountStatus { sign_ins: 0, ..status }).collect()
+}
+
 /// Records `accounts` and their `reserve` in the domain when it holds something else.
 fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>, reserve: Share) {
     for _ in 0..5 {
         let state = domain.read();
-        if state.state().accounts == accounts && state.state().account_reserve == reserve {
+        if unchecked(&state.state().accounts) == accounts && state.state().account_reserve == reserve {
             return;
         }
         let envelope = CommandEnvelope {
@@ -193,17 +231,25 @@ pub(crate) fn write(domain: &DomainRuntime, home: &Path, body: &serde_json::Valu
     let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let claude = Claude::of(domain);
     let user_home = claude.as_ref().map_or_else(crate::options::user_home, |claude| claude.user_home.clone());
-    if let Err(refused) = store(home, &user_home, claude.as_ref(), &change.version, &change.accounts) {
+    let working = working(domain.read().state());
+    if let Err(refused) = store(home, &user_home, claude.as_ref(), &change.version, &change.accounts, &working) {
         return refused.reply(lang);
     }
     check(domain, home);
     read(domain, home)
 }
 
+/// The accounts the open tasks' executions run on.
+fn working(state: &alondra_core::domain::DomainState) -> Vec<AccountId> {
+    state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.account.clone()).collect()
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Refused {
     Invalid(String),
     Stale,
+    /// Open tasks still run on the account, by its name.
+    InUse(String),
     Folder(String),
     SignOut(String),
 }
@@ -217,6 +263,11 @@ impl Refused {
                 "Las cuentas cambiaron mientras tanto: vuelve a intentarlo.".to_owned()
             } else {
                 "The accounts changed in the meantime: try again.".to_owned()
+            }),
+            Refused::InUse(name) => (StatusCode::CONFLICT, "account_in_use", if es {
+                format!("Aún hay tareas abiertas que trabajan con {name}: quítala cuando terminen.")
+            } else {
+                format!("Open tasks still run on {name}: remove it once they are done.")
             }),
             Refused::Folder(why) => (StatusCode::INTERNAL_SERVER_ERROR, "cannot_create", if es {
                 format!("No se pudo preparar la cuenta: {why}")
@@ -234,8 +285,9 @@ impl Refused {
 }
 
 /// Writes `next` over the section `seen` names: prepares the folder of each account it adds,
-/// signs out each one it takes away and deletes its folder once the file no longer names it.
-pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig) -> Result<(), Refused> {
+/// signs out each one it takes away and deletes its folder once the file no longer names it. An
+/// account open tasks still run on (`working`) is not taken away.
+pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig, working: &[AccountId]) -> Result<(), Refused> {
     next.check().map_err(Refused::Invalid)?;
     let current = config(home).map_err(Refused::Invalid)?;
     if version(&current) != seen {
@@ -248,6 +300,10 @@ pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen
         claude_account::prepare(home, id, &shared).map_err(|e| Refused::Folder(e.to_string()))?;
     }
     let removed: Vec<&AccountId> = before.iter().filter(|id| !after.contains(id)).collect();
+    if let Some(busy) = removed.iter().find(|id| working.contains(id)) {
+        let name = current.find(Provider::Claude, busy.as_str()).map_or_else(|| busy.to_string(), |account| account.name);
+        return Err(Refused::InUse(name));
+    }
     for id in &removed {
         sign_out(home, claude, id)?;
     }

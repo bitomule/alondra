@@ -630,7 +630,7 @@ impl SdkNode {
         let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
             task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
             prompt: "consume-and-hold".into(), plugin: home.join("plugin"), options: Default::default(),
-            model: None,
+            model: None, account: alondra_core::accounts::AccountId::default_account(),
         }).unwrap();
         let mut node = Self { driver, domain, capture, home, _state: state };
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {

@@ -302,6 +302,14 @@ pub struct AccountStatus {
     pub plan: Option<String>,
     #[serde(default)]
     pub billing: AccountBilling,
+    /// How many times the account was signed in again after its sign-in expired: the generation
+    /// of the credential its executions run on.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sign_ins: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// `text` with its `[accounts]` section replaced by `accounts`, every other line as it was: the

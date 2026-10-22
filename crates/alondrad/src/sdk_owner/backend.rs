@@ -4,6 +4,7 @@
 //! upgrade rehearsal). Outside a sandbox the native Claude runs as the user's own: in their real
 //! HOME and with their default profile, so it signs in as the user does; Seatbelt confinement
 //! stays optional.
+use alondra_core::accounts::AccountId;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -148,6 +149,25 @@ impl SdkBackend {
             .context("Claude Code (`claude`) is not on this daemon's PATH: install it, then run `alondra doctor --fix`")?;
         backend.native_sha256 = digest(&backend.native)?;
         compatible(&backend.native, &backend.native_sha256)?;
+        Ok(backend)
+    }
+}
+
+impl SdkBackend {
+    /// The backend an execution on `account` runs with. The default account is the user's own
+    /// profile, with no `CLAUDE_CONFIG_DIR`; any other runs Claude with its folder inside
+    /// `home`, which Alondra made when the user added it. An account `registered` does not name,
+    /// or whose folder is missing or a link, is refused: no other folder is ever handed to Claude.
+    pub(crate) fn for_account(&self, home: &Path, account: &AccountId, registered: &[AccountId]) -> Result<SdkBackend> {
+        if account.is_default() {
+            return Ok(self.clone());
+        }
+        ensure!(registered.contains(account), "the Claude account {account} is not one of the accounts in options.toml");
+        let folder = alondra_core::accounts::folder(home, account).context("the account has no folder")?;
+        let meta = std::fs::symlink_metadata(&folder).with_context(|| format!("the folder of the Claude account {account} is missing"))?;
+        ensure!(meta.is_dir(), "the folder of the Claude account {account} is not a folder Alondra made");
+        let mut backend = self.clone();
+        backend.native_environment.insert(DEFAULT_PROFILE[0].into(), folder.display().to_string());
         Ok(backend)
     }
 }
@@ -380,5 +400,33 @@ mod tests {
             let refused = load(&home, sandbox, &home.join("home")).unwrap_err().to_string();
             assert!(refused.contains(&format!("sets {profile}")), "{refused}");
         }
+    }
+
+    #[test]
+    fn an_account_runs_claude_with_its_own_folder_and_only_a_registered_one() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(FILE), configuration(&home, serde_json::json!({"HOME": root.join("user")})).to_string()).unwrap();
+        let backend = load(&home, false, &root.join("user")).unwrap().unwrap();
+        let (work, other) = (AccountId::parse("work").unwrap(), AccountId::parse("other").unwrap());
+        let registered = [AccountId::default_account(), work.clone()];
+        let default = backend.for_account(&home, &AccountId::default_account(), &registered).unwrap();
+        assert!(!default.native_environment.contains_key("CLAUDE_CONFIG_DIR"), "the default account is the user's own profile");
+        assert_eq!(default.configuration_digest(), backend.configuration_digest());
+        let missing = backend.for_account(&home, &work, &registered).unwrap_err().to_string();
+        assert!(missing.contains("missing"), "{missing}");
+        let folder = home.join("accounts/work");
+        std::fs::create_dir_all(&folder).unwrap();
+        let on_work = backend.for_account(&home, &work, &registered).unwrap();
+        assert_eq!(on_work.native_environment.get("CLAUDE_CONFIG_DIR").map(String::as_str), Some(folder.to_str().unwrap()));
+        assert_ne!(on_work.configuration_digest(), backend.configuration_digest(), "each account binds its own executions");
+        std::fs::create_dir_all(home.join("accounts/other")).unwrap();
+        let unregistered = backend.for_account(&home, &other, &registered).unwrap_err().to_string();
+        assert!(unregistered.contains("not one of the accounts"), "{unregistered}");
+        std::fs::remove_dir(&folder).unwrap();
+        std::os::unix::fs::symlink(root.join("user"), &folder).unwrap();
+        let linked = backend.for_account(&home, &work, &registered).unwrap_err().to_string();
+        assert!(linked.contains("not a folder Alondra made"), "{linked}");
     }
 }

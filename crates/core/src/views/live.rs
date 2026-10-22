@@ -199,7 +199,8 @@ pub struct LiveLaunchRefusal {
     #[serde(default)]
     pub detail: Option<String>,
 }
-/// When Claude usage ran out on this Mac and when Claude said it comes back, as local ISO times.
+/// Since when no Claude account of this Mac can work and when the soonest one can again, as local
+/// ISO times.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveUsageExhausted {
     pub since: String,

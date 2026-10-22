@@ -78,6 +78,8 @@ pub(crate) struct Launch {
     pub(crate) options: LaunchOptions,
     /// The model the launch chose, recorded on the task when its execution is admitted.
     pub(crate) model: Option<TaskModel>,
+    /// The provider account its Claude runs on, recorded on the task with its execution.
+    pub(crate) account: alondra_core::accounts::AccountId,
 }
 
 /// What the task's Claude is launched with besides its prompt: the model and effort the launch
@@ -188,6 +190,7 @@ pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 
 fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
     let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
+    let backend = &on_account(&domain, backend, &launch.account)?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
@@ -198,8 +201,8 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         expected_revision: 0,
         command,
     };
-    let binding = binding(backend, capabilities)?;
-    let mut configuration = configuration(backend, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)))?;
+    let binding = binding(backend, capabilities, &launch.account, crate::accounts::generation(&state, &launch.account))?;
+    let mut configuration = configuration(backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)))?;
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
@@ -222,6 +225,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         instance: agent.0.clone(),
         host: HOST.into(),
         model: launch.model.clone(),
+        account: Some(launch.account.clone()),
     });
     let (first, _) = domain
         .own(scope.clone(), |owner| {
@@ -250,25 +254,36 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     Ok(driver)
 }
 
-/// One binding per SDK configuration, named by its digest: the store keeps one active binding per
-/// provider instance, so a binding of each launch would revoke every task after the first, and a
-/// configuration that changes (a new release's host) binds the next executions while the earlier
-/// ones keep the binding they were admitted under.
-fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>) -> Result<ProviderBinding, Failed> {
+/// One binding per SDK configuration, account and generation of its credential, named by them:
+/// the store keeps one active binding per provider instance, so a binding of each launch would
+/// revoke every task after the first, and a configuration that changes (a new release's host, the
+/// account's folder) or an account signed in again binds the next executions while the earlier
+/// ones keep the binding they were admitted under. Its credential is the account.
+fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &alondra_core::accounts::AccountId, generation: u64) -> Result<ProviderBinding, Failed> {
     let configuration = backend.configuration_digest();
-    let short = &configuration[..16];
+    let instance = format!("{HOST}-{}-{account}-{generation}", &configuration[..16]);
     ProviderBinding::new(
-        format!("{DRIVER}-{HOST}-{short}"),
+        format!("{DRIVER}-{instance}"),
         DRIVER.into(),
-        format!("{HOST}-{short}"),
+        instance,
         configuration,
         1,
         3,
         capabilities,
-        "native-login".into(),
-        1,
+        account.to_string(),
+        generation,
     )
     .map_err(|error| Failed(format!("the provider binding: {error:?}")))
+}
+
+/// The started backend one host of an execution on `account` runs with.
+fn on_account(domain: &DomainRuntime, started: &SdkBackend, account: &alondra_core::accounts::AccountId) -> Result<SdkBackend, Failed> {
+    started.for_account(domain.home(), account, &crate::accounts::registered(domain.home())).map_err(|error| Failed(format!("{error:#}")))
+}
+
+/// The account an execution's binding runs it on.
+fn account_of(binding: &ProviderBinding) -> alondra_core::accounts::AccountId {
+    crate::usage_probe::account_of(binding.credential())
 }
 
 /// The launch of a daemon with an SDK backend: the task runs through the SDK or does not
@@ -320,7 +335,8 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let permit = sealed.permits.pop().ok_or_else(|| Failed("the reservation issued no launch permit".into()))?;
     let instance = adoption.stamp.instance().as_str().to_owned();
     let options = LaunchOptions::load(&backend.state_root.join(&instance))?;
-    let mut configuration = configuration(backend, &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)))?;
+    let backend = &on_account(&domain, backend, &account_of(grant.binding()))?;
+    let mut configuration = configuration(backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)))?;
     let capability = domain.bind_agent(&agent.0).map_err(|error| Failed(format!("issuing the node's capability: {error}")))?;
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
@@ -381,7 +397,8 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     let stamp = adoption.stamp;
     let options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
     let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory));
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(backend, &adoption.directory, stamp.instance().as_str(), false, profile)?)
+    let on_account = &on_account(&domain, backend, &account_of(grant.binding()))?;
+    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
@@ -598,7 +615,7 @@ fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskId, R
 
 /// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
 /// daemon that comes back finds it without searching. A launch creates it; an adoption reuses it.
-fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
+fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
     let state_directory = backend.state_root.join(instance);
     if create {
         std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed(format!("creating the SDK state root: {error}")))?;
@@ -617,7 +634,7 @@ fn configuration(backend: &SdkBackend, directory: &str, instance: &str, create: 
         native_directory: directory.into(),
         native_environment: backend.native_environment.clone(),
         profile_id: "alondra".into(),
-        account_id: "native-login".into(),
+        account_id: binding.credential().into(),
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),

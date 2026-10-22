@@ -72,6 +72,13 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
   on, so only «Force stop» ends it. While `fakes/fail-turn` exists, each turn ends as Claude Code
   ends one at its turn limit (`error_max_turns`); while `fakes/drop-input` exists, each input after
   the mission is completed without being started, so Claude never reads it.
+- **Claude accounts**: the native Claude runs on the account its `CLAUDE_CONFIG_DIR` folder names,
+  `default` without one, and writes it in each start. `claude auth status|login|logout` keep each
+  folder's sign-in in its `.sandbox-account`; the synthetic HOME's `~/.claude` is signed in. The
+  usage probe answers `fakes/usage/<account>.json` (Claude's usage endpoint as is). While
+  `fakes/refuse/<account>` holds `rate_limit` or `authentication_failed`, every turn on that account
+  ends as Claude Code ends one the API refused (429 with the 5-hour window's reset, or 401). The step
+  `{"do": "rate_limit", "info": {…}}` sends a `rate_limit_event` with that `rate_limit_info`.
 - **GitHub** (`gh`): PRs whose head is their branch's tip in `remote.git`; checks, drafts and merge
   failures are set per PR.
 
@@ -82,7 +89,7 @@ or a list). `die` kills a native session's Claude, as a crash does; its host goe
 ## Journeys
 
 `make e2e-journeys` (`//tests/sandbox:journeys`) starts a two-Mac sandbox with the fakes, runs
-`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|local|reopen` runs one, and
+`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|reopen|mcp|local|accounts` runs one, and
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
 
@@ -106,6 +113,18 @@ as the user through views and actions, the way the iPhone does.
   - L3: a revoked phone gets its sealed `device_revoked` and creates nothing.
 - `reopen` (over the direct listener):
   - R1: a task reopened with every slot taken waits in the queue saying why, then starts with a new node.
+- `accounts` (after `local`, over the direct listener), with the default account and Trabajo, added
+  through `PUT /settings/accounts`:
+  - A1: a new task starts on the account with the most margin: Trabajo at 10 % of its week, then
+    the default once Claude reports Trabajo at 90 %.
+  - A2: the default account's turn is refused for its usage limit: its task waits on its card, the
+    Mac does not wait, and a new task starts on Trabajo.
+  - A3: with Trabajo out too the Mac waits, a reopened task reads «Didn't start · Claude usage ran
+    out» and nothing starts; once Claude reports Trabajo's window reset, both start on Trabajo, its
+    held task goes on, and the default's still waits.
+  - A4: Trabajo's sign-in expires: its task's card says to run `alondra accounts login "Trabajo"`,
+    `alondra accounts list` shows it signed out, a new task starts on the default and the default's
+    held task goes on. Trabajo is removed afterwards.
 - B1, after them: the sandbox's `claude` ran only as the SDK host's native Claude, never `--bg` or `-p`.
 
 Evidence lands in `bazel-testlogs/tests/sandbox/journeys/test.outputs/` (`$SANDBOX_DIR/journeys`

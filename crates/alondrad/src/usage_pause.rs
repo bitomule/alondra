@@ -1,5 +1,6 @@
-//! What the daemon does while Claude usage has run out on this Mac. One record says until when
-//! Claude reported the limit lasts; while it stands, the orchestrator starts no
+//! What the daemon does while Claude usage has run out on this Mac: no account the user has can
+//! work (each ran out of its session or its week, or is signed out), or Claude reported a limit
+//! the accounts' readings do not show yet. One record says until when it lasts; while it stands, the orchestrator starts no
 //! batch, no scheduled launch or node revival calls Claude, and nodes the limit stopped wait for
 //! the machine. When the time comes the daemon resumes: it wakes those nodes, and the batch and
 //! the deferred schedules run again, each once. A limit that is still there when they run
@@ -49,6 +50,8 @@ struct Record {
     strikes: u32,
     /// Pace cards whose answer was already acted on, the latest last.
     settled_cards: Vec<String>,
+    /// The standing exhaustion is the accounts' readings saying none can work: they also end it.
+    by_margin: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,9 +96,36 @@ impl UsagePause {
     /// extends the standing exhaustion. One that returns right after a resume waits longer
     /// each time.
     pub(crate) fn exhaust(&self, until: Option<Millis>, now: Millis) -> Change {
+        self.exhaust_as(until, now, false)
+    }
+
+    /// No account can work until `until`, when the soonest one can again: the readings say so, so
+    /// a later reading that moves it earlier moves the wait too, and no backoff lengthens it.
+    pub(crate) fn exhaust_for_margin(&self, until: Option<Millis>, now: Millis) -> Change {
+        self.exhaust_as(until, now, true)
+    }
+
+    /// An account can work again before the reset the exhaustion waited for: an exhaustion the
+    /// readings started ends now, after the usual jitter, as at its reset. Any other stands.
+    pub(crate) fn margin_back(&self, now: Millis) -> bool {
         let mut record = self.record.lock().expect("usage pause poisoned");
+        let by_margin = record.by_margin;
+        let Some(standing) = record.exhausted.as_mut().filter(|standing| by_margin && !standing.by_user && standing.until > now) else { return false };
+        standing.until = now;
+        self.changed.send_replace(record.exhausted.clone());
+        true
+    }
+
+    fn exhaust_as(&self, until: Option<Millis>, now: Millis, by_margin: bool) -> Change {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        let standing = record.exhausted.is_some();
+        let follows_readings = by_margin && record.by_margin;
         let reported = until.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET_WAIT_MS);
         let change = match record.exhausted.as_mut() {
+            Some(standing) if follows_readings && !standing.by_user && reported < standing.until => {
+                standing.until = reported;
+                Change::Extended
+            }
             Some(standing) if standing.by_user => {
                 standing.by_user = false;
                 standing.until = standing.until.max(reported);
@@ -110,12 +140,13 @@ impl UsagePause {
             None => {
                 let flapping = record.resumed_at.is_some_and(|at| now - at < FLAP_WINDOW_MS);
                 record.strikes = if flapping { record.strikes + 1 } else { 0 };
-                let backoff = if record.strikes == 0 { 0 } else { (BACKOFF_BASE_MS << record.strikes.min(10)).min(BACKOFF_CAP_MS) };
+                let backoff = if record.strikes == 0 || by_margin { 0 } else { (BACKOFF_BASE_MS << record.strikes.min(10)).min(BACKOFF_CAP_MS) };
                 record.exhausted = Some(Exhausted { until: reported.max(now + backoff), since: now, by_user: false });
                 record.announced = false;
                 Change::Started
             }
         };
+        record.by_margin = if standing { record.by_margin && by_margin } else { by_margin };
         if change != Change::Unchanged {
             self.changed.send_replace(record.exhausted.clone());
         }
@@ -171,6 +202,7 @@ impl UsagePause {
     pub(crate) fn resume(&self, now: Millis) -> Option<bool> {
         let mut record = self.record.lock().expect("usage pause poisoned");
         let ended = record.exhausted.take()?;
+        record.by_margin = false;
         if !ended.by_user {
             record.resumed_at = Some(now);
         }
@@ -441,7 +473,7 @@ pub(crate) fn record_from_text(domain: &crate::domain_runtime::DomainRuntime, te
         return false;
     }
     let now = now_millis();
-    domain.live.usage_pause.exhaust(reset_in(text, now).or_else(|| domain.live.measured.reset_after_limit(now)), now);
+    domain.live.usage_pause.exhaust(reset_in(text, now).or_else(|| domain.live.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now)), now);
     true
 }
 

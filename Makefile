@@ -297,7 +297,7 @@ e2e-ios-offline:
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 # Scripted journeys on a fresh sandbox with the fake claude and gh (tools/sandbox/src/journey);
-# JOURNEY=task-cycle|session|local runs one. Evidence: bazel-testlogs/tests/sandbox/journeys/test.outputs.
+# JOURNEY=task-cycle|session|reopen|mcp|local|accounts runs one. Evidence: bazel-testlogs/tests/sandbox/journeys/test.outputs.
 # How the node and orchestrator skills behave with a real Claude run (plugin/evals,
 # plugin-orchestrator/evals): opt-in, it costs tokens. RUNS=1 for a quick look.
 skill-evals:

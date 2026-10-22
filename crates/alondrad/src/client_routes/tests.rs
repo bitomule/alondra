@@ -531,7 +531,7 @@ async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_wit
     let launched = crate::sdk_owner::launch(&fixture.domain, crate::sdk_owner::Launch {
         task: "task-sdk".into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: "/synthetic/plugin".into(), options: Default::default(),
-        model: None,
+        model: None, account: alondra_core::accounts::AccountId::default_account(),
     }).await.unwrap();
     let agent = AgentId::from(launched["agent_id"].as_str().unwrap());
     sdk.until_answered("task-sdk").await;

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
-use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Policy, Provider};
 use alondra_core::domain::{Actor, Command as DomainCommand, CommandEnvelope, DomainState, PROTOCOL_VERSION};
 use alondra_core::usage::{AccountUsage, Share, UsageReading, WindowKind, WindowReading};
 use alondra_core::{Millis, now_millis};
@@ -48,15 +48,15 @@ impl Measured {
         }
     }
 
-    /// When a limit of the account nodes run on, reported without a time, ends.
-    pub(crate) fn reset_after_limit(&self, now: Millis) -> Option<Millis> {
-        self.0.lock().expect("measured usage poisoned").iter().find(|usage| nodes_account(usage)).and_then(|usage| usage.reset_after_limit(now))
+    /// When a limit of `account`, reported without a time, ends.
+    pub(crate) fn reset_after_limit(&self, account: &AccountId, now: Millis) -> Option<Millis> {
+        self.0
+            .lock()
+            .expect("measured usage poisoned")
+            .iter()
+            .find(|usage| usage.provider == Provider::Claude && usage.account == *account)
+            .and_then(|usage| usage.reset_after_limit(now))
     }
-}
-
-/// Nodes run on the provider's own sign-in until each launch picks its account.
-fn nodes_account(usage: &AccountUsage) -> bool {
-    usage.provider == Provider::Claude && usage.account.is_default()
 }
 
 /// The accounts' usage together at `now`, as the gauges and the pace card read it.
@@ -185,14 +185,32 @@ fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, St
     reading(report)
 }
 
-/// Brings the live view's copy and the Mac-wide pause in step with what the domain committed: the
-/// session or the week of the account nodes run on running out pauses the Mac until it resets.
+/// Brings the live view's copy and the Mac-wide pause in step with what the domain committed: when
+/// no account can work, the Mac waits until the soonest one can; when one can again before that,
+/// the wait ends.
 pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
-    domain.live.measured.sync(read.state());
-    if let Some(until) = read.state().account_usage.iter().find(|usage| nodes_account(usage)).and_then(|usage| usage.plan_exhausted_until(now)) {
-        domain.live.usage_pause.exhaust(Some(until), now);
+    let state = read.state();
+    domain.live.measured.sync(state);
+    let day = crate::node_reports::local_day(now);
+    let can_work = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day).is_some();
+    if can_work {
+        drop(read);
+        domain.live.usage_pause.margin_back(now);
+    } else {
+        let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
+        drop(read);
+        domain.live.usage_pause.exhaust_for_margin(until, now);
     }
+}
+
+/// Records that Claude refused `account` work for its usage, until `until` when Claude said: its
+/// readings say it ran out, so no new work starts on it, and the next probe measures the rest.
+pub(crate) fn record_limit(domain: &DomainRuntime, account: &AccountId, until: Option<Millis>, now: Millis) {
+    let until = until.or_else(|| domain.live.measured.reset_after_limit(account, now)).filter(|until| *until > now);
+    let window = WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: until, exhausted: true };
+    record(domain, account, UsageReading { windows: vec![window], plan: None, complete: false }, now);
+    follow(domain, now);
 }
 
 /// Accounts whose usage limits apply: on, and paid by subscription.
@@ -228,7 +246,7 @@ pub(crate) fn due(accounts: &[AccountId], usage: &[AccountUsage], probed: &HashM
 }
 
 /// Keeps every account measured, and the live view's copy and the Mac-wide pause in step with
-/// what the account nodes run on says.
+/// what the accounts say.
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
     let mut changes = domain.subscribe();
     let mut pauses = domain.live.usage_pause.subscribe();
@@ -241,7 +259,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
         let accounts: Vec<AccountId> = probed_accounts(state).into_iter().map(|account| account.id.clone()).collect();
         let (mut ready, next) = due(&accounts, &state.account_usage, &probed, now);
         drop(read);
-        // Claude refused work Mac-wide (a hook, the orchestrator): measure the account nodes run on.
+        // A `claude --bg` node's hook paused the Mac: measure the default account, the one they run on.
         let nodes = AccountId::default_account();
         let refused = domain.live.usage_pause.current().filter(|standing| !standing.by_user).map(|standing| standing.since);
         if refused.is_some_and(|since| probed.get(&nodes).is_none_or(|probe| *probe < since)) && accounts.contains(&nodes) && !ready.contains(&nodes) {

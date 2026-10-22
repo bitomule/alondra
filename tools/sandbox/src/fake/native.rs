@@ -37,7 +37,8 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     if args.iter().any(|arg| arg == "--restricted") {
         return orchestrator::batch(fakes, args);
     }
-    if flag(args, "--resume").is_none() && flag(args, "--session-id").is_none() {
+    let probe = args.iter().any(|arg| arg == "--strict-mcp-config");
+    if probe && flag(args, "--resume").is_none() && flag(args, "--session-id").is_none() {
         return usage_probe(fakes);
     }
     worker(fakes, args)
@@ -45,7 +46,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
 
 /// The account a start of the native Claude signs in with: its configuration folder's name, or
 /// `default` for Claude's own profile.
-fn account() -> String {
+pub(super) fn account() -> String {
     std::env::var("CLAUDE_CONFIG_DIR").ok().and_then(|dir| Some(Path::new(&dir).file_name()?.to_string_lossy().into_owned())).unwrap_or_else(|| "default".into())
 }
 
@@ -135,6 +136,9 @@ pub struct Session {
     pub state: State,
     pub starts: u32,
     pub started_at: u64,
+    /// The account its latest start signed in with.
+    #[serde(default)]
+    pub account: String,
 }
 
 /// One start of the session's process, as the journeys read it.
@@ -146,6 +150,8 @@ pub struct Start {
     /// How many inputs its transcript held when it started.
     pub history: usize,
     pub cwd: PathBuf,
+    #[serde(default)]
+    pub account: String,
 }
 
 /// One input the session took.
@@ -450,9 +456,10 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         state: State::Running,
         starts: earlier.as_ref().map_or(0, |earlier| earlier.starts) + 1,
         started_at: now_ms(),
+        account: account(),
     };
     fakes.save_session(&session)?;
-    let start = Start { at: now_ms(), pid: std::process::id(), resume, history, cwd };
+    let start = Start { at: now_ms(), pid: std::process::id(), resume, history, cwd, account: account() };
     append(&dir.join("starts.jsonl"), &serde_json::to_value(&start)?)?;
     let log = dir.join("native.log");
     note(&log, &format!("started with {}", args.join(" ")));
@@ -501,6 +508,9 @@ pub const FAIL_TURN: &str = "fail-turn";
 /// While this file exists in `fakes/`, the native Claude completes each input after the mission
 /// without starting it, as one its transcript already holds: no turn ever answers it.
 pub const DROP_INPUT: &str = "drop-input";
+/// While `fakes/refuse/<account>` holds `rate_limit` or `authentication_failed`, the API refuses
+/// every turn on that account as it refuses one for its usage limit or for an expired sign-in.
+pub const REFUSE: &str = "refuse";
 
 struct Native<'a> {
     fakes: &'a Fakes,
@@ -614,6 +624,9 @@ impl Native<'_> {
             self.turn = Some(vec![]);
         }
         self.turn.get_or_insert_with(Vec::new).push(input.into());
+        if let Some(error) = self.refusal() {
+            return self.refused(&error);
+        }
         self.assistant(json!([{"type": "text", "text": "On it."}]))?;
         let Some(script) = self.script.clone() else { return Ok(()) };
         let steps = if mission {
@@ -646,6 +659,53 @@ impl Native<'_> {
             self.lifecycle(input, "completed")?;
         }
         Ok(())
+    }
+
+    /// What the API refuses the session's account, if anything.
+    fn refusal(&self) -> Option<String> {
+        let text = fs::read_to_string(self.fakes.dir.join(REFUSE).join(&self.session.account)).ok()?;
+        Some(text.trim().to_owned()).filter(|error| !error.is_empty())
+    }
+
+    /// The open turn ends as Claude Code ends one once the API refused it: a synthetic message
+    /// naming the error, for a usage limit the window that ran out, and a result with the status.
+    fn refused(&mut self, error: &str) -> Result<()> {
+        let (status, terminal, said) = match error {
+            "rate_limit" => (429, "blocking_limit", "You've hit your limit"),
+            "authentication_failed" => (401, "api_error", "Failed to authenticate. API Error: 401 OAuth token has expired · Please run /login"),
+            other => bail!("the sandbox's API does not refuse with {other}"),
+        };
+        note(&self.log, &format!("the API refused the turn: {error}"));
+        let (input, inputs) = self.answering();
+        let id = uuid()?;
+        self.send(json!({
+            "type": "assistant", "session_id": self.session.session_id, "uuid": id, "parent_tool_use_id": null, "error": error,
+            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text", "text": said}], "stop_reason": "stop_sequence", "stop_sequence": "",
+                "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
+            "user_message_uuid": input, "user_message_uuids": inputs,
+        }))?;
+        if error == "rate_limit" {
+            let mut info = json!({"status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0});
+            if let Some(resets) = usage_of(self.fakes, &self.session.account).ok().and_then(|usage| super::node::parse_rfc3339(usage["five_hour"]["resets_at"].as_str()?)) {
+                info["resetsAt"] = json!(resets / 1000);
+            }
+            self.rate_limit(info)?;
+        }
+        let Some(open) = self.turn.take() else { return Ok(()) };
+        self.send(json!({
+            "type": "result", "subtype": "success", "is_error": true, "session_id": self.session.session_id, "uuid": uuid()?,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "result": said, "api_error_status": status, "terminal_reason": terminal, "user_message_uuid": input, "user_message_uuids": inputs,
+        }))?;
+        for input in &open {
+            self.lifecycle(input, "completed")?;
+        }
+        Ok(())
+    }
+
+    fn rate_limit(&self, info: Value) -> Result<()> {
+        self.send(json!({"type": "rate_limit_event", "rate_limit_info": info, "session_id": self.session.session_id, "uuid": uuid()?}))
     }
 
     /// The open turn ends with `said`.
@@ -707,6 +767,7 @@ impl Native<'_> {
             Step::OwnTurn { said } => (self.own_turn(said), Leave::Stay),
             Step::LeavePlanMode { points } => (self.leave_plan_mode(*points), Leave::Stay),
             Step::EndOwnTurn => (self.end_own_turn(), Leave::Stay),
+            Step::RateLimit { info } => (self.rate_limit(info.clone()).map(|()| work::done("reported")), Leave::Stay),
             Step::End => (Ok(work::done("ended")), Leave::Exit),
             Step::Die => (Ok(work::done("killed")), Leave::Die),
             _ => {

@@ -56,7 +56,7 @@ fn with(accounts: Vec<ProviderAccount>) -> AccountsConfig {
 impl Fixture {
     fn store(&self, next: &AccountsConfig) -> Result<(), Refused> {
         let seen = version(&config(&self.home).unwrap());
-        store(&self.home, &self.user_home, Some(&self.claude), &seen, next)
+        store(&self.home, &self.user_home, Some(&self.claude), &seen, next, &[])
     }
     fn claude_tree(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(self.user_home.join(".claude")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
@@ -87,7 +87,7 @@ fn a_change_made_against_an_older_section_is_refused_and_changes_nothing() {
     let text = std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap();
     let stale = version(&AccountsConfig::default());
     let next = with(vec![work(), ProviderAccount { id: AccountId::parse("other").unwrap(), name: "Other".into(), ..work() }]);
-    assert_eq!(store(&f.home, &f.user_home, Some(&f.claude), &stale, &next), Err(Refused::Stale));
+    assert_eq!(store(&f.home, &f.user_home, Some(&f.claude), &stale, &next, &[]), Err(Refused::Stale));
     assert_eq!(std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap(), text);
     assert!(!f.home.join("accounts/other").exists());
     let broken = with(vec![work(), work()]);
@@ -151,5 +151,18 @@ fn an_account_that_cannot_be_signed_out_stays() {
     assert!(folder.join("signed-in").is_file());
     assert_eq!(config(&f.home).unwrap(), with(vec![work()]));
     let seen = version(&config(&f.home).unwrap());
-    assert!(matches!(store(&f.home, &f.user_home, None, &seen, &AccountsConfig::default()), Err(Refused::SignOut(_))), "without Claude Code nothing signs it out");
+    assert!(matches!(store(&f.home, &f.user_home, None, &seen, &AccountsConfig::default(), &[]), Err(Refused::SignOut(_))), "without Claude Code nothing signs it out");
+}
+
+#[test]
+fn an_account_open_tasks_run_on_is_not_removed() {
+    let f = fixture();
+    f.store(&with(vec![work()])).unwrap();
+    std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
+    let seen = version(&config(&f.home).unwrap());
+    let refused = store(&f.home, &f.user_home, Some(&f.claude), &seen, &with(vec![]), &[AccountId::parse("work").unwrap()]);
+    assert_eq!(refused, Err(Refused::InUse("Work".into())));
+    assert_eq!(config(&f.home).unwrap(), with(vec![work()]), "the section is as it was");
+    assert!(f.home.join("accounts/work/signed-in").exists(), "still signed in, its folder kept");
+    assert!(!f.user_home.join("logouts").exists(), "never signed out");
 }

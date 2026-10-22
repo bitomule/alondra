@@ -1,10 +1,14 @@
 //! Whether Claude can work for the tasks that run through the Agent SDK. A turn a Claude API error
 //! ended holds its task on a pause of its lifecycle, on a card of its own as every wait is, until
 //! something outside the task changes: the user signs in to Claude again, the API answers, or the
-//! usage limit resets. Waiting for You shows the cards of one hold as a single card: the oldest,
-//! and none while a probe runs. Only facts release them: the model answering any SDK task, or the
-//! one held task the user's answer or the daemon's schedule sent on as a probe.
+//! usage limit resets. A sign-in and a usage limit belong to the provider account the task runs
+//! on; the API is the same for every account. Waiting for You shows the cards of one hold (of one
+//! account) as a single card: the oldest, and none while a probe runs. Only facts release them:
+//! the model answering an SDK task, which lets go on the tasks its account's sign-in or limit
+//! held and every task the API held, or the one held task the user's answer or the daemon's
+//! schedule sent on as a probe.
 use super::*;
+use crate::accounts::{AccountId, AccountState};
 use alondra_domain::WaitReason as LifecycleWait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +25,7 @@ pub const SIGNED_IN: &str = "signed_in";
 pub const SIGNED_IN_LABEL: &str = "I signed in";
 pub const TRY_NOW: &str = "try_now";
 pub const TRY_NOW_LABEL: &str = "Try now";
-const SIGNED_IN_MEANS: &str = "One waiting task goes on; when Claude answers it, the rest go on too";
+const SIGNED_IN_MEANS: &str = "One waiting task goes on; when Claude answers it, the rest of its account go on too";
 const TRY_NOW_MEANS: &str = "One waiting task tries again now; when Claude answers it, the rest go on too";
 const GO_ON: &str = "Claude answers again: go on with your task from where it stopped.";
 
@@ -82,12 +86,27 @@ pub fn usage_resets_at(card: &InteractionId) -> Option<u64> {
     card.0.strip_prefix(USAGE_UNTIL)?.split('-').next()?.parse().ok()
 }
 
-/// A task Claude holds, and the card it waits on.
+/// A task Claude holds, the card it waits on and the account it runs on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeHeld {
     pub task: TaskId,
     pub hold: ClaudeHold,
     pub card: InteractionId,
+    pub account: AccountId,
+}
+
+impl ClaudeHeld {
+    /// What the hold waits for: the API, for every account; a sign-in or a limit, of its account.
+    pub fn waits_for(&self) -> (ClaudeHold, Option<AccountId>) {
+        (self.hold, self.hold.of_account(&self.account))
+    }
+}
+
+impl ClaudeHold {
+    /// The account a hold of a task on `account` waits for; none for the API, which is shared.
+    pub fn of_account(self, account: &AccountId) -> Option<AccountId> {
+        (self != Self::Outage).then(|| account.clone())
+    }
 }
 
 /// A task's last pause (true) or resume (false) on a Claude hold, and whether a turn ended after it.
@@ -105,6 +124,11 @@ fn last_hold(journal: &[LifecycleRecord]) -> Option<(&InteractionId, bool, bool)
 }
 
 impl DomainState {
+    /// The account the task's current execution runs on.
+    pub fn task_account(&self, task: &TaskId) -> AccountId {
+        self.tasks.get(task).and_then(|task| task.account.clone()).unwrap_or_else(AccountId::default_account)
+    }
+
     /// The open tasks Claude holds, by task id. A task's last pause on a Claude hold names it; its
     /// lifecycle confirms it still waits on that pause.
     pub fn claude_held(&self) -> Vec<ClaudeHeld> {
@@ -119,35 +143,45 @@ impl DomainState {
                 lifecycle.cards().iter().any(|(id, reason)| *id == card && *reason == LifecycleWait::Pause)
             });
             if waits {
-                held.push(ClaudeHeld { task: task.clone(), hold, card: card.clone() });
+                held.push(ClaudeHeld { task: task.clone(), hold, card: card.clone(), account: self.task_account(task) });
             }
         }
         held
     }
 
+    /// What a hold's card waits for: its hold, and the account of its task unless it waits for the API.
+    pub fn claude_card_waits_for(&self, card: &Interaction) -> Option<(ClaudeHold, Option<AccountId>)> {
+        let hold = ClaudeHold::of(&card.id)?;
+        let account = match &card.scope {
+            Scope::Task { task_id } => self.task_account(task_id),
+            _ => AccountId::default_account(),
+        };
+        Some((hold, hold.of_account(&account)))
+    }
+
     /// The holds a probe runs for now: a task sent on from one whose next turn has not ended.
-    fn probing(&self) -> BTreeSet<ClaudeHold> {
+    fn probing(&self) -> BTreeSet<(ClaudeHold, Option<AccountId>)> {
         self.lifecycle_journal
             .iter()
             .filter(|(task, _)| self.tasks.get(*task).is_some_and(|t| !t.over()))
-            .filter_map(|(_, journal)| match last_hold(journal) {
-                Some((card, false, false)) => ClaudeHold::of(card),
+            .filter_map(|(task, journal)| match last_hold(journal) {
+                Some((card, false, false)) => ClaudeHold::of(card).map(|hold| (hold, hold.of_account(&self.task_account(task)))),
                 _ => None,
             })
             .collect()
     }
 
-    /// The cards of Claude's holds Waiting for You shows: the oldest open one of each hold, and
-    /// none of a hold a probe runs for. The others wait in the queue, out of sight.
+    /// The cards of Claude's holds Waiting for You shows: the oldest open one of each hold of each
+    /// account, and none of one a probe runs for. The others wait in the queue, out of sight.
     pub fn shown_claude_cards(&self) -> BTreeSet<InteractionId> {
         let probing = self.probing();
-        let mut oldest: BTreeMap<ClaudeHold, &Interaction> = BTreeMap::new();
+        let mut oldest: BTreeMap<(ClaudeHold, Option<AccountId>), &Interaction> = BTreeMap::new();
         for card in self.interactions.values().filter(|i| i.author == Author::System && self.open(i)) {
-            let Some(hold) = ClaudeHold::of(&card.id) else { continue };
-            if probing.contains(&hold) {
+            let Some(waits_for) = self.claude_card_waits_for(card) else { continue };
+            if probing.contains(&waits_for) {
                 continue;
             }
-            let first = oldest.entry(hold).or_insert(card);
+            let first = oldest.entry(waits_for).or_insert(card);
             if card.order < first.order {
                 *first = card;
             }
@@ -160,13 +194,18 @@ impl DomainState {
         i.author == Author::System && ClaudeHold::of(&i.id).is_some() && !self.shown_claude_cards().contains(&i.id)
     }
 
-    /// How many open cards `hold` has: the tasks that wait on it.
-    pub fn claude_waiting(&self, hold: ClaudeHold) -> usize {
-        self.interactions.values().filter(|i| i.author == Author::System && ClaudeHold::of(&i.id) == Some(hold) && self.open(i)).count()
+    /// How many open cards wait for what `card` waits for: the tasks held with it.
+    pub fn claude_waiting(&self, card: &Interaction) -> usize {
+        let Some(waits_for) = self.claude_card_waits_for(card) else { return 0 };
+        self.interactions
+            .values()
+            .filter(|i| i.author == Author::System && self.open(i) && self.claude_card_waits_for(i).as_ref() == Some(&waits_for))
+            .count()
     }
 
-    /// The task waits on `hold`, on a card of its own, before its failed turn ends. The user hears
-    /// of a sign-in only when no other task waits for one; of the API and the limit, never.
+    /// The task waits on `hold`, on a card of its own, before its failed turn ends. An expired
+    /// sign-in leaves its account signed out, so no new work starts on it. The user hears of a
+    /// sign-in only when no other task of its account waits for one; of the API and the limit, never.
     pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, resets_at: Option<u64>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
         let revision = self.revision + 1;
         let id = InteractionId(match (hold, resets_at) {
@@ -175,7 +214,12 @@ impl DomainState {
             (ClaudeHold::Usage, Some(at)) => format!("{USAGE_UNTIL}{at}-{task}-{revision}"),
             (ClaudeHold::Usage, None) => format!("{USAGE_PREFIX}{task}-{revision}"),
         });
-        let announce = hold == ClaudeHold::SignedOut && self.claude_waiting(hold) == 0;
+        let account = self.task_account(task);
+        let announce = hold == ClaudeHold::SignedOut
+            && !self.claude_held().iter().any(|held| held.waits_for() == (hold, Some(account.clone())));
+        if hold == ClaudeHold::SignedOut {
+            self.account_signed_out(&account);
+        }
         self.interactions.insert(id.clone(), hold_card(id.clone(), task, hold, revision));
         if announce {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: id.clone() });
@@ -184,9 +228,10 @@ impl DomainState {
     }
 
     /// The daemon's schedule: the task of the oldest card of `hold` goes on, to probe whether
-    /// Claude works again. Its card is withdrawn: nobody answered it.
-    pub(super) fn probe_claude(&mut self, hold: ClaudeHold, lifecycles: &mut Lifecycles) -> Result<Option<TaskId>, DomainError> {
-        let held = self.claude_held().into_iter().filter(|held| held.hold == hold);
+    /// Claude works again; for a limit, of `account` when it names one. Its card is withdrawn:
+    /// nobody answered it.
+    pub(super) fn probe_claude(&mut self, hold: ClaudeHold, account: Option<&AccountId>, lifecycles: &mut Lifecycles) -> Result<Option<TaskId>, DomainError> {
+        let held = self.claude_held().into_iter().filter(|held| held.hold == hold && account.is_none_or(|account| held.account == *account));
         let Some(probe) = held.min_by_key(|held| self.interactions.get(&held.card).map(|i| i.order)) else {
             return Ok(None);
         };
@@ -195,11 +240,20 @@ impl DomainState {
         Ok(Some(probe.task))
     }
 
-    /// The model answered an SDK task: every held task goes on and its card is withdrawn.
-    pub(super) fn claude_answered(&mut self, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+    /// The model answered an SDK task on `account`: the tasks its account's sign-in or limit held
+    /// and those the API held go on, each card withdrawn. Tasks held by another account's sign-in
+    /// or limit wait on: this answer says nothing of it. An account Alondra saw signed out is
+    /// signed in again, with its credential's next generation.
+    pub(super) fn claude_answered(&mut self, account: &AccountId, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
         for held in self.claude_held() {
-            self.withdraw_hold(&held.card);
-            self.resume_held(&held, lifecycles)?;
+            if held.hold == ClaudeHold::Outage || held.account == *account {
+                self.withdraw_hold(&held.card);
+                self.resume_held(&held, lifecycles)?;
+            }
+        }
+        if let Some(status) = self.accounts.iter_mut().find(|status| status.id == *account && status.state == AccountState::SignedOut) {
+            status.state = AccountState::SignedIn;
+            status.sign_ins += 1;
         }
         Ok(())
     }
@@ -213,6 +267,35 @@ impl DomainState {
             self.resume_held(&held, lifecycles)?;
         }
         Ok(true)
+    }
+
+    fn account_signed_out(&mut self, account: &AccountId) {
+        if let Some(status) = self.accounts.iter_mut().find(|status| status.id == *account && status.state != AccountState::Disabled) {
+            status.state = AccountState::SignedOut;
+        }
+    }
+
+    /// The accounts the daemon saw, as the domain keeps them: an account whose expired sign-in
+    /// holds a task stays signed out until Claude answers on it, whatever its sign-in check says,
+    /// and one seen signed in again after it was signed out counts its credential's next generation.
+    pub(super) fn record_accounts(&mut self, seen: &[crate::accounts::AccountStatus]) {
+        let held: BTreeSet<AccountId> = self.claude_held().into_iter().filter(|held| held.hold == ClaudeHold::SignedOut).map(|held| held.account).collect();
+        let before = std::mem::take(&mut self.accounts);
+        self.accounts = seen
+            .iter()
+            .map(|status| {
+                let mut status = status.clone();
+                let prior = before.iter().find(|prior| prior.provider == status.provider && prior.id == status.id);
+                status.sign_ins = prior.map_or(0, |prior| prior.sign_ins);
+                let was_out = prior.is_some_and(|prior| prior.state == AccountState::SignedOut);
+                if status.state == AccountState::SignedIn && held.contains(&status.id) {
+                    status.state = AccountState::SignedOut;
+                } else if status.state == AccountState::SignedIn && was_out {
+                    status.sign_ins += 1;
+                }
+                status
+            })
+            .collect();
     }
 
     fn withdraw_hold(&mut self, card: &InteractionId) {

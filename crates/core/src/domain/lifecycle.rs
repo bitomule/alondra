@@ -1564,7 +1564,8 @@ impl DomainState {
         for fact in facts {
             let record = match fact.clone() {
                 RuntimeObservation::ModelAnswered => {
-                    self.claude_answered(lifecycles)?;
+                    let account = self.task_account(task);
+                    self.claude_answered(&account, lifecycles)?;
                     continue;
                 }
                 RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,

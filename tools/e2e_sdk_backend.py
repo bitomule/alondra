@@ -92,6 +92,9 @@ def runtime_of(sandbox, node, host, exist_ok):
 
 def fake(sandbox, mac, node, host, native):
     _, runtime, home, tmp = runtime_of(sandbox, node, host, exist_ok=True)
+    # The fake claude's sign-in of Claude's default profile: `claude auth status` reads it.
+    (home / '.claude').mkdir(mode=0o700, exist_ok=True)
+    (home / '.claude' / '.sandbox-account').write_text('default@sandbox.test\n')
     # Short enough for the host's Unix socket: <state root>/<execution UUID>/s.
     state = Path(tempfile.mkdtemp(prefix='as-sdk-', dir=os.path.realpath('/tmp')))
     (mac / 'sdk-state-root').write_text(str(state))

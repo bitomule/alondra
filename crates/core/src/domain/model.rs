@@ -146,6 +146,10 @@ pub struct Task {
     /// subagents it launched. A task ends only once each of them has ended.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub worktrees: BTreeMap<String, TaskWorktree>,
+    /// The provider account its current execution runs on; absent for Tasks admitted before it
+    /// was recorded, which run on the provider's own sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::AccountId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskWorktree {

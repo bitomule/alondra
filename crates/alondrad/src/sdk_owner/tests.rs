@@ -3,6 +3,7 @@
 //! result. Each step waits on the host's next event, never on a clock.
 use super::*;
 use crate::test_support::Directory;
+use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -247,6 +248,7 @@ impl Slice {
             plugin: self.plugin.clone(),
             options: LaunchOptions::default(),
             model: None,
+            account: AccountId::default_account(),
         }, capabilities, None)
         .unwrap()
     }
@@ -1290,7 +1292,7 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
     assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
     std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
-    crate::claude_access::probe(&slice.domain, ClaudeHold::Outage);
+    crate::claude_access::probe(&slice.domain, ClaudeHold::Outage, None);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -1327,12 +1329,103 @@ fn a_second_task_starts_through_the_same_sdk_host() {
         plugin: slice.plugin.clone(),
         options: LaunchOptions::default(),
         model: None,
+        account: AccountId::default_account(),
     })
     .expect("the second task starts too");
     slice.settle(&mut second);
     assert_eq!(slice.prompts(), ["Write the release notes", "Write the upgrade guide"]);
     first.stop().unwrap();
     second.stop().unwrap();
+}
+
+impl Slice {
+    /// A second task of the request, ready to launch in the slice's worktree.
+    fn task(&self, task: &str) {
+        self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
+            plan_items: None,
+            task_id: task.into(),
+            request_id: "sdk-slice-request".into(),
+            title: format!("Work on {task}"),
+            agent_id: None,
+            review_prs: false,
+            dependencies: BTreeSet::new(),
+            stack: None,
+            launch: Some(LaunchPlan::new("node", self.worktree.to_str().unwrap())),
+        });
+    }
+
+    fn launch_on(&self, task: &str, account: &str) -> Result<Driver, Failed> {
+        start(Arc::clone(&self.domain), &self.backend, Launch {
+            task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(),
+            prompt: format!("Work on {task}"), plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None,
+            account: AccountId::parse(account).unwrap(),
+        })
+    }
+
+    /// The account and generation of the credential the task's execution is bound to.
+    fn credential(&self, task: &str) -> (String, u64) {
+        let observer = Connection::open(&self.database).unwrap();
+        observer.query_row(
+            "SELECT b.credential, b.credential_generation FROM lifecycle_execution_bindings e JOIN provider_bindings b ON b.id=e.binding_id WHERE e.task_id=?1 ORDER BY e.generation DESC LIMIT 1",
+            [task], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)),
+        ).unwrap()
+    }
+
+    fn accounts_seen(&self, id: &str, work: AccountState) {
+        let accounts = [("default", AccountState::SignedIn), ("work", work)].map(|(id, state)| AccountStatus {
+            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+        }).to_vec();
+        self.run(&Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    }
+}
+
+fn sha256(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// An execution on an account the user added runs Claude with that account's folder as its
+// configuration, is bound to the account as its credential, and the task keeps its account. The
+// default account's execution has no `CLAUDE_CONFIG_DIR`; an account the user never registered
+// gets no Claude at all. Signing an account in again binds its next executions to a new generation.
+#[test]
+fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
+    let slice = Slice::new();
+    std::fs::write(alondra_core::options::path_in(&slice._home), "[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
+    let folder = slice._home.join("accounts/work");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).unwrap();
+    slice.accounts_seen("seen-1", AccountState::SignedIn);
+    slice.task("sdk-on-work");
+    let mut on_work = slice.launch_on("sdk-on-work", "work").expect("a registered account launches");
+    slice.settle(&mut on_work);
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    assert_eq!(capture["env_value_sha256"]["CLAUDE_CONFIG_DIR"].as_str(), Some(sha256(folder.to_str().unwrap()).as_str()), "its own folder");
+    assert_eq!(slice.credential("sdk-on-work"), ("work".into(), 1));
+    assert_eq!(slice.domain.read().state().tasks[&TaskId::from("sdk-on-work")].account.as_ref().map(AccountId::as_str), Some("work"));
+    on_work.stop().unwrap();
+
+    let mut on_default = slice.launch();
+    slice.settle(&mut on_default);
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let keys: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    assert!(!keys.contains(&"CLAUDE_CONFIG_DIR"), "the user's default profile: {keys:?}");
+    assert_eq!(slice.credential(TASK), ("default".into(), 1));
+    assert_eq!(slice.domain.read().state().tasks[&TaskId::from(TASK)].account, None, "the provider's own sign-in");
+    on_default.stop().unwrap();
+
+    slice.task("sdk-on-other");
+    std::fs::DirBuilder::new().mode(0o700).create(slice._home.join("accounts/other")).unwrap();
+    let Err(Failed(refused)) = slice.launch_on("sdk-on-other", "other") else { panic!("an account the user never added runs nothing") };
+    assert!(refused.contains("not one of the accounts"), "{refused}");
+
+    slice.accounts_seen("seen-2", AccountState::SignedOut);
+    slice.accounts_seen("seen-3", AccountState::SignedIn);
+    slice.task("sdk-on-work-again");
+    let mut again = slice.launch_on("sdk-on-work-again", "work").unwrap();
+    slice.settle(&mut again);
+    assert_eq!(slice.credential("sdk-on-work-again"), ("work".into(), 2), "signed in again: the credential's next generation");
+    assert_eq!(slice.credential("sdk-on-work"), ("work".into(), 1), "the earlier execution keeps the binding it was admitted under");
+    again.stop().unwrap();
 }
 
 // `claude --bg` gets the model, effort and denied tools of its launch as flags. Through the SDK the
@@ -1345,7 +1438,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
-        model: None,
+        model: None, account: AccountId::default_account(),
     }, capabilities(), None).unwrap();
     slice.settle(&mut driver);
     let launched = |slice: &Slice| -> Vec<String> {
@@ -1404,7 +1497,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     let mut replacement = start(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(),
-        model: None,
+        model: None, account: AccountId::default_account(),
     }).unwrap();
     slice.settle(&mut replacement);
     let state = slice.domain.state().unwrap();

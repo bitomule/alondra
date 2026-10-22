@@ -146,6 +146,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         owner, backend: backend.clone(), home: f.executor.home.clone(), directory,
         node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
         projects_root: None, capability: "c".repeat(64), session: session.into(), prompt: String::new(),
+        account: alondra_core::accounts::AccountId::default_account(),
     };
     let (configuration, profile) = (configuration(&batch).unwrap(), profile(&batch));
     let mut host = BatchHost::start(batch.owner, &configuration, session, &profile, "fixture:hold the first batch").unwrap();
@@ -179,6 +180,7 @@ fn the_projects_root_is_readable_and_never_writable() {
             owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),
             node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
             projects_root: root.map(Path::to_path_buf), capability: "c".repeat(64), session: "00000000-0000-4000-8000-00000000c0de".into(), prompt: String::new(),
+            account: alondra_core::accounts::AccountId::default_account(),
         }
     };
     let rooted = profile(&batch(Some(Path::new("/Users/someone/Projects"))));

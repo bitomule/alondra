@@ -523,7 +523,7 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
     let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted");
-    assert!(refused.message.contains("Claude usage ran out"), "{}", refused.message);
+    assert!(refused.message.contains("No Claude account on this Mac has usage left"), "{}", refused.message);
     assert!(f.sdk().starts().is_empty());
     assert!(f.task_node().is_none(), "the task is left as it was");
 
@@ -1455,4 +1455,76 @@ async fn an_sdk_launch_that_fails_leaves_the_task_without_a_node() {
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, None, "no node took the task");
     assert_eq!(state.agents.len(), 1, "no node was registered for it");
+}
+
+/// The user added a second Claude account, Work, signed in like the default one.
+fn with_work_account(f: &Fixture) -> PathBuf {
+    use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    std::fs::write(alondra_core::options::path_in(&f.home), "[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
+    let folder = f.home.join("accounts/work");
+    std::fs::create_dir_all(&folder).unwrap();
+    let accounts = ["default", "work"].map(|id| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
+        email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+    }).to_vec();
+    command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    folder
+}
+
+fn week_used(f: &Fixture, account: &str, used: f64) {
+    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+    let reading = UsageReading {
+        windows: vec![WindowReading { kind: WindowKind::Weekly, used: Share::of(used), resets_at: Some(alondra_core::now_millis() + 3 * 86_400_000), exhausted: false }],
+        plan: None, complete: true,
+    };
+    crate::usage_probe::record(&f.domain, &alondra_core::accounts::AccountId::parse(account).unwrap(), reading, alondra_core::now_millis());
+}
+
+fn config_dir_sha256(f: &Fixture) -> Option<String> {
+    let capture: Value = serde_json::from_slice(&std::fs::read(&f.sdk().capture).unwrap()).unwrap();
+    capture["env_value_sha256"]["CLAUDE_CONFIG_DIR"].as_str().map(str::to_owned)
+}
+
+fn sha256(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[tokio::test]
+async fn a_launch_starts_on_the_account_with_the_most_margin() {
+    let f = world();
+    let folder = with_work_account(&f);
+    week_used(&f, "default", 0.8);
+    week_used(&f, "work", 0.1);
+    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "Claude runs with the work account's folder");
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("work"), "the task keeps the account its execution runs on");
+}
+
+// No account can work: the launch waits for capacity, a state of its task the gate holds, never a
+// task in nobody's hands; once an account resets it goes ahead there.
+#[tokio::test]
+async fn while_no_account_can_work_a_launch_waits_for_capacity_and_goes_ahead_once_one_can() {
+    use alondra_core::domain::{GateCause, Holder};
+    let f = world();
+    let folder = with_work_account(&f);
+    let now = alondra_core::now_millis();
+    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
+    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
+    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "usage_exhausted", "{}", refused.message);
+    assert!(f.sdk().starts().is_empty() && f.task_node().is_none(), "nothing started");
+    let state = f.domain.state().unwrap();
+    let facts = crate::start_failures::facts(&f.domain, &state).unwrap();
+    let task = &state.tasks[&TaskId::from("t")];
+    assert_eq!(state.holder(task, &facts[&task.id]), Ok(Holder::Gate(GateCause::Room)), "the task waits for capacity");
+
+    week_used(&f, "work", 0.3);
+    crate::usage_probe::follow(&f.domain, alondra_core::now_millis());
+    f.domain.live.usage_pause.resume(alondra_core::now_millis());
+    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "on the account that came back");
 }
