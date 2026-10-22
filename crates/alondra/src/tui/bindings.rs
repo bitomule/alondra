@@ -50,6 +50,9 @@ pub(super) enum Act {
     ReaderDelete,
     ReaderSend,
     ReaderAnswer,
+    ReaderOpen,
+    ReaderPick,
+    ReaderPickClose,
     ModalConfirm,
     ModalCancel,
     Pairing(bool),
@@ -262,6 +265,14 @@ impl App {
 
     fn reader_bindings(&self, t: &mut Table) {
         let Some(r) = self.reader.as_ref() else { return };
+        let targets = r.blocks.get(r.cursor).map_or(0, |b| b.targets.len());
+        if r.picking && targets > 1 {
+            let keys: Vec<KeyEvent> = (0..targets.min(9)).filter_map(digit).collect();
+            let hint = format!("1-{}", keys.len());
+            t.add(keys, &hint, tr!("open", "abrir"), Act::ReaderPick);
+            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::ReaderPickClose);
+            return;
+        }
         let mut moves = selection_keys();
         moves.extend(page_keys());
         t.add(moves, "j/k", tr!("block", "bloque"), Act::Move);
@@ -273,6 +284,9 @@ impl App {
             t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("close the search", "cerrar la búsqueda"), Act::ReaderFindClose);
         }
         t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::ReaderFind);
+        if targets > 0 {
+            t.add(vec![char('v')], "v", tr!("open", "abrir"), Act::ReaderOpen);
+        }
         if r.blocks.get(r.cursor).is_some_and(|block| block.commentable()) {
             t.add(vec![char('c'), plain(KeyCode::Enter)], "c", tr!("comment", "comentar"), Act::ReaderComment);
         }
@@ -626,6 +640,13 @@ impl App {
             Act::ReaderDelete => self.delete_comment(),
             Act::ReaderSend => self.send_review(),
             Act::ReaderAnswer => self.answer_with_comments(key),
+            Act::ReaderOpen => self.open_block(),
+            Act::ReaderPick => self.pick_target(key),
+            Act::ReaderPickClose => {
+                if let Some(reader) = self.reader.as_mut() {
+                    reader.picking = false;
+                }
+            }
             Act::ModalConfirm => self.run_modal(),
             Act::ModalCancel => self.modal = None,
             Act::Pairing(allow) => {

@@ -1,6 +1,10 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
+use ratatui::buffer::{Buffer, CellDiffOption};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+
+mod html;
 
 pub const QUOTE_MAX: usize = 200;
 const CODE: Color = Color::Indexed(180);
@@ -31,6 +35,42 @@ struct Fmt {
     code: bool,
     link: bool,
     host: bool,
+    /// Stands in for an image (its glyph, or its file name when it has no alt text): shown, never quoted.
+    mark: bool,
+    /// The block's target this text opens.
+    href: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TargetKind {
+    Link,
+    Image,
+    /// A file Alondra stores, by its content route.
+    Stored,
+}
+
+/// Something a block lets the user open: a link, an image, or the file it stands for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub kind: TargetKind,
+    pub url: String,
+    pub label: String,
+}
+
+impl Target {
+    /// Only the web and mail open from a document: anything else would run whatever an agent wrote.
+    pub fn openable(&self) -> bool {
+        self.kind == TargetKind::Stored || (web(&self.url) && !self.url.chars().any(char::is_control))
+    }
+
+    pub fn local(&self) -> bool {
+        self.kind != TargetKind::Stored && !self.url.contains(':')
+    }
+}
+
+fn web(url: &str) -> bool {
+    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+    matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +87,7 @@ pub struct Block {
     pub kind: Kind,
     pub depth: usize,
     pub lines: Vec<Text>,
+    pub targets: Vec<Target>,
 }
 
 impl Block {
@@ -56,7 +97,12 @@ impl Block {
         } else {
             vec![vec![]]
         };
-        Block { kind, depth, lines }
+        Block {
+            kind,
+            depth,
+            lines,
+            targets: vec![],
+        }
     }
 
     fn plain_text(kind: Kind, text: &str) -> Self {
@@ -67,7 +113,13 @@ impl Block {
                 text: text.to_string(),
                 fmt: Fmt::default(),
             }]],
+            targets: vec![],
         }
+    }
+
+    pub fn opening(mut self, target: Target) -> Self {
+        self.targets.push(target);
+        self
     }
 
     pub fn label(text: &str) -> Self {
@@ -107,7 +159,7 @@ impl Block {
 
 fn plain(text: &[Run]) -> String {
     text.iter()
-        .filter(|r| !r.fmt.host)
+        .filter(|r| !r.fmt.host && !r.fmt.mark)
         .map(|r| r.text.as_str())
         .collect()
 }
@@ -141,8 +193,20 @@ struct Builder {
     emphasis: usize,
     strong: usize,
     strike: usize,
-    links: Vec<(String, usize)>,
+    links: Vec<Open>,
     code: Option<String>,
+    /// An HTML tag or comment the last HTML line left open.
+    html_rest: String,
+}
+
+/// A link or image being read: the destination whose host it shows, where its text starts on the
+/// line, and the block target it opens.
+struct Open {
+    host_of: String,
+    at: usize,
+    target: Option<u8>,
+    image: bool,
+    html: bool,
 }
 
 impl Builder {
@@ -195,11 +259,19 @@ impl Builder {
         if self.cur.is_none() {
             self.open_text();
         }
+        let href = self
+            .links
+            .iter()
+            .rev()
+            .find(|o| !o.image && o.target.is_some())
+            .or_else(|| self.links.iter().rev().find(|o| o.target.is_some()))
+            .and_then(|o| o.target);
         let fmt = Fmt {
             bold: self.strong > 0,
             italic: self.emphasis > 0,
             strike: self.strike > 0,
-            link: !self.links.is_empty() && !extra.host,
+            link: href.is_some() && !extra.host,
+            href: href.filter(|_| !extra.host),
             ..extra
         };
         let Some(b) = self.cur.as_mut() else { return };
@@ -231,16 +303,12 @@ impl Builder {
                     ..Fmt::default()
                 },
             ),
-            Event::InlineHtml(t)
-            | Event::Html(t)
-            | Event::InlineMath(t)
-            | Event::DisplayMath(t)
-            | Event::FootnoteReference(t) => self.push(&t, false),
+            Event::InlineHtml(t) | Event::Html(t) => self.html(&t),
+            Event::InlineMath(t) | Event::DisplayMath(t) | Event::FootnoteReference(t) => {
+                self.push(&t, false)
+            }
             Event::SoftBreak => self.push(" ", false),
-            Event::HardBreak => match self.cur.as_mut() {
-                Some(b) if !matches!(b.kind, Kind::Row { .. }) => b.lines.push(vec![]),
-                _ => self.push(" ", false),
-            },
+            Event::HardBreak => self.hard_break(),
             Event::Rule => {
                 self.open(Kind::Rule, self.nesting());
                 self.flush();
@@ -314,18 +382,18 @@ impl Builder {
                 link_type,
                 dest_url,
                 ..
-            }
-            | Tag::Image {
-                link_type,
-                dest_url,
-                ..
             } => {
-                let dest = if matches!(link_type, LinkType::Autolink | LinkType::Email) {
-                    String::new()
-                } else {
-                    dest_url.to_string()
+                let url = match link_type {
+                    LinkType::Email if !dest_url.starts_with("mailto:") => {
+                        format!("mailto:{dest_url}")
+                    }
+                    _ => dest_url.to_string(),
                 };
-                self.links.push((dest, self.current_line().len()));
+                let shown = matches!(link_type, LinkType::Autolink | LinkType::Email);
+                self.open_link(TargetKind::Link, url, !shown, false);
+            }
+            Tag::Image { dest_url, .. } => {
+                self.open_link(TargetKind::Image, dest_url.to_string(), true, false)
             }
             _ => {}
         }
@@ -333,9 +401,15 @@ impl Builder {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
+            TagEnd::HtmlBlock => {
+                let rest = std::mem::take(&mut self.html_rest);
+                if !rest.is_empty() {
+                    self.push(&rest, false);
+                }
+                self.close_html_block();
+            }
             TagEnd::Paragraph
             | TagEnd::Heading(_)
-            | TagEnd::HtmlBlock
             | TagEnd::Item
             | TagEnd::TableHead
             | TagEnd::TableRow => self.flush(),
@@ -370,19 +444,233 @@ impl Builder {
             TagEnd::Emphasis => self.emphasis = self.emphasis.saturating_sub(1),
             TagEnd::Strong => self.strong = self.strong.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
-            TagEnd::Link | TagEnd::Image => {
-                let Some((dest, at)) = self.links.pop() else {
-                    return;
-                };
-                let line = self.current_line();
-                let text = line.get(at..).unwrap_or_default().trim();
-                if let Some(h) = host(&dest).filter(|h| text != dest && text != *h) {
-                    self.push(&format!(" ({h})"), true);
-                }
-            }
+            TagEnd::Link | TagEnd::Image => self.close_link(),
             _ => {}
         }
     }
+
+    fn hard_break(&mut self) {
+        match self.cur.as_mut() {
+            Some(b) if !matches!(b.kind, Kind::Row { .. }) => b.lines.push(vec![]),
+            _ => self.push(" ", false),
+        }
+    }
+
+    fn target(&mut self, kind: TargetKind, url: String) -> Option<u8> {
+        if self.cur.is_none() {
+            self.open_text();
+        }
+        let targets = &mut self.cur.as_mut()?.targets;
+        let at = match targets.iter().position(|t| t.kind == kind && t.url == url) {
+            Some(at) => at,
+            None => {
+                targets.push(Target {
+                    kind,
+                    url,
+                    label: String::new(),
+                });
+                targets.len() - 1
+            }
+        };
+        u8::try_from(at).ok()
+    }
+
+    fn open_link(&mut self, kind: TargetKind, url: String, shows_host: bool, html: bool) {
+        let host_of = if shows_host { url.clone() } else { String::new() };
+        let target = self.target(kind, url);
+        let image = kind == TargetKind::Image;
+        self.links.push(Open {
+            host_of,
+            at: 0,
+            target,
+            image,
+            html,
+        });
+        if image {
+            self.push_fmt(
+                "📷 ",
+                Fmt {
+                    mark: true,
+                    ..Fmt::default()
+                },
+            );
+        }
+        let at = self.current_line().len();
+        if let Some(open) = self.links.last_mut() {
+            open.at = at;
+        }
+    }
+
+    fn close_link(&mut self) {
+        let Some(open) = self.links.last() else {
+            return;
+        };
+        let line = self.current_line();
+        let mut text = line.get(open.at..).unwrap_or_default().trim().to_string();
+        let (image, target, dest) = (open.image, open.target, open.host_of.clone());
+        let url = target
+            .and_then(|t| self.cur.as_ref()?.targets.get(t as usize))
+            .map(|t| t.url.clone())
+            .unwrap_or_default();
+        if image && text.is_empty() {
+            text = file_name(&url).to_string();
+            self.push_fmt(
+                &text,
+                Fmt {
+                    mark: true,
+                    ..Fmt::default()
+                },
+            );
+        }
+        self.links.pop();
+        if let Some(t) = target.and_then(|t| self.cur.as_mut()?.targets.get_mut(t as usize)) {
+            if t.label.is_empty() {
+                t.label = if text.is_empty() { url.clone() } else { text.clone() };
+            }
+        }
+        let local = !url.is_empty() && !url.contains(':');
+        if image && self.links.iter().any(|o| !o.image && o.target.is_some()) {
+            return;
+        }
+        if image && local {
+            self.push(
+                tr!(" (local image, not available here)", " (imagen local, no disponible aquí)"),
+                true,
+            );
+        } else if let Some(h) = host(&dest).filter(|h| text != dest && text != *h) {
+            self.push(&format!(" ({h})"), true);
+        }
+    }
+
+    fn html(&mut self, t: &str) {
+        let mut src = std::mem::take(&mut self.html_rest);
+        src.push_str(t);
+        let (pieces, rest) = html::pieces(&src);
+        for piece in pieces {
+            match piece {
+                html::Piece::Text(text) => {
+                    let text = collapse(&text);
+                    let text = if self.line_ends_in_space() { text.trim_start() } else { &text };
+                    if !text.is_empty() {
+                        self.push(text, false);
+                    }
+                }
+                html::Piece::Comment => {}
+                html::Piece::Tag(tag) => self.html_tag(&tag),
+            }
+        }
+        self.html_rest = rest.to_string();
+    }
+
+    fn html_tag(&mut self, tag: &html::Tag) {
+        let closing = tag.closing;
+        match tag.name.as_str() {
+            "img" if !closing => {
+                if let Some(src) = tag.attr("src").filter(|s| !s.is_empty()) {
+                    self.open_link(TargetKind::Image, src.to_string(), true, true);
+                    if let Some(alt) = tag.attr("alt") {
+                        self.push(alt, false);
+                    }
+                    self.close_link();
+                }
+            }
+            "img" | "source" => {}
+            "a" if closing => {
+                if self.links.last().is_some_and(|o| o.html) {
+                    self.close_link();
+                }
+            }
+            "a" => match tag.attr("href").filter(|h| !h.is_empty()) {
+                Some(href) => self.open_link(TargetKind::Link, href.to_string(), true, true),
+                None => self.links.push(Open {
+                    host_of: String::new(),
+                    at: 0,
+                    target: None,
+                    image: false,
+                    html: true,
+                }),
+            },
+            "b" | "strong" => {
+                self.strong = if closing { self.strong.saturating_sub(1) } else { self.strong + 1 }
+            }
+            "i" | "em" => {
+                self.emphasis = if closing {
+                    self.emphasis.saturating_sub(1)
+                } else {
+                    self.emphasis + 1
+                }
+            }
+            "br" => self.hard_break(),
+            "p" | "div" | "center" | "details" | "summary" | "h1" | "h2" | "h3" | "h4" | "h5"
+            | "h6" => {
+                if !self.line_blank() {
+                    self.hard_break();
+                }
+            }
+            "span" | "picture" | "sub" | "sup" => {}
+            _ => self.push(tag.raw, false),
+        }
+    }
+
+    fn line_ends_in_space(&self) -> bool {
+        self.cur
+            .as_ref()
+            .and_then(|b| b.lines.last())
+            .is_none_or(|l| {
+                l.iter()
+                    .rev()
+                    .find(|r| !r.text.is_empty())
+                    .is_none_or(|r| r.text.ends_with(char::is_whitespace))
+            })
+    }
+
+    fn line_blank(&self) -> bool {
+        self.cur
+            .as_ref()
+            .and_then(|b| b.lines.last())
+            .is_none_or(|l| blank(l))
+    }
+
+    /// An HTML block that only held layout (`<p align=center>`, `<br>`) leaves nothing behind.
+    fn close_html_block(&mut self) {
+        if let Some(b) = self.cur.as_mut() {
+            while b.lines.len() > 1 && b.lines.last().is_some_and(|l| blank(l)) {
+                b.lines.pop();
+            }
+            if b.targets.is_empty() && b.lines.iter().all(|l| blank(l)) {
+                self.cur = None;
+            }
+        }
+        self.flush();
+    }
+}
+
+/// HTML text the way a browser lays it out: every run of spaces and line breaks is one space.
+fn collapse(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii_whitespace() {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn blank(line: &[Run]) -> bool {
+    line.iter().all(|r| r.text.trim().is_empty())
+}
+
+fn file_name(url: &str) -> &str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(path)
 }
 
 pub fn parse(text: &str) -> Vec<Block> {
@@ -413,6 +701,9 @@ fn style(fmt: Fmt, base: Style) -> Style {
     }
     if fmt.link {
         s = s.fg(Color::LightBlue).add_modifier(Modifier::UNDERLINED);
+    }
+    if let Some(t) = fmt.href {
+        s = s.underline_color(Color::Rgb(0, 0, t));
     }
     if fmt.host {
         s = s.fg(DIM);
@@ -713,6 +1004,16 @@ fn separator(widths: &[usize]) -> Line<'static> {
 }
 
 pub fn render(blocks: &[Block], width: usize) -> Rendered {
+    let mut rendered = render_linked(blocks, width);
+    for span in rendered.lines.iter_mut().flat_map(|l| l.spans.iter_mut()) {
+        span.style.underline_color = None;
+    }
+    rendered
+}
+
+/// Like `render`, with each piece of text that opens a target tagged in its underline colour,
+/// for `hyperlinks` to find on screen.
+pub fn render_linked(blocks: &[Block], width: usize) -> Rendered {
     let width = width.max(8);
     let mut lines: Vec<Line<'static>> = vec![];
     let mut ranges = vec![];
@@ -739,11 +1040,60 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
         lines.extend(
             render_block(b, inner, &table)
                 .into_iter()
-                .map(|l| indented(l, indent)),
+                .map(|l| indented(tagged(l, i), indent)),
         );
         ranges.push((start, lines.len()));
     }
     Rendered { lines, ranges }
+}
+
+fn tagged(mut line: Line<'static>, block: usize) -> Line<'static> {
+    for span in &mut line.spans {
+        if let Some(Color::Rgb(0, 0, t)) = span.style.underline_color {
+            span.style.underline_color = u16::try_from(block)
+                .ok()
+                .map(|b| Color::Rgb((b >> 8) as u8, b as u8, t));
+        }
+    }
+    line
+}
+
+/// Turns the tagged text `render_linked` drew into terminal hyperlinks (OSC 8) to the target
+/// each piece opens, so a terminal that knows them opens it on a click; with `emit` off it only
+/// removes the tags.
+pub fn hyperlinks(buf: &mut Buffer, area: Rect, blocks: &[Block], emit: bool) {
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x < area.right() {
+            let cell = &mut buf[(x, y)];
+            let mut step = 1;
+            if let Color::Rgb(hi, lo, t) = cell.underline_color {
+                cell.underline_color = Color::Reset;
+                let url = blocks
+                    .get(usize::from(hi) << 8 | usize::from(lo))
+                    .and_then(|b| b.targets.get(usize::from(t)))
+                    .filter(|t| emit && t.kind != TargetKind::Stored && t.openable())
+                    .map(|t| t.url.clone());
+                let symbol = cell.symbol().to_string();
+                let width = str_width(&symbol).max(1);
+                if let (Some(url), Some(forced)) = (url, std::num::NonZeroU16::new(width as u16)) {
+                    cell.set_symbol(&format!("\x1b]8;;{url}\x1b\\{symbol}\x1b]8;;\x1b\\"));
+                    cell.set_diff_option(CellDiffOption::ForcedWidth(forced));
+                }
+                step = width as u16;
+            }
+            for k in 1..step {
+                if x + k < area.right() {
+                    let hidden = &mut buf[(x + k, y)];
+                    if matches!(hidden.underline_color, Color::Rgb(..)) {
+                        hidden.underline_color = Color::Reset;
+                    }
+                }
+            }
+            x += step;
+        }
+    }
 }
 
 fn indented(line: Line<'static>, indent: usize) -> Line<'static> {
@@ -1121,6 +1471,176 @@ mod tests {
             let lines = rendered(md, 80);
             assert_eq!(lines.last().map(String::as_str), Some(shown), "{md}");
         }
+    }
+
+    fn targets(md: &str) -> Vec<Vec<(TargetKind, String, String)>> {
+        parse(md)
+            .into_iter()
+            .map(|b| {
+                b.targets
+                    .into_iter()
+                    .map(|t| (t.kind, t.url, t.label))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn link(url: &str, label: &str) -> (TargetKind, String, String) {
+        (TargetKind::Link, url.into(), label.into())
+    }
+
+    fn image(url: &str, label: &str) -> (TargetKind, String, String) {
+        (TargetKind::Image, url.into(), label.into())
+    }
+
+    #[test]
+    fn markdown_links_and_images_keep_what_they_open() {
+        assert_eq!(
+            targets("See [the guide](https://docs.rs/a) and <https://x.y>, ![shot](https://x.y/s.png) or <me@x.y>."),
+            vec![vec![
+                link("https://docs.rs/a", "the guide"),
+                link("https://x.y", "https://x.y"),
+                image("https://x.y/s.png", "shot"),
+                link("mailto:me@x.y", "me@x.y"),
+            ]]
+        );
+        assert_eq!(
+            rendered("![shot](https://x.y/s.png) ![](https://x.y/logo.svg?v=2)", 80),
+            vec!["📷 shot (x.y) 📷 logo.svg (x.y)"]
+        );
+    }
+
+    #[test]
+    fn html_images_and_links_read_like_markdown_ones() {
+        let cases = [
+            (r#"<img src="https://x.y/a.png" alt="Logo" width=120>"#, "📷 Logo (x.y)"),
+            (r#"<img width='120' alt='Logo' src='https://x.y/a.png'/>"#, "📷 Logo (x.y)"),
+            ("<IMG ALT=Logo SRC=https://x.y/a.png>", "📷 Logo (x.y)"),
+            (r#"Read <a href="https://x.y/docs">the docs</a> first."#, "Read the docs (x.y) first."),
+        ];
+        for (md, shown) in cases {
+            assert_eq!(rendered(md, 80), vec![shown], "{md}");
+            let expected = if md.contains("<a") {
+                link("https://x.y/docs", "the docs")
+            } else {
+                image("https://x.y/a.png", "Logo")
+            };
+            assert_eq!(targets(md), vec![vec![expected]], "{md}");
+        }
+    }
+
+    #[test]
+    fn an_image_inside_a_link_opens_both_and_its_text_links_to_the_link() {
+        let md = r#"<a href="https://ci.x/run"><img alt="build" src="https://img.x/b.svg"></a> and [![tests](https://img.x/t.svg)](https://ci.x/run)"#;
+        assert_eq!(
+            targets(md),
+            vec![vec![
+                link("https://ci.x/run", "build"),
+                image("https://img.x/b.svg", "build"),
+                image("https://img.x/t.svg", "tests"),
+            ]]
+        );
+        assert_eq!(rendered(md, 80), vec!["📷 build (ci.x) and 📷 tests (ci.x)"]);
+        let blocks = parse(md);
+        let hrefs: Vec<(String, Option<u8>)> = blocks[0].lines[0]
+            .iter()
+            .filter(|r| !r.fmt.host)
+            .map(|r| (r.text.clone(), r.fmt.href))
+            .collect();
+        assert_eq!(
+            hrefs,
+            vec![
+                ("📷 ".into(), Some(0)),
+                ("build".into(), Some(0)),
+                (" and ".into(), None),
+                ("📷 ".into(), Some(0)),
+                ("tests".into(), Some(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn layout_html_goes_and_a_block_of_only_layout_leaves_nothing() {
+        let md = "<!-- badges -->\n\n<p align=\"center\">\n  <br/>\n</p>\n\n<div align=center>\n<img\n  src=\"https://x.y/w.png\"\n  alt=\"Wide\">\n</div>\n\n<details><summary>More</summary>\n\nBody\n\n</details>\n";
+        assert_eq!(rendered(md, 80), vec!["📷 Wide (x.y)", "", "More", "", "Body"]);
+        assert_eq!(targets(md)[0], vec![image("https://x.y/w.png", "Wide")]);
+    }
+
+    #[test]
+    fn block_tags_and_br_break_lines_and_b_i_style_them() {
+        let md = "<h1 align=center>Alondra</h1>\n<p>One<br>two <b>bold</b> <em>it</em> &amp; more</p>";
+        assert_eq!(rendered(md, 80), vec!["Alondra", "One", "two bold it & more"]);
+        let runs = &parse(md)[0].lines[2];
+        assert!(runs.iter().any(|r| r.text == "bold" && r.fmt.bold));
+        assert!(runs.iter().any(|r| r.text == "it" && r.fmt.italic));
+    }
+
+    #[test]
+    fn html_indentation_and_line_breaks_read_as_single_spaces() {
+        let md = "<p align=\"center\">\n  <a href=\"https://x.y/a\">Docs</a>   ·\n    <a href=\"https://z.w/b\">Code</a>\n</p>";
+        assert_eq!(rendered(md, 80), vec!["Docs (x.y) · Code (z.w)"]);
+    }
+
+    #[test]
+    fn picture_sources_give_way_to_their_image_and_unknown_tags_stay_text() {
+        let md = "<picture>\n  <source srcset=\"https://x.y/dark.png\">\n  <img src=\"https://x.y/light.png\" alt=\"Diagram\">\n</picture>\n\nPress <kbd>v</kbd>, 3 < 4.\n\n<table><tr><td>x</td></tr></table>\n";
+        assert_eq!(
+            rendered(md, 80),
+            vec![
+                "📷 Diagram (x.y)",
+                "",
+                "Press <kbd>v</kbd>, 3 < 4.",
+                "",
+                "<table><tr><td>x</td></tr></table>",
+            ]
+        );
+        assert_eq!(targets(md)[0], vec![image("https://x.y/light.png", "Diagram")]);
+    }
+
+    #[test]
+    fn a_local_image_says_it_cannot_be_shown_here() {
+        assert_eq!(
+            rendered("![main screen](docs/main.png)", 80),
+            vec!["📷 main screen (imagen local, no disponible aquí)"]
+        );
+        let target = &parse("<img src=\"docs/main.png\">")[0].targets[0];
+        assert!(target.local() && !target.openable());
+        assert_eq!(target.label, "main.png");
+    }
+
+    #[test]
+    fn only_web_and_mail_targets_open() {
+        let open = |url: &str| {
+            Target {
+                kind: TargetKind::Link,
+                url: url.into(),
+                label: String::new(),
+            }
+            .openable()
+        };
+        assert!(open("https://x.y") && open("HTTP://x.y") && open("mailto:a@x.y"));
+        assert!(!open("file:///etc/passwd") && !open("javascript:alert(1)") && !open("notes.md"));
+        assert!(!open("https://x.y/\u{1b}]8;;evil"));
+    }
+
+    #[test]
+    fn hyperlinks_wrap_each_linked_cell_and_untag_the_rest() {
+        use ratatui::widgets::{Paragraph, Widget};
+        let blocks = parse("Go [here](https://x.y/a) or [there](notes.md).");
+        let lines = render_linked(&blocks, 40).lines;
+        assert!(render(&blocks, 40).lines.iter().flat_map(|l| &l.spans).all(|s| s.style.underline_color.is_none()));
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(lines.clone()).render(area, &mut buf);
+        let mut plain = buf.clone();
+        hyperlinks(&mut plain, area, &blocks, false);
+        assert!(plain.content.iter().all(|c| c.underline_color == Color::Reset));
+        assert_eq!(plain.content[3].symbol(), "h");
+        hyperlinks(&mut buf, area, &blocks, true);
+        let linked: Vec<usize> = (0..40).filter(|&x| buf.content[x].symbol().starts_with('\u{1b}')).collect();
+        assert_eq!(linked, vec![3, 4, 5, 6]);
+        assert_eq!(buf.content[3].symbol(), "\u{1b}]8;;https://x.y/a\u{1b}\\h\u{1b}]8;;\u{1b}\\");
+        assert!(buf.content.iter().all(|c| c.underline_color == Color::Reset));
     }
 
     #[test]

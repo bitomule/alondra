@@ -957,7 +957,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         None => doc,
     };
     let width = doc.width.saturating_sub(4) as usize;
-    let rendered = md::render(&r.blocks, width);
+    let rendered = md::render_linked(&r.blocks, width);
     let h = doc.height as usize;
     r.view_h = h;
     let total = rendered.lines.len();
@@ -1021,11 +1021,56 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
             r.scroll,
         );
     }
+    md::hyperlinks(f.buffer_mut(), doc, &r.blocks, app.hyperlinks);
+    if r.picking {
+        if let Some(b) = r.blocks.get(r.cursor).filter(|b| b.targets.len() > 1) {
+            draw_targets(f, doc, &b.targets);
+        }
+    }
     scrollbar(f, doc, total, r.scroll);
     if let Some(side) = side {
         let cursor = r.cursor;
         draw_comments(f, app, side, cursor);
     }
+}
+
+/// What the selected block opens, numbered, over the bottom of the document.
+fn draw_targets(f: &mut Frame, doc: Rect, targets: &[md::Target]) {
+    let width = doc.width.saturating_sub(4) as usize;
+    let lines: Vec<Line> = targets
+        .iter()
+        .take(9)
+        .enumerate()
+        .map(|(i, t)| {
+            let glyph = match t.kind {
+                md::TargetKind::Link => "↗",
+                md::TargetKind::Image => "📷",
+                md::TargetKind::Stored => "📎",
+            };
+            let label = md::truncate(&format!("{glyph} {}", md::one_line(&t.label)), width / 2);
+            let place = if t.kind == md::TargetKind::Stored || t.label == t.url {
+                String::new()
+            } else {
+                format!("  {}", md::truncate(&t.url, width.saturating_sub(md::str_width(&label) + 6)))
+            };
+            Line::from(vec![
+                Span::styled(format!(" {} ", i + 1), Style::new().fg(ACCENT).bold()),
+                Span::raw(label),
+                Span::styled(place, Style::new().fg(DIM)),
+            ])
+        })
+        .collect();
+    let height = (lines.len() as u16 + 2).min(doc.height);
+    let area = Rect {
+        y: doc.bottom().saturating_sub(height),
+        height,
+        ..doc
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(panel(Line::from(tr!(" Open ", " Abrir ")), true)),
+        area,
+    );
 }
 
 fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
@@ -1297,7 +1342,7 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
 fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
     let mut spans = vec![];
     for chip in chips {
-        let icon = if chip.image() { "🖼" } else { "📄" };
+        let icon = if chip.image() { "📷" } else { "📄" };
         let size = super::files::size(chip.bytes as usize);
         let (label, style) = match chip.upload {
             super::dropped::Upload::Sending => (

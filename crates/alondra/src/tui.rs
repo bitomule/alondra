@@ -331,6 +331,8 @@ pub struct Reader {
     pub view_h: usize,
     pub total: usize,
     pub find: Option<Find>,
+    /// The numbered list of what the selected block opens, when it opens more than one thing.
+    pub picking: bool,
 }
 
 impl Reader {
@@ -699,6 +701,8 @@ pub struct App {
     /// How images are drawn in this terminal: Kitty graphics in Ghostty and Kitty, iTerm2 or sixel
     /// where supported, colour half-blocks elsewhere. Found once, when the TUI starts.
     pub picker: Option<ratatui_image::picker::Picker>,
+    /// Whether the reader writes its links as terminal hyperlinks.
+    pub hyperlinks: bool,
     pub images: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
     /// The preview of each image attached in the composer, by chip.
     pub previews: HashMap<u64, ratatui_image::protocol::StatefulProtocol>,
@@ -763,6 +767,7 @@ pub fn run() -> Result<()> {
             let (tx, rx) = mpsc::sync_channel::<Msg>(64);
             let mut app = App::with_target(tx, target);
             app.picker = Some(picker.clone());
+            app.hyperlinks = std::env::var("TERM").map_or(true, |term| term != "dumb");
             app.start_view_feed();
             (app, rx)
         })
@@ -1011,7 +1016,14 @@ fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -
 
 /// The Mac's default app for a URL or file, through `open`. Tests never open one, and a sandbox
 /// TUI given `ALONDRA_SANDBOX_OPENED` writes it there instead, for a journey to follow.
+#[cfg(test)]
+thread_local! {
+    static OPENED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn open_with_mac(target: &str) {
+    #[cfg(test)]
+    OPENED.with(|opened| opened.borrow_mut().push(target.to_owned()));
     if cfg!(test) {
         return;
     }
@@ -1134,6 +1146,7 @@ impl App {
             files: HashMap::new(),
             loading: HashSet::new(),
             picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
+            hyperlinks: false,
             images: HashMap::new(),
             previews: HashMap::new(),
             threads: None,
@@ -2921,6 +2934,7 @@ impl App {
                 view_h: 0,
                 total: 0,
                 find: None,
+                picking: false,
             });
             self.rebuild_reader();
             return;
@@ -2975,6 +2989,7 @@ impl App {
                 view_h: 0,
                 total: 0,
                 find: None,
+                picking: false,
             });
             self.rebuild_reader();
             return;
@@ -2993,7 +3008,11 @@ impl App {
                     blocks.push(Block::label(&format!("📎 {name}")));
                     match self.files.get(route) {
                         Some(Ok(files::FileBody::Text(text))) => blocks.extend(md::parse(text)),
-                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body))),
+                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body)).opening(md::Target {
+                            kind: md::TargetKind::Stored,
+                            url: route.clone(),
+                            label: name.clone(),
+                        })),
                         Some(Err(e)) => blocks.push(Block::para(&trf!(
                             "Could not load the file: {e}",
                             "No he podido cargar el fichero: {e}"
@@ -3077,6 +3096,74 @@ impl App {
             if let Target::ViewAction { review, .. } = &mut composer.target {
                 *review = Some(key);
             }
+        }
+    }
+
+    fn open_block(&mut self) {
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
+        let Some(b) = r.blocks.get(r.cursor) else {
+            return;
+        };
+        match b.targets.as_slice() {
+            [] => {}
+            [target] => {
+                let target = target.clone();
+                self.open_target(&target);
+            }
+            _ => {
+                r.picking = true;
+                self.flash = None;
+            }
+        }
+    }
+
+    fn pick_target(&mut self, key: KeyEvent) {
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
+        r.picking = false;
+        let KeyCode::Char(c @ '1'..='9') = key.code else {
+            return;
+        };
+        let target = r
+            .blocks
+            .get(r.cursor)
+            .and_then(|b| b.targets.get(c as usize - '1' as usize))
+            .cloned();
+        if let Some(target) = target {
+            self.open_target(&target);
+        }
+    }
+
+    fn open_target(&mut self, target: &md::Target) {
+        let label = md::one_line(&target.label);
+        if target.kind == md::TargetKind::Stored {
+            let (name, route) = (target.label.clone(), target.url.clone());
+            self.pending(trf!("Opening “{label}”…", "Abriendo «{label}»…"));
+            self.spawn(move |tx, mac| {
+                if let Err(e) = open_stored(mac, &name, &route) {
+                    let _ = tx.send(Msg::SyncError(trf!(
+                        "Could not open {name}: {e}",
+                        "No he podido abrir {name}: {e}"
+                    )));
+                }
+            });
+        } else if target.openable() {
+            open_with_mac(&target.url);
+            self.flash(trf!("Opened “{label}”", "Abierto «{label}»"));
+        } else if target.local() {
+            self.fail(tr!(
+                "This image is a file on the Mac that wrote the document: it cannot be opened from here",
+                "Esta imagen es un fichero del Mac que escribió el documento: no se puede abrir desde aquí"
+            ));
+        } else {
+            let url = &target.url;
+            self.fail(trf!(
+                "Only web and mail links open from a document: {url}",
+                "Desde un documento solo se abren enlaces web y de correo: {url}"
+            ));
         }
     }
 

@@ -51,7 +51,7 @@ fn observed(app: &mut App) -> String {
         app.card_view.as_ref().map(|view| &view.key),
         app.cmdline.is_some(),
         app.search.is_some(),
-        app.reader.as_ref().map(|reader| (reader.cursor, reader.scroll, reader.find.is_some())),
+        app.reader.as_ref().map(|reader| (reader.cursor, reader.scroll, reader.find.is_some(), reader.picking)),
         app.schedules_open,
         (app.detail_scroll, app.list_scroll, app.focus == Pane::Detail, app.screen == Screen::Inbox, app.screen == Screen::Tasks),
     )
@@ -158,6 +158,38 @@ fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
 
 type State = (&'static str, bool, Box<dyn Fn() -> App>);
 
+const README: &str = "Intro without links.\n\nRead [the guide](https://x.y/guide).\n\n<a href=\"https://ci.x/run\"><img alt=\"build\" src=\"https://img.x/b.svg\"></a> ![shot](docs/shot.png) [notes](file:///etc/hosts)\n";
+
+fn reader_on(parts: Vec<Part>, block_with: usize) -> App {
+    let mut app = on(Screen::Inbox, "home-tui.json");
+    app.reader = Some(Reader {
+        key: Key("result:readme".into()),
+        agent: String::new(),
+        task_id: None,
+        title: "README".into(),
+        kind: "Result".into(),
+        glyph: "✓",
+        color: ratatui::style::Color::Green,
+        parts,
+        blocks: vec![],
+        cursor: 0,
+        scroll: 0,
+        ranges: vec![],
+        view_h: 0,
+        total: 0,
+        find: None,
+        picking: false,
+    });
+    app.rebuild_reader();
+    let reader = app.reader.as_mut().unwrap();
+    reader.cursor = reader.blocks.iter().position(|block| block.targets.len() == block_with).unwrap();
+    app
+}
+
+fn readme(block_with: usize) -> App {
+    reader_on(vec![Part::Text(README.into())], block_with)
+}
+
 fn reader_on_question(comment: bool) -> App {
     let mut app = on(Screen::Inbox, "home-tui.json");
     card(&mut app, QUESTION, "card-document-question-es-tui.json");
@@ -260,6 +292,14 @@ fn states() -> Vec<State> {
             app.on_key(plain(KeyCode::Enter));
             app
         })),
+        ("reader, a block with no link", false, Box::new(|| readme(0))),
+        ("reader, a block that opens one link", false, Box::new(|| readme(1))),
+        ("reader, a block that opens several things", false, Box::new(|| readme(4))),
+        ("reader, picking what to open", false, Box::new(|| {
+            let mut app = readme(4);
+            app.on_key(plain(KeyCode::Char('v')));
+            app
+        })),
         ("reader, the card is gone", false, Box::new(|| {
             let mut app = reader_on_question(true);
             app.card_view = None;
@@ -324,4 +364,58 @@ fn the_reader_on_a_document_question_offers_each_key_once_and_its_digits_answer(
     app.on_key(plain(KeyCode::Char('1')));
     assert_eq!(app.posted.borrow().last().map(|(_, body)| body["option_id"].clone()),
         Some(serde_json::json!("clear")), "1 answers the option the bar names");
+}
+
+fn opened() -> Vec<String> {
+    OPENED.with(|opened| std::mem::take(&mut *opened.borrow_mut()))
+}
+
+#[test]
+fn v_offers_and_opens_only_what_the_selected_block_opens() {
+    opened();
+    let mut app = readme(0);
+    let _ = draw_text(&mut app);
+    assert!(!draw::footer_keys(&app).iter().any(|(hint, _)| hint == "v"));
+
+    let mut app = readme(1);
+    let _ = draw_text(&mut app);
+    assert!(draw::footer_keys(&app).contains(&("v".into(), "abrir".into())));
+    app.on_key(plain(KeyCode::Char('v')));
+    assert_eq!(opened(), vec!["https://x.y/guide"]);
+
+    app.on_key(plain(KeyCode::Char('j')));
+    app.on_key(plain(KeyCode::Char('v')));
+    assert!(app.reader.as_ref().unwrap().picking);
+    assert!(app.flash.is_none(), "the flash of the last link would cover the list");
+    assert!(opened().is_empty());
+    let screen = draw_text(&mut app);
+    for entry in ["1 ↗ build", "2 📷  build", "3 📷  shot", "4 ↗ notes"] {
+        assert!(screen.contains(entry), "{entry} not in the list:\n{screen}");
+    }
+    assert_eq!(draw::footer_keys(&app).first(), Some(&("1-4".into(), "abrir".into())));
+    app.on_key(plain(KeyCode::Char('2')));
+    assert_eq!(opened(), vec!["https://img.x/b.svg"]);
+    assert!(!app.reader.as_ref().unwrap().picking);
+
+    for (digit, why) in [('3', "Mac que escribió"), ('4', "enlaces web y de correo")] {
+        app.on_key(plain(KeyCode::Char('v')));
+        app.on_key(plain(KeyCode::Char(digit)));
+        assert!(opened().is_empty(), "{digit} opened something");
+        let flash = app.flash.take().unwrap();
+        assert!(flash.kind == FlashKind::Error && flash.text.contains(why), "{digit}: {}", flash.text);
+    }
+}
+
+#[test]
+fn v_on_a_stored_file_fetches_it_to_open() {
+    let parts = vec![Part::File { name: "build.zip".into(), route: "/files/build.zip".into() }];
+    let mut app = reader_on(parts, 0);
+    app.files.insert("/files/build.zip".into(), Ok(files::FileBody::Binary { bytes: 2048 }));
+    app.rebuild_reader();
+    let reader = app.reader.as_mut().unwrap();
+    reader.cursor = reader.blocks.iter().position(|block| !block.targets.is_empty()).unwrap();
+    let spawned = app.spawned.borrow().len();
+    app.on_key(plain(KeyCode::Char('v')));
+    assert_eq!(app.spawned.borrow().len(), spawned + 1);
+    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("build.zip")));
 }

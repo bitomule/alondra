@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct MarkdownCorpusTests {
     /// Fixtures `MarkdownParser` still gets wrong. Remove a name when its fixture starts passing.
-    static let knownBroken: Set<String> = []
+    static let knownBroken: Set<String> = ["html_readme"]
 
     struct Fixture: CustomTestStringConvertible {
         let name: String
