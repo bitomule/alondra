@@ -699,12 +699,13 @@ impl DomainState {
     }
 
     /// A node of the Agent SDK takes a slot while its task's lifecycle holds one: no session phase
-    /// moves for it once it starts, so its phase only says whether it is paused, lost or ending.
+    /// moves for it once it starts, so its phase only says whether it waits on the user, is
+    /// paused, lost or ending. A turn kept open on a plan or a question for the user holds none.
     fn holds_slot(&self, agent: &Agent) -> bool {
         let sdk = self.tasks.values()
             .find(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal() && super::read_index::admitted_through_sdk(self, &t.id, &agent.id));
         match sdk {
-            Some(task) => !matches!(agent.phase, NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed)
+            Some(task) => !matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed)
                 && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()),
             None => agent.phase.holds_slot(),
         }

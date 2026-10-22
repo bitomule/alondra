@@ -427,6 +427,45 @@ fn a_node_of_the_sdk_takes_a_slot_only_while_its_task_runs() {
     assert_aggregate_rules(&s);
 }
 
+/// Nodes of the Agent SDK whose turn stays open on a plan or a question for the user hold no slot,
+/// as the log's "waiting on the user" says: only the one at work does. Answered, a node takes its
+/// slot back at once, whatever else works.
+#[test]
+fn nodes_of_the_sdk_waiting_on_the_user_inside_their_turn_hold_no_slot_until_answered() {
+    let mut s = world();
+    let plans = ["p1", "p2", "p3"];
+    let questions = ["q1", "q2"];
+    for id in plans.iter().chain(&questions).chain(&["busy"]) {
+        let node = format!("node-{id}");
+        must(&mut s, Actor::System, Command::RegisterAgent { agent_id: node.as_str().into(), name: node.clone(), at: 0 });
+        sdk_turn(&mut s, id, &node);
+    }
+    for id in plans {
+        must(&mut s, Actor::System, Command::RecordDecisionRequest {
+            task_id: id.into(), generation: 1, epoch: 1, hold: Hold::Plan, tool: Some("ExitPlanMode".into()), input: serde_json::json!({}), mcp_server: None,
+            prompt: DecisionPrompt::Card { body: "- [ ] Fix it".into(), options: Hold::Plan.options(), card: CardSpec::new(CardKind::Review, "Fix it").content(ContentKind::Plan, "- [ ] Fix it") },
+        });
+    }
+    for id in questions {
+        let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+        must(&mut s, node(&format!("node-{id}")), Command::AskQuestion { attachments: vec![], interaction_id: format!("ask-{id}").into(),
+            scope: Scope::Task { task_id: id.into() }, recipient: Recipient::User, body: "Pick the name".into(), blocking: true, options,
+            card: CardSpec::derived(CardKind::Decide, "Pick the name") });
+    }
+    let slots = |s: &DomainState| s.slots().iter().map(|agent| agent.id.0.clone()).filter(|id| id.starts_with("node-")).collect::<Vec<_>>();
+    for id in plans.iter().chain(&questions) {
+        assert!(matches!(s.agents[&AgentId::from(format!("node-{id}").as_str())].phase, NodePhase::WaitingUser { in_turn: true }), "{id} waits on the user inside its turn");
+        assert!(holds_slot(&s, id), "{id}'s turn is still open");
+    }
+    assert_eq!(slots(&s), ["node-busy"], "only the node at work holds a slot");
+
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"p1".into(), 1, 1),
+        option_id: Hold::APPROVE.into(), inputs: BTreeMap::new() });
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "ask-q1".into(), option_id: "short".into(), inputs: BTreeMap::new() });
+    assert_eq!(slots(&s), ["node-busy", "node-p1", "node-q1"], "answered, they work again");
+    assert_aggregate_rules(&s);
+}
+
 /// The screen of task `id` in `lang`.
 fn turn_end_shown(s: &DomainState, id: &str, lang: crate::views::text::Lang) -> String {
     use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};

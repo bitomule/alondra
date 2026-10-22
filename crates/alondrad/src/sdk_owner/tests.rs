@@ -3051,3 +3051,75 @@ fn cancelling_from_the_turn_end_card_after_an_approved_plan_ends_the_task() {
     assert_cancelled_from_its_card(&slice, &reply);
     driver.stop().unwrap();
 }
+
+impl Slice {
+    /// Launches task `task` of the request told `prompt`, and reads its host until `done`.
+    fn launch_until(&self, task: &str, prompt: &str, done: impl Fn(&DomainState, &AgentId) -> bool) -> Driver {
+        let mut driver = start_bound(Arc::clone(&self.domain), &self.backend, Launch {
+            task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(), prompt: prompt.into(),
+            plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None, account: AccountId::default_account(),
+        }, capabilities(), None).unwrap();
+        while !done(&self.domain.state().unwrap(), driver.agent()) {
+            assert!(driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host(),
+                "{task} has nothing left to run: {:?}", self.domain.state().unwrap().node_phase(driver.agent()));
+            driver.step(&|| false).unwrap();
+        }
+        driver
+    }
+}
+
+/// The fleet of 2026-10-22: five nodes of the Agent SDK wait inside their turn for the user to
+/// approve a plan or answer a question, one works, and a High task waits in the queue with a limit
+/// of 6. They hold no slot, so it starts, and the gate, the log's "waiting on the user" and the
+/// apps' count agree on who works. A plan approved once the fleet is full again goes on at once
+/// over the limit, as an answer never passes the gate; nothing more starts until the count is
+/// back under it.
+#[test]
+fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() {
+    use crate::fleet_gate::{Hold as Held, Key, Limit, Tuning, Waiting};
+    let slice = Slice::new();
+    let gate = &slice.domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    let task_of = |state: &DomainState, agent: &AgentId| state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent)).map(|task| task.id.clone());
+    let activity = move |state: &DomainState, agent: &AgentId| task_of(state, agent)
+        .and_then(|task| state.lifecycle_of(&task).ok()).map(|lifecycle| (lifecycle.activity(), !lifecycle.cards().is_empty()));
+    let waits_on_user = move |state: &DomainState, agent: &AgentId| activity(state, agent) == Some((ActivityView::Working, true));
+    let works = move |state: &DomainState, agent: &AgentId| activity(state, agent) == Some((ActivityView::Working, false));
+    let mut drivers = vec![];
+    for (task, prompt) in [("p1", "decide:plan"), ("p2", "decide:plan"), ("p3", "decide:plan"), ("q1", "decide:question"), ("q2", "decide:question")] {
+        slice.task(task);
+        drivers.push(slice.launch_until(task, prompt, waits_on_user));
+    }
+    slice.task("busy");
+    drivers.push(slice.launch_until("busy", "consume-and-hold", works));
+    let state = slice.domain.state().unwrap();
+    for driver in &drivers[..5] {
+        assert!(matches!(state.node_phase(driver.agent()), Some(NodePhase::WaitingUser { .. })), "the log lists it as waiting on the user");
+    }
+    assert_eq!(crate::fleet_gate::working_tasks(&state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
+    let now = alondra_core::now_millis();
+    assert_eq!(gate.snapshot(&slice.domain, now).unwrap().working, 1);
+    assert_eq!(gate.live(&slice.domain, now).unwrap().working, 1, "the apps show the gate's count");
+
+    slice.task("high");
+    slice.run(&user(), "priority-high", Command::SetPriority { task_id: "high".into(), priority: TaskPriority::High });
+    let high = Waiting { key: Key::Task("high".into()), priority: TaskPriority::High, resuming: false, since: now };
+    assert_eq!(gate.ask(&slice.domain, high, now), Ok(()), "the queued High task starts");
+    drivers.push(slice.launch_until("high", "consume-and-hold", works));
+
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(2)) });
+    let plan = slice.domain.state().unwrap().lifecycle_of(&"p1".into()).unwrap().cards()[0].0.clone();
+    slice.answer(&plan.0, Hold::APPROVE, None).unwrap();
+    let state = slice.domain.state().unwrap();
+    assert!(crate::fleet_gate::working_tasks(&state).contains(&TaskId::from("p1")), "approved, p1 goes on without waiting for a slot");
+    slice.task("next");
+    let next = Waiting { key: Key::Task("next".into()), priority: TaskPriority::High, resuming: false, since: now };
+    assert_eq!(gate.ask(&slice.domain, next, now), Err(Held::Slots { working: 3, limit: 2 }), "nothing more starts while 3 of 2 work");
+    let p1 = &mut drivers[0];
+    while !slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow") {
+        p1.step(&|| false).unwrap();
+    }
+    for mut driver in drivers {
+        driver.stop().unwrap();
+    }
+}
