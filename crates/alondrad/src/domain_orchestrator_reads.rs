@@ -2,21 +2,12 @@
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, TaskId};
+use alondra_core::domain::{body_title, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, TaskId};
 use alondra_core::Node;
 use serde_json::{Value, json};
 
 fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
     domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
-}
-
-fn title(body: &str) -> String {
-    let line = body.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
-    let mut short: String = line.chars().take(120).collect();
-    if line.chars().count() > 120 {
-        short.push('…');
-    }
-    short
 }
 
 fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -96,7 +87,7 @@ fn question(i: &Interaction, state: &DomainState) -> Option<Value> {
         _ => return None,
     };
     let status = if i.withdrawn { "withdrawn" } else if answer.is_some() { "answered" } else { "open" };
-    Some(json!({"id": i.id, "title": title(&i.body), "detail": i.body, "blocking": i.blocking,
+    Some(json!({"id": i.id, "title": body_title(&i.body), "detail": i.body, "blocking": i.blocking,
         "options": options.iter().map(|o| json!({"label": o.label})).collect::<Vec<_>>(),
         "to_orchestrator": i.recipient == Recipient::Orchestrator, "action": action, "status": status,
         "answer": answer.as_ref().map(wire), "node_name": author_name(i, state), "session_id": author_session(i)}))
@@ -110,7 +101,7 @@ fn report(i: &Interaction, state: &DomainState) -> Option<Value> {
             (if *is_final { "final" } else { "partial" }, acceptance.is_some() || !feedback.is_empty()),
         _ => return None,
     };
-    Some(json!({"id": i.id, "title": title(&i.body), "kind": kind, "body": i.body, "read": read,
+    Some(json!({"id": i.id, "title": body_title(&i.body), "kind": kind, "body": i.body, "read": read,
         "node_name": author_name(i, state), "session_id": author_session(i)}))
 }
 

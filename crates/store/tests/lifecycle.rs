@@ -3649,3 +3649,62 @@ fn retention_releases_old_evidence_in_bounded_passes_and_drops_it_once_the_execu
     let kept: i64 = fixture.connection.query_row("SELECT cursor FROM provider_observations", [], |row| row.get(0)).unwrap();
     assert_eq!(kept, 40);
 }
+
+fn commands(fixture: &Fixture) -> i64 {
+    fixture.connection.query_row("SELECT count(*) FROM provider_commands", [], |row| row.get(0)).unwrap()
+}
+fn retain(fixture: &mut Fixture) -> EvidenceRetention {
+    let mut tx = fixture.transaction();
+    let pass = tx.retain_evidence(16).unwrap();
+    tx.commit().unwrap();
+    pass
+}
+
+#[test]
+fn a_provider_command_is_removed_only_once_its_execution_is_no_longer_current() {
+    let mut fixture = Fixture::new();
+    let owner = crashed_claim(&mut fixture, b"framed command");
+    let stamp = owner.execution().clone();
+    assert_eq!(retain(&mut fixture).commands_removed, 0, "a claimed send keeps the bytes it may send again");
+    assert!(fixture.connection.execute("DELETE FROM provider_commands", []).is_err());
+    let intent = fixture.transaction().unresolved_commands(&"task".into()).unwrap()[0].intent_id;
+    let mut tx = fixture.transaction();
+    tx.resolve_dispatch(&stamp, intent, owner.generation(), DispatchReceipt::Handed).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(retain(&mut fixture).commands_removed, 0, "the current execution keeps its commands");
+    assert!(fixture.connection.execute("DELETE FROM provider_commands", []).is_err());
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.put_input(&"task".into(), payload("requeue")).unwrap();
+    tx.apply(&"task".into(), revision, "release", Event::ExecutionReleased { input: id("requeue") }).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(commands(&fixture), 1);
+    assert_eq!(retain(&mut fixture).commands_removed, 1);
+    assert_eq!(commands(&fixture), 0);
+    assert_eq!(retain(&mut fixture).commands_removed, 0);
+}
+
+fn texts(fixture: &Fixture) -> (i64, i64) {
+    fixture.connection.query_row("SELECT count(*),count(body) FROM lifecycle_inputs WHERE task_id='task'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+}
+
+#[test]
+fn an_input_lets_go_of_its_text_only_once_its_task_is_done_or_cancelled() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let mut tx = fixture.transaction();
+    tx.put_input(&"task".into(), payload("told")).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(texts(&fixture), (2, 2));
+    assert_eq!(retain(&mut fixture).texts_released, 0, "a task that runs keeps the texts it may still send");
+    assert!(fixture.connection.execute("UPDATE lifecycle_inputs SET body=NULL", []).is_err());
+    for state in ["done", "cancelled"] {
+        fixture.connection.execute("UPDATE tasks SET state=?1 WHERE id='task'", [state]).unwrap();
+        assert!(fixture.connection.execute("UPDATE lifecycle_inputs SET body='other' WHERE input_id='told'", []).is_err(), "a text is never rewritten");
+    }
+    assert_eq!(retain(&mut fixture).texts_released, 2);
+    assert_eq!(texts(&fixture), (2, 0), "the inputs stay, without their text");
+    assert_eq!(retain(&mut fixture).texts_released, 0);
+    let tx = fixture.transaction();
+    tx.load(&"task".into()).expect("the journal still reads without the texts");
+}

@@ -15,9 +15,13 @@ const EARLIER: [&str; 3] = [
     include_str!("controls_before_force_stop.sql"),
     include_str!("controls_before_clear_auth.sql"),
 ];
-/// The observation triggers journals installed before the retention of normalized evidence hold:
-/// they refused every update and delete.
-const BEFORE_RETENTION: &str = include_str!("observations_before_retention.sql");
+/// The triggers journals installed before each retention hold: the observation triggers refused
+/// every update and delete, an input kept its text for good and a provider command was never
+/// deleted.
+const BEFORE_RETENTION: [&str; 2] = [
+    include_str!("observations_before_retention.sql"),
+    include_str!("inputs_and_commands_before_compaction.sql"),
+];
 
 pub(super) fn install(connection: &Connection) -> Result<()> {
     let existing: bool = connection.query_row(
@@ -96,11 +100,11 @@ fn widen(connection: &Connection) -> Result<()> {
     }
     Ok(())
 }
-/// Replaces each observation trigger that still has its definition from before the retention with
-/// the current one; the table and its rows are untouched.
+/// Replaces each trigger that still has its definition from before a retention with the current
+/// one; the table and its rows are untouched.
 fn retain(connection: &Connection) -> Result<()> {
     let current = objects(SCHEMA)?;
-    for (_, name, previous) in objects(BEFORE_RETENTION)? {
+    for (_, name, previous) in BEFORE_RETENTION.iter().map(|before| objects(before)).collect::<Result<Vec<_>>>()?.into_iter().flatten() {
         let held: Option<String> = connection
             .query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1", [name], |row| row.get(0))
             .optional()?;

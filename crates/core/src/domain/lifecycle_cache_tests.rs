@@ -170,7 +170,7 @@ fn a_journal_moved_by_hand_is_replayed_rather_than_read_from_what_was_kept() {
     let mut s = fleet();
     let task = TaskId::from(SDK);
     let kept = s.lifecycle_of(&task).unwrap();
-    s.lifecycle_journal.get_mut(&task).unwrap().push(LifecycleRecord::Told { input: "input:by-hand".into(), text: "By hand".into() });
+    s.lifecycle_journal.get_mut(&task).unwrap().push(LifecycleRecord::Told { input: "input:by-hand".into(), text: Some("By hand".into()) });
     let read = s.lifecycle_of(&task).unwrap();
     assert_eq!(read.revision(), kept.revision() + 1);
     assert_eq!(*read, replay(&task, &s.lifecycle_journal[&task]).unwrap());

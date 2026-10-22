@@ -4,6 +4,9 @@ mod plan_review;
 pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem};
 #[path = "guards.rs"]
 mod guards;
+#[path = "compaction.rs"]
+mod compaction;
+pub use compaction::{body_title, result_excerpt, RESULT_LIMIT};
 #[path = "decisions.rs"]
 mod decisions;
 #[path = "mcp.rs"]
@@ -2133,9 +2136,12 @@ impl DomainState {
         next.resume_waiting_nodes(self, &mut effects);
         next.wrap_up_step(&mut effects);
         next.settle_nodes();
-        for id in self.touched_tasks(&next) {
-            let task = next.tasks.get_mut(&id).unwrap();
-            if task.started_without_node() && !self.tasks.get(&id).is_some_and(Task::started_without_node) {
+        // Compacting an ended task changes nothing a screen shows of it, so the buttons it already
+        // shows, which carry its revision, stay valid.
+        let touched = if matches!(envelope.command, Command::CompactEndedTasks { .. }) { BTreeSet::new() } else { self.touched_tasks(&next) };
+        for id in &touched {
+            let task = next.tasks.get_mut(id).unwrap();
+            if task.started_without_node() && !self.tasks.get(id).is_some_and(Task::started_without_node) {
                 return fail("conflict", &format!("Task {} would be in progress with no node", id.0));
             }
             task.revision = self.revision + 1;
@@ -2148,7 +2154,7 @@ impl DomainState {
         }
         next.validate()?;
         next.validate_nodes()?;
-        next.validate_lifecycles(self.touched_tasks(&next).iter())?;
+        next.validate_lifecycles(touched.iter())?;
         let superseded_acceptances = self
             .interactions
             .values()
@@ -4255,6 +4261,10 @@ impl DomainState {
                 let record = self.compact_guard(actor, task_id)?;
                 self.decide(lifecycles, task_id, record)?;
             }
+            Command::CompactEndedTasks { task_ids } => {
+                system(actor)?;
+                self.compact_ended_tasks(task_ids)?;
+            }
             Command::TellNode { task_id, text } => {
                 system(actor)?;
                 nonempty(text)?;
@@ -4265,7 +4275,7 @@ impl DomainState {
                     return fail("conflict", &format!("Task {task_id} has no node running through the Agent SDK"));
                 }
                 let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
-                let record = LifecycleRecord::Told { input: self.next_input(task_id), text: text.clone() };
+                let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()) };
                 self.decide(lifecycles, task_id, record)?;
                 let answered: Vec<InteractionId> = {
                     let still = self.lifecycle(lifecycles, task_id)?.cards();

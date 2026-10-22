@@ -230,8 +230,13 @@ pub enum LifecycleRecord {
         text: Option<String>,
     },
     ExecutionReleased { input: String },
-    /// Someone told the task's node `text` outside a card, as `input`.
-    Told { input: String, text: String },
+    /// Someone told the task's node `text` outside a card, as `input`. The store lets the text
+    /// go once the task ended, so a journal read back may have none.
+    Told {
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     Presented { delivery: InteractionId },
     /// The standing delivery left: the task goes on with `input`. An SDK execution is told `text`,
     /// what happened and that it delivers again; a `claude --bg` node is told through its mod.
@@ -630,7 +635,7 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::ExecutionReleased { input }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
         LifecycleRecord::Compacted { input } => Some((input, Some(COMPACT))),
-        LifecycleRecord::Told { input, text } => Some((input, Some(text.as_str()))),
+        LifecycleRecord::Told { input, text } => Some((input, text.as_deref())),
         LifecycleRecord::Answered { input, text, .. }
         | LifecycleRecord::Resumed { input, text, .. }
         | LifecycleRecord::HandedBack { input, text, .. } => Some((input, text.as_deref())),
@@ -700,7 +705,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         }
         Event::Tell { input } => LifecycleRecord::Told {
             input: input.as_str().into(),
-            text: texts.get(input).cloned().ok_or_else(|| corrupt(task, format!("what it was told as {input:?} has no text")))?,
+            text: texts.get(input).cloned(),
         },
         Event::Answer { card, input } => LifecycleRecord::Answered {
             card: card.clone(),

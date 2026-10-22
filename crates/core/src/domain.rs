@@ -23,6 +23,8 @@ mod card_tests;
 #[cfg(test)]
 mod checklist_tests;
 #[cfg(test)]
+mod compaction_tests;
+#[cfg(test)]
 mod cited_files_tests;
 #[cfg(test)]
 mod tests;
@@ -72,4 +74,4 @@ pub use read_index::*;
 pub use refusal::*;
 pub use schedule::*;
 pub use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
-pub use rules::{MCP_GO_ON_WITHOUT, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpWaiting, MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn, ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem, ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, unanswered_withdrawn_notice, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, post_merge_reminder, merge_failed_text, merge_failure, merged_notice};
+pub use rules::{body_title, result_excerpt, RESULT_LIMIT, MCP_GO_ON_WITHOUT, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpWaiting, MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn, ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem, ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, unanswered_withdrawn_notice, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, post_merge_reminder, merge_failed_text, merge_failure, merged_notice};

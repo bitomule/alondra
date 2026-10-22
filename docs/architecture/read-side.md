@@ -238,6 +238,36 @@ rows: shrinking a row in place leaves its page mostly empty for good. Audit rows
 that, with the command inside, move their body out once and the store is rebuilt once after. A new
 table policy is one more entry in `POLICIES`.
 
+### What an ended task keeps
+
+Once a task is done or cancelled, a card of it shows as settled without its content, its detail
+lists only cards that wait, and its history comes from `task_history`. What is still read of its
+cards stays: the final result's excerpt (`result_excerpt`, the first 4 000 characters a task that
+builds on it starts from), each card's need, why, plan, answer, options, attachments, targets and
+feedback, and the first line of its body (`body_title`, the title the orchestrator's `fleet` and
+`node` read). Kept whole: a plan card whose body another task implements, the cards of a plan
+review, a notice nobody read (it still waits for the user) and Alondra's own cards, some of which it
+recognizes by their text. The rest goes: the body past its first line, the content's body and the
+options' descriptions. The cards are domain state, held in memory, so the `retention` loop
+compacts them with a command (`CompactEndedTasks`, 32 tasks each) rather than in SQL, which the next
+commit touching a card would undo; it changes no task's revision, so buttons already shown stay
+valid. A reopened task keeps its compacted cards: none of them waits again, and its new node reads
+the plan and its dependencies' results, which are kept.
+
+The same pass removes the provider commands of executions that are no longer current (their bytes
+are read only while their dispatch is claimed, and no claim outlives its execution), lets go of the
+text of an ended task's inputs (only the current execution is sent a text; replaying the journal
+needs the ids), and empties the text of an ended task's messages once they were handed or given up
+(rows, attempts and outbox stay for `alondra delivery list` and the push records). The journal's
+triggers allow exactly that; journals from before get the new triggers on open, without rewriting
+a table. The cards shrink in place, so the first time no ended task is left to compact the store is
+rebuilt once.
+
+22 October, copy of the real HOME (69.1 MB): the first run of the whole retention leaves 36.5 MB,
+as compact as its `VACUUM INTO` (`interactions` 12.0 → 3.9 MB, `lifecycle_inputs` 2.0 → 0.4,
+`provider_commands` 1.7 → 0.1, `domain_messages` 1.2 → 0.4); a week later, with nothing new
+written, 19.8 MB. A batch of 32 tasks holds the writer lock 51 ms.
+
 21 October, copy of the real HOME (64 MB `domain.db`, 4974 journal events; one closing task held
 1568 pending inputs, 1563 of them the same closer message): preflight 5.15 s → 0.48 s. Before, each
 event looked up every pending input again with a freshly prepared statement (1.2 M lookups per

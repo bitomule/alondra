@@ -852,7 +852,7 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
     let told = || slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter()
-        .filter(|record| matches!(record, LifecycleRecord::Told { text, .. } if text.contains(dirty.to_str().unwrap()))).count();
+        .filter(|record| matches!(record, LifecycleRecord::Told { text: Some(text), .. } if text.contains(dirty.to_str().unwrap()))).count();
     let timing = crate::task_closer::Timing::new(None);
     let retry = i64::try_from(timing.retry.as_millis()).unwrap();
     let now = alondra_core::now_millis();
@@ -1464,7 +1464,7 @@ async fn a_cancelled_sdk_task_with_work_left_in_a_subagents_worktree_keeps_its_h
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Closing);
     let told = state.lifecycle_journal[&TaskId::from(TASK)].iter().rev()
-        .find_map(|record| match record { alondra_core::domain::LifecycleRecord::Told { text, .. } => Some(text.clone()), _ => None })
+        .find_map(|record| match record { alondra_core::domain::LifecycleRecord::Told { text, .. } => text.clone(), _ => None })
         .expect("the node is told what holds the close");
     assert!(told.contains(subagent.to_str().unwrap()) && told.contains("discard"), "{told}");
     assert!(subagent.join("draft.txt").exists(), "nothing with work is deleted");

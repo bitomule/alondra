@@ -365,3 +365,52 @@ fn a_journal_from_before_the_retention_gets_the_new_observation_triggers_and_ope
         assert_eq!(schema_snapshot(&database.connection), before, "upgrading twice changes nothing");
     }
 }
+
+/// A journal installed before the compaction of ended tasks: an input kept its text for good and a
+/// provider command was never deleted.
+fn journal_before_compaction() -> Database {
+    let database = Database::domain();
+    let mut schema = include_str!("../src/schema.sql").to_owned();
+    let before = include_str!("../src/inputs_and_commands_before_compaction.sql");
+    for trigger in ["lifecycle_input_immutable", "provider_command_retained"] {
+        let current = format!("CREATE TRIGGER IF NOT EXISTS {trigger} ");
+        let start = schema.find(&current).unwrap();
+        let end = schema[start..].find("END;").unwrap() + start + "END;".len();
+        let old_start = before.find(&current).unwrap();
+        let old_end = before[old_start..].find("END;").unwrap() + old_start + "END;".len();
+        schema.replace_range(start..end, &before[old_start..old_end]);
+    }
+    database.connection.execute_batch(&schema).unwrap();
+    database.connection.execute_batch(include_str!("../src/controls.sql")).unwrap();
+    database.connection.execute_batch("CREATE TABLE lifecycle_journal_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1),format TEXT NOT NULL); INSERT INTO lifecycle_journal_format VALUES(1,'alondra-task-resources-v1');").unwrap();
+    database
+}
+fn trigger(connection: &Connection, name: &str) -> String {
+    connection.query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1", [name], |row| row.get(0)).unwrap()
+}
+#[test]
+fn a_journal_from_before_the_compaction_gets_the_new_input_and_command_triggers_and_opens() {
+    let mut fresh = journal_before_retention();
+    let mut tx = fresh.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+    LifecycleTransaction::upgrade(&mut tx).unwrap();
+    tx.commit().unwrap();
+    for install in [true, false] {
+        let mut database = journal_before_compaction();
+        assert_ne!(trigger(&database.connection, "lifecycle_input_immutable"), trigger(&fresh.connection, "lifecycle_input_immutable"));
+        let raw = database.connection.transaction().unwrap();
+        assert!(matches!(LifecycleTransaction::attach(raw, AuthorityScope::new("epoch".into()).unwrap()), Err(Error::UnsupportedJournalFormat)));
+        let mut tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        if install {
+            LifecycleTransaction::install(&mut tx).unwrap();
+        } else {
+            LifecycleTransaction::upgrade(&mut tx).unwrap();
+        }
+        tx.commit().unwrap();
+        for name in ["lifecycle_input_immutable", "provider_command_retained"] {
+            assert_eq!(trigger(&database.connection, name), trigger(&fresh.connection, name), "{name}");
+        }
+        let tx = database.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()).unwrap().commit().unwrap();
+        assert_eq!(schema_snapshot(&database.connection), schema_snapshot(&fresh.connection));
+    }
+}

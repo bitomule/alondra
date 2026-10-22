@@ -561,7 +561,6 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &Task
     launch(domain, home, body, |request| request_choices(domain, request).ok().flatten()).await
 }
 
-const RESULT_LIMIT: usize = 4_000;
 const FOLLOW_UP_LIMIT: usize = 12_000;
 
 fn prefixed(prefix: &str, text: String) -> String {
@@ -591,7 +590,7 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
             "not finished yet"
         };
         let body = match earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
-            Some(result) => clipped(result.body.trim(), RESULT_LIMIT, "\n[shortened]"),
+            Some(result) => alondra_core::domain::result_excerpt(&result.body),
             None => "No final result was recorded for it.".to_owned(),
         };
         let mut entry = format!("### “{}” ({status})\n{body}", earlier.title);

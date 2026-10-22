@@ -132,13 +132,13 @@ fn a_command_older_than_a_week_keeps_its_revision_and_time_and_loses_its_body_an
     let clock_before = clock(&mut store, now);
     assert_eq!(receipts(&store.conn), ["agent", "present", "request", "task"]);
 
-    assert_eq!(drain(&mut store, now, 1), [0, 3, 0, 0], "three week-old commands, one row per pass");
+    assert_eq!(drain(&mut store, now, 1), [0, 3, 0, 0, 0], "three week-old commands, one row per pass");
 
     assert_eq!(bodies(&store.conn), [today], "only today's command keeps its body");
     assert_eq!(receipts(&store.conn), ["present"]);
     assert_eq!(audit(&store.conn), rows);
     assert_eq!(clock(&mut store, now), clock_before);
-    assert_eq!(drain(&mut store, now, 1), [0, 0, 0, 0], "a second run finds nothing left");
+    assert_eq!(drain(&mut store, now, 1), [0, 0, 0, 0, 0], "a second run finds nothing left");
     store.integrity_check().unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
@@ -190,11 +190,11 @@ fn a_receipt_written_before_receipts_carried_a_time_lasts_a_week_from_the_first_
         [],
     ).unwrap();
 
-    assert_eq!(drain(&mut store, now, 256), [0, 3, 1, 0]);
+    assert_eq!(drain(&mut store, now, 256), [0, 3, 1, 0, 0]);
     assert!(receipts(&store.conn).contains(&"unchanged".to_string()));
-    assert_eq!(drain(&mut store, now + WINDOW_MS, 256), [0, 0, 0, 0]);
+    assert_eq!(drain(&mut store, now + WINDOW_MS, 256), [0, 0, 0, 0, 0]);
     assert!(receipts(&store.conn).contains(&"unchanged".to_string()));
-    assert_eq!(drain(&mut store, now + WINDOW_MS + 1, 256), [0, 1, 0, 1], "today's command and the dated receipt");
+    assert_eq!(drain(&mut store, now + WINDOW_MS + 1, 256), [0, 1, 0, 1, 0], "today's command and the dated receipt");
     assert!(!receipts(&store.conn).contains(&"unchanged".to_string()));
 }
 
@@ -211,7 +211,7 @@ fn the_daemon_runs_every_policy_and_gives_the_disk_every_page_it_freed() {
     let retained = runtime.retain(now).unwrap();
 
     let names: Vec<_> = POLICIES.iter().map(|policy| policy.name).collect();
-    assert_eq!(retained.tables, names.into_iter().zip([0, 3, 0, 0]).collect::<Vec<_>>());
+    assert_eq!(retained.tables, names.into_iter().zip([0, 3, 0, 0, 0]).collect::<Vec<_>>());
     let observer = Connection::open(fixture.path()).unwrap();
     assert_eq!(pages(&observer, "freelist_count"), 0, "every freed page goes back");
     assert!(pages(&observer, "page_count") < before - 40, "{} pages, {before} before", pages(&observer, "page_count"));
@@ -257,7 +257,7 @@ fn a_store_of_the_previous_release_opens_into_the_schema_of_a_new_one_with_its_r
     assert_eq!(schema(&store.conn), schema(&Connection::open(fresh.path()).unwrap()));
     assert_eq!((audit(&store.conn), receipts(&store.conn)), rows);
     let now = store.conn.query_row("SELECT max(at) FROM command_audit", [], |row| row.get::<_, i64>(0)).unwrap();
-    assert_eq!(drain(&mut store, now, 256), [4, 3, 1, 0], "every inline body, three week-old commands, today's undated receipt");
+    assert_eq!(drain(&mut store, now, 256), [4, 3, 1, 0, 0], "every inline body, three week-old commands, today's undated receipt");
     assert_eq!(kinds(&audit(&store.conn)), kinds(&rows.0));
     assert!(audit(&store.conn).iter().all(|row| row.1.len() < 40), "{:?}", audit(&store.conn));
     assert_eq!(bodies(&store.conn), [rows.0[3].clone()], "today's body moved beside its audit row");
@@ -283,7 +283,7 @@ fn a_store_whose_audit_rows_held_their_bodies_is_rebuilt_once_they_all_moved() {
     assert_eq!(pages(&observer, "page_count"), packed, "the shrunk audit rows leave no half-empty pages");
     let marks: Vec<String> = observer.prepare("SELECT policy FROM retention_marks ORDER BY policy").unwrap()
         .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-    assert_eq!(marks, ["week_old_commands"], "the rebuild is owed no more");
+    assert_eq!(marks, ["ended_tasks_compacted", "week_old_commands"], "the rebuild is owed no more");
 }
 
 #[test]
@@ -298,4 +298,138 @@ fn an_audit_table_of_unknown_shape_is_refused() {
     drop(store);
     let refused = DomainStore::open(&fixture.path()).err().map(|error| format!("{error:#}"));
     assert!(refused.as_deref().is_some_and(|error| error.contains("unexpected command_audit definition")), "{refused:?}");
+}
+
+fn long(head: &str) -> String {
+    format!("{head}\n\n{}", "What the node measured, line after line of it. ".repeat(300))
+}
+/// A done task whose question, notices, final result and messages hold long texts.
+fn ended_task(fixture: &Fixture) -> DomainStore {
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let user = Actor::User { user_id: "user-1".into() };
+    let ask = Command::AskQuestion {
+        attachments: vec![], interaction_id: "ask-1".into(), scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User,
+        body: long("Which table goes first?"), blocking: true,
+        options: vec![
+            QuestionOption { id: "cards".into(), label: "Cards".into(), description: Some(long("They weigh most")) },
+            QuestionOption { id: "inputs".into(), label: "Inputs".into(), description: None },
+        ],
+        card: CardSpec::new(CardKind::Decide, "Choose the table to compact first").why("The cards weigh most").content(ContentKind::Options, long("Measured")),
+    };
+    let answer = Command::AnswerQuestion { attachments: vec![], interaction_id: "ask-1".into(), option_id: "cards".into(), inputs: Default::default() };
+    let targets = vec![DeliveryTarget::Text { text: "The answer".into() }];
+    let mut card = CardSpec::delivery("Review the result", &targets, true);
+    card.content = Some(CardContent { kind: ContentKind::Report, summary: None, body: long("# Report") });
+    let present = Command::PresentResult {
+        checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: long("Finished the answer"),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, attachments: vec![], card,
+    };
+    let accept = Command::AcceptDelivery { presentation_id: "delivery-1".into(), targets };
+    let end = Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: None };
+    let mut steps = vec![("ask".to_owned(), agent(), ask), ("answer".into(), user.clone(), answer)];
+    for n in 0..60 {
+        steps.push((format!("notice-{n}"), Actor::Orchestrator { generation: 0 }, Command::PublishInformation {
+            attachments: vec![], interaction_id: format!("notice-{n}").into(), scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User,
+            body: format!("Notice {n}\n\n{}", "A few lines the node measured. ".repeat(40)), card: CardSpec::new(CardKind::Know, format!("Read notice {n}")),
+        }));
+        steps.push((format!("read-{n}"), user.clone(), Command::MarkRead { interaction_id: format!("notice-{n}").into() }));
+    }
+    steps.extend([("present".into(), agent(), present), ("accept".into(), user, accept), ("end".into(), Actor::System, end)]);
+    for (id, actor, command) in steps {
+        let e = envelope(&mut store, &id, command);
+        store.execute_authenticated(&actor, &e, None).unwrap();
+    }
+    assert_eq!(store.load().unwrap().tasks[&TaskId::from("task-1")].state, TaskState::Done);
+    store
+}
+/// What the apps show: the task's detail, its cards, the home and the task list, on every client.
+fn shown(state: &DomainState) -> Vec<serde_json::Value> {
+    use alondra_core::views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
+    let index = ReadIndex::build(state);
+    let live = LiveSnapshot::default();
+    let mut keys = vec!["task:task-1".to_owned(), "home".into(), "tasks".into()];
+    keys.extend(state.interactions.keys().map(|id| format!("card:{}", id.0)));
+    let mut shown = vec![];
+    for key in &keys {
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let view = alondra_core::views::build(key, RenderContext {
+                domain: state, index: &index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback, cursor: "", rendered_at: "",
+            });
+            let Ok(view) = view else { continue };
+            let mut view = serde_json::to_value(view).unwrap();
+            for field in ["version", "status"] {
+                view.as_object_mut().unwrap().remove(field);
+            }
+            shown.push(serde_json::json!({ "key": key, "view": view }));
+        }
+    }
+    shown
+}
+
+#[test]
+fn the_daemon_compacts_an_ended_tasks_cards_and_messages_and_the_apps_show_the_same() {
+    let fixture = Fixture::new();
+    let store = ended_task(&fixture);
+    store.conn.execute("UPDATE domain_outbox SET state='handed'", []).unwrap();
+    store.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;").unwrap();
+    let messages: i64 = store.conn.query_row("SELECT count(*) FROM domain_messages WHERE task_id='task-1' AND message<>''", [], |row| row.get(0)).unwrap();
+    assert!(messages > 0);
+    drop(store);
+    let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
+    let before = runtime.state().unwrap();
+    let now = alondra_core::now_millis();
+
+    let retained = runtime.retain(now).unwrap();
+
+    assert_eq!(retained.compacted, 1);
+    assert_eq!(retained.tables.last(), Some(&("messages of ended tasks", messages as usize)));
+    let after = runtime.state().unwrap();
+    assert_eq!(after.interactions[&InteractionId::from("ask-1")].body, "Which table goes first?");
+    assert_eq!(result_excerpt(&after.interactions[&InteractionId::from("delivery-1")].body), result_excerpt(&before.interactions[&InteractionId::from("delivery-1")].body));
+    let renumbered = serde_json::to_string(&shown(&before)).unwrap().replace(&format!("@{}", before.revision), &format!("@{}", after.revision));
+    assert_eq!(serde_json::to_string(&shown(&after)).unwrap(), renumbered, "the apps show the same, buttons aside, which carry the revision");
+    let observer = Connection::open(fixture.path()).unwrap();
+    let left: i64 = observer.query_row("SELECT count(*) FROM domain_messages WHERE message<>''", [], |row| row.get(0)).unwrap();
+    assert_eq!(left, 0, "a handed message of an ended task keeps no text");
+    let marks: Vec<String> = observer.prepare("SELECT policy FROM retention_marks ORDER BY policy").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(marks, ["ended_tasks_compacted"], "the first full compaction rebuilt the store once");
+    let compact = fixture.0.join("compact.sqlite");
+    observer.execute("VACUUM INTO ?1", [compact.to_str().unwrap()]).unwrap();
+    assert_eq!(pages(&observer, "page_count"), pages(&Connection::open(&compact).unwrap(), "page_count"), "the shrunk cards leave no half-empty pages");
+    drop(observer);
+    let again = runtime.retain(now).unwrap();
+    assert_eq!(again.compacted, 0);
+    drop(runtime);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*reopened.load().unwrap(), *after, "what the daemon holds is what the store keeps");
+    let reopen = CommandEnvelope { expected_revision: before.revision, ..envelope(&mut reopened, "reopen", Command::ReopenTask { task_id: "task-1".into() }) };
+    reopened.execute_authenticated(&Actor::User { user_id: "user-1".into() }, &reopen, None).expect("a button shown before the compaction still works");
+}
+
+/// Runs the whole retention on a copy of a real domain database at `ALONDRA_RETENTION_DB`, as of
+/// `ALONDRA_RETENTION_DAYS` days from now, and prints how long it took.
+#[test]
+#[ignore = "measures a copy of a real HOME: ALONDRA_RETENTION_DB=… bazelisk test … --test_arg=--ignored"]
+fn measure_retention() {
+    let path = std::path::PathBuf::from(std::env::var("ALONDRA_RETENTION_DB").expect("ALONDRA_RETENTION_DB"));
+    let days: i64 = std::env::var("ALONDRA_RETENTION_DAYS").map_or(0, |days| days.parse().unwrap());
+    let started = std::time::Instant::now();
+    let runtime = crate::domain_runtime::DomainRuntime::open_at(path.parent().unwrap(), &path).unwrap();
+    eprintln!("open: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+    let state = runtime.state().unwrap();
+    let batch = state.compactable_tasks(32);
+    if !batch.is_empty() {
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "measure-compaction".into(),
+            expected_revision: state.revision, command: Command::CompactEndedTasks { task_ids: batch.clone() },
+        };
+        let started = std::time::Instant::now();
+        runtime.execute_on_current(&envelope).unwrap();
+        eprintln!("one batch of {} ended tasks under the writer lock: {:.0} ms", batch.len(), started.elapsed().as_secs_f64() * 1000.0);
+    }
+    let started = std::time::Instant::now();
+    let retained = runtime.retain(alondra_core::now_millis() + days * DAY).unwrap();
+    eprintln!("retention: {:.0} ms; {} ended tasks compacted; {:?}; {:?}", started.elapsed().as_secs_f64() * 1000.0, retained.compacted, retained.evidence, retained.tables);
 }

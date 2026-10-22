@@ -73,7 +73,9 @@ CREATE TRIGGER IF NOT EXISTS lifecycle_event_retained BEFORE DELETE ON lifecycle
 CREATE TRIGGER IF NOT EXISTS lifecycle_event_immutable BEFORE UPDATE ON lifecycle_events
  BEGIN SELECT RAISE(ABORT,'lifecycle journal is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_input_immutable BEFORE UPDATE ON lifecycle_inputs
- WHEN OLD.body IS NOT NULL OR NEW.body IS NULL OR NEW.task_id<>OLD.task_id OR NEW.input_id<>OLD.input_id
+ WHEN NEW.task_id<>OLD.task_id OR NEW.input_id<>OLD.input_id
+   OR NOT ((OLD.body IS NULL AND NEW.body IS NOT NULL)
+      OR (OLD.body IS NOT NULL AND NEW.body IS NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.id=OLD.task_id AND t.state IN('done','cancelled'))))
  BEGIN SELECT RAISE(ABORT,'lifecycle input is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS lifecycle_execution_immutable BEFORE UPDATE ON lifecycle_executions
  BEGIN SELECT RAISE(ABORT,'lifecycle execution identity is immutable'); END;
@@ -157,6 +159,8 @@ CREATE TABLE IF NOT EXISTS provider_commands(
 CREATE TRIGGER IF NOT EXISTS provider_command_immutable BEFORE UPDATE ON provider_commands
  BEGIN SELECT RAISE(ABORT,'provider command evidence is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS provider_command_retained BEFORE DELETE ON provider_commands
+ WHEN EXISTS(SELECT 1 FROM lifecycle_current_execution c WHERE c.task_id=OLD.task_id AND c.generation=OLD.generation)
+   OR EXISTS(SELECT 1 FROM lifecycle_dispatches d WHERE d.id=OLD.intent_id AND d.status='claimed')
  BEGIN SELECT RAISE(ABORT,'provider command evidence is retained'); END;
 CREATE TABLE IF NOT EXISTS provider_observations(
  task_id TEXT NOT NULL,generation INTEGER NOT NULL,binding_id TEXT NOT NULL,cursor INTEGER NOT NULL CHECK(cursor BETWEEN 1 AND 9007199254740991),

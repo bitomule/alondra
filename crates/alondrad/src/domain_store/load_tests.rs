@@ -53,7 +53,7 @@ fn told(notices: usize) -> (Fixture, DomainStore) {
     let known = records.len();
     records.extend((0..notices).map(|notice| LifecycleRecord::Told {
         input: format!("input:task-1:notice-{notice}"),
-        text: "Alondra could not close this session yet: no host could take over its session".into(),
+        text: Some("Alondra could not close this session yet: no host could take over its session".into()),
     }));
     store
         .own(scope_of(&state), |owner| Ok(repository::save_journal(owner.journal(), &task, &records, known)?))
@@ -102,4 +102,24 @@ fn measure_domain_open() {
         .collect();
     samples.sort_by(f64::total_cmp);
     eprintln!("loading the domain: median {:.1} ms (min {:.1}, max {:.1})", samples[samples.len() / 2], samples[0], samples[samples.len() - 1]);
+}
+
+#[test]
+fn a_journal_whose_told_texts_the_store_let_go_still_opens() {
+    let (_fixture, store) = told(3);
+    let before = repository::load(&store.conn).unwrap();
+    let state: String = store.conn.query_row("SELECT state FROM tasks WHERE id='task-1'", [], |row| row.get(0)).unwrap();
+    store.conn.execute("UPDATE tasks SET state='done' WHERE id='task-1'", []).unwrap();
+    store.conn.execute("UPDATE lifecycle_inputs SET body=NULL WHERE task_id='task-1' AND input_id LIKE '%notice%'", []).unwrap();
+    store.conn.execute("UPDATE tasks SET state=?1 WHERE id='task-1'", [state]).unwrap();
+
+    let after = repository::load(&store.conn).unwrap();
+
+    let task: TaskId = "task-1".into();
+    let told: Vec<_> = after.lifecycle_journal[&task].iter().filter_map(|record| match record {
+        LifecycleRecord::Told { text, .. } => Some(text.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(told, [None, None, None]);
+    assert_eq!(after.lifecycle_journal[&task].len(), before.lifecycle_journal[&task].len());
 }

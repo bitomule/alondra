@@ -27,11 +27,12 @@ impl Policy {
     }
 }
 
-pub(crate) const POLICIES: [Policy; 4] = [
+pub(crate) const POLICIES: [Policy; 5] = [
     Policy { name: "audit rows written with their body", pass: bodies_written_inline },
     Policy { name: "commands older than a week", pass: week_old_commands },
     Policy { name: "undated receipts", pass: undated_receipts },
     Policy { name: "receipts", pass: receipts },
+    Policy { name: "messages of ended tasks", pass: messages_of_ended_tasks },
 ];
 
 fn mark(tx: &Transaction<'_>, policy: &str) -> rusqlite::Result<Option<i64>> {
@@ -120,6 +121,18 @@ fn receipts(tx: &Transaction<'_>, now: i64, limit: i64) -> rusqlite::Result<usiz
     )
 }
 
+/// A message's text is read only while it waits in the outbox or is retried. Once it was handed or
+/// given up and its task is done or cancelled, the row stays for the delivery evidence and the
+/// push records, without its text.
+fn messages_of_ended_tasks(tx: &Transaction<'_>, _: i64, limit: i64) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE domain_messages SET message='' WHERE id IN(
+           SELECT m.id FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id JOIN tasks t ON t.id=m.task_id
+           WHERE m.message<>'' AND o.state IN('handed','discarded') AND t.state IN('done','cancelled') LIMIT ?1)",
+        [limit],
+    )
+}
+
 impl DomainStore {
     /// One pass of `policy` in its own transaction. What it changes is no domain state, so the
     /// cached state stays.
@@ -133,6 +146,15 @@ impl DomainStore {
     /// Whether the rows a policy shrank in place are all done and the store is owed its one rebuild.
     pub(super) fn owes_rebuild(&self) -> rusqlite::Result<bool> {
         self.conn.query_row("SELECT EXISTS(SELECT 1 FROM retention_marks WHERE policy='rebuild')", [], |row| row.get(0))
+    }
+    /// The first time no ended task is left to compact, the cards it shrank in place are done and
+    /// the store is owed its one rebuild.
+    pub(crate) fn ended_tasks_compacted(&self) -> rusqlite::Result<()> {
+        let first = self.conn.execute("INSERT OR IGNORE INTO retention_marks(policy,revision) VALUES('ended_tasks_compacted',0)", [])? == 1;
+        if first {
+            self.conn.execute("INSERT OR IGNORE INTO retention_marks(policy,revision) VALUES('rebuild',0)", [])?;
+        }
+        Ok(())
     }
     pub(super) fn rebuilt(&self) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM retention_marks WHERE policy='rebuild'", []).map(drop)

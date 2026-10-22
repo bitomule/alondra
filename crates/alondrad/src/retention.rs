@@ -20,6 +20,13 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
                 if retained.evidence.released + retained.evidence.removed > 0 {
                     log!("released {} normalized SDK observations and removed {} of finished executions", retained.evidence.released, retained.evidence.removed);
                 }
+                let evidence = retained.evidence;
+                if evidence.commands_removed + evidence.texts_released > 0 {
+                    log!("removed {} provider commands of ended executions and released {} input texts of ended tasks", evidence.commands_removed, evidence.texts_released);
+                }
+                if retained.compacted > 0 {
+                    log!("compacted the cards of {} ended tasks", retained.compacted);
+                }
                 for (policy, changed) in retained.tables.iter().filter(|(_, changed)| *changed > 0) {
                     log!("retention of {policy}: {changed} rows");
                 }

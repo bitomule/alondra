@@ -2976,9 +2976,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RefuseDecisionRequest { .. } => 94,
         Command::ClearMcpSignIn { .. } => 95,
         Command::RecordAccountUsage { .. } => 96,
+        Command::CompactEndedTasks { .. } => 97,
     }
 }
-const COMMAND_KINDS: usize = 97;
+const COMMAND_KINDS: usize = 98;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3127,6 +3128,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CompleteMcpSignIn { task_id: ids.task.into(), server: "linear".into(), state: "s".into() }, false),
         (Command::WaitForMcp { task_id: ids.task.into(), server: "linear".into() }, false),
         (Command::CompactConversation { task_id: ids.task.into() }, false),
+        (Command::CompactEndedTasks { task_ids: vec![ids.task.into()] }, false),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),

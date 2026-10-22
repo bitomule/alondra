@@ -636,6 +636,10 @@ pub enum Command {
     CompactConversation {
         task_id: TaskId,
     },
+    /// Alondra lets go of what nobody reads any more of the cards of done or cancelled Tasks.
+    CompactEndedTasks {
+        task_ids: Vec<TaskId>,
+    },
     /// Claude asks, through the Task's SDK execution of `generation`, for the decision its host
     /// persisted at `epoch`. Alondra's own tools are allowed, what nodes may not do and a plan
     /// without its checklist are denied, all without a card; anything else is put to the user.

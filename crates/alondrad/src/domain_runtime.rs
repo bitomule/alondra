@@ -59,6 +59,8 @@ pub struct DomainRuntime {
 pub(crate) struct Retained {
     pub(crate) evidence: alondra_store::EvidenceRetention,
     pub(crate) tables: Vec<(&'static str, usize)>,
+    /// Ended tasks whose cards were compacted.
+    pub(crate) compacted: usize,
 }
 
 impl DomainRuntime {
@@ -199,7 +201,9 @@ impl DomainRuntime {
             let pass = self.store.lock().expect("domain store poisoned").retain_evidence(PASS)?;
             retained.evidence.released += pass.released;
             retained.evidence.removed += pass.removed;
-            if pass.released < PASS && pass.removed < PASS {
+            retained.evidence.commands_removed += pass.commands_removed;
+            retained.evidence.texts_released += pass.texts_released;
+            if [pass.released, pass.removed, pass.commands_removed, pass.texts_released].iter().all(|changed| *changed < PASS) {
                 break;
             }
         }
@@ -214,8 +218,40 @@ impl DomainRuntime {
             }
             retained.tables.push((policy.name, changed));
         }
+        retained.compacted = self.compact_ended_tasks()?;
         self.store.lock().expect("domain store poisoned").reclaim_space(4096)?;
         Ok(retained)
+    }
+    /// Compacts the cards of done and cancelled tasks, a batch per command, until none is left. A
+    /// refusal, such as a task reopened meanwhile, ends this pass: the next one tries again.
+    fn compact_ended_tasks(&self) -> Result<usize, StoreError> {
+        const BATCH: usize = 32;
+        let mut compacted = 0;
+        loop {
+            let state = self.state().map_err(StoreError::Storage)?;
+            let task_ids = state.compactable_tasks(BATCH);
+            if task_ids.is_empty() {
+                self.store.lock().expect("domain store poisoned").ended_tasks_compacted().map_err(anyhow::Error::from)?;
+                return Ok(compacted);
+            }
+            let count = task_ids.len();
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: state.data_epoch.clone(),
+                command_id: format!("compact-ended-tasks-{}", crate::auth::random_hex(8)).into(),
+                expected_revision: state.revision,
+                command: Command::CompactEndedTasks { task_ids },
+            };
+            match self.execute_on_current(&envelope) {
+                Ok(outcome) if outcome.changed => compacted += count,
+                Ok(_) => return Ok(compacted),
+                Err(StoreError::Domain(error)) => {
+                    log!("could not compact the cards of ended tasks: {}", error.message);
+                    return Ok(compacted);
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
     /// Provider evidence, its normalization and the domain's decision commit in one transaction.
     /// Still under the writer lock, readers get the committed state and the change is notified;
@@ -811,7 +847,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordAccounts { .. }
         | Command::RecordAccountUsage { .. }
         | Command::InterruptTurn { .. }
-        | Command::ForceStopTurn { .. } => None,
+        | Command::ForceStopTurn { .. }
+        | Command::CompactEndedTasks { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {
