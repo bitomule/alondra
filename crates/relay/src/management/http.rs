@@ -265,7 +265,7 @@ async fn rename_owned(
         })
         .map(|(mac, _)| mac)
         .ok_or_else(|| failure(DomainError::NotFound.into()))?;
-    let key = request(
+    let key = admin_request(
         &headers,
         "rename_device",
         json!({"kind":kind,"id":id,"label":body.label,"expected_revision":body.expected_revision}),
@@ -311,7 +311,7 @@ async fn revoke_owned(
             }
         })
         .ok_or_else(|| failure(DomainError::NotFound.into()))?;
-    let key = request(
+    let key = admin_request(
         &headers,
         "revoke_device",
         json!({"kind":kind,"id":id}),
@@ -366,7 +366,7 @@ async fn delete_self(
         return Err(failure(DomainError::InvalidInput.into()));
     }
     let actor = actor(&server, &headers).await?;
-    let key = request(&headers, "self_delete", json!({"confirm":true}), false)?;
+    let key = admin_request(&headers, "self_delete", json!({"confirm":true}), false)?;
     let account = db(&server)?
         .delete_self_request(actor.id, &key)
         .await
@@ -418,7 +418,7 @@ struct InviteBody {
     email: String,
     ttl_seconds: i64,
 }
-fn request(
+pub(super) fn admin_request(
     headers: &HeaderMap,
     operation: &str,
     body: Value,
@@ -436,7 +436,7 @@ async fn invite(
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
     let actor = actor(&server, &headers).await?;
-    let key = request(
+    let key = admin_request(
         &headers,
         "invite",
         json!({"email":body.email,"ttl_seconds":body.ttl_seconds}),
@@ -458,7 +458,7 @@ async fn cancel(
     Path(id): Path<Uuid>,
 ) -> ApiResult {
     let actor = actor(&server, &headers).await?;
-    let key = request(&headers, "cancel", json!({"id":id}), false)?;
+    let key = admin_request(&headers, "cancel", json!({"id":id}), false)?;
     Ok(Json(json!({"invitation":db(&server)?.cancel_invitation_request(actor.id,id,Some(&key)).await.map_err(failure)?})).into_response())
 }
 #[derive(Deserialize)]
@@ -473,7 +473,7 @@ async fn reissue(
     Json(body): Json<ReissueBody>,
 ) -> ApiResult {
     let actor = actor(&server, &headers).await?;
-    let key = request(
+    let key = admin_request(
         &headers,
         "reissue",
         json!({"id":id,"ttl_seconds":body.ttl_seconds}),
@@ -491,7 +491,7 @@ async fn reissue(
 }
 async fn lifecycle(server: Arc<Server>, headers: HeaderMap, id: Uuid, delete: bool) -> ApiResult {
     let actor = actor(&server, &headers).await?;
-    let key = request(
+    let key = admin_request(
         &headers,
         if delete { "delete" } else { "disable" },
         json!({"id":id}),

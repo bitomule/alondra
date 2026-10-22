@@ -38,6 +38,51 @@ test('admin lists waitlist requests and removes one only after confirmation', as
  expect(deletes).toBe(1);
 });
 
+test('admin invites someone from the waitlist and gets the link to send by hand', async ({ page }) => {
+ await admin(page);
+ let entries = [
+  { id: 'wait-1', email: 'friend@example.test', created_at_ms: 1790500000000 },
+  { id: 'wait-2', email: 'member@example.test', created_at_ms: 1790600000000 },
+ ];
+ const invitations: { id: string; email: string; status: string; expires_at_ms: number; account_id: null }[] = [];
+ await page.route('**/v1/admin/invitations', route => route.fulfill({ json: { invitations, next_cursor: null } }));
+ await page.route('**/v1/admin/waitlist', route => route.fulfill({ json: { entries, next_cursor: null } }));
+ const keys: string[] = [];
+ await page.route('**/v1/admin/waitlist/wait-1/invite', route => {
+  const request = route.request();
+  expect(request.method()).toBe('POST');
+  expect(request.headers()['x-csrf-token']).toBe('synthetic-csrf');
+  expect(request.postDataJSON()).toEqual({ ttl_seconds: 604800 });
+  keys.push(request.headers()['idempotency-key']);
+  const invitation = { id: 'invite-1', email: 'friend@example.test', status: 'pending', expires_at_ms: 1791100000000, account_id: null };
+  invitations.push(invitation);
+  entries = entries.filter(entry => entry.id !== 'wait-1');
+  return route.fulfill({ status: 201, json: { invitation, token: 'synthetic-token' } });
+ });
+ await page.route('**/v1/admin/waitlist/wait-2/invite', route => route.fulfill({ status: 409, json: { error: { code: 'state_conflict', retryable: false } } }));
+ await page.goto('/admin');
+ const waitlist = page.getByRole('region', { name: 'Lista de espera' });
+ await waitlist.getByRole('button', { name: 'Invitar' }).first().click();
+ await expect(page.getByRole('dialog')).toContainText('friend@example.test');
+ await page.getByRole('button', { name: 'Volver', exact: true }).click();
+ expect(keys).toEqual([]);
+ await waitlist.getByRole('button', { name: 'Invitar' }).first().click();
+ await page.getByRole('dialog').getByRole('button', { name: 'Invitar' }).click();
+ const issued = page.getByRole('dialog', { name: 'Invitación preparada' });
+ await expect(issued.getByLabel('Enlace privado')).toHaveValue(/\/invite#synthetic-token$/);
+ await expect(issued).toContainText('friend@example.test');
+ expect(keys).toHaveLength(1);
+ expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+ await issued.getByRole('button', { name: 'Ya lo he guardado' }).click();
+ await expect(waitlist.getByRole('heading', { name: 'friend@example.test' })).toHaveCount(0);
+ await expect(page.getByRole('region', { name: 'Invitaciones' }).getByRole('heading', { name: 'friend@example.test' })).toBeVisible();
+
+ await waitlist.getByRole('button', { name: 'Invitar' }).click();
+ await page.getByRole('dialog').getByRole('button', { name: 'Invitar' }).click();
+ await expect(waitlist.getByRole('status')).toContainText('Este correo ya tiene invitación o cuenta. Puedes retirar la solicitud.');
+ await expect(waitlist.getByRole('heading', { name: 'member@example.test' })).toBeVisible();
+});
+
 test('ordinary account never requests the waitlist', async ({ page }) => {
  await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: false } } }));
  const requests: string[] = [];

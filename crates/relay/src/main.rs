@@ -1133,6 +1133,80 @@ mod http_tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL"]
+    async fn inviting_from_the_waitlist_issues_a_link_and_clears_the_request_in_one_step() -> anyhow::Result<()> {
+        let (db, admin, schema) =
+            management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        let invitation = db.create_invitation(admin.id, "member@example.test", 300).await?;
+        db.reserve_acceptance(&invitation.token, "Member").await?.complete("member").await?;
+        db.join_waitlist("friend@example.test").await?;
+        db.join_waitlist("member@example.test").await?;
+        let entries = db.list_waitlist(admin.id, None, 10).await?.entries;
+        let id_of = |email: &str| entries.iter().find(|entry| entry.email == email).unwrap().id;
+        let (friend, member) = (id_of("friend@example.test"), id_of("member@example.test"));
+        let key = SigningKey::from_slice(&[32u8; 32]).unwrap();
+        let (url, _server, join) = test_server_with_management(&key, None, Some(db.clone())).await;
+        let client = reqwest::Client::new();
+        let invite = |subject: &str, id: uuid::Uuid, idempotency: &str| {
+            client
+                .post(format!("{url}/v1/admin/waitlist/{id}/invite"))
+                .bearer_auth(jwt(subject, now_ms()))
+                .header("Idempotency-Key", idempotency)
+                .json(&json!({"ttl_seconds": 604800}))
+                .send()
+        };
+        let waiting = || {
+            let pool = db.pool.clone();
+            async move {
+                sqlx_core::query_scalar::query_scalar::<_, String>("SELECT email FROM management_waitlist ORDER BY email")
+                    .fetch_all(&pool)
+                    .await
+            }
+        };
+        let invited = || {
+            let pool = db.pool.clone();
+            async move {
+                sqlx_core::query_scalar::query_scalar::<_, String>("SELECT email FROM management_invitations ORDER BY email")
+                    .fetch_all(&pool)
+                    .await
+            }
+        };
+
+        assert_eq!(invite("member", friend, "member-attempt-0001").await?.status(), StatusCode::FORBIDDEN);
+        assert_eq!(waiting().await?, ["friend@example.test", "member@example.test"]);
+
+        let issued = invite("stable-admin-sub", friend, "friend-invite-0001").await?;
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let issued: Value = issued.json().await?;
+        assert_eq!(issued["invitation"]["email"], "friend@example.test");
+        assert_eq!(issued["invitation"]["status"], "pending");
+        assert_eq!(db.invitation_status(issued["token"].as_str().unwrap()).await?, "pending");
+        assert_eq!(waiting().await?, ["member@example.test"]);
+        assert_eq!(invited().await?, ["friend@example.test", "member@example.test"]);
+
+        let repeated = invite("stable-admin-sub", friend, "friend-invite-0001").await?;
+        assert_eq!(repeated.status(), StatusCode::CONFLICT);
+        assert_eq!(repeated.json::<Value>().await?["error"]["code"], "invitation_token_already_issued");
+        assert_eq!(invite("stable-admin-sub", friend, "friend-invite-0002").await?.status(), StatusCode::NOT_FOUND);
+
+        let taken = invite("stable-admin-sub", member, "member-invite-0001").await?;
+        assert_eq!(taken.status(), StatusCode::CONFLICT);
+        assert_eq!(taken.json::<Value>().await?["error"]["code"], "state_conflict");
+        assert_eq!(waiting().await?, ["member@example.test"], "a refused invitation keeps the request");
+        assert_eq!(invited().await?, ["friend@example.test", "member@example.test"]);
+
+        let audited: Vec<String> = sqlx_core::query_scalar::query_scalar(
+            "SELECT action FROM management_audit WHERE actor_id=$1 AND action IN ('invite_create','waitlist_remove') ORDER BY action",
+        )
+        .bind(admin.id)
+        .fetch_all(&db.pool)
+        .await?;
+        assert_eq!(audited, ["invite_create", "invite_create", "waitlist_remove"]);
+        join.abort();
+        management::tests::cleanup(db, schema).await
+    }
+
+    #[tokio::test]
     #[ignore="requires disposable local PostgreSQL"]
     async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage() -> anyhow::Result<()> {
         let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;

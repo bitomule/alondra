@@ -1,7 +1,7 @@
 //! Private-alpha waitlist. Joining stores one normalized address and nothing else:
 //! it never creates a Keycloak user, an invitation or access, and never sends mail.
 //! The public answer is identical for new, repeated and existing-account addresses.
-use super::http::{actor, db, failure};
+use super::http::{actor, admin_request, db, failure};
 use super::*;
 use crate::Server;
 use axum::{
@@ -35,6 +35,7 @@ pub fn routes() -> Router<Arc<Server>> {
         .route("/api/waitlist", post(join))
         .route("/v1/admin/waitlist", get(list))
         .route("/v1/admin/waitlist/{id}", delete(remove))
+        .route("/v1/admin/waitlist/{id}/invite", post(invite))
 }
 
 /// Trim, lowercase and check an address. ASCII only; no provider-specific
@@ -292,6 +293,32 @@ impl Management {
         tx.commit().await?;
         Ok(())
     }
+    /// Invites the request's address and takes it off the list together: a conflict leaves both as they were.
+    pub async fn invite_from_waitlist(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        seconds: i64,
+        request: Option<&AdminRequest>,
+    ) -> Result<IssuedInvitation> {
+        let seconds = ttl(seconds)?;
+        let mut tx = self.admin_tx(actor).await?;
+        if let Some(request) = request {
+            request.reserve(&mut tx, actor).await?;
+        }
+        let address: Option<String> =
+            sqlx::query_scalar("DELETE FROM management_waitlist WHERE id=$1 RETURNING email")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(address) = address else {
+            return domain(DomainError::NotFound);
+        };
+        audit(&mut tx, Some(actor), "waitlist_remove", id).await?;
+        let issued = issue_invitation(&mut tx, actor, &email(&address)?, seconds).await?;
+        tx.commit().await?;
+        Ok(issued)
+    }
 }
 
 #[derive(Deserialize)]
@@ -331,6 +358,35 @@ async fn remove(
         .await
         .map_err(failure)?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InviteBody {
+    ttl_seconds: i64,
+}
+async fn invite(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<InviteBody>,
+) -> std::result::Result<Response, Response> {
+    let actor = actor(&server, &headers).await?;
+    let key = admin_request(
+        &headers,
+        "waitlist_invite",
+        json!({"id":id,"ttl_seconds":body.ttl_seconds}),
+        true,
+    )?;
+    let result = db(&server)?
+        .invite_from_waitlist(actor.id, id, body.ttl_seconds, Some(&key))
+        .await
+        .map_err(failure)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"invitation":result.invitation,"token":result.token})),
+    )
+        .into_response())
 }
 
 #[cfg(test)]

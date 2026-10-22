@@ -155,6 +155,27 @@ fn email(input: &str) -> Result<String> {
     );
     Ok(value)
 }
+/// Expects a normalized address and a checked lifetime, inside the administrator's transaction.
+async fn issue_invitation(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: Uuid,
+    address: &str,
+    seconds: i64,
+) -> Result<IssuedInvitation> {
+    let id = Uuid::new_v4();
+    let (token, hash) = token()?;
+    // Expired invitations must be canceled explicitly, so provisioning cleanup is never skipped.
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_invitations i LEFT JOIN management_accounts a ON a.id=i.account_id WHERE i.email=$1 AND (i.status IN ('pending','provisioning') OR a.status!='deleted'))")
+        .bind(address).fetch_one(&mut **tx).await?;
+    ensure!(!exists, DomainError::Conflict);
+    let row=sqlx::query("INSERT INTO management_invitations(id,email,token_hash,status,expires_at,created_by) VALUES($1,$2,$3,'pending',now()+make_interval(secs=>$4),$5) RETURNING id,email,status,account_id,(extract(epoch FROM expires_at)*1000)::bigint AS expires_at_ms")
+        .bind(id).bind(address).bind(hash).bind(seconds as f64).bind(actor).fetch_one(&mut **tx).await?;
+    audit(tx, Some(actor), "invite_create", id).await?;
+    Ok(IssuedInvitation {
+        invitation: Invitation::from_row(&row)?,
+        token,
+    })
+}
 fn ttl(seconds: i64) -> Result<i64> {
     ensure!((300..=604800).contains(&seconds), DomainError::InvalidInput);
     Ok(seconds)
@@ -449,24 +470,13 @@ impl Management {
     ) -> Result<IssuedInvitation> {
         let address = email(address)?;
         let seconds = ttl(seconds)?;
-        let id = Uuid::new_v4();
-        let (token, hash) = token()?;
         let mut tx = self.admin_tx(actor).await?;
         if let Some(request) = request {
             request.reserve(&mut tx, actor).await?;
         }
-        // Expired invitations must be canceled explicitly, so provisioning cleanup is never skipped.
-        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_invitations i LEFT JOIN management_accounts a ON a.id=i.account_id WHERE i.email=$1 AND (i.status IN ('pending','provisioning') OR a.status!='deleted'))")
-            .bind(&address).fetch_one(&mut *tx).await?;
-        ensure!(!exists, DomainError::Conflict);
-        let row=sqlx::query("INSERT INTO management_invitations(id,email,token_hash,status,expires_at,created_by) VALUES($1,$2,$3,'pending',now()+make_interval(secs=>$4),$5) RETURNING id,email,status,account_id,(extract(epoch FROM expires_at)*1000)::bigint AS expires_at_ms")
-            .bind(id).bind(&address).bind(hash).bind(seconds as f64).bind(actor).fetch_one(&mut *tx).await?;
-        audit(&mut tx, Some(actor), "invite_create", id).await?;
+        let issued = issue_invitation(&mut tx, actor, &address, seconds).await?;
         tx.commit().await?;
-        Ok(IssuedInvitation {
-            invitation: Invitation::from_row(&row)?,
-            token,
-        })
+        Ok(issued)
     }
     #[cfg(test)]
     pub async fn cancel_invitation(&self, actor: Uuid, id: Uuid) -> Result<Invitation> {
