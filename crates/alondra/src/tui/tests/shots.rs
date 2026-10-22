@@ -13,14 +13,14 @@ const CARD: &str = "hf-weekly-2026-09-30";
 
 /// The card's own words as the server writes them in Spanish (`views/card.rs`).
 const SPANISH: [(&str, &str); 10] = [
-    ("Merge", "Fusionar"),
-    ("Squash and merge", "Fusionar con squash"),
+    ("Merge", "Hacer merge"),
+    ("Squash and merge", "Squash and merge"),
     ("One commit on main", "Un solo commit en main"),
-    ("Merge commit", "Commit de fusión"),
+    ("Merge commit", "Merge commit"),
     ("Keeps every commit", "Conserva todos los commits"),
-    ("Merging…", "Fusionando…"),
+    ("Merging…", "Haciendo merge…"),
     ("Request changes", "Pedir cambios"),
-    ("Close without merging", "Cerrar sin fusionar"),
+    ("Close without merging", "Cerrar sin hacer merge"),
     ("Open on GitHub", "Abrir en GitHub"),
     ("Reply", "Responder"),
 ];

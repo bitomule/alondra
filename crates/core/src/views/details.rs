@@ -187,7 +187,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
     if pr.state != PrState::Open {
         view.notices.push(Notice {
             text: if pr.state == PrState::Merged {
-                t!(context.lang, "Merged", "Fusionada")
+                t!(context.lang, "Merged", "Mergeada")
             } else {
                 t!(context.lang, "Closed", "Cerrada")
             }

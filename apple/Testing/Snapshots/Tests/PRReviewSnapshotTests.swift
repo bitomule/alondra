@@ -47,7 +47,7 @@ final class PRReviewSnapshotTests: XCTestCase {
     private static let spanishLabels = [
         "Ask about the PR": "Preguntar por la PR",
         "Request changes": "Pedir cambios",
-        "Merge": "Fusionar",
+        "Merge": "Hacer merge",
         "Resolve conflicts": "Resolver conflictos",
         "Your question": "Tu pregunta",
         "Describe the changes": "Describe los cambios",

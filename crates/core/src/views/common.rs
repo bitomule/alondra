@@ -103,7 +103,7 @@ pub(super) fn instruction_label(task: &crate::domain::Task, domain: &crate::doma
     use crate::domain::{Instruction, TaskState};
     if task.state != TaskState::Running { return None; }
     if domain.task_merge_failure(&task.id).is_some() {
-        return Some(super::text::t!(lang, "Alondra couldn't merge it", "Alondra no pudo fusionarla"));
+        return Some(super::text::t!(lang, "Alondra couldn't merge it", "Alondra no pudo hacer el merge"));
     }
     Some(match domain.task_handed_back(&task.id)? {
         Instruction::Changes => super::text::t!(lang, "Changes requested", "Cambios solicitados"),

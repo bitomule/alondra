@@ -206,8 +206,8 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
             return value.description.clone();
         }
         match (spec.id.as_str(), value.id.as_str()) {
-            ("pr", "review") => Some("Cada PR que abre el nodo es una tarjeta para ti; Alondra la fusiona cuando la aceptas"),
-            ("pr", "auto_merge") => Some("Alondra fusiona la PR cuando pasan sus comprobaciones"),
+            ("pr", "review") => Some("Cada PR que abre el nodo es una tarjeta para ti; Alondra hace el merge cuando la aceptas"),
+            ("pr", "auto_merge") => Some("Alondra hace merge de la PR cuando pasan sus comprobaciones"),
             ("effort", "auto") => Some("Alondra elige el modelo y el esfuerzo según la tarea"),
             ("effort", "light") => Some("Un modelo rápido y más barato para trabajo pequeño y claro"),
             ("effort", "normal") => Some("El modelo y el esfuerzo por defecto de Claude"),

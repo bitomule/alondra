@@ -79,7 +79,7 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
     }
     let read = context.reading(&task.id);
     if let Some((_, reason)) = read.and_then(|read| read.merge_failure.clone()) {
-        return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, InProgress, Some(reason));
+        return Presentation::new(t!(lang, "Couldn't merge", "No se pudo hacer merge"), Tone::Warning, InProgress, Some(reason));
     }
     let waits = context.waits_for_user(&task.id);
     let attention = context.attention(task);
@@ -193,7 +193,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (TaskActivity::WaitingDependency, _) => return waiting_dependency(task, context),
         (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
         (TaskActivity::AfterMerge { reason }, _) => return Presentation { since: active_at,
-            ..Presentation::new(t!(lang, "Finishing after the merge", "Terminando tras fusionar"), Tone::Info, Block::InProgress, Some(reason.clone())) },
+            ..Presentation::new(t!(lang, "Finishing after the merge", "Terminando tras el merge"), Tone::Info, Block::InProgress, Some(reason.clone())) },
         (TaskActivity::Paused(pause), _) => {
             let fact = match &pause.reason {
                 PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),
@@ -241,7 +241,7 @@ fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let fact = if task.wrap_up.asked_at.is_some() {
         t!(lang, "Cleaning up before closing", "Limpiando antes de cerrar")
     } else {
-        t!(lang, "Accepted · Alondra merges its PR", "Aceptada · Alondra fusiona su PR")
+        t!(lang, "Accepted · Alondra merges its PR", "Aceptada · Alondra hace merge de su PR")
     };
     Presentation::new(t!(lang, "Closing", "Cerrando"), Tone::Success, Block::InProgress, Some(fact.into()))
 }
@@ -267,7 +267,7 @@ fn waiting_for(task: &Task, reason: &WaitReason, context: &RenderContext<'_>) ->
 
 fn waiting_pr(number: u64, lang: super::Lang) -> Presentation {
     Presentation::new(t!(lang, "Waiting for PR", "Esperando PR"), Tone::Info, Block::Waiting,
-        Some(tf!(lang, "Waits for PR #{number} to merge", "Espera a que se fusione la PR #{number}")))
+        Some(tf!(lang, "Waits for PR #{number} to merge", "Espera al merge de la PR #{number}")))
 }
 
 /// The open tasks this one still waits for.
@@ -410,7 +410,7 @@ fn done_fact(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
     if let Some(pr) = task.pr_id.as_ref().and_then(|id| context.domain.pull_requests.get(id)).filter(|pr| pr.state == PrState::Merged) {
         let number = pr.number;
-        return tf!(lang, "PR #{number} merged", "PR #{number} fusionada");
+        return tf!(lang, "PR #{number} merged", "PR #{number} mergeada");
     }
     if !task.documents.is_empty() {
         return t!(lang, "You accepted the document", "Aceptaste el documento").into();

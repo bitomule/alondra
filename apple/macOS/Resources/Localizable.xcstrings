@@ -255,7 +255,7 @@
     "Add a note or line comment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añade una nota o un comentario en una línea"}}}},
     "Choose a valid time.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una hora válida."}}}},
     "Could not verify the latest diff; review was not sent: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo comprobar el último diff; la revisión no se envió: %@"}}}},
-    "It started, and what is left of it waits for PR #%@ of “%@” to be merged: it goes on once that PR is merged.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Empezó, y lo que queda espera a que se fusione el PR #%1$@ de «%2$@»: sigue en cuanto ese PR se fusione."}}}},
+    "It started, and what is left of it waits for PR #%@ of “%@” to be merged: it goes on once that PR is merged.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Empezó, y lo que queda espera al merge del PR #%1$@ de «%2$@»: sigue en cuanto se haga ese merge."}}}},
     "Send your comments or clear them before accepting.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Envía tus comentarios o bórralos antes de aceptar."}}}},
     "The PR changed; review the new diff before sending": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El PR ha cambiado; revisa el nuevo diff antes de enviar"}}}},
     "The diff changed; refresh before sending line comments": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El diff ha cambiado; actualiza antes de enviar comentarios en líneas"}}}},
@@ -266,7 +266,7 @@
     "We couldn’t confirm the result. Try again; it won’t be applied twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Inténtalo de nuevo; no se aplicará dos veces."}}}},
     "document: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "documento: %@"}}}},
     "question: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "pregunta: %@"}}}},
-    "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera a que se fusione el PR #%@"}}}},
+    "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera al merge del PR #%@"}}}},
     "Dismiss": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar"}}}},
     "Mark read": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Marcar como leído"}}}},
     "%lld working · %lld waiting": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%1$lld trabajando · %2$lld esperando"}}}},
@@ -1013,7 +1013,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "GitHub está comprobando si se puede fusionar"
+            "value": "GitHub está comprobando si se puede hacer merge"
           }
         }
       }
@@ -1053,7 +1053,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Su nodo integra la base en la rama, resuelve los conflictos y hace push; la tarjeta vuelve cuando se puede fusionar"
+            "value": "Su nodo integra la base en la rama, resuelve los conflictos y hace push; la tarjeta vuelve cuando se puede hacer merge"
           }
         }
       }
@@ -1113,7 +1113,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fusionar (%@)"
+            "value": "Hacer merge (%@)"
           }
         }
       }
@@ -1123,7 +1123,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "¿Fusionar el PR #%llu?"
+            "value": "¿Hacer merge del PR #%llu?"
           }
         }
       }
@@ -1133,7 +1133,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fusionar…"
+            "value": "Hacer merge…"
           }
         }
       }
@@ -2343,7 +2343,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pull requests en orden de fusión"
+            "value": "Pull requests en orden de merge"
           }
         }
       }

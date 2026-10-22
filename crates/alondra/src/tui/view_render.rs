@@ -1110,7 +1110,7 @@ mod action_tests {
 
     #[test]
     fn hints_follow_the_action_verb_whatever_the_label_says() {
-        assert_eq!(action_hint(&action("merge:pr-1@1", "Fusionar")), "m");
+        assert_eq!(action_hint(&action("merge:pr-1@1", "Hacer merge")), "m");
         assert_eq!(action_hint(&action("conflicts:pr-1@1", "Resolver")), "1");
         assert_eq!(action_hint(&action("withdraw:request-1@1", "Retirar")), "x");
         assert_eq!(action_hint(&action("reply:i-1@1", "Withdraw the merge button")), "");

@@ -212,7 +212,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
 
     private static let mergingReply = [
         false: #"{"protocol":1,"outcome":"applied","stamp":"Merging…","result":{"kind":"started","title":"The PR is merging","body":"You'll see it finished in its task when GitHub confirms."}}"#,
-        true: #"{"protocol":1,"outcome":"applied","stamp":"Fusionando…","result":{"kind":"started","title":"La PR se está fusionando","body":"La verás terminada en su tarea cuando GitHub lo confirme."}}"#,
+        true: #"{"protocol":1,"outcome":"applied","stamp":"Haciendo merge…","result":{"kind":"started","title":"Se está haciendo merge de la PR","body":"La verás terminada en su tarea cuando GitHub lo confirme."}}"#,
     ]
 
     private func pullRequest(spanish: Bool, _ edit: @escaping (inout ActionFeature.State, Card) throws -> Void) throws

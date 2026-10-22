@@ -861,9 +861,9 @@ fn pr_handling_says_what_happens_to_the_pr() {
             .expect("PR handling")
     };
     state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = true;
-    assert_eq!(handling(&state), "La revisas tú; al aceptarla, Alondra la fusiona");
+    assert_eq!(handling(&state), "La revisas tú; al aceptarla, Alondra hace el merge");
     state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = false;
-    assert_eq!(handling(&state), "Merge automático: Alondra la fusiona al pasar los checks");
+    assert_eq!(handling(&state), "Merge automático: Alondra hace el merge al pasar los checks");
 }
 
 #[test]
@@ -3494,7 +3494,7 @@ fn a_task_detail_says_what_its_node_still_does_after_the_merge() {
         node_work_rows(&view, "now").first().map(|row| row.title.clone())
     };
     assert_eq!(now(Lang::En).as_deref(), Some("finishing after the merge: release.sh publishes 0.2.54"));
-    assert_eq!(now(Lang::Es).as_deref(), Some("terminando tras fusionar: release.sh publishes 0.2.54"));
+    assert_eq!(now(Lang::Es).as_deref(), Some("terminando tras el merge: release.sh publishes 0.2.54"));
 }
 
 fn workflow_agent(label: &str, phase: &str, model: Option<&str>, running: bool) -> LiveWorkflowAgent {
@@ -3994,7 +3994,7 @@ fn string_leaves(value: &serde_json::Value, path: &str, out: &mut Vec<(String, S
 #[test]
 fn every_builder_string_has_spanish() {
     const NAMES_AND_DATA: &[&str] = &[
-        "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
+        "Squash and merge", "Merge commit", "Rebase and merge", "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
         "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
@@ -4047,6 +4047,48 @@ fn every_builder_string_has_spanish() {
         }
     }
     assert!(untranslated.is_empty(), "strings identical in Spanish: {untranslated:#?}");
+}
+
+/// Says "fusion" or "fusión" in any case: in Spanish a pull request gets a merge.
+fn says_fusionar(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["fusi\u{f3}n", "fusion"].iter().any(|word| lower.contains(word))
+}
+
+#[test]
+fn spanish_says_merge_for_a_pull_request() {
+    let sources = [
+        ("accounts.rs", include_str!("accounts.rs")), ("action_id.rs", include_str!("action_id.rs")),
+        ("allow_always.rs", include_str!("allow_always.rs")), ("card.rs", include_str!("card.rs")),
+        ("common.rs", include_str!("common.rs")), ("components.rs", include_str!("components.rs")),
+        ("details.rs", include_str!("details.rs")), ("fleet.rs", include_str!("fleet.rs")),
+        ("home.rs", include_str!("home.rs")), ("live.rs", include_str!("live.rs")),
+        ("mcp_servers.rs", include_str!("mcp_servers.rs")), ("messages.rs", include_str!("messages.rs")),
+        ("misc.rs", include_str!("misc.rs")), ("mod.rs", include_str!("mod.rs")), ("pacing.rs", include_str!("pacing.rs")),
+        ("resolves.rs", include_str!("resolves.rs")), ("review_export.rs", include_str!("review_export.rs")),
+        ("schedules.rs", include_str!("schedules.rs")), ("sidebar.rs", include_str!("sidebar.rs")),
+        ("status.rs", include_str!("status.rs")), ("summary.rs", include_str!("summary.rs")),
+        ("task_state.rs", include_str!("task_state.rs")), ("tasks.rs", include_str!("tasks.rs")),
+    ];
+    let mut found: Vec<String> = sources.iter().flat_map(|(file, source)| source.lines().enumerate()
+        .filter(|(_, line)| says_fusionar(line)).map(move |(number, line)| format!("{file}:{}: {}", number + 1, line.trim())))
+        .collect();
+    let live = golden_live();
+    for state in [golden_fixture(), golden_in_progress()] {
+        for (key, client) in [
+            ("home", Client::Ios), ("home", Client::Tui), ("card:github.com/example/repo#12", Client::Ios),
+            ("card:github.com/example/repo#12", Client::Mac), ("card:hf-weekly-2026-09-30", Client::Ios),
+            ("tasks", Client::Ios), ("fleet", Client::Ios), ("new_request", Client::Ios),
+            ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios), ("pull_request:github.com/example/repo#12", Client::Ios),
+            ("machine", Client::Ios), ("schedule:new", Client::Ios), ("sidebar", Client::Mac),
+        ] {
+            let view = render(&state, &live, client, Lang::Es, key, "2026-09-30T10:00:00Z");
+            let mut leaves = vec![];
+            string_leaves(&serde_json::to_value(view).unwrap(), "", &mut leaves);
+            found.extend(leaves.into_iter().filter(|(_, text)| says_fusionar(text)).map(|(path, text)| format!("{key} {path}: {text}")));
+        }
+    }
+    assert!(found.is_empty(), "in Spanish a PR gets a merge, never a fusión: {found:#?}");
 }
 
 fn scheduled_run_fixture(with_run: bool) -> DomainState {
@@ -4531,7 +4573,7 @@ fn request_option_values_keep_their_description_in_both_languages() {
     assert_eq!(pr[1].as_deref(), Some("Alondra merges the PR once its checks pass"));
     assert!(effort.iter().all(Option::is_some));
     let [pr, effort] = descriptions(Lang::Es);
-    assert_eq!(pr[1].as_deref(), Some("Alondra fusiona la PR cuando pasan sus comprobaciones"));
+    assert_eq!(pr[1].as_deref(), Some("Alondra hace merge de la PR cuando pasan sus comprobaciones"));
     assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
 }
 
@@ -4880,7 +4922,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
     });
     let english = task(&state, Lang::En);
     assert!(english.contains("Couldn't merge") && !english.contains("Resolving conflicts"), "{english}");
-    assert!(task(&state, Lang::Es).contains("No se pudo fusionar"));
+    assert!(task(&state, Lang::Es).contains("No se pudo hacer merge"));
     let card = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "card:d", "")).unwrap();
     assert!(card.contains("Alondra couldn't merge #12") && card.contains("its checks failed (lint)")
         && !card.contains("Conflicts were reported"), "{card}");
@@ -4980,7 +5022,7 @@ fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merg
     assert_ne!(state_of(&state, Lang::En), "Merging", "an authorization nobody claimed yet is not a merge");
     state.merge_authorizations.insert("auth-1".into(), authorization(MergeAttemptState::Claimed));
     assert_eq!(state_of(&state, Lang::En), "Merging");
-    assert_eq!(state_of(&state, Lang::Es), "Fusionando");
+    assert_eq!(state_of(&state, Lang::Es), "Haciendo merge");
     state.pull_requests.get_mut(&"pr-1".into()).unwrap().state = PrState::Merged;
     assert_ne!(state_of(&state, Lang::En), "Merging", "the merge was observed");
 }
@@ -5002,7 +5044,7 @@ fn a_node_working_after_the_merge_says_what_it_does_in_fleet() {
     assert_eq!(state_of(&state, Lang::En), "Done");
     state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
     assert_eq!(state_of(&state, Lang::En), "Finishing after the merge: release.sh publishes 0.2.54");
-    assert_eq!(state_of(&state, Lang::Es), "Terminando tras fusionar: release.sh publishes 0.2.54");
+    assert_eq!(state_of(&state, Lang::Es), "Terminando tras el merge: release.sh publishes 0.2.54");
 }
 
 #[test]
@@ -5681,7 +5723,7 @@ fn a_closing_task_says_whether_it_waits_for_its_merge_or_its_nodes_cleanup() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
     assert_eq!(now_title(&state, Lang::En).unwrap(), "accepted; Alondra merges its pull request");
-    assert_eq!(now_title(&state, Lang::Es).unwrap(), "aceptada; Alondra fusiona su PR");
+    assert_eq!(now_title(&state, Lang::Es).unwrap(), "aceptada; Alondra hace merge de su PR");
     state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.asked_at = Some(5);
     assert_eq!(now_title(&state, Lang::En).unwrap(), "finished; the node cleans up before Alondra closes it");
     assert_eq!(now_title(&state, Lang::Es).unwrap(), "terminada; el nodo limpia antes de que Alondra lo cierre");
@@ -6343,7 +6385,7 @@ fn a_pr_card_that_cannot_merge_says_why() {
     let moved = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
     assert!(!card_of(&moved).actions.iter().any(|action| action.id.starts_with("merge:")));
     assert_eq!(reason(&moved).as_deref(), Some(
-        "La PR #12 tiene commits que este resultado no incluye: no se puede fusionar desde aquí hasta que el nodo la vuelva a presentar."));
+        "La PR #12 tiene commits que este resultado no incluye: no se puede hacer merge desde aquí hasta que el nodo la vuelva a presentar."));
 }
 
 #[test]

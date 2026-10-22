@@ -111,7 +111,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::Starting { reviving: true, .. } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
         NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
         NodePhase::Starting { reviving: false, .. } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
-        NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
+        NodePhase::Working if merging => (t!(lang, "Merging", "Haciendo merge"), Tone::Info),
         NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. } => (t!(lang, "Working", "Trabajando"), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
         NodePhase::WaitingUser { .. } if node_waiting(agent, context).next().is_none()
@@ -134,10 +134,10 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::NoTask => (t!(lang, "No task", "Sin tarea"), Tone::Neutral),
         NodePhase::Closing => match post_merge_work(agent, context) {
             Some(reason) => return super::Label {
-                text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras fusionar: {reason}", reason = reason),
+                text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras el merge: {reason}", reason = reason),
                 tone: Tone::Info,
             },
-            None if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
+            None if merging => (t!(lang, "Merging", "Haciendo merge"), Tone::Info),
             None => (t!(lang, "Done", "Terminado"), Tone::Success),
         },
         NodePhase::Closed if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) =>

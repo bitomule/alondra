@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "vd9ce92a38182b975",
+  "version": "v86da1c79beb9cb2a",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -278,7 +278,7 @@
             },
             {
               "label": "Gestión de PR",
-              "value": "Merge automático: Alondra la fusiona al pasar los checks"
+              "value": "Merge automático: Alondra hace el merge al pasar los checks"
             },
             {
               "label": "Modelo",

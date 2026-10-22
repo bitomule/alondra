@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Every literal a SwiftUI view or a feature reducer looks up in an app's Localizable catalog needs a Spanish translation.
 
-Feature reducers are checked against the iOS catalog, Mac-named files against the Mac catalog."""
+Feature reducers are checked against the iOS catalog, Mac-named files against the Mac catalog.
+In Spanish a pull request gets a merge: no translation says "fusionar" or "fusión"."""
 import json
 import re
 import sys
@@ -22,6 +23,16 @@ def translated(catalog, key):
     return "es" in catalog.get(key, {}).get("localizations", {})
 
 
+MERGE_IN_SPANISH = re.compile("fusi[oó]n", re.IGNORECASE)
+
+
+def spanish_values(catalog):
+    for key, entry in catalog.items():
+        unit = entry.get("localizations", {}).get("es", {})
+        for found in re.findall(r'"value":\s*"((?:[^"\\]|\\.)*)"', json.dumps(unit, ensure_ascii=False)):
+            yield key, found
+
+
 def clientFor(source):
     if "/macOS/" in source or re.search("/Mac[A-Z]", source):
         return "mac"
@@ -35,6 +46,10 @@ def main():
     shared = strings(shared_path)
     catalogs = {"ios": strings(ios_path), "mac": strings(mac_path)}
     missing = []
+    for path, catalog in [(shared_path, shared), (ios_path, catalogs["ios"]), (mac_path, catalogs["mac"])]:
+        for key, value in spanish_values(catalog):
+            if MERGE_IN_SPANISH.search(value):
+                missing.append(f"{path}: {key!r} says {value!r}: in Spanish it is a merge")
     for source in sources:
         client = clientFor(source)
         for number, line in enumerate(open(source), 1):

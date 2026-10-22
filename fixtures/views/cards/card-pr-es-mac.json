@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v58964628c2e8db3e",
+  "version": "vff0c0f5cd5c48ed7",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -98,7 +98,7 @@
           "more": [
             {
               "id": "close_unmerged:hf-weekly-2026-09-30@1",
-              "label": "Cerrar sin fusionar",
+              "label": "Cerrar sin hacer merge",
               "style": "destructive",
               "role": "risk",
               "presentation": "button",
@@ -107,8 +107,8 @@
               },
               "attachments": false,
               "confirm": {
-                "title": "¿Cerrar la PR #12 sin fusionar?",
-                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.",
+                "title": "¿Cerrar la PR #12 sin hacer merge?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
                 "button": "Cerrar la PR"
               },
               "enabled": true,
@@ -154,14 +154,14 @@
           "actions": [
             {
               "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-              "label": "Fusionar",
+              "label": "Hacer merge",
               "style": "primary",
               "role": "advance",
               "presentation": "menu",
               "options": [
                 {
                   "id": "squash",
-                  "label": "Fusionar con squash",
+                  "label": "Squash and merge",
                   "description": "Un solo commit en main",
                   "style": "secondary",
                   "input": {
@@ -171,7 +171,7 @@
                 },
                 {
                   "id": "merge",
-                  "label": "Commit de fusión",
+                  "label": "Merge commit",
                   "description": "Conserva todos los commits",
                   "style": "secondary",
                   "input": {
@@ -185,7 +185,7 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Fusionando…",
+              "stamp": "Haciendo merge…",
               "key": "1",
               "resolves_card": true
             },

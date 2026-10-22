@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v90f9a306634355be",
+  "version": "v5c83b1c44093eb98",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -107,7 +107,7 @@
             },
             {
               "label": "Gestión de PR",
-              "value": "Merge automático: Alondra la fusiona al pasar los checks"
+              "value": "Merge automático: Alondra hace el merge al pasar los checks"
             }
           ]
         }

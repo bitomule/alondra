@@ -880,13 +880,13 @@ fn wait_text(reason: &crate::domain::WaitReason, context: &RenderContext<'_>) ->
             let title = context.domain.tasks.get(task).map_or(task.0.as_str(), |t| t.title.as_str());
             tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = title)
         }
-        W::UpstreamPr { number } => tf!(lang, "Waits for PR #{number} to merge", "Espera a que se fusione la PR #{number}", number = number),
+        W::UpstreamPr { number } => tf!(lang, "Waits for PR #{number} to merge", "Espera al merge de la PR #{number}", number = number),
         W::Answer { card, need } => {
             let need = context.domain.interactions.get(card).map_or_else(|| need.clone(), |card| super::card::shown_need(card, context.domain, lang));
             tf!(lang, "Waits for your answer to “{need}”", "Espera tu respuesta a «{need}»", need = need)
         }
         W::NodeFixing { node, pr } => tf!(lang, "“{node}” is resolving the conflicts on PR #{pr}", "«{node}» está resolviendo los conflictos de la PR #{pr}", node = node, pr = pr),
-        W::Merging { pr } => tf!(lang, "Merging PR #{pr}", "Fusionando la PR #{pr}", pr = pr),
+        W::Merging { pr } => tf!(lang, "Merging PR #{pr}", "Haciendo merge de la PR #{pr}", pr = pr),
         W::Closing => t!(lang, "Closing", "Cerrando").into(),
     }
 }
@@ -907,7 +907,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         return Some(line(wait_text(&reason, context), None));
     }
     if let Some(work) = task.wrap_up.post_merge_work.as_ref().filter(|_| !task.state.terminal()) {
-        return Some(line(tf!(context.lang, "finishing after the merge: {reason}", "terminando tras fusionar: {reason}",
+        return Some(line(tf!(context.lang, "finishing after the merge: {reason}", "terminando tras el merge: {reason}",
             reason = work.reason), None));
     }
     match task.state {
@@ -928,7 +928,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
             .and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
             .map(|pr| line(
                 tf!(context.lang, "waits for PR #{number} to be merged",
-                    "espera a que se fusione el PR #{number}", number = pr.number), None)),
+                    "espera al merge del PR #{number}", number = pr.number), None)),
         TaskState::Closing => Some(line(if task.cancelled() {
             if task.agent_id.is_some() && task.wrap_up.node.is_none() {
                 t!(context.lang, "cancelled; Alondra closes its node", "cancelada; Alondra cierra su nodo").into()
@@ -939,7 +939,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
             t!(context.lang, "finished; the node cleans up before Alondra closes it",
                 "terminada; el nodo limpia antes de que Alondra lo cierre").into()
         } else {
-            t!(context.lang, "accepted; Alondra merges its pull request", "aceptada; Alondra fusiona su PR").into()
+            t!(context.lang, "accepted; Alondra merges its pull request", "aceptada; Alondra hace merge de su PR").into()
         }, None)),
         TaskState::NotStarted => common::failed_launch(task, context).map(|error| line(
             if error.is_empty() {
@@ -1142,9 +1142,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }, Fact {
             label: t!(context.lang, "PR handling", "Gestión de PR").into(),
             value: if task.review_prs {
-                t!(context.lang, "You review it; accepting it merges it", "La revisas tú; al aceptarla, Alondra la fusiona")
+                t!(context.lang, "You review it; accepting it merges it", "La revisas tú; al aceptarla, Alondra hace el merge")
             } else {
-                t!(context.lang, "Auto-merge: Alondra merges it once its checks pass", "Merge automático: Alondra la fusiona al pasar los checks")
+                t!(context.lang, "Auto-merge: Alondra merges it once its checks pass", "Merge automático: Alondra hace el merge al pasar los checks")
             }.into(),
             tone: None,
             link: None,

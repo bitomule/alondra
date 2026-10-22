@@ -327,7 +327,7 @@ fn blocked_reason(item: &InboxItem, context: &RenderContext<'_>) -> Option<Strin
     let domain = context.domain;
     let blocker = domain.interactions.get(first)?;
     Some(match pr_target(blocker, domain) {
-        Some(pr) => tf!(context.lang, "Merge #{number} first", "Fusiona primero la #{number}", number = pr.number),
+        Some(pr) => tf!(context.lang, "Merge #{number} first", "Haz antes el merge de la #{number}", number = pr.number),
         None => tf!(context.lang, "Answer “{need}” first", "Responde primero «{need}»", need = clip(&shown_need(blocker, domain, context.lang), 50)),
     })
 }
@@ -1490,9 +1490,9 @@ fn delivery_actions(
 
 fn method_text(method: MergeMethod, lang: Lang) -> (&'static str, &'static str) {
     match method {
-        MergeMethod::Squash => (t!(lang, "Squash and merge", "Fusionar con squash"), t!(lang, "squash", "squash")),
-        MergeMethod::Merge => (t!(lang, "Merge commit", "Commit de fusión"), t!(lang, "a merge commit", "un commit de fusión")),
-        MergeMethod::Rebase => (t!(lang, "Rebase and merge", "Rebase y fusión"), t!(lang, "rebase", "rebase")),
+        MergeMethod::Squash => (t!(lang, "Squash and merge", "Squash and merge"), t!(lang, "squash", "squash")),
+        MergeMethod::Merge => (t!(lang, "Merge commit", "Merge commit"), t!(lang, "a merge commit", "un merge commit")),
+        MergeMethod::Rebase => (t!(lang, "Rebase and merge", "Rebase and merge"), t!(lang, "rebase", "rebase")),
     }
 }
 
@@ -1508,10 +1508,10 @@ fn method_id(method: MergeMethod) -> &'static str {
 /// described ways when there are several. The server words every label; clients paint them.
 fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Action {
     let lang = context.lang;
-    let mut merge = button(id, t!(lang, "Merge", "Fusionar"), Role::Advance);
-    merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
+    let mut merge = button(id, t!(lang, "Merge", "Hacer merge"), Role::Advance);
+    merge.stamp = Some(t!(lang, "Merging…", "Haciendo merge…").into());
     if let [only] = pr.allowed_methods.as_slice() {
-        merge.label = tf!(lang, "Merge PR #{number}", "Fusionar la PR #{number}", number = pr.number);
+        merge.label = tf!(lang, "Merge PR #{number}", "Hacer merge de la PR #{number}", number = pr.number);
         merge.option_id = Some(method_id(*only).into());
         merge.description = Some(tf!(lang, "{method}: the only way this repository allows",
             "{method}: la única forma que permite este repositorio", method = method_text(*only, lang).0));
@@ -1537,12 +1537,12 @@ fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Ac
 fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let id = action_id(Verb::CloseUnmerged, subject, revision, None)?;
-    let mut action = button(id.to_string(), t!(lang, "Close without merging", "Cerrar sin fusionar"), Role::Risk);
+    let mut action = button(id.to_string(), t!(lang, "Close without merging", "Cerrar sin hacer merge"), Role::Risk);
     action.stamp = Some(t!(lang, "Closing…", "Cerrando…").into());
     action.confirm = Some(super::Confirm {
-        title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin fusionar?", number = pr.number),
+        title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin hacer merge?", number = pr.number),
         message: t!(lang, "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
-            "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.").into(),
+            "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.").into(),
         button: t!(lang, "Close PR", "Cerrar la PR").into(),
     });
     Some(action)
@@ -2027,7 +2027,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
                 use crate::domain::Instruction;
                 if let Some((number, reason)) = crate::domain::merge_failure(&feedback.body) {
                     row(format!("feedback-{index}"), Icon::History,
-                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo fusionar la #{number}", number = number),
+                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo hacer merge de la #{number}", number = number),
                         Some(clip(reason, 240)));
                     continue;
                 }

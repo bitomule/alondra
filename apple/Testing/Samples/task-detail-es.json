@@ -251,7 +251,7 @@
           "items": [
             {
               "label": "Gestión de PR",
-              "value": "Revisar antes de fusionar"
+              "value": "Revisar antes del merge"
             },
             {
               "label": "Esfuerzo",

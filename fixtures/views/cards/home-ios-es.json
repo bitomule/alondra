@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v32d1138b86acc987",
+  "version": "v0390324ab37302cd",
   "cursor": "cursor-1",
   "status": {
     "version": "v21e817e49a9c8092",
@@ -496,7 +496,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v9f57a756e1d44d9e",
+      "version": "v654886fd3cb7b4c7",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -589,7 +589,7 @@
               "more": [
                 {
                   "id": "close_unmerged:hf-weekly-2026-09-30@1",
-                  "label": "Cerrar sin fusionar",
+                  "label": "Cerrar sin hacer merge",
                   "style": "destructive",
                   "role": "risk",
                   "presentation": "button",
@@ -598,8 +598,8 @@
                   },
                   "attachments": false,
                   "confirm": {
-                    "title": "¿Cerrar la PR #12 sin fusionar?",
-                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.",
+                    "title": "¿Cerrar la PR #12 sin hacer merge?",
+                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
                     "button": "Cerrar la PR"
                   },
                   "enabled": true,
@@ -643,14 +643,14 @@
               "actions": [
                 {
                   "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-                  "label": "Fusionar",
+                  "label": "Hacer merge",
                   "style": "primary",
                   "role": "advance",
                   "presentation": "menu",
                   "options": [
                     {
                       "id": "squash",
-                      "label": "Fusionar con squash",
+                      "label": "Squash and merge",
                       "description": "Un solo commit en main",
                       "style": "secondary",
                       "input": {
@@ -659,7 +659,7 @@
                     },
                     {
                       "id": "merge",
-                      "label": "Commit de fusión",
+                      "label": "Merge commit",
                       "description": "Conserva todos los commits",
                       "style": "secondary",
                       "input": {
@@ -672,7 +672,7 @@
                   },
                   "attachments": false,
                   "enabled": true,
-                  "stamp": "Fusionando…",
+                  "stamp": "Haciendo merge…",
                   "resolves_card": true
                 },
                 {

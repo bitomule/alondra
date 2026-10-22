@@ -118,12 +118,12 @@
                   {
                     "id": "review",
                     "label": "Revisar cada una",
-                    "description": "Cada PR que abre el nodo es una tarjeta para ti; Alondra la fusiona cuando la aceptas"
+                    "description": "Cada PR que abre el nodo es una tarjeta para ti; Alondra hace el merge cuando la aceptas"
                   },
                   {
                     "id": "auto_merge",
                     "label": "Merge automático",
-                    "description": "Alondra fusiona la PR cuando pasan sus comprobaciones"
+                    "description": "Alondra hace merge de la PR cuando pasan sus comprobaciones"
                   }
                 ]
               },

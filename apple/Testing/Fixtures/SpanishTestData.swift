@@ -59,8 +59,8 @@ enum SpanishTestData {
         "Blocks Alondra · iOS": "Bloquea a Alondra · iOS", "Pick the release channel": "Elige el canal de publicación",
         "Five channels are open and one ships first.": "Hay cinco canales abiertos y uno sale primero.",
         "Repository": "Repositorio", "Head": "Rama", "4 files · +120 −30": "4 archivos · +120 −30",
-        "Merge": "Fusionar", "Merge commit": "Commit de fusión",
-        "Merging…": "Fusionando…", "Open on GitHub": "Abrir en GitHub", "Accept without merging": "Aceptar sin fusionar",
+        "Merge": "Hacer merge", "Merge commit": "Merge commit",
+        "Merging…": "Haciendo merge…", "Open on GitHub": "Abrir en GitHub", "Accept without merging": "Aceptar sin hacer merge",
         "Accepted": "Aceptado",
         "Answer “Ship the compact schedule editor with this beta?” first":
             "Responde primero a «¿Publicar el editor compacto con esta beta?»",

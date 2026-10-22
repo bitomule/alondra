@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v9f51e083f78737b9",
+  "version": "v4671890af1d4499c",
   "cursor": "cursor-1",
   "status": {
     "version": "v628d97b17c8156ba",
@@ -675,7 +675,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "vbd90eeeec42823b4",
+      "version": "v7e9819f2f86691bb",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -769,7 +769,7 @@
               "more": [
                 {
                   "id": "close_unmerged:hf-weekly-2026-09-30@1",
-                  "label": "Cerrar sin fusionar",
+                  "label": "Cerrar sin hacer merge",
                   "style": "destructive",
                   "role": "risk",
                   "presentation": "button",
@@ -778,8 +778,8 @@
                   },
                   "attachments": false,
                   "confirm": {
-                    "title": "¿Cerrar la PR #12 sin fusionar?",
-                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.",
+                    "title": "¿Cerrar la PR #12 sin hacer merge?",
+                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
                     "button": "Cerrar la PR"
                   },
                   "enabled": true,
@@ -825,14 +825,14 @@
               "actions": [
                 {
                   "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-                  "label": "Fusionar",
+                  "label": "Hacer merge",
                   "style": "primary",
                   "role": "advance",
                   "presentation": "menu",
                   "options": [
                     {
                       "id": "squash",
-                      "label": "Fusionar con squash",
+                      "label": "Squash and merge",
                       "description": "Un solo commit en main",
                       "style": "secondary",
                       "input": {
@@ -842,7 +842,7 @@
                     },
                     {
                       "id": "merge",
-                      "label": "Commit de fusión",
+                      "label": "Merge commit",
                       "description": "Conserva todos los commits",
                       "style": "secondary",
                       "input": {
@@ -856,7 +856,7 @@
                   },
                   "attachments": false,
                   "enabled": true,
-                  "stamp": "Fusionando…",
+                  "stamp": "Haciendo merge…",
                   "key": "1",
                   "resolves_card": true
                 },

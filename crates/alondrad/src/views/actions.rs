@@ -1271,7 +1271,7 @@ fn map_merge(
         && matches!(a.attempt, alondra_core::domain::MergeAttemptState::Claimed
             | alondra_core::domain::MergeAttemptState::Uncertain));
     if merging { return Err(Refusal::MergeInProgress { number: pr.number }); }
-    let stamp = if lang == Lang::Es { "Fusionando…" } else { "Merging…" };
+    let stamp = if lang == Lang::Es { "Haciendo merge…" } else { "Merging…" };
     Ok((Command::AuthorizeMerge {
         authorization_id: AuthorizationId(format!("auth-{}", request.command_id)),
         presentation_id: interaction.id.clone(), pr_id: pr.id.clone(),
@@ -1659,10 +1659,10 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
     let say = |en: &str, es_text: &str| if es { es_text } else { en }.to_owned();
     match verb {
         Verb::Merge => Outcome::started(
-            say("The PR is merging", "La PR se está fusionando"),
+            say("The PR is merging", "Se está haciendo merge de la PR"),
             Some(say("You'll see it finished in its task when GitHub confirms.", "La verás terminada en su tarea cuando GitHub lo confirme.")),
         ),
-        Verb::CloseUnmerged => Outcome::done(say("PR closed without merging. The task is cancelled.", "PR cerrada sin fusionar. La tarea está cancelada.")),
+        Verb::CloseUnmerged => Outcome::done(say("PR closed without merging. The task is cancelled.", "PR cerrada sin hacer merge. La tarea está cancelada.")),
         Verb::Accept => Outcome::done(match accepted {
             Accepted::Plan => say("Plan approved.", "Plan aprobado."),
             Accepted::Document => say("Document accepted.", "Documento aceptado."),
@@ -1819,13 +1819,13 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "not_assigned" => "La tarea ya no está asignada a este nodo",
         "agent_busy" => "Ese nodo está en otra tarea hasta que acabe: lanza un nodo nuevo para esta",
         "agent_used" => "Ese nodo ya trabajó en otra tarea: lanza un nodo nuevo para esta",
-        "task_closing" => "El PR de esta tarea ya está fusionado y la tarea se está cerrando: pide más trabajo como una petición nueva",
+        "task_closing" => "La PR de esta tarea ya está mergeada y la tarea se está cerrando: pide más trabajo como una petición nueva",
         "invalid_action_for_kind" => "Esta acción no se puede aplicar a este elemento",
-        "acceptance_missing" => "Autoriza primero la fusión de la PR presentada",
+        "acceptance_missing" => "Autoriza primero el merge de la PR presentada",
         "subject_already_linked" => "Este elemento ya está vinculado a otra tarea",
         "delivery_uncertain" => "No se pudo confirmar si el nodo recibió el mensaje",
         "blocking_interaction" => "Responde primero a la interacción pendiente de la tarea",
-        "merge_not_confirmed" => "No se pudo confirmar la fusión de la PR",
+        "merge_not_confirmed" => "No se pudo confirmar el merge de la PR",
         "task_not_cancelled" => "La tarea todavía no está cancelada",
         "interactive_session" => "La sesión del nodo requiere interacción manual",
         "launch_failed" => "No se pudo iniciar la sesión del nodo",
@@ -1915,6 +1915,14 @@ fn head_prefix(head: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spanish_says_merge_for_a_pull_request() {
+        let found: Vec<&str> = include_str!("actions.rs").lines()
+            .filter(|line| [concat!("fu", "sion"), "fusi\u{f3}n"].iter().any(|word| line.to_lowercase().contains(word)))
+            .collect();
+        assert!(found.is_empty(), "in Spanish a PR gets a merge: {found:#?}");
+    }
 
     fn mapped(
         state: &alondra_core::domain::DomainState,
@@ -2263,7 +2271,7 @@ mod tests {
             ("subject_already_linked", "Este elemento ya está vinculado a otra tarea"),
             ("delivery_uncertain", "No se pudo confirmar si el nodo recibió el mensaje"),
             ("blocking_interaction", "Responde primero a la interacción pendiente de la tarea"),
-            ("merge_not_confirmed", "No se pudo confirmar la fusión de la PR"),
+            ("merge_not_confirmed", "No se pudo confirmar el merge de la PR"),
             ("task_not_cancelled", "La tarea todavía no está cancelada"),
             ("incompatible_protocol", "Actualiza Alondra para completar esta acción"),
             ("interactive_session", "La sesión del nodo requiere interacción manual"),
@@ -3375,7 +3383,7 @@ mod tests {
         let again = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
         let in_flight = act(&home, &domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", again, Some("squash"), None).await;
         assert_eq!(in_flight["result"]["kind"], "refused", "{in_flight}");
-        assert_eq!(in_flight["message"], "Alondra ya está fusionando la PR #7; espera a que GitHub lo confirme.");
+        assert_eq!(in_flight["message"], "Alondra ya está haciendo merge de la PR #7; espera a que GitHub lo confirme.");
     }
 
     #[tokio::test]
@@ -3427,7 +3435,7 @@ mod tests {
         for (error, cancelled, title) in [
             ("! Pull request me/app#7 is already closed", true, "La PR #7 ya estaba cerrada. Tarea cancelada."),
             ("X Pull request me/app#7 can't be closed because it was already merged", false,
-                "La PR #7 ya estaba fusionada, así que no se puede cerrar sin fusionar."),
+                "La PR #7 ya estaba mergeada, así que no se puede cerrar sin hacer merge."),
         ] {
             let (home, domain, client) = action_home();
             client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some(error), None)));

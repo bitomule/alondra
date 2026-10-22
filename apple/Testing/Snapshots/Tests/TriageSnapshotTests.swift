@@ -323,7 +323,7 @@ final class TriageSnapshotTests: XCTestCase {
         for spanish in [false, true] {
             let store = try pullRequest(spanish: spanish) { actions, card in
                 actions.action = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
-                actions.stamp = spanish ? "Fusionando…" : "Merging…"
+                actions.stamp = spanish ? "Haciendo merge…" : "Merging…"
             }
             assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }
         }
@@ -338,7 +338,7 @@ final class TriageSnapshotTests: XCTestCase {
 
     private static let mergingReply = [
         false: #"{"protocol":1,"outcome":"applied","stamp":"Merging…","result":{"kind":"started","title":"The PR is merging","body":"You'll see it finished in its task when GitHub confirms."}}"#,
-        true: #"{"protocol":1,"outcome":"applied","stamp":"Fusionando…","result":{"kind":"started","title":"La PR se está fusionando","body":"La verás terminada en su tarea cuando GitHub lo confirme."}}"#,
+        true: #"{"protocol":1,"outcome":"applied","stamp":"Haciendo merge…","result":{"kind":"started","title":"Se está haciendo merge de la PR","body":"La verás terminada en su tarea cuando GitHub lo confirme."}}"#,
     ]
 
     /// The pull request card with its action state edited, in either language.
