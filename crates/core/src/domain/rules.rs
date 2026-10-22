@@ -2083,6 +2083,8 @@ impl DomainState {
             // A Schedule's own revision is its subject: Update carries the next
             // one, Delete and Claim the one they read. The rule checks it.
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
+            // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
+            Command::ClearCompleted { .. } => Some(0),
             Command::DeleteSchedule {
                 expected_schedule_revision: Some(_),
                 ..
@@ -4348,6 +4350,15 @@ impl DomainState {
                 self.archive_guard(actor, task_id, *archived)?;
                 self.tasks.get_mut(task_id).unwrap().archived = *archived;
             }
+            Command::ClearCompleted { seen } => {
+                let (tasks, requests) = self.clear_guard(actor, *seen)?;
+                for id in tasks {
+                    self.tasks.get_mut(&id).unwrap().archived = true;
+                }
+                for id in requests {
+                    self.requests.get_mut(&id).unwrap().cleared = true;
+                }
+            }
         }
         Ok(())
     }
@@ -4509,6 +4520,9 @@ impl DomainState {
                 return fail("invalid_input", "Request identity mismatch");
             };
             nonempty(&r.body)?;
+            if r.cleared && !r.closed {
+                return fail("invalid_input", "Cleared Request is still open");
+            }
         }
         for (k, a) in &self.agents {
             id(&k.0)?;

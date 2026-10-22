@@ -454,6 +454,11 @@ pub enum Command {
         task_id: TaskId,
         archived: bool,
     },
+    /// The user clears the completed work off the lists: every ended Task the user saw at
+    /// revision `seen`, and every closed Request that made none.
+    ClearCompleted {
+        seen: Revision,
+    },
     /// The Agent working on the Task was closed by the user: the Task goes back to not started with
     /// no Agent, and stays open for a new one.
     ReleaseTask {

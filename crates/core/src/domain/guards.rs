@@ -30,6 +30,7 @@ impl DomainState {
             Command::CancelTask { task_id } => self.cancel_guard(actor, task_id),
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
+            Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
             Command::ForceStopTurn { agent_id } => self.force_stop_guard(actor, agent_id).map(drop),
             Command::SetModel { task_id, model } => {
@@ -404,6 +405,26 @@ impl DomainState {
             return fail("task_not_active", "Only terminal Tasks can be archived");
         };
         Ok(())
+    }
+
+    /// What clearing the completed work takes off the lists: the ended Tasks the user saw at
+    /// revision `seen`, and the closed Requests listed without Tasks.
+    pub(super) fn clear_guard(&self, actor: &Actor, seen: Revision) -> Result<(Vec<TaskId>, Vec<RequestId>)> {
+        user(actor)?;
+        if seen > self.revision {
+            return fail("invalid_input", "The list was seen at a revision the state has not reached");
+        }
+        let tasks: Vec<TaskId> = self.tasks.values()
+            .filter(|t| t.state.terminal() && !t.archived && t.revision <= seen)
+            .map(|t| t.id.clone()).collect();
+        let with_tasks: BTreeSet<&RequestId> = self.tasks.values().map(|t| &t.request_id).collect();
+        let requests: Vec<RequestId> = self.requests.values()
+            .filter(|r| r.closed && !r.cleared && !r.message && !with_tasks.contains(&r.id))
+            .map(|r| r.id.clone()).collect();
+        if tasks.is_empty() && requests.is_empty() {
+            return fail("nothing_to_clear", "Nothing completed is left to clear");
+        }
+        Ok((tasks, requests))
     }
 }
 

@@ -2757,6 +2757,66 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     assert_eq!(ReadIndex::build(&s).counts().unread_information, 1);
 }
 
+/// Task "t" done, "c" cancelled and "w" not started in Request "r"; "q" answered without Tasks and
+/// "m", a message to the orchestrator, closed without Tasks.
+fn completed_work() -> DomainState {
+    let mut s = fixture();
+    present(&mut s, "d", text());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
+    end_node(&mut s, "t");
+    for task in ["c", "w"] {
+        exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, task_id: task.into(), request_id: "r".into(),
+            title: task.into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
+    }
+    exec(&mut s, user(), Command::CancelTask { task_id: "c".into() }).unwrap();
+    receipt(&mut s, "c");
+    for (request, message) in [("q", false), ("m", true)] {
+        exec(&mut s, user(), Command::CreateRequest { request_id: request.into(), body: "Is main green?".into(),
+            auto_merge: false, maintenance: false, message }).unwrap();
+        exec(&mut s, orchestrator(), Command::CloseRequest { request_id: request.into(), answer: Some("Yes".into()),
+            withdrawn: false, title: None }).unwrap();
+    }
+    s
+}
+
+#[test]
+fn clearing_takes_every_ended_task_and_every_request_closed_without_tasks() {
+    let mut s = completed_work();
+    assert_eq!(s.tasks[&"c".into()].state, TaskState::Cancelled);
+    assert!(s.clear_completed_action().enabled);
+    let seen = s.revision;
+    exec(&mut s, user(), Command::ClearCompleted { seen }).unwrap();
+    let archived: BTreeSet<&str> = s.tasks.values().filter(|t| t.archived).map(|t| t.id.0.as_str()).collect();
+    assert_eq!(archived, BTreeSet::from(["t", "c"]), "the done and the cancelled task, never the one not started");
+    let cleared: BTreeSet<&str> = s.requests.values().filter(|r| r.cleared).map(|r| r.id.0.as_str()).collect();
+    assert_eq!(cleared, BTreeSet::from(["q"]), "a request with tasks goes with them, and a message is never listed");
+    assert!(!s.clear_completed_action().enabled);
+    let revision = s.revision;
+    reject_unchanged(&mut s, user(), Command::ClearCompleted { seen: revision }, "nothing_to_clear");
+    assert_eq!(s.revision, revision);
+}
+
+#[test]
+fn clearing_leaves_what_ended_after_the_list_was_seen() {
+    let mut s = completed_work();
+    let seen = s.revision;
+    exec(&mut s, user(), Command::CancelTask { task_id: "w".into() }).unwrap();
+    receipt(&mut s, "w");
+    exec(&mut s, user(), Command::CreateRequest { request_id: "later".into(), body: "Later".into(),
+        auto_merge: false, maintenance: false, message: false }).unwrap();
+    exec(&mut s, user(), Command::ClearCompleted { seen }).unwrap();
+    assert!(s.tasks[&"t".into()].archived && s.tasks[&"c".into()].archived);
+    assert!(!s.tasks[&"w".into()].archived, "it was cancelled after the list was seen");
+    assert!(!s.requests[&"later".into()].cleared, "an open request is never cleared");
+    let ahead = s.revision + 1;
+    reject_unchanged(&mut s, user(), Command::ClearCompleted { seen: ahead }, "invalid_input");
+    let seen = s.revision;
+    reject_unchanged(&mut s, orchestrator(), Command::ClearCompleted { seen }, "forbidden");
+    exec(&mut s, user(), Command::ReopenTask { task_id: "c".into() }).unwrap();
+    assert!(!s.tasks[&"c".into()].archived, "a reopened task is listed again");
+}
+
 #[test]
 fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     let mut s = fixture();
@@ -2977,9 +3037,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ClearMcpSignIn { .. } => 95,
         Command::RecordAccountUsage { .. } => 96,
         Command::CompactEndedTasks { .. } => 97,
+        Command::ClearCompleted { .. } => 98,
     }
 }
-const COMMAND_KINDS: usize = 98;
+const COMMAND_KINDS: usize = 99;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3129,6 +3190,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::WaitForMcp { task_id: ids.task.into(), server: "linear".into() }, false),
         (Command::CompactConversation { task_id: ids.task.into() }, false),
         (Command::CompactEndedTasks { task_ids: vec![ids.task.into()] }, false),
+        (Command::ClearCompleted { seen: 0 }, false),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
@@ -4346,6 +4408,9 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::ReopenTask { task_id: "t".into() },
         Command::ArchiveTask { task_id: "t".into(), archived: true },
         Command::ArchiveTask { task_id: "t".into(), archived: false },
+        Command::ClearCompleted { seen: 0 },
+        Command::ClearCompleted { seen: cancelled.revision },
+        Command::ClearCompleted { seen: MAX_REVISION },
         Command::InterruptTurn { agent_id: "a".into() },
         Command::InterruptTurn { agent_id: "s".into() },
         Command::InterruptTurn { agent_id: "missing".into() },

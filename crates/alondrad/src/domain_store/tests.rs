@@ -1503,10 +1503,10 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
-    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests").unwrap();
+    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests; DROP TABLE cleared_requests").unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees", "maintenance_requests"] {
+    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees", "maintenance_requests", "cleared_requests"] {
         let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table} is created empty");
     }
@@ -1526,6 +1526,25 @@ fn a_maintenance_message_stays_one_after_a_restart() {
     let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert!(state.requests[&"request-m".into()].maintenance);
     assert!(!state.requests[&"request-1".into()].maintenance);
+}
+
+#[test]
+fn a_cleared_request_stays_cleared_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    for id in ["request-q", "request-open"] {
+        execute(&mut store, &user(), id, Command::CreateRequest {
+            request_id: id.into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
+    }
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest {
+        request_id: "request-q".into(), answer: Some("Yes".into()), withdrawn: false, title: None });
+    let seen = store.load().unwrap().revision;
+    execute(&mut store, &user(), "clear", Command::ClearCompleted { seen });
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert!(state.requests[&"request-q".into()].cleared);
+    assert!(!state.requests[&"request-open".into()].cleared);
 }
 
 #[test]

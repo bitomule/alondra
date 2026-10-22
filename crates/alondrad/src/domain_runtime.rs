@@ -852,7 +852,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordAccountUsage { .. }
         | Command::InterruptTurn { .. }
         | Command::ForceStopTurn { .. }
-        | Command::CompactEndedTasks { .. } => None,
+        | Command::CompactEndedTasks { .. }
+        | Command::ClearCompleted { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

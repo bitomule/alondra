@@ -63,10 +63,13 @@ pub struct Request {
     /// it only once it has tasks.
     #[serde(default)]
     pub message: bool,
+    /// The user cleared it from the completed work: a closed Request without Tasks no list shows again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleared: bool,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +129,7 @@ pub struct Task {
     pub review_rounds: u8,
     pub stack: Option<StackDependency>,
     pub documents: BTreeMap<DocumentId, String>,
+    /// The user cleared it from the completed work: an ended Task no list shows again.
     pub archived: bool,
     /// The model its node was last launched with; absent for Tasks launched before it was recorded
     /// and for launches that left Claude's default model.

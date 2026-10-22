@@ -100,6 +100,10 @@ impl DomainState {
             ),
         ])
     }
+    /// The button that clears the completed work off the lists, judged by the rule clearing runs.
+    pub fn clear_completed_action(&self) -> AvailableAction {
+        self.action("clear_completed", Command::ClearCompleted { seen: self.revision }, None, None, self)
+    }
     fn action(
         &self,
         kind: &str,

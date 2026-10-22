@@ -747,13 +747,16 @@ pub(super) fn save_changes(
     }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
-        strip(&mut row, &["maintenance", "message"]);
+        strip(&mut row, &["maintenance", "message", "cleared"]);
         upsert(c, "requests", &["id"], row)?;
         if x.maintenance {
             exec(c, "INSERT OR IGNORE INTO maintenance_requests(request_id) VALUES(?1)", params![x.id.0])?;
         }
         if x.message {
             exec(c, "INSERT OR IGNORE INTO message_requests(request_id) VALUES(?1)", params![x.id.0])?;
+        }
+        if x.cleared {
+            exec(c, "INSERT OR IGNORE INTO cleared_requests(request_id) VALUES(?1)", params![x.id.0])?;
         }
     }
     for (x, _) in changed(&before.agents, &after.agents) {
@@ -996,6 +999,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(messages);
+    let mut cleared = c.prepare("SELECT request_id FROM cleared_requests")?;
+    let mut stored = cleared.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.requests.get_mut(&RequestId::from(id)).context("cleared request missing")?.cleared = true;
+    }
+    drop(stored);
+    drop(cleared);
     for row in rows(c, "agents", &[], &["phase"])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);
