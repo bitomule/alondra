@@ -151,14 +151,27 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
             problem: UnsplitProblem { request_id: request.id.0.clone(), title },
         });
     }
-    let body: String = request.body.trim().chars().take(BODY_SHOWN).collect();
-    Some(Step::Remind {
-        request: request.id.clone(),
-        id: format!("{UNSPLIT_NOTICE_PREFIX}{}-{}", request.id, reminders + 1),
-        text: format!(
-            "Request {} has no Task, no answer and no open question of yours, and nothing else waits for you. Handle it now: create its Task, answer it and close it with close_request, or ask the user. An answer written only in this conversation reaches nobody. If it no longer applies, close it with close_request and say why.\nRequest: {body}",
+    let text = match approved_plan_work(state, &request.id) {
+        Some(work) => format!(
+            "Request {} holds a plan the user approved and still has no implementation Task, and nothing else waits for you. Create its Tasks now; close it with close_request only if Tasks that already exist cover the whole plan, naming them. {work}",
             request.id),
-    })
+        None => {
+            let body: String = request.body.trim().chars().take(BODY_SHOWN).collect();
+            format!(
+                "Request {} has no Task, no answer and no open question of yours, and nothing else waits for you. Handle it now: create its Task, answer it and close it with close_request, or ask the user. An answer written only in this conversation reaches nobody. If it no longer applies, close it with close_request and say why.\nRequest: {body}",
+                request.id)
+        }
+    };
+    Some(Step::Remind { request: request.id.clone(), id: format!("{UNSPLIT_NOTICE_PREFIX}{}-{}", request.id, reminders + 1), text })
+}
+
+/// What the orchestrator does with a request that holds a plan the user approved from a final result.
+pub(crate) fn approved_plan_work(state: &DomainState, request: &RequestId) -> Option<String> {
+    let approved = state.request_plans.get(request)?;
+    let source = state.tasks.get(&approved.task_id).map_or("", |task| task.title.as_str());
+    Some(format!(
+        "The user approved the plan that Task “{source}” ({task}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, or one per phase when the plan is in phases: in the same project folder as that Task, with dependencies on {task} and role implementation. The first takes the whole plan as its checklist; each later one takes its phase's points from the first with plan_items, with dependencies only on the phases it truly needs. Each starts with its points approved and the whole plan in its mission: never ask its node for a new plan.",
+        task = approved.task_id))
 }
 
 /// A problem per question: two questions left unanswered never replace each other's card.

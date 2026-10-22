@@ -1486,6 +1486,48 @@ mod tests {
         assert_eq!(f.starts().len(), 2, "then it is the user's question: one fresh run, not a loop");
     }
 
+    /// 21 October: David accepted a design whose plan has six phases and asked for them before the
+    /// orchestrator's batch, already creating them, had finished.
+    #[tokio::test]
+    async fn an_accepted_plan_in_phases_reaches_the_orchestrator_at_once_and_one_left_without_tasks_is_flagged() {
+        use alondra_core::orchestrator_cards::{UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
+        let f = fixture();
+        let domain = &f.executor.domain;
+        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
+        command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+            request_id: "r".into(), body: "Design several Claude accounts".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+            task_id: "design".into(), request_id: "r".into(), title: "Design several Claude accounts".into(), agent_id: Some("a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+        });
+        let plan = "# Several accounts\n\n## Phase 1\n\n- [ ] Accounts in options\n\n## Phase 2\n\n- [ ] Usage per account\n";
+        let targets = vec![DeliveryTarget::Text { text: "Design".into() }];
+        command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+            checklist: vec![], attachments: vec![], task_id: "design".into(), interaction_id: "design-result".into(),
+            body: "Read the design".into(), card: CardSpec::delivery("Read the design", &targets, true).plan(plan),
+            targets: targets.clone(), is_final: true, nothing_to_review: false,
+        });
+        command(domain, Actor::User { user_id: "u".into() }, "implement", Command::DecideProposedPlan {
+            presentation_id: "design-result".into(), targets, choice: PlanChoice::Implement,
+        });
+        assert_eq!(outbox(domain).len(), 1, "the acceptance alone puts the plan in the orchestrator's inbox");
+
+        f.tick().await;
+        let prompt = last_prompt(&f);
+        assert!(prompt.contains("Request implement-design-result holds that plan") && prompt.contains("one per phase"), "{prompt}");
+
+        let reminder = format!("{UNSPLIT_NOTICE_PREFIX}implement-design-result-1");
+        assert_eq!(reminders(domain), [reminder.clone()], "a batch that left the plan without tasks is told so");
+        let text = domain.state().unwrap().interactions[&InteractionId::from(reminder.as_str())].body.clone();
+        assert!(text.contains("holds a plan the user approved and still has no implementation Task")
+            && text.contains("one per phase") && !text.contains("answer it and close it"), "{text}");
+
+        f.tick().await;
+        assert_eq!(f.cards(UNSPLIT_PROBLEM_PREFIX), [format!("{UNSPLIT_PROBLEM_PREFIX}implement-design-result-1")],
+            "left without tasks again, it is the user's problem");
+    }
+
     #[test]
     fn each_open_request_carries_the_choices_it_was_asked_with() {
         let f = fixture();

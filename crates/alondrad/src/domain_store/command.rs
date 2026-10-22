@@ -258,21 +258,10 @@ pub(super) fn stage(
                                 "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request; it gets no card for the user."
                             )
                         }
-                        Some(request) => match next.request_plans.get(request) {
-                            Some(approved) => {
-                                let source = next
-                                    .tasks
-                                    .get(&approved.task_id)
-                                    .map_or("", |task| task.title.as_str());
-                                format!(
-                                    "The user approved the plan that Task “{source}” ({}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, or one per phase when the plan is in phases: in the same project folder as that Task, with dependencies on {} and role implementation. The first takes the whole plan as its checklist; each later one takes its phase's points from the first with plan_items, with dependencies only on the phases it truly needs. Each starts with its points approved and the whole plan in its mission: never ask its node for a new plan.",
-                                    approved.task_id, approved.task_id
-                                )
-                            }
-                            None => format!(
+                        Some(request) => crate::orchestrator_inbox::approved_plan_work(&next, request)
+                            .unwrap_or_else(|| format!(
                                 "The user created Request {request}: turn it into Tasks, or answer it and close it."
-                            ),
-                        },
+                            )),
                         None => "The domain has something for you.".to_owned(),
                     },
                 ),
