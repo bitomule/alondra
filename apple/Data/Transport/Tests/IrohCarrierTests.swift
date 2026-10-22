@@ -24,6 +24,8 @@ private actor FakeIrohMac {
     let deviceAgreement = P256.KeyAgreement.PrivateKey()
     let endpoint = IrohIdentity(seed: Data(repeating: 3, count: 32))
     var acceptsHello = true
+    private var holdsHellos = false
+    private var heldHellos: [CheckedContinuation<Void, Never>] = []
     private(set) var hellos: [Data] = []
     private(set) var requests = 0
     private var script: [Reply] = []
@@ -32,12 +34,21 @@ private actor FakeIrohMac {
 
     func refuseHello() { acceptsHello = false }
     func acceptHello() { acceptsHello = true }
+    /// A hello is answered as it is when it arrives, but only goes back once released.
+    func holdHellos() { holdsHellos = true }
+    func releaseHellos() {
+        holdsHellos = false
+        heldHellos.forEach { $0.resume() }
+        heldHellos.removeAll()
+    }
     func then(_ replies: Reply...) { script += replies }
     func executions(of requestID: String) -> Int { runs[requestID, default: 0] }
 
-    func hello(_ body: Data) -> Data {
+    func hello(_ body: Data) async -> Data {
         hellos.append(body)
-        return Data((acceptsHello ? #"{"ok":true}"# : #"{"error":"unauthorized"}"#).utf8)
+        let reply = Data((acceptsHello ? #"{"ok":true}"# : #"{"error":"unauthorized"}"#).utf8)
+        if holdsHellos { await withCheckedContinuation { heldHellos.append($0) } }
+        return reply
     }
 
     func request(_ body: Data) async throws -> Data {
@@ -429,10 +440,28 @@ struct IrohCarrierTests {
         let f = try await Fixture(retryDelays: [.seconds(3600)])
         await f.mac.refuseHello()
         await f.carrier.start()
-        try await waitUntil { await f.mac.hellos.count == 1 }
+        try await waitUntil { await !f.carrier.isConnecting }
         await f.mac.acceptHello()
         #expect(try await f.session.perform(f.read()) == answered)
         #expect(f.dialer.dials == 2)
+    }
+
+    /// A request that comes while an attempt is failing gets that failure at once, so a session
+    /// with another carrier moves to it with the time it has left.
+    @Test func aRequestMadeWhileAConnectionFailsSharesItsFailure() async throws {
+        let f = try await Fixture(retryDelays: [.seconds(3600)])
+        await f.mac.refuseHello()
+        await f.mac.holdHellos()
+        await f.carrier.start()
+        try await waitUntil { await f.mac.hellos.count == 1 }
+        let session = f.session
+        let read = try f.read()
+        let waiting = Task { try await session.perform(read) }
+        try await waitUntil { await f.carrier.requestsWaitingForConnection == 1 }
+        await f.mac.acceptHello()
+        await f.mac.releaseHellos()
+        await #expect(throws: IrohCarrierError.unavailable) { try await waiting.value }
+        #expect(f.dialer.dials == 1)
     }
 
     @Test func aConnectionThatDropsIsReplaced() async throws {

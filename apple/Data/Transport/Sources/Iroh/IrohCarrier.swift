@@ -71,6 +71,10 @@ public actor IrohCarrier: EnvelopeCarrier {
 
     public var isConnected: Bool { liveLink != nil }
 
+    var isConnecting: Bool { connectingNow }
+
+    var requestsWaitingForConnection: Int { waiters.count }
+
     /// The app came to the foreground: connect now and stay connected. A connection a request
     /// opened in the background is kept.
     public func start() {
