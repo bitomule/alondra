@@ -33,9 +33,9 @@ relay_bin=$3
 tool_bin=$4
 macs=${MACS:-1}
 fakes=${FAKES:-0}
-dir=${SANDBOX_DIR:-/tmp/alondra-sandbox}
-base=${SANDBOX_PORT:-47890}
 repo=$(cd "$(dirname "$0")/.." && pwd)
+dir=${SANDBOX_DIR:-$(git -C "$repo" rev-parse --show-toplevel)/.scratch/sandbox}
+base=${SANDBOX_PORT:-47890}
 issuer_port=$((base - 1))
 relay_port=$base
 direct_listen=127.0.0.1
@@ -113,6 +113,10 @@ wait_until() {
 # does from the marketplace in production.
 mkdir -p "$dir/bin" "$dir/issuer/public"
 : >"$dir/.alondra-sandbox"
+# A Unix socket's path fits in 104 bytes and a worktree's does not leave room, so the Macs' homes and
+# the fakes, which hold sockets, live in a short folder of their own that $dir links to.
+short=$(mktemp -d /private/tmp/asb.XXXXXX)
+printf '%s\n' "$short" >"$dir/short-root"
 for pair in "alondrad:$daemon" "alondra:$cli" "alondra-relay:$relay_bin" "alondra-sandbox:$tool_bin"; do
 	cp "${pair#*:}" "$dir/bin/${pair%%:*}"
 	chmod 755 "$dir/bin/${pair%%:*}"
@@ -138,7 +142,8 @@ echo $! >"$dir/relay.pid"
 wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"
 
 fake() {
-	mkdir -p "$dir/fakes"
+	mkdir -p "$short/fakes"
+	[ -L "$dir/fakes" ] || ln -s "$short/fakes" "$dir/fakes"
 	printf '#!/bin/sh\nexec "%s" --sandbox "%s" %s -- "$@"\n' "$tool" "$dir" "$2" >"$dir/fakes/$1"
 	chmod 755 "$dir/fakes/$1"
 }
@@ -172,9 +177,10 @@ fi
 macs_json=
 i=1
 while [ "$i" -le "$macs" ]; do
-	home="$dir/mac-$i"
+	home="$short/mac-$i"
 	port=$(local_port "$i")
 	mkdir -p "$home"
+	ln -s "$home" "$dir/mac-$i"
 	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen" --iroh-port "$(iroh_port "$i")")
 	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
 	[ -z "${SANDBOX_IROH_RELAY:-}" ] || sed -i '' 's/^relay = "off"$/relay = "auto"/' "$home/service.toml"
@@ -207,9 +213,10 @@ while [ "$i" -le "$macs" ]; do
 done
 
 if [ "${NEW_MAC:-0}" = 1 ]; then
-	home="$dir/mac-new"
+	home="$short/mac-new"
 	port=$(local_port "$all")
 	mkdir -p "$home/bin"
+	ln -s "$home" "$dir/mac-new"
 	cat >"$home/bin/service" <<SCRIPT
 #!/bin/sh
 # Stands in for launchd: gives the new Mac its port and a loopback direct listener, then

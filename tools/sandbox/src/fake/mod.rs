@@ -47,11 +47,10 @@ pub struct Call {
 
 impl Fakes {
     pub fn open(sandbox: &Path) -> Result<Self> {
-        let dir = sandbox.join("fakes");
-        if !dir.is_dir() {
-            bail!("{} has no fakes; start the sandbox with FAKES=1", sandbox.display());
+        match sandbox.join("fakes").canonicalize() {
+            Ok(dir) if dir.is_dir() => Ok(Self { sandbox: sandbox.into(), dir }),
+            _ => bail!("{} has no fakes; start the sandbox with FAKES=1", sandbox.display()),
         }
-        Ok(Self { sandbox: sandbox.into(), dir })
     }
 
     pub fn alondra(&self) -> PathBuf {

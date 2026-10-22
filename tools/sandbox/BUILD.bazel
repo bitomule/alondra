@@ -1,8 +1,8 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 rust_binary(
     name = "alondra-sandbox",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_sandbox",
     edition = "2024",
     visibility = ["//visibility:public"],
@@ -20,4 +20,11 @@ rust_binary(
         "@crates//:toml",
         "@crates//:ureq",
     ],
+)
+
+rust_test(
+    name = "alondra-sandbox_test",
+    crate = ":alondra-sandbox",
+    edition = "2024",
+    deps = ["@crates//:tempfile"],
 )

@@ -8,8 +8,8 @@ set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 stamp=$(date +%Y%m%d-%H%M%S)
-dir=${SANDBOX_DIR:-/tmp/alondra-explore-$stamp}
-report=${REPORT_DIR:-/tmp/alondra-explore-$stamp-report}
+dir=${SANDBOX_DIR:-$(git -C "$repo" rev-parse --show-toplevel)/.scratch/explore-$stamp}
+report=${REPORT_DIR:-$(git -C "$repo" rev-parse --show-toplevel)/.scratch/explore-$stamp-report}
 session="alondra-explore-$stamp"
 model=${MODEL:-opus}
 budget=${BUDGET:-5}

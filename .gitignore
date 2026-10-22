@@ -25,3 +25,6 @@ __pycache__/
 
 # make e2e-tui-optimistic screens
 /.e2e-captures/
+
+# Sandboxes and other local scratch (make e2e-sandbox)
+/.scratch/

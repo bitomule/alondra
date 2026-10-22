@@ -9,8 +9,11 @@ mod phone;
 mod relay;
 mod sandbox;
 mod scenario;
+#[cfg(test)]
+#[path = "../../../crates/test_support.rs"]
+mod test_support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -18,9 +21,9 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "alondra-sandbox")]
 struct Cli {
-    /// The sandbox directory `tools/e2e-sandbox.sh` created.
-    #[arg(long, env = "SANDBOX_DIR", default_value = "/tmp/alondra-sandbox", global = true)]
-    sandbox: PathBuf,
+    /// The sandbox directory `tools/e2e-sandbox.sh` created; `.scratch/sandbox` in the repository by default.
+    #[arg(long, env = "SANDBOX_DIR", global = true)]
+    sandbox: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -166,8 +169,27 @@ enum PhoneAction {
     Revoke,
 }
 
+/// Where `tools/e2e-sandbox.sh` puts a sandbox by default: inside the checkout `cwd` belongs to, so
+/// nothing a node does with it writes outside its worktree.
+fn default_sandbox(cwd: &Path) -> PathBuf {
+    let root = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim_end()))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    root.join(".scratch/sandbox")
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let dir = match cli.sandbox {
+        Some(dir) => dir,
+        None => default_sandbox(&std::env::current_dir()?),
+    };
     match cli.command {
         Command::Jwks { key, out } => issuer::write_jwks(&key, &out),
         Command::RelayConfig { listen, issuer, registry, out } => {
@@ -182,7 +204,7 @@ fn main() -> Result<()> {
             mac::Mac::open(&home)?.enroll(&relay::Relay::new(&relay), &token)
         }
         Command::Phone { name, mac, action } => {
-            let sandbox = sandbox::Sandbox::open(&cli.sandbox)?;
+            let sandbox = sandbox::Sandbox::open(&dir)?;
             let target = sandbox.mac(mac)?;
             let phone = phone::Phone::open(&sandbox, &name)?;
             match action {
@@ -211,14 +233,30 @@ fn main() -> Result<()> {
                 PhoneAction::Revoke => phone.revoke(&target),
             }
         }
-        Command::Scenario => scenario::run(&sandbox::Sandbox::open(&cli.sandbox)?),
-        Command::Iroh => iroh_check::run(&sandbox::Sandbox::open(&cli.sandbox)?),
-        Command::IrohCli => iroh_cli::run(&sandbox::Sandbox::open(&cli.sandbox)?),
-        Command::FakeClaude { args } => std::process::exit(fake::claude(&fake::Fakes::open(&cli.sandbox)?, &args)?),
-        Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&cli.sandbox)?, &args)?),
-        Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&cli.sandbox)?, &short),
-        Command::Journey { names } if names == ["seed"] => journey::seed::run(&sandbox::Sandbox::open(&cli.sandbox)?),
-        Command::Journey { names } => journey::run(&sandbox::Sandbox::open(&cli.sandbox)?, &names),
-        Command::Fake { action } => fake::node::command(&fake::Fakes::open(&cli.sandbox)?, action.into()),
+        Command::Scenario => scenario::run(&sandbox::Sandbox::open(&dir)?),
+        Command::Iroh => iroh_check::run(&sandbox::Sandbox::open(&dir)?),
+        Command::IrohCli => iroh_cli::run(&sandbox::Sandbox::open(&dir)?),
+        Command::FakeClaude { args } => std::process::exit(fake::claude(&fake::Fakes::open(&dir)?, &args)?),
+        Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&dir)?, &args)?),
+        Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&dir)?, &short),
+        Command::Journey { names } if names == ["seed"] => journey::seed::run(&sandbox::Sandbox::open(&dir)?),
+        Command::Journey { names } => journey::run(&sandbox::Sandbox::open(&dir)?, &names),
+        Command::Fake { action } => fake::node::command(&fake::Fakes::open(&dir)?, action.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_sandbox_is_inside_the_checkout() {
+        let checkout = test_support::Directory::new();
+        let nested = checkout.join("tools/sandbox");
+        std::fs::create_dir_all(&nested).unwrap();
+        let init = std::process::Command::new("git").arg("init").arg("-q").arg(&*checkout).status().unwrap();
+        assert!(init.success());
+        let root = std::fs::canonicalize(&*checkout).unwrap();
+        assert_eq!(default_sandbox(&nested), root.join(".scratch/sandbox"));
     }
 }

@@ -329,7 +329,7 @@ e2e-explore:
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:
-	@dir=$${SANDBOX_DIR:-/tmp/alondra-sandbox}; \
+	@dir=$${SANDBOX_DIR:-$$(git rev-parse --show-toplevel)/.scratch/sandbox}; \
 	if [ "$(MAC)" = relay ]; then tail -f $$dir/relay.log; else tail -f $$dir/mac-$${MAC:-1}/alondrad.log; fi
 
 # The previous published release must restart into this build on copies of the live HOME, and its

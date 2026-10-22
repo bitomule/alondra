@@ -4,7 +4,8 @@
 # Only a PID whose command still belongs to that sandbox is signalled.
 set -u
 
-dir=${1:-${SANDBOX_DIR:-/tmp/alondra-sandbox}}
+repo=$(cd "$(dirname "$0")/.." && pwd)
+dir=${1:-${SANDBOX_DIR:-$(git -C "$repo" rev-parse --show-toplevel)/.scratch/sandbox}}
 
 if [ ! -f "$dir/.alondra-sandbox" ]; then
 	echo "No sandbox in $dir." >&2
@@ -55,6 +56,8 @@ done
 stop "$dir/relay.pid"
 stop "$dir/issuer.pid"
 stop "$dir/sdk/model.pid"
+short=$(cat "$dir/short-root" 2>/dev/null) || short=
+case $short in /private/tmp/asb.*) ;; *) short= ;; esac
 # The SDK hosts' state roots live outside the sandbox, where a Unix socket path is short enough.
 state=
 for file in "$dir/sdk/state-root" "$dir"/mac-*/sdk-state-root; do
@@ -65,11 +68,12 @@ done
 
 if [ "${KEEP:-0}" = 1 ]; then
 	rm -f "$dir/sandbox.json"
-	echo "Sandbox stopped; files kept in $dir${state:+, and the state of its SDK hosts in $state}."
+	echo "Sandbox stopped; files kept in $dir${short:+, the homes of its Macs and its fakes in $short}${state:+, and the state of its SDK hosts in $state}."
 else
 	for root in $state; do
 		rm -rf "$root"
 	done
 	rm -rf "$dir"
+	[ -z "$short" ] || rm -rf "$short"
 	echo "Sandbox stopped and $dir removed."
 fi

@@ -1,7 +1,11 @@
 # alondra-sandbox
 
 Throwaway Macs, relay and phone for `make e2e-sandbox`. Everything listens on loopback and lives
-in `SANDBOX_DIR` (default `/tmp/alondra-sandbox`); nothing touches `~/.alondra` or port 47800.
+in `SANDBOX_DIR` (default `.scratch/sandbox` at the root of the checkout or worktree it runs from,
+which git ignores); nothing touches `~/.alondra` or port 47800. A Unix socket's path fits in 104
+bytes, so the Macs' homes and the fakes, which hold sockets, live in a short folder of their own
+(`/private/tmp/asb.*`, linked from `SANDBOX_DIR/mac-N` and `SANDBOX_DIR/fakes`) that the scripts
+create and delete; everything else, `bin/` included, stays in `SANDBOX_DIR`.
 
 ```sh
 make e2e-sandbox MACS=2            # N daemons in service mode + relay + token issuer, in the background
@@ -177,9 +181,9 @@ seconds finishes and its turn ends with one card.
 `alondra-sandbox journey sdk` runs it against a sandbox already started with `SDK=1`; `journey all`
 leaves it out.
 
-Start a sandbox you will drive from the TUI under `/private/tmp` (`SANDBOX_DIR=/private/tmp/…`):
-the local action journal opens SQLite with `NOFOLLOW`, and `/tmp` is a symbolic link, so the TUI's
-actions would get `503 outcome_unknown` and be retried in silence.
+A sandbox you will drive from the TUI needs a `SANDBOX_DIR` without symbolic links, as the default
+is: the local action journal opens SQLite with `NOFOLLOW`, so under `/tmp`, itself a symbolic link,
+the TUI's actions would get `503 outcome_unknown` and be retried in silence.
 
 ## Tester agent
 
@@ -192,7 +196,7 @@ it (`alondra-sandbox journey seed`):
 It opens each Mac's TUI in tmux (160x45, Spanish) and runs a print-mode Claude (`MODEL`, default
 opus; `BUDGET` in USD, default 5) with `tools/e2e/explorer.md`. The agent drives the TUI with
 `tmux send-keys`/`capture-pane`, moves the fake nodes, reads the views, and writes `report.md`
-with the findings, captures and views in `/tmp/alondra-explore-<stamp>-report` (`REPORT_DIR`).
+with the findings, captures and views in `.scratch/explore-<stamp>-report` (`REPORT_DIR`).
 
 Its Claude starts with a clean environment and the Alondra plugins off, so it never reaches the
 real Alondra. It may only run tmux, the sandbox's binaries and write in its report folder.
@@ -244,7 +248,7 @@ and answers every one from a client. Each card must leave at once, as its action
 make e2e-direct-cards                # the synthetic phone, over the Mac's direct listener
 make e2e-cards-tui                   # the real TUI in tmux
 make e2e-ios-cards                   # the iOS app in a pooled simulator, driven with MAV
-E2E_CAPTURES=/tmp/cards make e2e-cards-tui   # keeps what the client showed at each step
+E2E_CAPTURES=.scratch/cards make e2e-cards-tui # keeps what the client showed at each step
 ```
 
 The iOS run builds `//apple:AlondraiOS` for the simulator with `--define=alondra_sandbox=1`,
