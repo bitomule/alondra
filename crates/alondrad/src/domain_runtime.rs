@@ -149,6 +149,10 @@ impl DomainRuntime {
     pub(crate) fn owns_sdk_host(&self, agent: &AgentId) -> bool {
         self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent && !owner.ended())
     }
+    /// The process group of every node host this daemon owns now, which is what a node costs.
+    pub(crate) fn node_groups(&self) -> Vec<i32> {
+        self.sdk_owners.lock().expect("SDK owners poisoned").iter().filter_map(crate::sdk_owner::Owner::host_group).collect()
+    }
     /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
     /// its own. Those are joined once the list is released: their end may read it.
     pub(crate) fn add_sdk_owner(&self, owner: crate::sdk_owner::Owner) {

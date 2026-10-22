@@ -662,7 +662,10 @@ fn stopping_the_owners_leaves_no_process_of_their_hosts() {
     let processes = alondra_process_group::members(group).unwrap();
     assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    assert_eq!(slice.domain.node_groups(), [group], "the gate measures the node by its host's group");
+    assert!(alondra_process_group::footprint(group).unwrap() > 0);
     slice.domain.stop_sdk_owners();
+    assert!(slice.domain.node_groups().is_empty(), "a stopped node costs nothing");
     let left: Vec<String> =
         processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "SDK host processes survived the daemon shutdown: {left:?}");
@@ -1020,7 +1023,8 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     slice.settle(&mut driver);
     assert_eq!(slice.prompts(), ["Write the release notes"], "the launch prompt reached the host once");
     assert_eq!(owner_generation(&slice.database), 1, "the launch owned the execution as generation 1");
-    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let group = driver.worker.host_group().unwrap();
+    let processes = alondra_process_group::members(group).unwrap();
     // The daemon dies: drop its driver without stopping the host, which keeps running.
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
@@ -1033,7 +1037,9 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     assert_eq!(prompts.len(), 2, "the same Claude got the launch and the carry-on, no restart: {prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "the adopted turn ended with its own card");
-    adopted.stop().unwrap();
+    restarted.sdk_owners.lock().unwrap().push(Owner::spawn(adopted));
+    assert_eq!(restarted.node_groups(), [group], "the adopted host is measured as the node it runs");
+    restarted.stop_sdk_owners();
     let left: Vec<String> =
         processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "the adopted host's processes survived its stop: {left:?}");

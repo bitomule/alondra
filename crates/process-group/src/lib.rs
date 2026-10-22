@@ -110,6 +110,33 @@ pub fn peer(stream: &impl AsFd) -> io::Result<Option<Member>> {
     Ok(inspect(pid)?.map(|(member, _)| member))
 }
 
+/// The bytes the live processes of `group` hold, as macOS charges them (`ri_phys_footprint`, the
+/// Memory column of Activity Monitor): unlike the resident size it keeps counting pages compressed
+/// or swapped out. Processes that moved to a group of their own are not counted.
+pub fn footprint(group: i32) -> io::Result<u64> {
+    let mut total = 0;
+    for member in members(group)?.into_iter().filter(|member| !member.zombie) {
+        total += process_footprint(member.pid)?.unwrap_or(0);
+    }
+    Ok(total)
+}
+
+fn process_footprint(pid: i32) -> io::Result<Option<u64>> {
+    let mut usage = MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    clear_errno();
+    // SAFETY: RUSAGE_INFO_V2 writes exactly one rusage_info_v2 into the buffer it is given.
+    let result = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, usage.as_mut_ptr().cast::<libc::rusage_info_t>()) };
+    if result != 0 {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ESRCH) | Some(0) | None => Ok(None),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: the kernel filled the whole structure.
+    Ok(Some(unsafe { usage.assume_init() }.ri_phys_footprint))
+}
+
 /// The group the process `pid` names belongs to right now; none once it is gone.
 pub fn group(pid: i32) -> io::Result<Option<i32>> {
     Ok(inspect(pid)?.map(|(_, group)| group))
@@ -326,6 +353,22 @@ mod tests {
         assert!(members(group).unwrap().iter().all(|member| member.zombie), "only the unreaped zombie stays in the group");
         child.wait().unwrap();
         assert!(members(group).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_group_footprint_sums_its_live_members_and_an_empty_group_holds_nothing() {
+        let mut leader = Command::new("/bin/sleep").arg("600").process_group(0).stdin(Stdio::null()).spawn().unwrap();
+        let group = i32::try_from(leader.id()).unwrap();
+        let mut member = Command::new("/bin/sleep").arg("600").process_group(group).stdin(Stdio::null()).spawn().unwrap();
+        let alone = process_footprint(group).unwrap().expect("the leader runs");
+        let both = footprint(group).unwrap();
+        assert!(alone > 0, "a running process holds memory");
+        assert!(both > alone, "the second member counts too: {both} vs {alone}");
+        for child in [&mut member, &mut leader] {
+            kill_child(i32::try_from(child.id()).unwrap());
+            child.wait().unwrap();
+        }
+        assert_eq!(footprint(group).unwrap(), 0);
     }
 
     #[test]

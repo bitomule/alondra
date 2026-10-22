@@ -67,6 +67,7 @@ mod plan_reviews;
 mod start_failures;
 mod launch_worktree;
 mod node_close;
+mod node_cost;
 mod node_reconcile;
 mod revoked_devices;
 mod device_expiry;

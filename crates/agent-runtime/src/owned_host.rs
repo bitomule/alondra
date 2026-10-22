@@ -452,6 +452,15 @@ impl HostStop {
     pub fn request_after_interrupt(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::INT)
     }
+    /// The process group the host leads, named by its PID: Claude and every command it runs
+    /// that did not move to a group of its own. `None` once the host is gone or before an adopted
+    /// host was reached.
+    pub fn process_group(&self) -> Option<i32> {
+        match &self.0 {
+            Leader::Launched(leader) => (*leader.lock().expect("owned host leader poisoned")).map(|pid| pid.as_raw_nonzero().get()),
+            Leader::Adopted(peer) => (*peer.lock().expect("adopted host peer poisoned")).map(|host| host.pid),
+        }
+    }
     fn send(&self, sig: rustix::process::Signal) -> io::Result<()> {
         let pid = match &self.0 {
             Leader::Launched(leader) => {

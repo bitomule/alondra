@@ -272,9 +272,9 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let slots = Hold::Slots { working: 3, limit: 3 };
     assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
         "the fleet gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
-    let margin = Hold::Memory { why: NoRoom::Margin { margin: GIB / 2, needed: 2 * GIB }, free: Some(42) };
+    let margin = Hold::Memory { why: NoRoom::Margin { margin: GIB / 2, needed: 1_230_000_000, nodes: 3, cost: 410_000_000 }, free: Some(42) };
     assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &margin, &[], &[], 2).unwrap(),
-        "the fleet gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 2 GiB needed (42% free); 2 node(s) paused");
+        "the fleet gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 1.1 GiB needed for 3 node(s) at 0.38 GiB each (42% free); 2 node(s) paused");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
         "the fleet gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
@@ -354,25 +354,29 @@ fn margin(domain: &DomainRuntime, margin_gib: f64, from: Millis, to: Millis) {
     }
 }
 
-/// Nodes admitted in the last 3 minutes do not show their memory yet: with 4 of them the next start
-/// needs 5 GiB between the Mac and macOS's warning, and 4.5 GiB is enough once they are 3 minutes in.
+/// Nodes admitted in the last 3 minutes do not show their memory yet, so each reserves what a node
+/// measured. With nodes of 0.41 GB, as on 22 October, 2 GiB to macOS's warning takes five starts in
+/// a row, where 1 GiB a node took one.
 #[test]
-fn with_4_nodes_admitted_in_the_last_3_minutes_the_next_start_needs_5_gib_of_margin() {
+fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
     let (_home, domain) = world();
-    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    for id in ["t1", "t2", "t3", "t4", "t5"] {
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(10)) });
+    for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
         create(&domain, id);
     }
     let base = alondra_core::now_millis();
-    margin(&domain, 4.5, base - MIN, base + SAMPLE);
-    for id in ["t1", "t2", "t3", "t4"] {
+    let cost: i64 = 410_000_000;
+    domain.live.machine_watch.measure_nodes(base - MIN, vec![cost as u64; 30]);
+    margin(&domain, 2.0, base - MIN, base + SAMPLE);
+    for id in ["t1", "t2", "t3", "t4", "t5"] {
         assert_eq!(ask(&domain, id, base), Ok(()), "{id}");
         start(&domain, id, base);
     }
-    assert_eq!(ask(&domain, "t5", base), Err(Hold::Memory { why: NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }, free: Some(40) }));
-    margin(&domain, 4.5, base + SAMPLE, base + 3 * MIN);
-    assert_eq!(ask(&domain, "t5", base + 3 * MIN - 1), Err(Hold::Memory { why: NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }, free: Some(40) }));
-    assert_eq!(ask(&domain, "t5", base + 3 * MIN), Ok(()), "the four are no longer in flight");
+    let held = Err(Hold::Memory { why: NoRoom::Margin { margin: 2 * GIB, needed: 6 * cost, nodes: 6, cost }, free: Some(40) });
+    assert_eq!(ask(&domain, "t6", base), held);
+    margin(&domain, 2.0, base + SAMPLE, base + 3 * MIN);
+    assert_eq!(ask(&domain, "t6", base + 3 * MIN - 1), held);
+    assert_eq!(ask(&domain, "t6", base + 3 * MIN), Ok(()), "the five are no longer in flight");
 }
 
 #[test]

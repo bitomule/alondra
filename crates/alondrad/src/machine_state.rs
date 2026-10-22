@@ -2,8 +2,9 @@
 //! answers, for the fleet gate, whether one more node may start or a paused one resume.
 //!
 //! There is room when every sample of the last `ROOM_WINDOW` has macOS at normal pressure and a
-//! margin to macOS's warning of at least 1 GiB, plus 1 GiB for each node admitted in the last
-//! 3 minutes, whose memory does not show yet. The margin is what XNU weighs: it warns once the
+//! margin to macOS's warning that fits what one node costs, measured (`node_cost`), for the node
+//! that starts and for each node admitted in the last 3 minutes, whose memory does not show yet.
+//! The margin is what XNU weighs: it warns once the
 //! compressor holds more pages than all uncompressed memory, so the margin is uncompressed minus
 //! compressor memory (`MemoryCompressor::margin`). Where the system gives no compressor counters,
 //! 20 % free stands in for it. Over 33,145 samples of 10–13 Oct this rule keeps starts open 92 % of
@@ -19,8 +20,6 @@ use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
 /// How long memory must have had room before one more node starts.
 pub(crate) const ROOM_WINDOW: Millis = 60_000;
 const GIB: i64 = 1 << 30;
-/// The margin to macOS's warning kept with nobody starting, and again for each node in flight.
-const MARGIN_PER_NODE: i64 = GIB;
 /// Free memory that counts as room where the system gives no compressor counters.
 const ROOM_FREE: u32 = 20;
 const LOAD_BUSY_PER_CORE: f64 = 4.0;
@@ -34,8 +33,9 @@ pub(crate) enum NoRoom {
     /// The daemon has not seen a minute of samples yet.
     Measuring,
     Pressure(MemoryPressure),
-    /// The margin to macOS's warning, in bytes, and what the nodes in flight need.
-    Margin { margin: i64, needed: i64 },
+    /// The margin to macOS's warning, in bytes, and what the node that starts and those in flight
+    /// need, `nodes` of them at `cost` each.
+    Margin { margin: i64, needed: i64, nodes: usize, cost: i64 },
     /// Free memory, without compressor counters.
     Free { free: u32 },
 }
@@ -46,7 +46,7 @@ impl std::fmt::Display for NoRoom {
         match self {
             NoRoom::Measuring => write!(out, "the daemon is measuring memory for its first minute"),
             NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
-            NoRoom::Margin { margin, needed } => write!(out, "{:.1} GiB left before macOS's memory warning, {:.0} GiB needed", gib(*margin), gib(*needed)),
+            NoRoom::Margin { margin, needed, nodes, cost } => write!(out, "{:.1} GiB left before macOS's memory warning, {:.1} GiB needed for {nodes} node(s) at {:.2} GiB each", gib(*margin), gib(*needed), gib(*cost)),
             NoRoom::Free { free } => write!(out, "{free}% free, {ROOM_FREE}% needed"),
         }
     }
@@ -61,12 +61,13 @@ struct Sample {
 }
 
 impl Sample {
-    fn room(&self, needed: i64) -> Result<(), NoRoom> {
+    fn room(&self, nodes: usize, cost: i64) -> Result<(), NoRoom> {
         if let Some(pressure) = self.pressure.filter(|pressure| *pressure != MemoryPressure::Normal) {
             return Err(NoRoom::Pressure(pressure));
         }
+        let needed = cost * nodes as i64;
         match self.margin {
-            Some(margin) if margin < needed => Err(NoRoom::Margin { margin, needed }),
+            Some(margin) if margin < needed => Err(NoRoom::Margin { margin, needed, nodes, cost }),
             None if self.free < ROOM_FREE => Err(NoRoom::Free { free: self.free }),
             _ => Ok(()),
         }
@@ -83,6 +84,9 @@ pub(crate) struct MacState {
     pub pressure: Option<MemoryPressure>,
     pub compressor: Option<MemoryCompressor>,
     pub swap_rates: Option<(f64, f64)>,
+    /// What the gate takes one node to cost, from what the nodes measured; `None` before the
+    /// daemon's first measure.
+    pub node_cost: Option<u64>,
     pub load: f64,
     pub cpus: usize,
     /// The samples of the last `ROOM_WINDOW` and the one before them, which shows it is covered.
@@ -119,17 +123,24 @@ impl MacState {
         }
     }
 
+    /// What one more node is expected to take.
+    pub(crate) fn node_cost(&self) -> i64 {
+        i64::try_from(self.node_cost.unwrap_or(crate::node_cost::DEFAULT)).unwrap_or(i64::MAX)
+    }
+
     /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes. A
     /// system that never reported memory always has room; one that did needs `ROOM_WINDOW` of it.
+    /// macOS's warning holds every start whatever is free: the margin here only approximates what
+    /// the kernel weighs, and half of the warnings start with it still positive.
     pub(crate) fn room(&self, in_flight: usize, now: Millis) -> Result<(), NoRoom> {
         let Some(first) = self.samples.front() else { return Ok(()) };
         if first.at > now - ROOM_WINDOW {
             return Err(NoRoom::Measuring);
         }
-        let needed = MARGIN_PER_NODE * (1 + in_flight as i64);
+        let cost = self.node_cost();
         let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > now - ROOM_WINDOW).collect();
         let judged = if recent.is_empty() { self.samples.back().into_iter().collect() } else { recent };
-        judged.into_iter().rev().try_for_each(|sample| sample.room(needed))
+        judged.into_iter().rev().try_for_each(|sample| sample.room(1 + in_flight, cost))
     }
 
     fn step_load(&mut self, machine: &Machine, now: Millis) {
@@ -179,7 +190,7 @@ pub(crate) const SAMPLES_DIR: &str = "machine-samples";
 const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 
 /// `health` says whether the gate had room for one more node with none in flight.
-const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s";
+const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb";
 const GB: f64 = (1u64 << 30) as f64;
 
 pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize) {
@@ -202,7 +213,8 @@ pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working
             let swap = mac.swap_rates.map(|(ins, outs)| format!("{ins:.0},{outs:.0}")).unwrap_or_else(|| ",".into());
             format!("{:.3},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
         }).unwrap_or_else(|| ",,,,,,,".into());
-        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor}", mac.load, mac.cpus, mac.cpu_busy)
+        let node_cost = mac.node_cost.map(|cost| format!("{:.2}", cost as f64 / GB)).unwrap_or_default();
+        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor},{node_cost}", mac.load, mac.cpus, mac.cpu_busy)
     });
     if let Err(error) = written {
         log!("could not record the machine sample in {}: {error}", file.display());
@@ -240,6 +252,10 @@ mod tests {
     fn weighed(free: u32, pressure: MemoryPressure, uncompressed: u64, compressor: u64) -> Machine {
         let counters = MemoryCompressor { page_size: PAGE, uncompressed_pages: uncompressed, compressor_pages: compressor, ..MemoryCompressor::default() };
         Machine { compressor: Some(counters), ..pressed(free, pressure) }
+    }
+
+    fn margin_of(margin_gib: f64) -> i64 {
+        with_margin(margin_gib, MemoryPressure::Normal).compressor.unwrap().margin()
     }
 
     /// The Mac with `margin_gib` left before macOS's warning, out of the same memory weighed.
@@ -438,18 +454,53 @@ mod tests {
         assert_eq!(state.room(0, end), Ok(()), "the builds are over");
     }
 
+    /// 08:39 on 22 October: 4.8 GiB to macOS's warning and 4 nodes admitted in the last 3 minutes,
+    /// while the nodes at work measured 0.13–0.41 GB each. 1 GiB per node held 31 tasks.
     #[test]
-    fn four_nodes_admitted_in_the_last_3_minutes_need_5_gib_of_margin() {
+    fn the_margin_needed_is_what_a_node_measures_for_the_one_that_starts_and_each_in_flight() {
         let mut state = MacState::default();
-        let now = feed(&mut state, &with_margin(4.5, MemoryPressure::Normal), 0, 2 * MIN);
-        assert_eq!(state.room(3, now), Ok(()), "4 GiB needed for 3 in flight");
-        assert_eq!(state.room(4, now), Err(NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }));
-        let now = feed(&mut state, &with_margin(5.0, MemoryPressure::Normal), now, now + MIN);
-        assert_eq!(state.room(4, now), Ok(()));
+        let now = feed(&mut state, &with_margin(4.8, MemoryPressure::Normal), 0, 2 * MIN);
+        let measured: u64 = 410_000_000;
+        state.node_cost = Some(measured);
+        assert_eq!(state.room(4, now), Ok(()), "5 nodes at 0.41 GB fit in 4.8 GiB");
+        let cost = measured as i64;
+        assert_eq!(state.room(11, now), Ok(()), "12 of them fit");
+        assert_eq!(state.room(12, now), Err(NoRoom::Margin { margin: margin_of(4.8), needed: 13 * cost, nodes: 13, cost }));
+        state.node_cost = Some(GIB as u64);
+        assert_eq!(state.room(4, now), Err(NoRoom::Margin { margin: margin_of(4.8), needed: 5 * GIB, nodes: 5, cost: GIB }),
+            "the 1 GiB a node was taken to cost held this start");
+        state.node_cost = None;
+        assert_eq!(state.node_cost(), 512 << 20, "before the daemon measured its nodes, one costs 512 MiB");
+        assert_eq!(state.room(8, now), Ok(()));
+        assert!(matches!(state.room(9, now), Err(NoRoom::Margin { nodes: 10, .. })));
+        let now = feed(&mut state, &with_margin(0.4, MemoryPressure::Normal), now, now + SAMPLE);
+        assert!(matches!(state.room(0, now), Err(NoRoom::Margin { nodes: 1, .. })), "even with nobody starting, the node that starts must fit");
+    }
+
+    /// 11:37:50 to 11:38:50 on 22 October: a build took the memory a simulator had just freed and
+    /// macOS warned with 31–35 % free, the compressor above all uncompressed memory; at 08:46 it
+    /// warned with 1.9 GB of margin left. macOS's level is what holds, not the free figure.
+    #[test]
+    fn macos_warning_holds_every_start_with_a_third_of_memory_free_and_margin_left() {
+        const OCTOBER_22: &[(Millis, u64, u64, i32, u32)] = &[
+            (0, 633955, 254778, 1, 55), (10, 556964, 308724, 1, 48), (20, 403023, 476013, 2, 35), (30, 365749, 522283, 2, 31),
+            (40, 380928, 508170, 2, 33), (50, 396269, 493498, 2, 34), (60, 366324, 524757, 2, 31),
+        ];
+        let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
+        let now = feed(&mut state, &with_margin(5.8, MemoryPressure::Normal), 0, 2 * MIN);
         assert_eq!(state.room(0, now), Ok(()));
-        let now = feed(&mut state, &with_margin(0.9, MemoryPressure::Normal), now, now + SAMPLE);
-        assert!(matches!(state.room(0, now), Err(NoRoom::Margin { needed: GIB, .. })),
-            "even with nobody starting, 1 GiB stays between the Mac and macOS's warning");
+        for &(seconds, uncompressed, compressor, level, free) in OCTOBER_22 {
+            let at = now + seconds * 1000;
+            let pressure = MemoryPressure::from_kernel_level(level).unwrap();
+            state.step(&weighed(free, pressure, uncompressed, compressor), at);
+            if pressure == MemoryPressure::Warning {
+                assert_eq!(state.room(0, at), Err(NoRoom::Pressure(MemoryPressure::Warning)), "at {seconds} s, {free} % free");
+            }
+        }
+        let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
+        let now = feed(&mut state, &weighed(44, MemoryPressure::Warning, 512_794, 387_515), 0, 2 * MIN);
+        assert!(state.compressor.unwrap().margin() > GIB, "margin left: {}", state.compressor.unwrap().margin());
+        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Warning)));
     }
 
     #[test]
@@ -511,7 +562,7 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some(SAMPLES_HEADER));
-        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,no_room,false,6,warning,,,,,,,,"));
+        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,no_room,false,6,warning,,,,,,,,,"));
     }
 
     #[test]
@@ -522,7 +573,7 @@ mod tests {
         std::fs::create_dir_all(&*dir).unwrap();
         std::fs::write(&day, "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,burst_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s\n\
             1,40,1.00,11,tight,false,2,normal,0.318,5.00,0.89,286160,613840,0,6700,30,0\n").unwrap();
-        let mut state = MacState::default();
+        let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
         let mut machine = with_margin(5.0, MemoryPressure::Normal);
         machine.compressor.as_mut().unwrap().swap_used = 6_700 << 20;
         state.step(&machine, 0);
@@ -532,8 +583,8 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         assert_eq!(text.lines().collect::<Vec<_>>(), [
             SAMPLES_HEADER,
-            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0",
-            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0",
+            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0,",
+            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38",
         ]);
     }
 }

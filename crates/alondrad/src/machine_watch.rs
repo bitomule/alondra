@@ -73,6 +73,8 @@ struct Record {
     mac: MacState,
     #[serde(default)]
     sampled_at: Millis,
+    #[serde(skip)]
+    node_cost: crate::node_cost::NodeCost,
 }
 
 /// A node stopped for the machine, as the card names it.
@@ -276,6 +278,17 @@ impl MachineWatch {
         (before.is_ok() != after.is_ok()).then_some(after)
     }
 
+    fn nodes_due(&self, now: Millis) -> bool {
+        self.record.lock().expect("machine watch poisoned").node_cost.due(now)
+    }
+
+    /// Keeps what each node measured at `now`; the gate reserves the new estimate from then on.
+    pub(crate) fn measure_nodes(&self, now: Millis, footprints: Vec<u64>) {
+        let mut record = self.record.lock().expect("machine watch poisoned");
+        record.node_cost.record(now, footprints);
+        record.mac.node_cost = Some(record.node_cost.estimate());
+    }
+
     fn home(&self) -> Option<&Path> {
         self.file.as_deref().and_then(Path::parent)
     }
@@ -437,6 +450,10 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     domain.live.machine_watch.sample_threads.lock().unwrap().push(std::thread::current().id());
     let watch = &domain.live.machine_watch;
     let now = if machine.at == 0 { now_millis() } else { machine.at };
+    if watch.nodes_due(now) {
+        let footprints = domain.node_groups().into_iter().map(|group| alondra_process_group::footprint(group).unwrap_or(0)).collect();
+        watch.measure_nodes(now, footprints);
+    }
     let change = watch.sample(machine, now);
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::fleet_gate::working_tasks(&state).len()).unwrap_or(0);

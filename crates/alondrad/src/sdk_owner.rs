@@ -1140,6 +1140,14 @@ impl Owner {
         self.ended.load(Ordering::SeqCst)
     }
 
+    /// The process group of the node's host, while the owner holds one.
+    pub(crate) fn host_group(&self) -> Option<i32> {
+        if self.ended() {
+            return None;
+        }
+        self.host.lock().expect("host stop poisoned").as_ref().and_then(|host| host.process_group())
+    }
+
     /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
     /// until the owner has seen the host exit and its whole process group end. An error says the
     /// group did not empty, or the owner could not see it end.
