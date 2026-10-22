@@ -1070,16 +1070,23 @@ impl DomainState {
     /// A message to the orchestrator that made tasks is done once the last of them ends: nobody
     /// is left to close it, since `close_request` waits for its tasks.
     fn close_finished_messages(&mut self) {
-        let mut open: BTreeSet<RequestId> = BTreeSet::new();
-        let mut ended: BTreeSet<RequestId> = BTreeSet::new();
+        let ended = self.open_requests_with_every_task_over();
+        for request in self.requests.values_mut().filter(|request| request.message && ended.contains(&request.id)) {
+            request.closed = true;
+        }
+    }
+    /// Open Requests that have Tasks and none of them still open: only the orchestrator moves them
+    /// on, by closing them or creating their next Tasks.
+    fn open_requests_with_every_task_over(&self) -> BTreeSet<RequestId> {
+        let mut open: BTreeSet<&RequestId> = BTreeSet::new();
+        let mut ended: BTreeSet<&RequestId> = BTreeSet::new();
         for task in self.tasks.values() {
-            if task.over() { &mut ended } else { &mut open }.insert(task.request_id.clone());
+            if task.over() { &mut ended } else { &mut open }.insert(&task.request_id);
         }
-        for request in self.requests.values_mut().filter(|request| request.message && !request.closed) {
-            if ended.contains(&request.id) && !open.contains(&request.id) {
-                request.closed = true;
-            }
-        }
+        ended.into_iter()
+            .filter(|id| !open.contains(id) && self.requests.get(*id).is_some_and(|r| !r.closed))
+            .cloned()
+            .collect()
     }
     fn tell_the_answer(&mut self, actor: &Actor, request: &RequestId, answer: &str, title: Option<&str>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
@@ -2129,6 +2136,14 @@ impl DomainState {
         }
         next.retire_cards_of_ended_tasks(&mut effects);
         next.close_finished_messages();
+        let ended_before = self.open_requests_with_every_task_over();
+        for request_id in next.open_requests_with_every_task_over().into_iter().filter(|id| !ended_before.contains(id)) {
+            let mut tasks = next.tasks.values().filter(|t| t.request_id == request_id);
+            let last = tasks.clone().find(|t| !self.tasks.get(&t.id).is_some_and(Task::over)).or_else(|| tasks.next());
+            if let Some(task) = last {
+                effects.push(DomainEffect::RequestTasksOver { request_id, task_id: task.id.clone() });
+            }
+        }
         let acting_before = self.acting();
         for (task_id, card) in next.acting() {
             if acting_before.get(&task_id).map(|before| &before.interaction) != Some(&card.interaction) {

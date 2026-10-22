@@ -276,6 +276,19 @@ pub(super) fn stage(
                         None => "The domain has something for you.".to_owned(),
                     },
                 ),
+                DomainEffect::RequestTasksOver { request_id, task_id } => (
+                    "orchestrator",
+                    None,
+                    Some(task_id.0.as_str()),
+                    None,
+                    format!(
+                        "Every Task of Request {request_id}{} has ended (done or cancelled; the last was {task_id}) and the Request is still open: close it with close_request saying what came of it, or create its next Tasks.",
+                        next.requests
+                            .get(request_id)
+                            .and_then(|r| r.title.as_deref())
+                            .map_or(String::new(), |title| format!(" (“{title}”)"))
+                    ),
+                ),
                 DomainEffect::ReviewDependentPlans { review_id, task_id } => (
                     "orchestrator",
                     None,

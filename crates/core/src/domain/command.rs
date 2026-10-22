@@ -767,6 +767,12 @@ pub enum DomainEffect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<RequestId>,
     },
+    /// The last open Task of an open Request ended: the orchestrator closes the Request or creates
+    /// its next Tasks.
+    RequestTasksOver {
+        request_id: RequestId,
+        task_id: TaskId,
+    },
     /// The user decided on a Task that others wait for: the orchestrator reviews the plans of
     /// the dependents this decision holds.
     ReviewDependentPlans {

@@ -25,6 +25,8 @@ mod checklist_tests;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]
+mod request_over_tests;
+#[cfg(test)]
 mod cited_files_tests;
 #[cfg(test)]
 mod tests;
