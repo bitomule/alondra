@@ -4,6 +4,7 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,9 +28,10 @@ const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// How Claude Code runs to read or end an account's sign-in: the executable and environment the
 /// daemon's nodes get.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Claude {
     pub executable: PathBuf,
+    pub environment: BTreeMap<String, String>,
     pub user_home: PathBuf,
     pub path: String,
     pub username: String,
@@ -41,15 +43,15 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = backend.native_environment.get("HOME").map(PathBuf::from).unwrap_or_else(crate::options::user_home);
-        Some(Claude { executable, user_home, path, username: claude_account::effective_username()? })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
     }
 
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
-        claude_account::status(&self.executable, &self.user_home, &self.path, &self.username, folder)
+        claude_account::status(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
     }
 
     fn logout(&self, folder: &Path) -> Result<(), String> {
-        claude_account::logout(&self.executable, &self.user_home, &self.path, &self.username, folder)
+        claude_account::logout(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
     }
 }
 

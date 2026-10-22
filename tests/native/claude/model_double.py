@@ -8,8 +8,8 @@ each request's last user text, its tools' names and its context to <log>, one JS
 A request that offers the orchestrator's create_task is an orchestrator batch: for each request the
 user created in that batch with a script in <request scripts> (the sandbox's `fakes/scripts`), it
 calls create_task and then launch for every scripted task, or close_request with the script's
-`answer`, one tool call per reply, and ends the turn once they are all made. Auto mode's safety check of an action (it stops at `</block>`) is
-answered with an allow. A task's request whose prompt holds the `when` text of a call scripted in
+`answer`, one tool call per reply, and ends the turn once they are all made. Auto mode's safety check of an action (it stops at `</block>` or
+`</severity>`) is answered with an allow. A task's request whose prompt holds the `when` text of a call scripted in
 `model-tools/*.json` next to <log> ({"when", "id", "name", "input"}) and that offers its tool gets
 that tool call, once per prompt; the request after its result is logged with it. `{plan_file}` in
 a scripted input becomes the plan file Claude Code's plan mode named in the request, and
@@ -30,6 +30,9 @@ MAX_BODY = 1048576
 TOKEN = 'sk-ant-public-loopback-fixture-only'
 REPLY = 'Done: the notes are drafted.'
 ORCHESTRATOR = 'mcp__alondra-orchestrator__'
+# Auto mode's safety check of an action, by the tag it stops at, answered with an allow: a yes/no
+# block verdict, or a severity below the allow/block boundary of 50.
+ALLOW = {'</block>': '<block>no', '</severity>': '<severity>0'}
 
 
 def last_user_text(body):
@@ -266,10 +269,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             calls = task_calls(self.server.log, body, batch_text(body) + '\n' + refused_text(body))
         pending = [call for call in calls if call[0] not in made]
         stop_sequence = None
-        if '</block>' in (body.get('stop_sequences') or []):
+        verdict = next((stop for stop in ALLOW if stop in (body.get('stop_sequences') or [])), None)
+        if verdict:
             block = {'type': 'text', 'text': ''}
-            delta = {'type': 'text_delta', 'text': '<block>no'}
-            stop, stop_sequence = 'stop_sequence', '</block>'
+            delta = {'type': 'text_delta', 'text': ALLOW[verdict]}
+            stop, stop_sequence = 'stop_sequence', verdict
         elif pending:
             use, tool, arguments = pending[0]
             block = {'type': 'tool_use', 'id': use, 'name': tool, 'input': {}}

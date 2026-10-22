@@ -93,13 +93,13 @@ printf '{"loggedIn":false}'; exit 1"#);
     std::fs::create_dir_all(&user_home).unwrap();
     let account = user_home.join(".alondra/accounts/work");
     std::fs::create_dir_all(&account).unwrap();
-    let default = status(&script, &user_home, &path, &user, None).unwrap();
+    let default = status(&script, &BTreeMap::new(), &user_home, &path, &user, None).unwrap();
     assert_eq!(default.email.as_deref(), Some("me@example.org"));
     assert_eq!(default.subscription.as_deref(), Some("pro"));
-    assert!(!status(&script, &user_home, &path, &user, Some(&account)).unwrap().logged_in);
+    assert!(!status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account)).unwrap().logged_in);
     std::fs::write(account.join("in"), "").unwrap();
-    assert_eq!(status(&script, &user_home, &path, &user, Some(&account)).unwrap().email.as_deref(), Some("work@example.org"));
-    let vars: Vec<String> = command(&script, &user_home, &path, &user, None).get_envs().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+    assert_eq!(status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account)).unwrap().email.as_deref(), Some("work@example.org"));
+    let vars: Vec<String> = command(&script, &BTreeMap::new(), &user_home, &path, &user, None).get_envs().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
     assert_eq!(vars.len(), 4, "{vars:?}");
 }
 

@@ -5,6 +5,7 @@
 //! in `~/.claude` (skills, agents, commands, plugins, rules, instructions, settings and the
 //! conversations), so a node works the same on any account; its sign-in and `.claude.json` are its
 //! own. Alondra never reads or keeps a token: `claude auth` does all of it.
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -122,11 +123,12 @@ pub fn effective_username() -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// How Claude is run for an account: nothing inherited but HOME, PATH and the user, in HOME, with
-/// `CLAUDE_CONFIG_DIR` only for an account that is not the default one.
-pub fn command(executable: &Path, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Command {
+/// How Claude is run for an account: with the `environment` nodes run Claude with and nothing else
+/// inherited but HOME, PATH and the user, in HOME, with `CLAUDE_CONFIG_DIR` only for an account
+/// that is not the default one.
+pub fn command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Command {
     let mut command = Command::new(executable);
-    command.env_clear().env("HOME", user_home).env("PATH", path).env("USER", username).env("LOGNAME", username).current_dir(user_home);
+    command.env_clear().envs(environment).env("HOME", user_home).env("PATH", path).env("USER", username).env("LOGNAME", username).current_dir(user_home);
     if let Some(folder) = folder {
         command.env("CLAUDE_CONFIG_DIR", folder).env("CLAUDE_HOME", folder);
     }
@@ -160,16 +162,16 @@ pub fn output(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Ve
 }
 
 /// The sign-in of the account whose folder is `folder` (`None`: the default one).
-pub fn status(executable: &Path, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Result<AuthStatus, String> {
-    let mut command = command(executable, user_home, path, username, folder);
+pub fn status(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Result<AuthStatus, String> {
+    let mut command = command(executable, environment, user_home, path, username, folder);
     command.args(["auth", "status", "--json"]);
     let (status, bytes) = output(command, STATUS_TIMEOUT)?;
     parse_status(status.success(), &bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
 }
 
 /// Signs the account out of Claude, which removes its sign-in from the Keychain.
-pub fn logout(executable: &Path, user_home: &Path, path: &str, username: &str, folder: &Path) -> Result<(), String> {
-    let mut command = command(executable, user_home, path, username, Some(folder));
+pub fn logout(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: &Path) -> Result<(), String> {
+    let mut command = command(executable, environment, user_home, path, username, Some(folder));
     command.args(["auth", "logout"]);
     let (status, _) = output(command, STATUS_TIMEOUT)?;
     if status.success() { Ok(()) } else { Err(format!("claude auth logout ended with {status}")) }

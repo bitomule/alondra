@@ -121,12 +121,12 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         report.snapshot("card-delivery-checklist", &card)?;
         let accept = user.action(&card, "accept:").or_else(|| user.action_labeled(&card, "Accept")).with_context(|| format!("the delivery offers no «Accept»: {card}"))?;
         report.step("the user accepts the result", || user.press(accept["id"].as_str().unwrap_or_default(), accept["option_id"].as_str(), None).map(drop))?;
-        wait(report, "Alondra asks the node to clean up, and it does", || {
-            let cleanup = tool_result(sandbox, "toolu_w3_5_cleanup")?;
-            let seen = format!("{cleanup:?}; dispatches of t-w3: {}; asked: {}", dispatches(sandbox, "t-w3")?,
-                model_requests(sandbox)?.iter().any(|request| request.to_string().contains("is finished and is closing")));
-            Ok((cleanup.filter(|result| result["is_error"] != true).map(drop), seen))
+        wait(report, "Alondra asks the node to clean up", || {
+            let asked = model_requests(sandbox)?.iter().any(|request| request.to_string().contains("is finished and is closing"));
+            Ok((asked.then_some(()), format!("dispatches of t-w3: {}", dispatches(sandbox, "t-w3")?)))
         })?;
+        // cleanup_done closes the session, which may end before Claude sends its result to the model:
+        // the task finishing is what shows the node cleaned up.
         state(report, user, "t-w3", FINISHED)?;
         report.step("the task's worktree is gone and its node left Fleet", || {
             let worktree = sandbox.dir.join("repo/.claude/worktrees/t-w3");
@@ -198,9 +198,8 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             let refused = tool_result(sandbox, "toolu_w4_3_cleanup")?;
             Ok((refused.filter(|result| result["is_error"] == true && result["text"].as_str().is_some_and(|text| text.contains(subagent.to_str().unwrap_or_default()))).map(drop), "no refusal yet".into()))
         })?;
-        wait(report, "the node reads which worktree holds work and gives it up", || {
-            Ok((tool_result(sandbox, "toolu_w4_4_give_up")?.filter(|result| result["is_error"] != true).map(drop), "the node has not given it up yet".into()))
-        })?;
+        // Giving the worktree up closes the session, which may end before Claude sends the result to
+        // the model: the task finishing is what shows the node gave it up.
         state(report, user, "t-w4", FINISHED)?;
         report.step("nothing of the task is left: its worktree and the subagent's are gone", || {
             ensure!(!subagent.exists(), "{} is still there", subagent.display());

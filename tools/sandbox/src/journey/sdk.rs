@@ -207,6 +207,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
+    if report.step("the user's settings ask before the commands whose permission cards the journey answers", || ask_before(sandbox)).is_err() {
+        return;
+    }
     decisions::run(report, sandbox, fakes, &user);
     relay::run(report, sandbox, fakes);
     workers::run(report, sandbox, fakes, &user);
@@ -266,9 +269,9 @@ const CONTEXT_BATCHES: usize = 5;
 
 /// Three tasks whose mission Claude had not shown it read when the Mac shut down.
 const DOUBTFUL: [(&str, &str, &str); 3] = [
-    ("req-s11", "t-s11", "Write the migration notes"),
-    ("req-s12", "t-s12", "Write the rollout plan"),
-    ("req-s13", "t-s13", "Write the support guide"),
+    ("req-s11-a", "t-s11-a", "Write the migration notes"),
+    ("req-s11-b", "t-s11-b", "Write the rollout plan"),
+    ("req-s11-c", "t-s11-c", "Write the support guide"),
 ];
 
 /// The model double takes the tasks' requests and holds them unanswered while it is set.
@@ -308,10 +311,6 @@ fn write_parity(sandbox: &Sandbox) -> Result<()> {
     let files = [
         (home.join(".claude/CLAUDE.md"), "PARITY-USER-MEMORY\n".to_owned()),
         (home.join(".claude/skills/user-parity/SKILL.md"), skill("user-parity")),
-        (home.join(".claude/settings.json"), serde_json::json!({
-            "extraKnownMarketplaces": {"parity": {"source": {"source": "directory", "path": marketplace}}},
-            "enabledPlugins": {"parity-plugin@parity": true},
-        }).to_string()),
         (marketplace.join(".claude-plugin/marketplace.json"), serde_json::json!({
             "name": "parity", "owner": {"name": "Parity"},
             "plugins": [{"name": "parity-plugin", "source": "./parity-plugin", "description": "The parity check's plugin"}],
@@ -325,11 +324,38 @@ fn write_parity(sandbox: &Sandbox) -> Result<()> {
         std::fs::create_dir_all(path.parent().context("a parent folder")?)?;
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     }
+    user_settings(sandbox, serde_json::json!({
+        "extraKnownMarketplaces": {"parity": {"source": {"source": "directory", "path": marketplace}}},
+        "enabledPlugins": {"parity-plugin@parity": true},
+    }))?;
     for args in [&["add", "CLAUDE.md"][..], &["commit", "-q", "-m", "Project memory for the parity check"]] {
         let status = std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().context("git")?;
         anyhow::ensure!(status.success(), "git {args:?} failed in {}", repo.display());
     }
     Ok(())
+}
+
+/// Nodes run in auto mode, where the classifier (the model double allows every call) decides
+/// without asking; an explicit ask rule still makes Claude Code ask the user. These are the
+/// commands whose permission cards the journey answers.
+fn ask_before(sandbox: &Sandbox) -> Result<()> {
+    user_settings(sandbox, serde_json::json!({"permissions": {"ask": ["Bash(echo *)", "Bash(sleep *)", "Bash(git commit *)"]}}))
+}
+
+/// Adds `fields` to the settings of the user's default profile that the native Claude reads.
+fn user_settings(sandbox: &Sandbox, fields: Value) -> Result<()> {
+    let path = sandbox.dir.join("sdk/home/.claude/settings.json");
+    let mut settings: Value = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("reading {}", path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let (Some(settings), Value::Object(fields)) = (settings.as_object_mut(), fields) else {
+        anyhow::bail!("{} and its new fields must be JSON objects", path.display());
+    };
+    settings.extend(fields);
+    std::fs::create_dir_all(path.parent().context("a parent folder")?)?;
+    std::fs::write(&path, Value::Object(settings.clone()).to_string()).with_context(|| format!("writing {}", path.display()))
 }
 
 /// The events the SDK hosts of `task` kept in their own outboxes, under the backend's state root,

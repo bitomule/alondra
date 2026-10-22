@@ -3,12 +3,14 @@ use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, Policy, ProviderAccount};
 use std::os::unix::fs::PermissionsExt as _;
 
-/// A Claude Code that keeps each folder's sign-in as a file in it, and logs every sign-out.
+/// A Claude Code that keeps each folder's sign-in as a file in it, and logs every sign-out. An API
+/// key in its environment signs every folder in.
 const FAKE: &str = r#"#!/bin/sh
 folder="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 case "$1 $2" in
   "auth status")
-    if [ -f "$folder/signed-in" ]; then printf '{"loggedIn":true,"email":"%s","subscriptionType":"max"}' "$(cat "$folder/signed-in")"; else printf '{"loggedIn":false}'; exit 1; fi ;;
+    if [ -n "$ANTHROPIC_API_KEY" ]; then printf '{"loggedIn":true,"authMethod":"api_key"}';
+    elif [ -f "$folder/signed-in" ]; then printf '{"loggedIn":true,"email":"%s","subscriptionType":"max"}' "$(cat "$folder/signed-in")"; else printf '{"loggedIn":false}'; exit 1; fi ;;
   "auth logout")
     [ -f "$HOME/refuse-logout" ] && exit 2
     echo "$folder" >> "$HOME/logouts"; rm -f "$folder/signed-in" ;;
@@ -41,6 +43,7 @@ fn fixture() -> Fixture {
         user_home: user_home.clone(),
         path: format!("{}:/usr/bin:/bin", bin.display()),
         username: claude_account::effective_username().unwrap(),
+        environment: BTreeMap::new(),
     };
     Fixture { _scratch: scratch, home, user_home, claude }
 }
@@ -123,6 +126,17 @@ fn each_account_is_seen_with_its_own_sign_in_email_and_plan() {
     ], "a plan the user set wins over the reported one, and a disabled account is not checked");
     let unavailable = observe(&f.home, None, &config);
     assert!(unavailable[..3].iter().all(|s| s.state == AccountState::Unavailable));
+}
+
+#[test]
+fn an_account_is_checked_with_the_environment_its_nodes_run_claude_with() {
+    let mut f = fixture();
+    std::fs::remove_file(f.user_home.join(".claude/signed-in")).unwrap();
+    let config = AccountsConfig::default();
+    assert_eq!(observe(&f.home, Some(&f.claude), &config)[0].state, AccountState::SignedOut);
+    f.claude.environment = BTreeMap::from([("ANTHROPIC_API_KEY".into(), "sk-ant-fixture".into())]);
+    assert_eq!(observe(&f.home, Some(&f.claude), &config)[0].state, AccountState::SignedIn,
+        "nodes that sign in with their environment's key run on a signed-in account");
 }
 
 #[test]
