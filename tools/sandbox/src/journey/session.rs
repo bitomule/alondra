@@ -22,6 +22,7 @@ use crate::{
 
 /// A title longer than a card's headline can hold with what the card asks.
 const S5_TITLE: &str = "Plan the onboarding without the login barrier and the GitHub permissions it asks for";
+const S6_TITLE: &str = "Publish the release after its merge";
 
 pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     let Ok(user) = report.step("a phone pairs with Mac 1 with the account", || User::paired(sandbox, "journey", 1, false)) else {
@@ -163,6 +164,52 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         report.snapshot("fleet-after-plan", &user.view("fleet")?)
     });
+    report.case("S6", "The user force-stops a node while it runs its work after the merge: a card says so, and «Close the task» finishes it", |report| {
+        let mut script = task_script("req-s6", "t-s6", S6_TITLE);
+        script.tasks[0].cleans_up = false;
+        request(report, fakes, &user, &script, S6_TITLE)?;
+        let node = launched(report, fakes, "t-s6")?;
+        state(report, &user, "t-s6", WORKING)?;
+        act(report, fakes, &node, "the node says it publishes the release after the merge", &[Step::PostMergeWork { reason: Some("release.sh publishes 0.3.0".into()) }])?;
+        act(report, fakes, &node, "the node delivers PR #26", &Step::work(26, "release.txt"))?;
+        let (_, view) = review_card(report, &user, &node)?;
+        let head = head(&node)?;
+        press(report, &user, &view, "merge:", None, None, "the user merges PR #26 from the card")?;
+        merged(report, fakes, 26, &head)?;
+        let hold = fakes.dir.join(native::HOLD_INTERRUPT);
+        report.step("Claude will accept an interrupt and keep going", || Ok(fs::write(&hold, b"")?))?;
+        let interrupt = wait(report, "Fleet offers «Interrupt» on the node", || Ok((interrupt_of(&user.view("fleet")?, S6_TITLE), "no «Interrupt»".into())))?;
+        report.step("the user presses «Interrupt» on the node in Fleet", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
+        let force = wait(report, "Fleet offers «Force stop» once Claude accepted the interrupt", || {
+            Ok((fleet_action(&user.view("fleet")?, S6_TITLE, "force_stop:"), "no «Force stop»".into()))
+        })?;
+        report.step("the user presses «Force stop»", || user.press(force["id"].as_str().unwrap_or_default(), None, None))?;
+        let card = wait(report, "a card in Inbox says the work after the merge stopped", || card_in_inbox(&user, "session-ended-t-s6-"))?;
+        let view = user.view(&format!("card:{card}"))?;
+        report.snapshot("card-post-merge-stopped", &view)?;
+        report.step("the card names the stopped work and offers «Carry on» and «Close the task»", || {
+            anyhow::ensure!(mentions(&view, "during its work after the merge") && mentions(&view, "release.sh publishes 0.3.0"), "{view}");
+            anyhow::ensure!(user.action_labeled(&view, "Carry on").is_some(), "no «Carry on»: {view}");
+            Ok(())
+        })?;
+        let close = user.action_labeled(&view, "Close the task").with_context(|| format!("no «Close the task»: {view}"))?;
+        report.step("the user presses «Close the task»", || {
+            let _ = fs::remove_file(&hold);
+            user.press(close["id"].as_str().unwrap_or_default(), close["option_id"].as_str(), None)
+        })?;
+        state(report, &user, "t-s6", FINISHED)
+    });
+}
+
+/// The enabled action of Fleet's row for `title` whose id starts with `prefix`.
+fn fleet_action(fleet: &serde_json::Value, title: &str, prefix: &str) -> Option<serde_json::Value> {
+    let mut rows = vec![];
+    super::user::collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
+    rows.into_iter().rev().find_map(|row| {
+        let mut found = vec![];
+        super::user::collect(&row, &mut |item| item.get("id").and_then(serde_json::Value::as_str).is_some_and(|id| id.starts_with(prefix)) && item.get("enabled") != Some(&serde_json::Value::Bool(false)), &mut found);
+        found.into_iter().next()
+    })
 }
 
 /// The node Fleet lists for the task titled `title`.

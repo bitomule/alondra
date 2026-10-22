@@ -688,6 +688,26 @@ async fn after_three_hours_alondra_asks_the_node_and_an_idle_node_that_does_not_
 }
 
 #[tokio::test]
+async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_without_waiting_for_its_cleanup() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0).await;
+    let card = format!("{POST_MERGE_PROBLEM_PREFIX}t-raised");
+    command(&rig.domain, Actor::System, "raise", Command::RaiseProblem {
+        attachments: vec![], interaction_id: card.as_str().into(), scope: Scope::Task { task_id: "t".into() }, body: "Its session closed".into(),
+        options: vec![QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the task".into(), description: None }],
+        card: CardSpec::new(alondra_core::domain::CardKind::Problem, "Its work after the merge stopped")
+            .why("Its session closed while it ran its work after the merge.").content(alondra_core::domain::ContentKind::Diagnosis, "Its session closed"),
+    });
+    command(&rig.domain, user(), "close", Command::AnswerQuestion {
+        attachments: vec![], interaction_id: card.as_str().into(), option_id: POST_MERGE_CLOSE.into(), inputs: Default::default(),
+    });
+    rig.pass(T0 + MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1, "the user's choice closes the node now, not after the 30 minutes its cleanup gets");
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
 async fn the_clock_only_asks_and_never_ends_the_work_after_the_merge() {
     let rig = Rig::new(thirty_minutes());
     rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));

@@ -1298,6 +1298,11 @@ impl DomainState {
             self.cancel(&task_id, effects, lifecycles)?;
             return Ok(true);
         }
+        let after_merge = self.work_after_merge(&task_id, self.lifecycle(lifecycles, &task_id)?);
+        if option == CLOSE_TASK && after_merge.is_some() {
+            self.end_post_merge(&task_id, PostMergeEnd::UserDecision, lifecycles)?;
+            return Ok(true);
+        }
         if self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, reason)| *held == card && *reason == alondra_domain::WaitReason::Doubt) {
             self.settle_handoff(&task_id, card, option, written, lifecycles)?;
             return Ok(true);
@@ -1306,7 +1311,11 @@ impl DomainState {
             self.settle_dropped(&task_id, card, option, written, lifecycles)?;
             return Ok(true);
         }
-        let mut text = if option == CARRY_ON { CARRY_ON_INSTRUCTION.to_owned() } else { String::new() };
+        let mut text = match (option, after_merge.as_deref()) {
+            (CARRY_ON, Some(reason)) => post_merge_carry_on_instruction(reason),
+            (CARRY_ON, None) => CARRY_ON_INSTRUCTION.to_owned(),
+            _ => String::new(),
+        };
         if let Some(written) = written.map(str::trim).filter(|written| !written.is_empty()) {
             if !text.is_empty() {
                 text.push_str("\n\n");
@@ -1337,12 +1346,15 @@ impl DomainState {
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let available = lifecycle.resource() == Some(ResourceEvidence::Available);
         let looped = resumes && resumed_without_progress(&self.lifecycle_journal[task]);
+        let after_merge = self.work_after_merge(task, lifecycle);
+        let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction);
         let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
             unheard_card: card.clone(),
-            text: resume.as_ref().map(|_| HOST_RESUMED_INSTRUCTION.to_owned()),
+            text: resume.as_ref().map(|_| resumed_text.clone()),
             resume,
         };
-        let resumed = resumes && !forced && !looped && available && self.decide(lifecycles, task, ended(Some(self.next_input(task)))).is_ok();
+        let under_review = lifecycle.phase() == TaskPhase::Delivered && after_merge.is_none();
+        let resumed = resumes && !forced && !looped && available && !under_review && self.decide(lifecycles, task, ended(Some(self.next_input(task)))).is_ok();
         if !resumed {
             self.decide(lifecycles, task, ended(None))?;
         }
@@ -1352,7 +1364,9 @@ impl DomainState {
         }
         if now.contains(&card) {
             let title = self.tasks[task].title.clone();
-            let ended = if forced {
+            let ended = if let Some(reason) = &after_merge {
+                post_merge_ended_card(card.clone(), task, &title, reason, forced, self.revision + 1)
+            } else if forced {
                 turn_ended_card(card.clone(), task, &title, TurnEnd::Interrupted, self.revision + 1)
             } else {
                 session_ended_card(card.clone(), task, &title, if looped { SESSION_ENDED_AGAIN_WHY } else { SESSION_ENDED_WHY }, self.revision + 1)
@@ -1679,6 +1693,17 @@ impl DomainState {
             return Ok(());
         };
         self.decide(lifecycles, task, LifecycleRecord::PostMergeEnded { operation, fact })
+    }
+
+    /// The user ended the task's work after the merge on one of its cards: its node closes now,
+    /// without waiting for a cleanup it may never confirm.
+    pub fn post_merge_closed_by_user(&self, task: &TaskId) -> bool {
+        self.lifecycle_journal.get(task).is_some_and(|journal| journal.iter().rev()
+            .find_map(|record| match record {
+                LifecycleRecord::PostMergeEnded { fact, .. } => Some(*fact == PostMergeEnd::UserDecision),
+                _ => None,
+            })
+            .unwrap_or(false))
     }
 
     /// Work after the merge a node declared under a daemon from before the lifecycle owed it: the
@@ -2070,6 +2095,64 @@ fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, r
 fn capitalized(text: &str) -> String {
     let mut chars = text.trim().chars();
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+impl DomainState {
+    /// What the node said it runs after its PR merged, once its delivery is settled and waits for
+    /// that work to end: a host that ends then leaves the task on a card about that work.
+    fn work_after_merge(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<String> {
+        if lifecycle.phase() != TaskPhase::Delivered || lifecycle.post_merge().is_none() {
+            return None;
+        }
+        let task = self.tasks.get(task).filter(|task| self.finished(task))?;
+        task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())
+    }
+}
+
+/// The option of a card about the work after the merge that takes that work as done.
+pub const CLOSE_TASK: &str = "close_task";
+pub const CLOSE_TASK_LABEL: &str = "Close the task";
+const CLOSE_TASK_MEANS: &str = "Its work after the merge counts as done: the task is completed and Alondra closes its session";
+pub const POST_MERGE_ENDED_WHY: &str = "Its PR is merged. Its session closed while it ran what it said comes after the merge, and whatever ran in the background stopped. Tell it to go on, with all its context, or close the task if that work is done.";
+pub const POST_MERGE_STOPPED_WHY: &str = "Its PR is merged and you stopped what it ran after the merge. Tell it to go on, with all its context, or close the task if that work is done.";
+
+fn post_merge_resumed_instruction(reason: &str) -> String {
+    format!("Your session was cut off when its host stopped, and Alondra resumed it. Your PR is merged: check where you were and go on with the work you said runs after the merge (“{reason}”). When it is done, call post_merge_work without a reason, clean up and call cleanup_done.")
+}
+
+fn post_merge_carry_on_instruction(reason: &str) -> String {
+    format!("Go on with the work you said runs after the merge (“{reason}”). When it is done, call post_merge_work without a reason, clean up and call cleanup_done.")
+}
+
+fn post_merge_ended_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, forced: bool, revision: u64) -> Interaction {
+    let (need, why) = if forced {
+        (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("You stopped “{title}” during its work after the merge: tell it how to go on")), POST_MERGE_STOPPED_WHY)
+    } else {
+        (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped its work after the merge when its session closed: tell it how to go on")), POST_MERGE_ENDED_WHY)
+    };
+    let need = clip(&need, CardSpec::NEED_MAX);
+    Interaction {
+        attachments: vec![],
+        id,
+        scope: Scope::Task { task_id: task.clone() },
+        author: Author::System,
+        recipient: Recipient::User,
+        body: need.clone(),
+        blocking: true,
+        subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![
+                QuestionOption { id: CARRY_ON.into(), label: CARRY_ON_LABEL.into(), description: Some(CARRY_ON_MEANS.into()) },
+                QuestionOption { id: CLOSE_TASK.into(), label: CLOSE_TASK_LABEL.into(), description: Some(CLOSE_TASK_MEANS.into()) },
+            ],
+            answer: None,
+        },
+        revision,
+        order: revision,
+        withdrawn: false,
+        card: CardSpec::new(CardKind::Decide, need).why(why).content(ContentKind::Diagnosis, reason),
+        clarification: None,
+    }
 }
 
 fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, why: &str, revision: u64) -> Interaction {

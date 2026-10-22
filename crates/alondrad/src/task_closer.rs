@@ -275,7 +275,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         },
         (Due::Cleanup, true, None) if !session_over => return hold_while_working_after_merge(domain, now, row),
         _ => {
-            close_now |= matches!(post_merge_answer(domain, &state, task_id)?, Some(Card::Retry));
+            close_now |= matches!(post_merge_answer(domain, &state, task_id)?, Some(Card::Retry)) || state.post_merge_closed_by_user(task_id);
             forget_post_merge_check(domain, task_id)?;
         }
     }
@@ -380,7 +380,7 @@ async fn close_sdk_node(
     row: TaskClosing, owned: bool,
 ) -> Result<()> {
     let cleanup = matches!(kind, Due::Cleanup);
-    let user_closed = matches!(post_merge_answer(domain, state, &task.id)?, Some(Card::Retry));
+    let user_closed = matches!(post_merge_answer(domain, state, &task.id)?, Some(Card::Retry)) || state.post_merge_closed_by_user(&task.id);
     let owes_nothing = !cleanup || task.wrap_up.cleaned_at.is_some() || user_closed;
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;

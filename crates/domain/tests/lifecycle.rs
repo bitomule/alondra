@@ -2540,3 +2540,63 @@ fn advancing_leaves_the_aggregate_it_started_from_as_it_was() {
     assert_eq!(task.advanced(task.revision() + 1, admission()), Err(Refusal::StaleRevision));
     assert!(next.advanced(next.revision(), admission()).is_err(), "a second admission of the same execution is refused");
 }
+
+/// A task whose node declared work after the merge, with its delivery accepted and merged and the
+/// root turn still running that work.
+fn merged_with_work_after_it() -> TaskLifecycle {
+    let mut task = running();
+    apply(&mut task, Event::PostMergeDeclared { operation: operation("release") });
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    apply(&mut task, Event::Accept { delivery: "delivery".into(), merge: Some(operation("merge")) });
+    apply(&mut task, Event::MergeObserved { operation: operation("merge") });
+    assert!(task.accepted());
+    task
+}
+
+#[test]
+fn a_host_that_ends_during_the_work_after_the_merge_asks_the_user_how_it_goes_on() {
+    let mut task = merged_with_work_after_it();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    assert_eq!(task.phase(), TaskPhase::Delivered);
+    assert_eq!(task.activity(), ActivityView::Resting);
+    assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)], "the ended session can no longer say the work ended");
+
+    let mut task = merged_with_work_after_it();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    assert!(task.cards().is_empty(), "a resting node may still say the work ended");
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)], "once its session ends it cannot");
+}
+
+#[test]
+fn a_resumed_session_goes_on_with_the_work_after_the_merge_without_a_card() {
+    let mut task = merged_with_work_after_it();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.pending_inputs(), [&input("resumed")]);
+    assert_eq!(task.phase(), TaskPhase::Delivered);
+}
+
+#[test]
+fn ending_the_work_after_the_merge_or_telling_the_node_settles_the_card_of_its_ended_session() {
+    let mut task = merged_with_work_after_it();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    apply(&mut task, Event::PostMergeEnded { operation: operation("release"), fact: PostMergeFact::UserDecision });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.post_merge(), None);
+
+    let mut task = merged_with_work_after_it();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    apply(&mut task, Event::Tell { input: input("told") });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.pending_inputs(), [&input("told")]);
+}
+
+#[test]
+fn a_host_that_ends_on_a_delivery_that_owes_nothing_after_the_merge_asks_nothing() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    apply(&mut task, Event::Accept { delivery: "delivery".into(), merge: None });
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    assert!(task.cards().is_empty());
+}

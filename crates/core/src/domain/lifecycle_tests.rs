@@ -476,6 +476,16 @@ fn turn_end_shown(s: &DomainState, id: &str, lang: crate::views::text::Lang) -> 
     serde_json::to_string(&view).unwrap()
 }
 
+/// The card view of `card` in `lang`.
+fn card_shown(s: &DomainState, card: &InteractionId, lang: crate::views::text::Lang) -> String {
+    use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
+    let index = ReadIndex::build(s);
+    let live = LiveSnapshot::default();
+    let view = build(&format!("card:{card}"), RenderContext { domain: s, index: &index, live: &live, client: Client::Tui, lang,
+        transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+    serde_json::to_string(&view).unwrap()
+}
+
 #[test]
 fn a_turn_the_user_interrupted_ends_on_a_card_that_says_so() {
     use crate::views::text::Lang;
@@ -1538,5 +1548,96 @@ fn a_message_claude_never_reads_can_be_let_go_and_the_task_asks_how_to_go_on() {
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: DISCARD.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Write the docs instead".into()))]) });
     assert!(matches!(last(&s, "t"), LifecycleRecord::Answered { text: Some(text), .. } if text == "Write the docs instead"), "what they wrote goes in its place");
+    assert_aggregate_rules(&s);
+}
+
+/// An SDK task whose node declared work after the merge and whose PR was accepted and merged while
+/// its turn runs that work.
+fn working_after_the_merge(s: &mut DomainState) {
+    sdk_turn(s, "t", "a");
+    must(s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("release.sh publishes 0.3.0".into()) });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+    must(s, node("a"), Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    must(s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    must(s, Actor::System, Command::ObservePrState {
+        pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
+    });
+    assert!(s.post_merge_owed(&s.tasks[&TaskId::from("t")]));
+}
+
+/// The user forces the running turn of `t` to stop and its host ends.
+fn force_stopped(s: &mut DomainState) -> (CommandOutcome, InteractionId) {
+    must(s, user(), Command::InterruptTurn { agent_id: "a".into() });
+    must(s, Actor::System, Command::RecordInterruptAccepted { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
+    must(s, user(), Command::ForceStopTurn { agent_id: "a".into() });
+    let ended = must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the stopped work after the merge asks").clone();
+    (ended, card)
+}
+
+#[test]
+fn a_host_force_stopped_during_the_work_after_the_merge_tells_the_user_and_offers_the_ways_out() {
+    use crate::views::text::Lang;
+    let mut s = world();
+    working_after_the_merge(&mut s);
+    let (ended, card) = force_stopped(&mut s);
+    assert_eq!(s.interactions[&card].card.need, "You stopped “Task t” during its work after the merge: tell it how to go on");
+    assert_eq!(s.interactions[&card].card.why, POST_MERGE_STOPPED_WHY);
+    assert_eq!(s.interactions[&card].card.content.as_ref().map(|content| content.body.as_str()), Some("release.sh publishes 0.3.0"));
+    assert_eq!(options(&s, &card), [CARRY_ON, CLOSE_TASK]);
+    assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)), "the user hears of it");
+    assert!(s.open(&s.interactions[&card]));
+    let es = turn_end_shown(&s, "t", Lang::Es);
+    assert!(es.contains("Paraste «Task t» durante su trabajo tras fusionar: dile cómo seguir"), "{es}");
+    let shown = card_shown(&s, &card, Lang::Es);
+    assert!(shown.contains("\"label\":\"Cerrar la tarea\"") && shown.contains("\"label\":\"Que siga\""), "{shown}");
+    assert_aggregate_rules(&s);
+
+    answer(&mut s, &card, CARRY_ON);
+    let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("the answer goes to the resumed session") };
+    assert!(text.contains("release.sh publishes 0.3.0") && text.contains("post_merge_work"), "{text}");
+    assert!(s.post_merge_owed(&s.tasks[&TaskId::from("t")]), "carrying on keeps the work owed");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn closing_the_task_on_that_card_ends_the_work_after_the_merge_and_the_task_finishes_with_its_node() {
+    let mut s = world();
+    working_after_the_merge(&mut s);
+    let (_, card) = force_stopped(&mut s);
+    answer(&mut s, &card, CLOSE_TASK);
+    assert!(!s.post_merge_owed(&s.tasks[&TaskId::from("t")]));
+    assert!(!s.open(&s.interactions[&card]));
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::PostMergeEnded { fact: PostMergeEnd::UserDecision, .. })));
+    assert_aggregate_rules(&s);
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Done);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_host_that_crashes_during_the_work_after_the_merge_resumes_it_or_asks() {
+    let mut s = world();
+    working_after_the_merge(&mut s);
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "a resumed session goes on by itself");
+    assert!(!ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
+    let Some(LifecycleRecord::HostEnded { resume: Some(_), text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("resumed") };
+    assert!(text.contains("release.sh publishes 0.3.0") && text.contains("post_merge_work"), "{text}");
+    assert_aggregate_rules(&s);
+
+    let mut s = world();
+    working_after_the_merge(&mut s);
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("no session takes its place: the user is asked").clone();
+    assert_eq!(s.interactions[&card].card.why, POST_MERGE_ENDED_WHY);
+    assert_eq!(options(&s, &card), [CARRY_ON, CLOSE_TASK]);
     assert_aggregate_rules(&s);
 }

@@ -150,7 +150,10 @@ impl TaskLifecycle {
                     State::InProgress(Progress::Executing { execution, .. }) => queue_input(&mut execution.0, input)?,
                     State::InProgress(Progress::Queued { remaining, .. }) => remaining.push_back(input),
                     State::InProgress(Progress::Waiting { session, .. } | Progress::Dependency { session, .. }) => tell(session, input)?,
-                    State::Delivered(delivered) => tell(&mut delivered.session, input)?,
+                    State::Delivered(delivered) => {
+                        delivered.decisions.retain(|_, card| card.reason != WaitReason::Unheard);
+                        tell(&mut delivered.session, input)?;
+                    }
                     State::Finishing(finishing) => tell(&mut finishing.session, input)?,
                     State::Unstarted(_) | State::Completed | State::Cancelled => return Err(Refusal::InvalidState),
                 }
@@ -381,6 +384,9 @@ impl TaskLifecycle {
             Event::PostMergeEnded { operation, fact: _ } => {
                 if self.post_merge.as_ref() == Some(&operation) {
                     self.post_merge = None;
+                    if let State::Delivered(delivered) = &mut self.state {
+                        delivered.decisions.retain(|_, card| card.reason != WaitReason::Unheard);
+                    }
                 } else {
                     self.discharge(DrainObligation::PostMerge(operation))?;
                 }

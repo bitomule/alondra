@@ -25,6 +25,7 @@ impl TaskLifecycle {
         let mut resting_card = None;
         let mut resume_instead = None;
         let mut ended_callbacks = Vec::new();
+        let mut host_end = None;
         // Claude went on by itself: the cards that asked the user how it goes on no longer hold.
         let mut unprompted = false;
         if execution.resource != ResourceEvidence::Available
@@ -394,6 +395,7 @@ impl TaskLifecycle {
             RuntimeFact::Notification => {}
             RuntimeFact::HostEnded { unheard_card, resume } => {
                 valid_id(&unheard_card.0)?;
+                host_end = Some(unheard_card.clone());
                 if !matches!(execution.resource, ResourceEvidence::Reserved | ResourceEvidence::Available) {
                     return Err(Refusal::InvalidState);
                 }
@@ -446,6 +448,7 @@ impl TaskLifecycle {
                 });
             }
         }
+        let owes_post_merge = self.post_merge.is_some();
         match &mut self.state {
             State::InProgress(Progress::Executing { stage, .. }) => {
                 self.state = if let Some(card) = forced_card.or(requested_card) {
@@ -570,6 +573,27 @@ impl TaskLifecycle {
                         return Err(Refusal::DuplicateObligation);
                     }
                     delivered.decisions.entry(card.id.clone()).or_insert(card);
+                }
+                // The work after the merge can only be reported by the session that ran it: once
+                // that session ends, a resumed one goes on with it or the user is asked how it goes on.
+                if let Some(id) = host_end.filter(|_| {
+                    owes_post_merge
+                        && delivered.decisions.is_empty()
+                        && matches!(execution.activity, Activity::Resting)
+                }) {
+                    match resume_instead.take() {
+                        Some(input) => queue_input(&mut execution, input)?,
+                        None => {
+                            delivered.decisions.insert(
+                                id.clone(),
+                                Card {
+                                    id,
+                                    reason: WaitReason::Unheard,
+                                    callback: None,
+                                },
+                            );
+                        }
+                    }
                 }
                 delivered.session = Session::Present(execution);
             }
