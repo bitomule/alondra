@@ -48,9 +48,11 @@ checks:
       - "deploy/apple/**"
       - "deploy/pi/iroh-relay/**"
       - "tools/shared.bzl"
+      - "tests/system/macos/**"
     with:
       targets:
         - //crates/...
+        - //tests/system/macos:local_daemon_test
         - //apple:no_sleep_wording_test
         - //apple:release_bonjour_test
         - //apple:spanish_catalog_test

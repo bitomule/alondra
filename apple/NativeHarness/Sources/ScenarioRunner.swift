@@ -50,8 +50,9 @@ public enum NativeScenarioRunner {
                 var rejected = false
                 do {
                     if scenario == "large-resource-read" {
-                        _ = try await api.send(Endpoint<Data>.data(.get, path: ["summary"]))
-                        _ = try await api.send(Endpoint<Data>.data(.get, path: ["documents", "document-1"]))
+                        _ = try await api.send(Endpoint<Data>.data(.get, path: ["capabilities"]))
+                        _ = try await api.send(Endpoint<Data>.data(.get, path: ["views", "document:document-1"],
+                            query: [("protocol", "1"), ("client", "ios"), ("lang", "en")]))
                     }
                     let text = try await readDocumentContent(api, expectedDigest: fixture.documentDigest)
                     result = Data(text.utf8)
@@ -63,9 +64,11 @@ public enum NativeScenarioRunner {
                     let chunks = stride(from: 0, to: fixture.document.count, by: SyntheticMacHTTP.chunkBytes).map { $0 }
                     report.checks["exact_large_unicode_document"] = result == fixture.document && fixture.document.count > 180 * 1024
                     report.checks["all_resource_chunks_requested"] = observation.offsets == chunks
-                    report.checks["resource_reads_only"] = observation.resourcePaths.contains("/summary")
-                        && observation.resourcePaths.contains("/documents/document-1")
-                        && observation.resourcePaths.allSatisfy { !$0.contains("snapshot") && !$0.contains("/v1/") && !$0.contains("/v2/") }
+                    report.checks["resource_reads_only"] = observation.resourcePaths.contains("/capabilities")
+                        && observation.resourcePaths.contains(SyntheticMacHTTP.documentView)
+                        && observation.resourcePaths.allSatisfy { path in
+                            !["/summary", "/documents/", "snapshot", "/v1/", "/v2/"].contains { path.contains($0) }
+                        }
                     report.checks["verified_encrypted_requests"] = observation.opened == chunks.count + 2
                     report.checks["no_account_token_for_the_mac"] = authCalls.tokens == 0
                 } else {

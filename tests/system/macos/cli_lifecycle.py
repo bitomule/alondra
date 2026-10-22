@@ -19,10 +19,31 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 
 import cli
+
+def legacy_readiness(process, port, version, home):
+    """The pinned 0.1.x daemons answer the /v1 router that later releases retired."""
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        cli.require(process.poll() is None, 'daemon exited before readiness')
+        try:
+            health = cli.request(port, '/v1/health')
+        except (OSError, ValueError):
+            time.sleep(.1)
+            continue
+        cli.require(health.get('ok') is True and health.get('version') == version, 'health/version mismatch')
+        config = health['config']
+        cli.require(config['home'] == str(home) and config['port'] == port and config['listen'] == '127.0.0.1',
+                    'daemon isolation mismatch')
+        cli.require(config['wake'] is False and config['legacy_bridge'] is False and config['resume_dead_nodes'] is False,
+                    'unsafe daemon flags')
+        return health
+    raise RuntimeError('daemon readiness timeout')
+
 
 RELEASES = {
     '0.1.8': {'commit': 'acd39210f921fb305494146e6c717a3f0bc16584',
@@ -232,7 +253,7 @@ def run():
         def file_bound(): resource.setrlimit(resource.RLIMIT_FSIZE, (cli.MAX_LOG, cli.MAX_LOG))
         process = subprocess.Popen([str(prefix / 'bin/alondrad')], env=env, stdin=subprocess.DEVNULL,
                                    stdout=daemon_log, stderr=subprocess.STDOUT, preexec_fn=file_bound)
-        cli.readiness(process, port, version, state)
+        legacy_readiness(process, port, version, state)
         cli.require(command([str(prefix / 'bin/alondra'), 'config', '--get', 'archived_tasks_days'],
                             name + '-config', execution_env=env).strip() == '37', 'persisted config was not applied')
         return process.pid
@@ -282,7 +303,7 @@ def run():
         cli.check_guest_network_disabled(command(['/sbin/ifconfig', 'en0'], 'network-status'))
         pid = start('0.1.8', '018')
         seeded = create_schedule('Pre-upgrade schedule')
-        before_seq = cli.request(port, '/summary')['revision']
+        before_seq = cli.request(port, '/v1/overview')['seq']
         before_rows = schedules(); stop()
         before_audit = audit('018-audit')
         backup = project / 'pre-upgrade-state'; hashes = snapshot(state, backup)
@@ -297,9 +318,9 @@ def run():
         cli.require((state / 'lifecycle-marker.json').read_bytes() == (backup / 'lifecycle-marker.json').read_bytes(), 'upgrade changed marker')
         cli.require((state / 'config.toml').read_bytes() == (backup / 'config.toml').read_bytes(), 'upgrade changed configuration')
         later = create_schedule('Post-upgrade schedule; preserved outside rollback')
-        upgraded_seq = cli.request(port, '/summary')['revision']
+        upgraded_seq = cli.request(port, '/v1/overview')['seq']
         cli.require(upgraded_seq > before_seq, '019 did not record its new bootstrap event')
-        upgraded_rows = schedules(); result['tui'] = cli.tui(prefix / 'bin/alondra', env); stop()
+        upgraded_rows = schedules(); result['tui'] = cli.tui(prefix / 'bin/alondra', env, 'Local'); stop()
         upgraded_audit = audit('019-audit')
         with closing(sqlite3.connect((state / 'alondra.db').as_uri() + '?mode=ro', uri=True)) as db:
             cli.require(db.execute("SELECT COUNT(*) FROM event_log WHERE kind='splits_released'").fetchone() == (1,), 'missing new event for downgrade oracle')

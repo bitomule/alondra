@@ -16,7 +16,9 @@ import sys
 import termios
 import time
 import struct
+import sqlite3
 import urllib.request
+from contextlib import closing
 
 ROOT = Path('/Users/admin/alondra-gate')
 TEAM = '658YBSK6MG'
@@ -92,22 +94,82 @@ def request(port, path):
         return json.loads(body)
 
 
-def readiness(process, port, version, home):
+def readiness(process, port, version):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         require(process.poll() is None, 'daemon exited before readiness')
         try:
-            health = request(port, '/v1/health')
+            daemon = request(port, '/daemon')
         except (OSError, ValueError):
             time.sleep(.1)
             continue
-        require(health.get('ok') is True and health.get('version') == version, 'health/version mismatch')
-        config = health['config']
-        require(config['home'] == str(home) and config['port'] == port and config['listen'] == '127.0.0.1', 'daemon isolation mismatch')
-        require(config['wake'] is False and config['legacy_bridge'] is False and config['resume_dead_nodes'] is False,
-                'unsafe daemon flags')
-        return health
+        require(daemon.get('version') == version, 'daemon version mismatch')
+        return daemon
     raise RuntimeError('daemon readiness timeout')
+
+
+def status_blocks(output):
+    """`alondra status` prints the home and tasks views under unindented headings."""
+    blocks, current = {}, None
+    for line in output.splitlines():
+        if line and not line.startswith(' ') and line.endswith(':'):
+            current = line[:-1]
+            blocks[current] = []
+        elif current is not None and line.strip():
+            blocks[current].append(line.strip())
+    return blocks
+
+
+def stored_domain(state):
+    """Read once the daemon has stopped: no route without a device signature carries the revision."""
+    with closing(sqlite3.connect((state / 'domain.db').as_uri() + '?mode=ro', uri=True)) as db:
+        (revision,) = db.execute('SELECT revision FROM domain_meta WHERE singleton=1').fetchone()
+        (tasks,) = db.execute('SELECT COUNT(*) FROM tasks').fetchone()
+        (agents,) = db.execute('SELECT COUNT(*) FROM agents').fetchone()
+    return {'revision': revision, 'tasks': tasks, 'agents': agents}
+
+
+def local_daemon_checks(binary, daemon, env, port, state, version, logs, with_tui, owned):
+    """Two starts of the daemon on an empty home: it answers, reads the configuration a finished
+    setup leaves, stays empty and writes nothing to the domain. That file is what makes `alondra`
+    open the TUI rather than the setup wizard.
+
+    Every daemon started is appended to `owned`, so the caller can still stop it after a signal."""
+    def bound_daemon_files():
+        # This fixture is empty; limit every file to bound daemon log output too.
+        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_LOG, MAX_LOG))
+    state.mkdir(mode=0o700, exist_ok=True)
+    (state / 'config.toml').write_text('listen = "127.0.0.1"\n')
+    result = {}
+    revisions = []
+    for cycle in range(2):
+        process = None
+        with (logs / f'daemon-{cycle}.log').open('xb') as daemon_log:
+            try:
+                process = subprocess.Popen([str(daemon)], env=env, stdin=subprocess.DEVNULL, stdout=daemon_log,
+                                           stderr=subprocess.STDOUT, preexec_fn=bound_daemon_files)
+                owned.append(process)
+                readiness(process, port, version)
+                blocks = status_blocks(command([str(binary), 'status'], env, logs / f'status-{cycle}.log'))
+                require(blocks.get('Waiting for You') == [] and 'Tasks' in blocks, 'expected an empty home view')
+                require(command([str(binary), 'config', 'get', 'home'], env, logs / f'home-{cycle}.log').strip() == str(state),
+                        'CLI home mismatch')
+                require(command([str(binary), 'config', 'get', 'port'], env, logs / f'port-{cycle}.log').strip() == str(port),
+                        'CLI port mismatch')
+                require(command([str(binary), 'config', 'get', 'listen'], env, logs / f'listen-{cycle}.log').strip() == '127.0.0.1',
+                        'CLI listen mismatch')
+                if with_tui and cycle == 1:
+                    result['tui'] = tui(binary, env)
+                require(process.poll() is None, 'daemon exited during local checks')
+            finally:
+                stop(process)
+        stored = stored_domain(state)
+        require(stored['tasks'] == 0 and stored['agents'] == 0, 'expected an empty domain')
+        revisions.append(stored['revision'])
+        require(not (state / 'service.toml').exists(), 'unexpected service enrollment')
+    require(revisions[0] == revisions[1], 'empty domain changed across restart')
+    result['persisted_revision'] = revisions[-1]
+    return result
 
 
 def final_screen(data):
@@ -139,7 +201,7 @@ def final_screen(data):
     return '\n'.join(''.join(line) for line in screen)
 
 
-def tui(binary, env):
+def tui(binary, env, landmark='Bandeja'):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 160, 0, 0))
     def own_terminal():
@@ -173,7 +235,7 @@ def tui(binary, env):
         os.write(master, b'q')
         drain(5)
         require(process.wait(timeout=2) == 0, 'TUI q exit failed')
-        require(loaded and 'Local' in screen and not offline and b'\x1b[?1049l' in data, 'TUI did not render online Local overview')
+        require(loaded and landmark in screen and not offline and b'\x1b[?1049l' in data, 'TUI did not render its online home')
         return {'online_header': loaded, 'offline': offline, 'exit': 0, 'cursor_replies': cursor,
                 'device_status_replies': status, 'bytes_observed': len(data), 'screen_retained': False}
     finally:
@@ -182,12 +244,14 @@ def tui(binary, env):
 
 
 def check_plan(plan, prefix):
-    require(f'<string>{prefix}/bin/alondrad</string>' in plan,
-            'setup did not discover stable Brew opt daemon')
-    require('(dry run: nothing was written or run)' in plan,
-            'setup did not complete dry-run mode')
-    require('/Cellar/' not in plan and '.local/bin/alondrad' not in plan and 'make install' not in plan,
-            'setup proposed a source-checkout or unstable daemon path')
+    """`doctor` without --fix only reports: the service it would install runs the stable Brew opt daemon."""
+    report = json.loads(plan)
+    install = [check['install'] for check in report['checks'] if check.get('id') == 'service' and check.get('install')]
+    require(len(install) == 1, 'doctor did not report the service it would install')
+    program = install[0]['program']
+    require(program == f'{prefix}/bin/alondrad', 'doctor did not discover stable Brew opt daemon')
+    require('/Cellar/' not in program and '.local/bin/alondrad' not in program,
+            'doctor proposed a source-checkout or unstable daemon path')
 
 
 def check_guest_network_disabled(output):
@@ -208,12 +272,9 @@ def run(version):
     state = home / '.alondra'
     claude = home / '.claude'
     claude.mkdir()
-    projects = home / 'Projects'
-    projects.mkdir()
     result = {'schema': 1, 'profile': 'cli-public-package-local-runtime', 'expected_version': version,
               'status': 'failed', 'checks': [], 'limits': ['no authenticated setup', 'no Claude', 'no service pairing', 'no cloud E2E']}
-    process = None
-    daemon_log = None
+    daemons = []
     base_env = {**os.environ, 'HOMEBREW_NO_AUTO_UPDATE': '1', 'HOMEBREW_NO_ANALYTICS': '1', 'HOMEBREW_NO_INSTALL_CLEANUP': '1'}
     try:
         require(not Path('/Users/admin/.alondra').exists(), 'guest contains Alondra profile')
@@ -255,37 +316,14 @@ def run(version):
         before = tree(home)
         plans = []
         for index in range(2):
-            plans.append(command([str(binary), 'setup', '--dry-run', '--no-input', '--projects-root', str(projects),
-                '--listen', '127.0.0.1', '--port', str(port), '--wake', 'false'], env, logs / f'dryrun-{index}.log'))
+            plans.append(command([str(binary), 'doctor', '--no-input', '--json', '--only', 'service'],
+                                 env, logs / f'doctor-{index}.log'))
             check_plan(plans[-1], prefix)
-            require(tree(home) == before, 'dry-run mutated fixture state')
-        require(plans[0] == plans[1], 'dry-run plan changed')
-        result['checks'].append('dryrun_twice_no_profile_writes')
-        sequences = []
-        def bound_daemon_files():
-            # This fixture is empty; limit every file to bound daemon log output too.
-            resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_LOG, MAX_LOG))
-        for cycle in range(2):
-            daemon_log = (logs / f'daemon-{cycle}.log').open('xb')
-            process = subprocess.Popen([str(daemon)], env=env, stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=subprocess.STDOUT, preexec_fn=bound_daemon_files)
-            readiness(process, port, version, state)
-            summary = request(port, '/summary')
-            require(isinstance(summary.get('revision'), int) and summary.get('open_tasks') == 0
-                    and summary.get('connected_agents') == 0, 'expected empty local resource summary')
-            sequences.append(summary['revision'])
-            command([str(binary), 'status'], env, logs / f'status-{cycle}.log')
-            require(command([str(binary), 'config', '--get', 'home'], env, logs / f'home-{cycle}.log').strip() == str(state), 'CLI home mismatch')
-            require(command([str(binary), 'config', '--get', 'port'], env, logs / f'port-{cycle}.log').strip() == str(port), 'CLI port mismatch')
-            if cycle == 1:
-                result['tui'] = tui(binary, env)
-            require(process.poll() is None, 'daemon exited during local checks')
-            stop(process); process = None
-            daemon_log.close(); daemon_log = None
-            command([str(binary), 'state', 'audit'], env, logs / f'audit-{cycle}.log')
-            require(not (state / 'service.toml').exists(), 'unexpected service enrollment')
-        require(sequences[0] == sequences[1], 'empty journal changed across restart')
-        result['persisted_sequence'] = sequences[-1]
-        result['checks'].extend(['isolated_daemon_health_resource_summary_config', 'restart_state_audit', 'local_tui_q_exit'])
+            require(tree(home) == before, 'doctor mutated fixture state')
+        require(plans[0] == plans[1], 'doctor report changed')
+        result['checks'].append('doctor_twice_no_profile_writes')
+        result.update(local_daemon_checks(binary, daemon, env, port, state, version, logs, True, daemons))
+        result['checks'].extend(['isolated_daemon_views_config', 'restart_keeps_empty_domain', 'local_tui_q_exit'])
         require(all(p.stat().st_size <= MAX_LOG for p in logs.iterdir()), 'oversized log')
         result['status'] = 'passed'
     except Exception as error:
@@ -293,9 +331,8 @@ def run(version):
     finally:
         # A second signal cannot skip cleanup or publication of the failed receipt.
         for sig in (signal.SIGINT, signal.SIGTERM): signal.signal(sig, signal.SIG_IGN)
-        stop(process)
-        if daemon_log is not None: daemon_log.close()
-        result['cleanup'] = process is None or process.poll() is not None
+        for process in daemons: stop(process)
+        result['cleanup'] = all(process.poll() is not None for process in daemons)
         temp = project / '.cli-result.json.tmp'
         temp.write_text(json.dumps(result, indent=2) + '\n')
         temp.replace(project / 'cli-result.json')

@@ -16,6 +16,7 @@ actor SyntheticMacHTTP: HTTPTransport {
     }
     static let chunkBytes = 49_152
     static let revisionID = "revision-1"
+    static let documentView = "/views/document%3Adocument-1?protocol=1&client=ios&lang=en"
     static let endpoint = DirectEndpoint(host: "192.168.1.5", port: 47810, kind: .localNetwork)
     private let document: Data
     private let loseResponse: Bool
@@ -83,12 +84,12 @@ actor SyntheticMacHTTP: HTTPTransport {
 
     private func read(_ method: String, _ path: String) async throws -> [String: Any] {
         switch (method, path) {
-        case ("GET", "/summary"):
+        case ("GET", "/capabilities"):
             observed.resourcePaths.append(path)
             return ["status": 200, "body": ["protocol_version": 2, "data_epoch": "synthetic", "revision": 1]]
-        case ("GET", "/documents/document-1"):
+        case ("GET", Self.documentView):
             observed.resourcePaths.append(path)
-            return ["status": 200, "body": ["id": "document-1"]]
+            return ["status": 200, "body": ["protocol": 1, "view": "document", "key": "document:document-1"]]
         case ("GET", let path) where path.hasPrefix("/operation-results/"):
             observed.resultReads += 1
             let components = URLComponents(string: "https://fixture.invalid" + path)

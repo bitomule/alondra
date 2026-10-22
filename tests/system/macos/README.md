@@ -71,7 +71,7 @@ python3 tests/system/macos.py --output-dir /private/tmp/alondra-macos-UNIQUE
 Reserve the shared heavy-work slot, then run the CLI profile:
 
 ```sh
-python3 tests/system/macos.py --run --brew-version 0.1.8 \
+python3 tests/system/macos.py --run --brew-version NEWEST_PUBLISHED_VERSION \
   --output-dir /private/tmp/alondra-cli-UNIQUE
 ```
 
@@ -132,10 +132,13 @@ into successes. The flow still requires visible destination readback.
 ## Assertions and limits
 
 CLI: public installation, package version, Developer ID signatures, packaged
-assets, Brew formula test, repeatable setup **dry-run without profile writes**,
-real local daemon health/overview, CLI configuration/status, SQLite audit and
-restart, then the actual default Local TUI in a PTY with normal `q` exit.
-No Claude double, personal account or copied Keychain is installed. `setup` has
+assets, Brew formula test, a repeatable `doctor` report (no `--fix`) **without profile
+writes** that proposes the stable Brew opt daemon, then `local_daemon_checks`: the daemon's
+`/daemon` version, the home and tasks views through `alondra status`, CLI
+configuration, an empty domain whose revision in `domain.db` survives a restart unchanged, and
+the actual TUI home in a PTY with normal `q` exit. Those local checks also run on every build
+as `//tests/system/macos:local_daemon_test`, against this checkout's binaries.
+No Claude double, personal account or copied Keychain is installed. `doctor --fix` has
 no offline mode: even skipping launchd/plugin still authenticates and enrolls.
 The shipping CLI pins its issuer/relay; this gate does **not** claim full setup,
 launchd/plugin registration, OAuth, pairing, encrypted remote service or Claude E2E.

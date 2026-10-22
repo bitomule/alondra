@@ -306,10 +306,17 @@ spec.loader.exec_module(cli_gate)
 class CLIGuestTests(unittest.TestCase):
  def test_plan_requires_installed_opt_daemon(self):
   prefix=Path('/opt/homebrew/opt/alondra')
-  valid=f'<string>{prefix}/bin/alondrad</string>\n(dry run: nothing was written or run)'
-  cli_gate.check_plan(valid,prefix)
-  for bad in [valid.replace(str(prefix),'/Users/admin/.local'),valid+'\nmake install',valid+'\n/opt/homebrew/Cellar/alondra']:
+  def report(program,check='service'):
+   return json.dumps({'schema':'alondra.doctor/1','ok':False,'checks':[{'id':check,'status':'fail',
+    'install':{'program':program,'profile_mode':'implicit'}}]})
+  cli_gate.check_plan(report(f'{prefix}/bin/alondrad'),prefix)
+  for bad in [report('/Users/admin/.local/bin/alondrad'),report('/opt/homebrew/Cellar/alondra/0.2.87/bin/alondrad'),
+              report(f'{prefix}/bin/alondrad','config'),json.dumps({'checks':[]})]:
    with self.assertRaises(RuntimeError):cli_gate.check_plan(bad,prefix)
+ def test_status_blocks_split_the_views_by_heading(self):
+  output='0 nodes working\n\nWaiting for You:\n  question         Pick a name\n\nTasks:\n  Active:\n\nMachine:\n  RAM: 50%\n'
+  self.assertEqual(cli_gate.status_blocks(output),{'Waiting for You':['question         Pick a name'],'Tasks':['Active:'],
+                   'Machine':['RAM: 50%']})
  def test_guest_network_requires_explicit_down(self):
   cli_gate.check_guest_network_disabled('en0: flags=8862<BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500')
   for bad in ['en0: flags=8863<UP,BROADCAST,RUNNING> mtu 1500','lo0: flags=8049<UP,LOOPBACK> mtu 16384','']:

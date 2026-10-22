@@ -1,0 +1,17 @@
+# The CLI gate's local daemon checks against this checkout's binaries; the Tart gate runs the
+# same checks on the published package.
+sh_test(
+    name = "local_daemon_test",
+    srcs = ["local_daemon_test.py"],
+    args = [
+        "$(rootpath //crates/alondra:alondra)",
+        "$(rootpath //crates/alondrad:alondrad)",
+    ],
+    data = [
+        "cli.py",
+        "//crates/alondra:alondra",
+        "//crates/alondrad:alondrad",
+    ],
+    size = "small",
+    tags = ["local"],
+)
