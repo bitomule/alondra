@@ -36,6 +36,31 @@ pub fn summary(outcomes: &[Outcome]) -> String {
     }
 }
 
+/// The end of `alondra update`: the summary with the mark of the worst check, then only the
+/// checks that did not pass, with their fix.
+pub fn after_update(outcomes: &[Outcome]) -> Vec<String> {
+    let open: Vec<&Outcome> = outcomes.iter().filter(|o| o.status != Status::Pass).collect();
+    let worst = if open.iter().any(|o| o.status == Status::Fail) {
+        Status::Fail
+    } else if open.is_empty() {
+        Status::Pass
+    } else {
+        Status::Warn
+    };
+    let width = open.iter().map(|o| o.name.chars().count()).max().unwrap_or(0);
+    let mut out = vec![format!("  {} {}", mark(worst), summary(outcomes))];
+    for o in &open {
+        out.push(format!("    {} {:<width$}  {}", mark(o.status), o.name, o.detail).trim_end().to_string());
+        if let Some(fix) = o.fix.as_ref().map(|f| f.text()).filter(|f| !f.is_empty()) {
+            out.push(format!("      {:<width$}  → {fix}", ""));
+        }
+    }
+    if !open.is_empty() {
+        out.push(tr!("    alondra doctor shows every check", "    alondra doctor muestra todas las comprobaciones").into());
+    }
+    out
+}
+
 /// `alondra doctor`: a header, the checks by group with their fix under them, and a summary.
 /// The tools share one line while they all pass.
 pub fn grouped(header: &str, outcomes: &[Outcome]) -> Vec<String> {

@@ -38,7 +38,7 @@ pub struct ServiceView {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ModsPass {
+pub struct PluginPass {
     pub fingerprint: String,
     pub at: i64,
 }
@@ -50,12 +50,12 @@ pub struct TestPush {
     pub at: i64,
 }
 
-/// What doctor remembers between runs, in `doctor.json`: when the slow mod check last passed,
+/// What doctor remembers between runs, in `doctor.json`: when the slow check of the node plugin last passed,
 /// and the last test notification a device accepted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
-    #[serde(default)]
-    pub mods: Option<ModsPass>,
+    #[serde(default, rename = "mods")]
+    pub plugin: Option<PluginPass>,
     #[serde(default)]
     pub test_push: Option<TestPush>,
 }

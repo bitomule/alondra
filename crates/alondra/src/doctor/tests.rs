@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use super::checks::*;
-use super::system::{MacInfo, Memory, ModsPass, ServiceView, System, TestPush};
+use super::system::{MacInfo, Memory, PluginPass, ServiceView, System, TestPush};
 use super::ui::{Plain, Recorded};
 use super::*;
 
@@ -101,7 +101,7 @@ impl Fake {
             port_owner: None,
             log: (1..=12).map(|n| format!("line {n}")).collect(),
             memory: RefCell::new(Memory {
-                mods: Some(ModsPass { fingerprint: "fp-1".into(), at: 0 }),
+                plugin: Some(PluginPass { fingerprint: "fp-1".into(), at: 0 }),
                 test_push: Some(TestPush { device: "phone-1".into(), name: "iPhone".into(), at: 0 }),
             }),
             starts_failing: RefCell::new(0),
@@ -482,12 +482,12 @@ fn the_slow_plugin_check_runs_only_with_deep_or_a_changed_plugin() {
     let deep = Env { sys: &sys, deep: true, first_run: false, yes: false, select: Selection::All };
     assert_eq!(find(&diagnose(&deep), "validate").detail, "the node plugin validates");
     assert!(sys.claude_calls.borrow().contains(&"plugin validate --strict /m/plugin".to_string()));
-    assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin test")), "the node mod's own tests no longer run");
+    assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin test")), "the node plugin's own tests no longer run");
 
     let mut changed = Fake::healthy();
     changed.fingerprint = Some("fp-2".into());
     assert_eq!(find(&diagnose(&env(&changed)), "validate").detail, "the node plugin validates");
-    assert_eq!(changed.memory().mods.map(|m| m.fingerprint), Some("fp-2".into()), "a pass is remembered");
+    assert_eq!(changed.memory().plugin.map(|m| m.fingerprint), Some("fp-2".into()), "a pass is remembered");
 
     let mut failing = Fake::healthy();
     failing.fingerprint = Some("fp-3".into());
@@ -781,6 +781,35 @@ fn the_summary_counts_problems_and_warnings() {
     assert_eq!(render::summary(&[o(Status::Fail), o(Status::Warn)]), "1 problem, 1 warning.");
     crate::i18n::set_for_this_thread(Lang::Es);
     assert_eq!(render::summary(&[o(Status::Fail), o(Status::Fail)]), "2 problemas.");
+}
+
+#[test]
+fn after_an_update_only_the_checks_that_need_something_are_listed() {
+    english();
+    let o = |name, status, detail: &str, fix: Option<Fix>| Outcome { id: "x", name, group: Group::Tools, status, detail: detail.into(), fix };
+    assert_eq!(render::after_update(&[o("config", Status::Pass, "read", None)]), ["  ✓ Nothing is broken."]);
+    let lines = render::after_update(&[
+        o("config", Status::Pass, "read", None),
+        o("devices", Status::Warn, "no device paired", Some(Fix::Manual("open Alondra on your iPhone".into()))),
+        o("plugin", Status::Fail, "not registered", Some(Fix::Manual("alondra doctor --fix".into()))),
+    ]);
+    assert_eq!(lines, [
+        "  ✗ 1 problem, 1 warning.",
+        "    ! devices  no device paired",
+        "               → open Alondra on your iPhone",
+        "    ✗ plugin   not registered",
+        "               → alondra doctor --fix",
+        "    alondra doctor shows every check",
+    ]);
+    assert_eq!(render::after_update(&[o("devices", Status::Warn, "none", None)])[0], "  ! 1 warning. Nothing is broken.");
+}
+
+#[test]
+fn doctor_json_keeps_the_key_it_was_written_with() {
+    let memory = Memory { plugin: Some(PluginPass { fingerprint: "fp".into(), at: 7 }), test_push: None };
+    let text = serde_json::to_string(&memory).unwrap();
+    assert!(text.contains(r#""mods":{"fingerprint":"fp","at":7}"#), "{text}");
+    assert_eq!(serde_json::from_str::<Memory>(&text).unwrap(), memory);
 }
 
 #[test]

@@ -49,7 +49,7 @@ pub(crate) fn effective_username() -> Result<String> {
     }
     let name = unsafe { std::ffi::CStr::from_ptr(record.pw_name) }
         .to_str()
-        .context("effective OS username is not UTF-8")?;
+        .context(tr!("the macOS user name is not UTF-8", "el nombre de usuario de macOS no es UTF-8"))?;
     if name.is_empty() {
         bail!(tr!("effective OS account has an empty username", "la cuenta efectiva del sistema tiene el nombre de usuario vacío"));
     }
@@ -105,7 +105,7 @@ impl ContextEnv {
                 .unwrap_or_else(|| home.to_owned()),
             path: vars
                 .get("PATH")
-                .context("daemon plist has no PATH; run alondra doctor --fix")?
+                .context(tr!("the service has no PATH; run alondra doctor --fix", "el servicio no tiene PATH; ejecuta alondra doctor --fix"))?
                 .clone(),
             config_dir: alondra_core::claude_account::configured_profile(&|key| vars.get(key).cloned())
                 .map(|p| p.to_string_lossy().into_owned()),
@@ -117,7 +117,8 @@ impl ContextEnv {
         let executable = std::env::split_paths(&self.path).map(|p| p.join("claude")).find(|p| {
             use std::os::unix::fs::PermissionsExt;
             p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        }).context("Claude Code is missing from the daemon PATH; install Claude Code, then run alondra doctor --fix")?;
+        }).context(tr!("alondrad cannot find Claude Code; install Claude Code, then run alondra doctor --fix",
+            "alondrad no encuentra Claude Code; instala Claude Code y luego ejecuta alondra doctor --fix"))?;
         let username = effective_username()?;
         let mut command = Command::new(executable);
         command
@@ -143,7 +144,7 @@ impl ContextEnv {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .context("could not check Claude authentication")?;
+            .context(tr!("could not check the Claude sign-in", "no se pudo comprobar la sesión de Claude"))?;
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -154,7 +155,7 @@ impl ContextEnv {
         let exit = wait(&mut child, Duration::from_secs(10))?;
         let bytes = rx
             .recv_timeout(Duration::from_secs(1))
-            .context("Claude status output timed out")??;
+            .context(tr!("Claude took too long to say whether it is signed in", "Claude tardó demasiado en decir si hay sesión iniciada"))??;
         parse_status(exit.success(), &bytes)
     }
 
@@ -169,7 +170,7 @@ impl ContextEnv {
             .command()?
             .args(["auth", "login"])
             .spawn()
-            .context("could not start Claude login")?;
+            .context(tr!("could not start the Claude sign-in", "no se pudo empezar a iniciar sesión en Claude"))?;
         if !wait(&mut child, Duration::from_secs(300))?.success() {
             bail!(tr!(
                 "Claude login did not finish; run `claude auth login`, then run `alondra doctor --fix`",
@@ -181,7 +182,7 @@ impl ContextEnv {
 
     /// `claude auth logout` for this context's profile, which removes its sign-in from the Keychain.
     pub(crate) fn sign_out(&self) -> Result<()> {
-        let status = self.command()?.args(["auth", "logout"]).stdin(Stdio::null()).status().context("could not start Claude logout")?;
+        let status = self.command()?.args(["auth", "logout"]).stdin(Stdio::null()).status().context(tr!("could not start the Claude sign-out", "no se pudo empezar a cerrar la sesión de Claude"))?;
         if !status.success() {
             bail!(tr!("Claude could not sign the account out", "Claude no pudo cerrar la sesión de la cuenta"));
         }
@@ -269,6 +270,7 @@ mod tests {
     }
     #[test]
     fn absent_executable_is_actionable() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         let env = ContextEnv {
             home: "/tmp".into(),
             path: "/nonexistent-alondra-test".into(),

@@ -81,7 +81,7 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', value_parser = clap::builder::PossibleValuesParser::new(doctor::check_ids()),
             help = tr!("Leave out these checks, by id", "Sin estas comprobaciones, por id"))]
         skip: Vec<String>,
-        #[arg(long, help = tr!("Also run the slow checks (the node mod, up to 3 minutes)", "Ejecuta también las comprobaciones lentas (el mod de nodo, hasta 3 minutos)"))]
+        #[arg(long, help = tr!("Also run the slow checks (validating Alondra's plugin for nodes, up to a minute)", "Ejecuta también las comprobaciones lentas (validar el plugin de Alondra para los nodos, hasta un minuto)"))]
         deep: bool,
         #[arg(long, conflicts_with_all = ["fix", "deep"], help = tr!("Send a test notification to the device used most recently", "Envía una notificación de prueba al dispositivo usado más recientemente"))]
         test_push: bool,
@@ -199,7 +199,7 @@ enum Cmd {
     /// Orchestrator MCP server, started by its separate plugin.
     #[command(hide = true)]
     McpOrchestrator,
-    /// What the node mod runs to report a session to alondrad and to hold its connection open.
+    /// What the node plugin runs to report a session to alondrad and to hold its connection open.
     #[command(hide = true)]
     Node {
         #[command(subcommand)]

@@ -579,7 +579,7 @@ fn run_validate(env: &Env) -> Option<Outcome> {
     let fingerprint = plugin.as_deref().and_then(|dir| env.sys.fingerprint(dir));
     let memory = env.sys.memory();
     if !env.deep
-        && let (Some(fingerprint), Some(passed)) = (&fingerprint, &memory.mods)
+        && let (Some(fingerprint), Some(passed)) = (&fingerprint, &memory.plugin)
         && passed.fingerprint == *fingerprint
     {
         return Some(validate_skipped(passed.at));
@@ -590,7 +590,7 @@ fn run_validate(env: &Env) -> Option<Outcome> {
     if checked.status == Status::Pass
         && let Some(fingerprint) = fingerprint
     {
-        env.sys.remember(&Memory { mods: Some(super::system::ModsPass { fingerprint, at: env.sys.now() }), ..memory });
+        env.sys.remember(&Memory { plugin: Some(super::system::PluginPass { fingerprint, at: env.sys.now() }), ..memory });
     }
     Some(checked)
 }

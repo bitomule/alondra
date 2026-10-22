@@ -1,13 +1,18 @@
 //! `alondra update`: install the newest release with Homebrew, then wait until the daemon runs it.
+mod brew;
+
+use std::io::{BufRead, BufReader, IsTerminal, Read};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use alondra_core::update;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::Value;
 
 use crate::client::Client;
+use crate::doctor::Status;
 
 const WAIT: Duration = Duration::from_secs(90);
 
@@ -27,34 +32,158 @@ pub fn run(check: bool) -> Result<()> {
     if check {
         return Ok(());
     }
+    let mut out = Steps::new();
     let daemon = prefix.join("opt/alondra/bin/alondrad");
     let before = installed_version(&daemon);
-    let brew = prefix.join("bin/brew");
-    let (shown, formula) = (brew.display(), update::FORMULA);
-    println!("{}", trf!("Running {shown} upgrade {formula}", "Ejecutando {shown} upgrade {formula}"));
-    let status = Command::new(&brew).args(["upgrade", update::FORMULA]).status()?;
-    if !status.success() {
-        bail!(trf!("brew upgrade failed ({status})", "brew upgrade falló ({status})"));
+    let log = alondra_core::config::alondra_home(&|k| std::env::var(k).ok()).join(LOG);
+    if let Err(lines) = upgrade(&prefix.join("bin/brew"), &log, &mut out) {
+        out.lines(&lines);
+        std::process::exit(1);
     }
     let Some(installed) = installed_version(&daemon) else {
         let shown = daemon.display();
-        bail!(trf!("cannot tell which version {shown} is", "no se puede saber qué versión es {shown}"));
+        out.fail(&trf!("cannot tell which version {shown} is", "no se puede saber qué versión es {shown}"));
+        std::process::exit(1);
     };
     if before.as_deref() == Some(installed.as_str()) {
-        println!("{}", trf!("Already up to date: {installed}", "Ya está al día: {installed}"));
+        out.pass(&trf!("Already up to date: alondra {installed}", "Ya está al día: alondra {installed}"));
     } else {
-        println!("{}", trf!("Installed {installed}", "Instalada {installed}"));
+        out.pass(&trf!("Installed alondra {installed}", "Instalada alondra {installed}"));
     }
-    apply_service(&prefix);
+    out.start(tr!("Bringing the service up to date", "Poniendo al día el servicio"));
+    match apply_service(&prefix) {
+        Ok(()) => out.pass(tr!("Service up to date", "Servicio al día")),
+        Err(lines) => out.lines(&lines),
+    }
+    out.start(&trf!("Waiting for alondrad to run {installed}", "Esperando a que alondrad ejecute {installed}"));
     let client = Client::new(Duration::from_secs(3));
     let outcome = wait_for_daemon(&installed, || daemon_info(&client), Instant::now, std::thread::sleep, WAIT, || restart_old_daemon(&daemon));
-    println!("{}", describe(&outcome, &installed));
-    println!();
-    crate::doctor::run(crate::doctor::Options::default())?;
-    if !matches!(outcome, Waited::Running) {
-        std::process::exit(1);
+    match outcome {
+        Waited::Running => out.pass(&describe(&outcome, &installed)),
+        _ => out.fail(&describe(&outcome, &installed)),
     }
-    Ok(())
+    let code = crate::doctor::after_update();
+    match (code, outcome) {
+        (0, Waited::Running) => Ok(()),
+        (0, _) => std::process::exit(1),
+        (code, _) => std::process::exit(code),
+    }
+}
+
+/// Homebrew's whole output of the last `alondra update`, in Alondra's home.
+const LOG: &str = "update.log";
+
+/// Runs `brew upgrade alondra` with its output captured: the steps it goes through, then
+/// everything it said in `log`. On failure, the lines that say why.
+fn upgrade(brew_path: &Path, log: &Path, out: &mut Steps) -> Result<(), Vec<String>> {
+    let mut progress = brew::Progress::default();
+    out.start(&progress.running(brew::Stage::Starting));
+    let spawned = Command::new(brew_path).args(["upgrade", update::FORMULA])
+        .env("HOMEBREW_NO_COLOR", "1").env("HOMEBREW_NO_ENV_HINTS", "1")
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return Err(failure(&progress.failed(), &[error.to_string()], &brew_path.display().to_string())),
+    };
+    let (tx, rx) = mpsc::channel();
+    let stdout = child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>);
+    let stderr = child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>);
+    for stream in [stdout, stderr].into_iter().flatten() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                let _ = tx.send(String::from_utf8_lossy(&line).trim_end().to_string());
+                line.clear();
+            }
+        });
+    }
+    drop(tx);
+    let mut output = String::new();
+    for line in rx {
+        let previous = progress.stage();
+        if let Some(stage) = progress.feed(&line) {
+            if let Some(done) = progress.done(previous) {
+                out.pass(&done);
+            }
+            out.start(&progress.running(stage));
+        }
+        output.push_str(&line);
+        output.push('\n');
+    }
+    let status = child.wait().map_err(|e| failure(&progress.failed(), &[e.to_string()], ""))?;
+    let saved = log.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok()) && std::fs::write(log, &output).is_ok();
+    if status.success() {
+        if let Some(done) = progress.done(progress.stage()) {
+            out.pass(&done);
+        }
+        return Ok(());
+    }
+    let last = if saved {
+        let shown = log.display();
+        trf!("Homebrew's whole output: {shown}", "Toda la salida de Homebrew: {shown}")
+    } else {
+        trf!("brew upgrade ended with {status}", "brew upgrade terminó con {status}")
+    };
+    Err(failure(&progress.failed(), &brew::failure_tail(&output, TAIL), &last))
+}
+
+/// How many lines of a failed command's output `alondra update` shows.
+const TAIL: usize = 8;
+
+pub fn step(status: Status, text: &str) -> String {
+    format!("  {} {text}", crate::doctor::mark(status))
+}
+
+/// A failed step, the output that says why and, last, where to look or what to run.
+pub fn failure(title: &str, why: &[String], last: &str) -> Vec<String> {
+    let mut lines = vec![step(Status::Fail, title)];
+    lines.extend(why.iter().chain([last.to_string()].iter()).filter(|l| !l.is_empty()).map(|l| format!("    {l}")));
+    lines
+}
+
+/// The steps `alondra update` shows: at a terminal a spinner on the one running, else only the
+/// lines of the steps that ended.
+struct Steps {
+    spinner: Option<cliclack::ProgressBar>,
+    terminal: bool,
+}
+
+impl Steps {
+    fn new() -> Self {
+        Self { spinner: None, terminal: std::io::stdout().is_terminal() && std::io::stderr().is_terminal() }
+    }
+
+    fn start(&mut self, text: &str) {
+        self.clear();
+        if self.terminal {
+            let spinner = cliclack::spinner();
+            spinner.start(text);
+            self.spinner = Some(spinner);
+        }
+    }
+
+    fn clear(&mut self) {
+        if let Some(spinner) = self.spinner.take() {
+            spinner.clear();
+        }
+    }
+
+    fn pass(&mut self, text: &str) {
+        self.lines(&[step(Status::Pass, text)]);
+    }
+
+    fn fail(&mut self, text: &str) {
+        self.lines(&[step(Status::Fail, text)]);
+    }
+
+    fn lines(&mut self, lines: &[String]) {
+        self.clear();
+        for line in lines {
+            println!("{line}");
+        }
+    }
 }
 
 pub fn availability(current: &str, latest: Option<&str>) -> String {
@@ -88,14 +217,17 @@ fn service_repair(prefix: &Path) -> (std::path::PathBuf, [&'static str; 5]) {
     (prefix.join("opt/alondra/bin/alondra"), ["doctor", "--fix", "--yes", "--only", "service"])
 }
 
-fn apply_service(prefix: &Path) {
+fn apply_service(prefix: &Path) -> Result<(), Vec<String>> {
     let (cli, args) = service_repair(prefix);
-    match Command::new(&cli).args(args).status() {
-        Ok(status) if status.success() => {}
-        Ok(status) => println!("{}", trf!("The service could not be brought up to date ({status}); run alondra doctor --fix",
-            "No se pudo poner al día el servicio ({status}); ejecuta alondra doctor --fix")),
-        Err(error) => println!("{}", trf!("The service could not be brought up to date ({error}); run alondra doctor --fix",
-            "No se pudo poner al día el servicio ({error}); ejecuta alondra doctor --fix")),
+    let title = tr!("The service could not be brought up to date", "No se pudo poner al día el servicio");
+    let fix = "→ alondra doctor --fix";
+    match Command::new(&cli).args(args).output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            Err(failure(title, &brew::failure_tail(&text, TAIL), fix))
+        }
+        Err(error) => Err(failure(title, &[error.to_string()], fix)),
     }
 }
 
@@ -242,6 +374,38 @@ mod tests {
     #[test]
     fn a_daemon_that_never_answers_is_reported() {
         assert_eq!(wait(vec![], never), (Waited::Unreachable, WAIT));
+    }
+
+    #[test]
+    fn a_failed_step_shows_why_and_then_where_to_look() {
+        assert_eq!(step(Status::Pass, "Installed alondra 0.3.6"), "  ✓ Installed alondra 0.3.6");
+        let why = ["Error: alondra: Failed to download resource".to_string()];
+        assert_eq!(failure("Could not download alondra 0.3.6", &why, "Homebrew's whole output: /h/update.log"), [
+            "  ✗ Could not download alondra 0.3.6",
+            "    Error: alondra: Failed to download resource",
+            "    Homebrew's whole output: /h/update.log",
+        ]);
+        assert_eq!(failure("Homebrew could not upgrade alondra", &[], ""), ["  ✗ Homebrew could not upgrade alondra"]);
+    }
+
+    #[test]
+    fn homebrew_runs_with_its_output_captured_and_kept_in_the_log() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let brew_path = dir.join("brew");
+        std::fs::write(&brew_path, "#!/bin/sh\necho '==> Downloading https://example/alondra.tar.gz'\necho 'Error: alondra: Failed to download resource' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&brew_path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let log = dir.join("home/update.log");
+        let lines = upgrade(&brew_path, &log, &mut Steps { spinner: None, terminal: false }).unwrap_err();
+        let shown = log.display();
+        assert_eq!(lines, [
+            "  ✗ Could not download alondra".to_string(),
+            "    Error: alondra: Failed to download resource".to_string(),
+            format!("    Homebrew's whole output: {shown}"),
+        ]);
+        let saved = std::fs::read_to_string(&log).unwrap();
+        assert!(saved.contains("==> Downloading https://example/alondra.tar.gz") && saved.contains("Error: alondra"), "{saved}");
     }
 
     #[test]

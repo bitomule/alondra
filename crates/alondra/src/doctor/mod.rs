@@ -2,6 +2,7 @@ mod checks;
 mod devices_wait;
 mod projects;
 mod render;
+pub use render::mark;
 pub mod system;
 mod ui;
 mod wizard;
@@ -478,6 +479,18 @@ fn check(options: Options) -> Result<i32> {
         }
     }
     Ok(exit_code(&outcomes))
+}
+
+/// The checks `alondra update` ends with, in its own style; returns doctor's exit code.
+pub fn after_update() -> i32 {
+    let sys = system::Real::new();
+    let env = Env { sys: &sys, deep: false, first_run: false, yes: false, select: Selection::All };
+    let outcomes = diagnose(&env);
+    println!();
+    for line in render::after_update(&outcomes) {
+        println!("{line}");
+    }
+    exit_code(&outcomes)
 }
 
 pub fn run(options: Options) -> Result<()> {
