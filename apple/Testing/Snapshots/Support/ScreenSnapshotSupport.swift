@@ -54,10 +54,9 @@ func assertScreenVariants<Content: View>(
             )
             assertAppSnapshot(
                 of: screen,
-                as: Snapshotting<AnyView, UIImage>.image(
-                    drawHierarchyInKeyWindow: true,
+                as: Snapshotting<AnyView, UIImage>.windowImage(
                     perceptualPrecision: 0.98,
-                    layout: .fixed(width: 393, height: 852),
+                    size: CGSize(width: 393, height: 852),
                     traits: .init(userInterfaceStyle: variant.style)
                 ).asRecorded,
                 named: suffix,

@@ -74,18 +74,16 @@ func assertScreen<Content: View>(
     let precision: Float = pixelPrecision ?? (animatedPixels ? 0.99 : 1)
     for variant in variants {
         let suffix = language == .english ? variant.suffix : "\(variant.suffix)_\(language.rawValue.prefix(2))"
+        let traits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: variant.style),
+            UITraitCollection(displayScale: 1),
+        ])
+        let strategy: Snapshotting<AnyView, UIImage> = inWindow
+            ? .windowImage(precision: precision, perceptualPrecision: 0.98, traits: traits)
+            : .image(precision: precision, perceptualPrecision: 0.98, layout: .sizeThatFits, traits: traits)
         assertAppSnapshot(
             of: screen(variant, language: language, content),
-            as: Snapshotting<AnyView, UIImage>.image(
-                drawHierarchyInKeyWindow: inWindow,
-                precision: precision,
-                perceptualPrecision: 0.98,
-                layout: .sizeThatFits,
-                traits: UITraitCollection(traitsFrom: [
-                    UITraitCollection(userInterfaceStyle: variant.style),
-                    UITraitCollection(displayScale: 1),
-                ])
-            ).asRecorded,
+            as: strategy.asRecorded,
             named: suffix,
             file: file,
             testName: testName,
