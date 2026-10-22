@@ -7093,6 +7093,50 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
     }
 }
 
+/// 20 October: the running task «t-alondrad-flaky-usage-sdk-owner-tests» offered only message,
+/// priority and cancel, because its node ran through the SDK. Its own screen offers Pause while
+/// its execution works and Resume once the user paused it, on every client.
+#[test]
+fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_by_its_state() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let admitted = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+    ];
+    let working = [admitted.clone(), vec![
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+    ]].concat();
+    let by_user = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "16:05".into(), reason: LivePauseReason::User,
+        fine_minutes: None, next: false, waits_for: None, retry: None };
+    let cases = [
+        ("working", NodePhase::Working, TaskState::Running, working.clone(), vec![], Some("pause:a-1")),
+        ("running nothing", NodePhase::Working, TaskState::Running, admitted, vec![], None),
+        ("paused by the user", NodePhase::Paused(by_user), TaskState::Running, working.clone(), vec![paused], Some("resume:a-1")),
+        ("done", NodePhase::Working, TaskState::Done, working, vec![], None),
+    ];
+    for (name, phase, task_state, journal, gate, offered) in cases {
+        let mut state = fixture();
+        node_in(&mut state, phase);
+        state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+        state.lifecycle_journal.insert("t-1".into(), journal);
+        let live = pacing_live(vec![], gate, None);
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let ids = action_ids(&render(&state, &live, client, Lang::Es, "task:t-1", ""));
+            let shown: Vec<&String> = ids.iter().filter(|id| id.starts_with("pause:") || id.starts_with("resume:")).collect();
+            match offered {
+                Some(prefix) => assert!(shown.iter().all(|id| id.starts_with(prefix)) && !shown.is_empty(),
+                    "{client:?}: a task {name} offers only {prefix}: {ids:?}"),
+                None => assert!(shown.is_empty(), "{client:?}: a task {name} offers neither pause nor resume: {ids:?}"),
+            }
+        }
+    }
+}
+
 #[test]
 fn a_node_that_runs_through_the_sdk_offers_interrupt_and_pause_but_no_close_or_message() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};

@@ -99,6 +99,9 @@ pub(super) fn resume_action(paused: &LivePaused, context: &RenderContext<'_>) ->
 
 /// Pause or Resume, whichever the task's place in the fleet allows.
 pub(super) fn task_actions(task: &Task, context: &RenderContext<'_>) -> Vec<super::Action> {
+    if task.state.terminal() {
+        return vec![];
+    }
     if let Some(paused) = common::paused(task, context) {
         return resume_action(paused, context).into_iter().collect();
     }
