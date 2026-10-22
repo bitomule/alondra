@@ -192,7 +192,7 @@ pub fn status_text(home: &View, tasks: &View) -> String {
     let mut out = format!("{}\n", home.status.summary);
     for (view, heading) in [(home, tr!("Waiting for You", "Te espera")), (tasks, tr!("Tasks", "Tareas"))] {
         let _ = write!(out, "\n{heading}:\n");
-        for section in &view.sections {
+        for section in view.sections.iter().filter(|section| section.id != "detail") {
             if view.key != "home" {
                 if let Some(title) = &section.title { let _ = writeln!(out, "  {title}:"); }
             }
@@ -286,6 +286,19 @@ mod tests {
         let text = status_text(&view("home"), &view("tasks"));
         assert!(text.contains("Te espera:") && text.contains("Tareas:") && text.contains("Build"), "{text}");
         assert!(!text.contains("Flota") && !text.contains("Instance A"), "{text}");
+    }
+
+    #[test]
+    fn status_lists_the_selected_card_once() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let s = world();
+        let d = alondra_core::domain::ReadIndex::build(&s);
+        let live = alondra_core::views::LiveSnapshot::default();
+        let view = |key: &str| alondra_core::views::build(key, alondra_core::views::RenderContext { domain: &s, index: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::Es, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" }).unwrap();
+        let home = view("home");
+        assert!(home.sections.iter().any(|section| section.id == "detail"), "the TUI home carries the selected card's detail");
+        let text = status_text(&home, &view("tasks"));
+        assert_eq!(text.matches("Answer the question").count(), 1, "{text}");
     }
 
     #[test]
