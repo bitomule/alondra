@@ -177,7 +177,9 @@ waits on its permission card and runs once the phone allows it; a question's opt
 as its answer; a plan the model writes to plan mode's plan file waits on its Review card and Claude
 goes on with it once the phone approves it; «Interrupt» in Fleet stops a running command and the turn ends with one card; a
 command that acts as the user is refused by the node guard with no card; a command that runs for
-seconds finishes and its turn ends with one card.
+seconds finishes and its turn ends with one card. Last, a task's detail shows what its node reads from
+the SDK host alone: its task list as «Steps», the call it and its subagent run in «Right now», its
+shell and subagent in the background, then what it said last, its context and its cost.
 `alondra-sandbox journey sdk` runs it against a sandbox already started with `SDK=1`; `journey all`
 leaves it out.
 

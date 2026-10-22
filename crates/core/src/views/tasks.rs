@@ -1022,7 +1022,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(now) = now_line(task, context) {
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }
-    view.sections.extend(agent.and_then(|agent| super::fleet::activity_rows(agent, context))
+    view.sections.extend(agent.and_then(|agent| super::fleet::activity_rows(agent, context, Some(&task.id)))
         .map(|rows| common::section("activity", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
     if let Some(node) = live {
         view.sections.extend(super::fleet::needs_section(node, context));

@@ -346,7 +346,7 @@ async fn gather_inner(
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
             let background: Vec<(&str, alondra_core::BackgroundItem)> = reported.background.iter()
-                .map(|(id, _)| id.as_str()).zip(reported.background_items()).collect();
+                .map(|(id, _)| id.as_str()).zip(reported.background_items(now)).collect();
             let suspect = |id: &str| background.iter().any(|(known, item)| *known == id && item.suspect);
             let shown_as_run = |id: &str| reported.work.agents.iter().any(|agent| agent.id == id && agent.finished_at.is_none())
                 || reported.work.workflows.iter().any(|workflow| workflow.id == id && workflow.finished_at.is_none());
@@ -355,14 +355,14 @@ async fn gather_inner(
                     let count = background.iter().filter(|(_, item)| item.kind == kind).count();
                     (count > 0).then(|| {
                         let noun = match (lang, kind) {
-                            (Lang::En, alondra_core::BackgroundKind::Agent) => "subagents",
-                            (Lang::En, alondra_core::BackgroundKind::Shell) => "shells",
-                            (Lang::En, alondra_core::BackgroundKind::Other) => "tasks",
-                            (Lang::Es, alondra_core::BackgroundKind::Agent) => "subagentes",
-                            (Lang::Es, alondra_core::BackgroundKind::Shell) => "shells",
-                            (Lang::Es, alondra_core::BackgroundKind::Other) => "tareas",
+                            (Lang::En, alondra_core::BackgroundKind::Agent) => "subagent",
+                            (Lang::En, alondra_core::BackgroundKind::Shell) => "shell",
+                            (Lang::En, alondra_core::BackgroundKind::Other) => "task",
+                            (Lang::Es, alondra_core::BackgroundKind::Agent) => "subagente",
+                            (Lang::Es, alondra_core::BackgroundKind::Shell) => "shell",
+                            (Lang::Es, alondra_core::BackgroundKind::Other) => "tarea",
                         };
-                        format!("{count} {noun}")
+                        format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
                     })
                 }).collect::<Vec<_>>();
             let background_suspect = background.iter().any(|(_, item)| item.suspect);
@@ -435,7 +435,7 @@ async fn gather_inner(
                 tool: tool.map(|tool| tool.chars().take(141).collect()),
                 context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: context.and_then(|(_, window)| window),
-                cost_cents: None,
+                cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),
                 model: reported.model.clone(),
                 disconnected: agent.phase == NodePhase::Closed && open_task,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
@@ -1205,6 +1205,49 @@ mod cache_tests {
         let answer_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, stalled_view.cursor);
         assert_eq!(client.views.build_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_node_of_the_agent_sdk_shows_what_its_host_observed() {
+        use serde_json::json;
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
+        let message = |parent: Option<&str>, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent,
+            "message": {"role": "assistant", "model": "claude-opus-5-5", "content": content}});
+        for (at, observed) in [
+            json!({"type": "system", "subtype": "init", "cwd": home.to_str().unwrap(), "model": "claude-opus-5-5"}),
+            message(None, json!([{"type": "text", "text": "Notes drafted."}])),
+            json!({"type": "result", "subtype": "success", "result": "Notes drafted.", "total_cost_usd": 0.42}),
+            message(None, json!([{"type": "tool_use", "id": "toolu_todo", "name": "TodoWrite", "input": {"todos": [
+                {"content": "Write the changelog", "status": "in_progress", "activeForm": "Writing the changelog"}]}}])),
+            json!({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "toolu_agent", "task_type": "local_agent",
+                "description": "Check the links", "subagent_type": "general-purpose"}),
+            json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [
+                {"task_id": "b1", "task_type": "local_bash", "description": "sleep 600"},
+                {"task_id": "a1", "task_type": "local_agent", "description": "Check the links"}]}),
+            message(None, json!([{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "cargo test"}}])),
+            message(Some("toolu_agent"), json!([{"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "/w/README.md"}}])),
+        ].into_iter().enumerate() {
+            domain.live.mods.apply_sdk("sdk-a", &observed, 1_000 + at as Millis);
+        }
+        let state = domain.state().unwrap();
+        let live = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
+        let node = live.nodes.iter().find(|node| node.agent_id == "sdk-a").expect("the SDK node is in the snapshot");
+        assert_eq!(node.tool.as_deref(), Some("Bash: cargo test"));
+        assert_eq!(node.last_message.as_deref(), Some("Notes drafted."));
+        assert_eq!(node.last_message_at, Some(timestamp(1_002)));
+        assert_eq!(node.cost_cents, Some(42));
+        assert_eq!(node.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(node.background_badge.as_deref(), Some("1 subagent · 1 shell"));
+        assert_eq!(node.background.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["sleep 600"], "a running subagent shows as a run, not twice");
+        assert_eq!(node.subagents.iter().map(|run| run.label.as_str()).collect::<Vec<_>>(), ["Check the links"]);
+        assert_eq!(node.steps.iter().map(|step| (step.subject.as_str(), step.state)).collect::<Vec<_>>(), [("Write the changelog", StepState::InProgress)]);
+        let threads = domain.live.threads("sdk-a").expect("its activity");
+        assert_eq!(threads.iter().map(|thread| (thread.agent_id.as_deref(), thread.summary.as_deref())).collect::<Vec<_>>(),
+            [(None, Some("cargo test")), (Some("a1"), Some("/w/README.md"))]);
     }
 
     /// The rows of a view whose badge says `state`, by id, wherever they are nested.

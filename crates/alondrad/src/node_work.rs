@@ -135,6 +135,13 @@ impl NodeWork {
         self.trim();
     }
 
+    pub(crate) fn workflow_finished(&mut self, id: &str, now: Millis) {
+        if let Some(workflow) = self.workflows.iter_mut().find(|workflow| workflow.id == id && workflow.finished_at.is_none()) {
+            workflow.finished_at = Some(now);
+        }
+        self.trim();
+    }
+
     /// The whole list of background work Claude Code gives at the end of a turn: what is in it
     /// runs, and a subagent or workflow that ran and is no longer in it has finished.
     pub(crate) fn listed(&mut self, tasks: &[Listed<'_>], now: Millis) {

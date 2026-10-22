@@ -26,8 +26,13 @@ pub enum ContextEvent {
 }
 
 pub fn context_event(observation: &OrderedObservation) -> Option<ContextEvent> {
+    of(&sdk_message(observation)?)
+}
+
+/// The Agent SDK message a host event carries, as the SDK gave it.
+pub fn sdk_message(observation: &OrderedObservation) -> Option<Value> {
     match host_event(observation)?.observation {
-        WireObservation::Sdk { payload, .. } => of(&payload),
+        WireObservation::Sdk { payload, .. } => Some(payload),
         _ => None,
     }
 }

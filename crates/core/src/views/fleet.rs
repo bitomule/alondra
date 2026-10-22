@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, NodePhase, Pause, PauseReason, RecordedWait, TaskState};
+use crate::domain::{AgentId, NodePhase, Pause, PauseReason, RecordedWait, TaskId, TaskState};
 use std::collections::BTreeMap;
 
 fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -510,13 +510,25 @@ pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderConte
     Some(common::section("last_message", Some(t!(context.lang, "What it said last", "Lo último que dijo").into()), items))
 }
 
-/// What a node does right now, one row per running thread, while it is in a turn.
-pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> Option<Vec<Item>> {
+/// What a node does right now, one row per running thread, while it is in a turn. A subagent's row
+/// says so, and each names the task it works for by its title, but in that task's own detail
+/// (`shown`).
+pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContext<'_>, shown: Option<&TaskId>) -> Option<Vec<Item>> {
     let activity = context.live.activity.get(&agent.id.0).filter(|items| !items.is_empty() && agent.phase.in_turn())?;
     Some(activity.iter().map(|entry| {
         let title = entry.summary.clone().or_else(|| entry.tool.clone())
             .unwrap_or_else(|| t!(context.lang, "Working", "Trabajando").into());
-        let subtitle = entry.task.as_ref().map(|task| format!("{} {task}", t!(context.lang, "Task", "Tarea")));
+        let subagent = entry.agent_id.as_ref().map(|_| match &entry.agent_type {
+            Some(kind) => format!("{} · {kind}", t!(context.lang, "Subagent", "Subagente")),
+            None => t!(context.lang, "Subagent", "Subagente").into(),
+        });
+        let task = entry.task.as_ref().filter(|task| shown.is_none_or(|shown| shown.0 != **task))
+            .map(|task| context.domain.tasks.get(&TaskId(task.clone())).map_or_else(|| task.clone(), |known| known.title.clone()))
+            .map(|task| format!("{} {task}", t!(context.lang, "Task", "Tarea")));
+        let subtitle = match (subagent, task) {
+            (Some(subagent), Some(task)) => Some(format!("{subagent} · {task}")),
+            (subagent, task) => subagent.or(task),
+        };
         let mut row = common::row(&entry.since, "node", Icon::History, title, subtitle);
         row.link = None;
         row.trailing = Some(Trailing::Time { at: entry.since.clone(), format: super::TimeFormat::Relative });
@@ -624,7 +636,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }
     view.sections.extend(live.and_then(|node| background_section(node, context)));
     view.sections.extend(live.and_then(|node| last_message_section(node, context)));
-    view.sections.extend(activity_rows(agent, context)
+    view.sections.extend(activity_rows(agent, context, None)
         .map(|rows| common::section("now", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
     let mut actions = vec![];
     // A node still on `claude --bg` takes a message through its mod's connection, and moves to the

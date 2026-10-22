@@ -4,6 +4,7 @@
 //! ends with nothing that explains the next step, so one card asks the user; «Carry on» with a
 //! note from the phone commits and reaches Claude, whose next turn ends with a card of its own.
 mod decisions;
+mod live;
 mod relay;
 mod workers;
 
@@ -211,6 +212,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         return;
     }
     decisions::run(report, sandbox, fakes, &user);
+    live::run(report, sandbox, fakes, &user);
     relay::run(report, sandbox, fakes);
     workers::run(report, sandbox, fakes, &user);
     report.case("S11", "The Mac shuts down before Claude shows it read its mission: each task sends it again by itself, flagged as maybe received", |report| {

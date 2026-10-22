@@ -97,6 +97,7 @@ mod push_gate;
 mod push_retract;
 mod relaunch;
 mod sdk_handover;
+mod sdk_live;
 mod sdk_owner;
 #[cfg(target_os = "macos")]
 mod schedule_clock;

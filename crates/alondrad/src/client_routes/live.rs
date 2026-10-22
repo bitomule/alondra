@@ -225,6 +225,9 @@ impl Live {
     }
 
     pub(crate) fn threads(&self, session_id: &str) -> Option<Vec<alondra_core::activity::Activity>> {
+        if let Some(activity) = self.mods.session(session_id).as_ref().and_then(crate::sdk_live::activity) {
+            return Some(activity);
+        }
         let view = self.view.lock().expect("live sessions poisoned");
         let node = view.nodes.get(session_id)?;
         Some(view.activity(node, now_millis()))

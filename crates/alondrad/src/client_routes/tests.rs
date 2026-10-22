@@ -1232,14 +1232,14 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
     report(json!({"event": "subagent.start", "id": "sa-1", "description": "Fix the parser"}), now);
     report(json!({"event": "subagent.start", "id": "sa-2", "description": "Review it"}), now);
     report(json!({"event": "shell.start", "id": "u1", "command": "until false; do sleep 5; done"}), now);
-    assert!(badge(&fixture).await.contains(&"2 subagents · 1 shells".to_owned()), "the same text as when the job state listed them");
+    assert!(badge(&fixture).await.contains(&"2 subagents · 1 shell".to_owned()), "the same text as when the job state listed them");
     assert_eq!(badge(&fixture).await[0], "Working", "a node with background work and no turn still works");
 
     report(json!({"event": "subagent.end", "id": "sa-1"}), now);
-    assert!(badge(&fixture).await.contains(&"1 subagents · 1 shells".to_owned()));
+    assert!(badge(&fixture).await.contains(&"1 subagent · 1 shell".to_owned()));
 
     report(json!({"event": "background", "tasks": [{"id": "b1", "type": "monitor", "description": "tail -f log"}]}), now);
-    assert!(badge(&fixture).await.contains(&"1 tasks".to_owned()), "the list at the end of a turn replaces what was reported before");
+    assert!(badge(&fixture).await.contains(&"1 task".to_owned()), "the list at the end of a turn replaces what was reported before");
 
     report(json!({"event": "background", "tasks": []}), now);
     assert!(!badge(&fixture).await.iter().any(|text| text.contains("tasks")));
@@ -1298,7 +1298,7 @@ async fn a_background_shell_whose_process_is_gone_is_flagged_and_stops_counting_
     assert!(shown.iter().all(|(label, _)| !label.contains("hung?")), "three hours on a live shell is work: {shown:?}");
     mods.live.mods.set_shell_alive("agent-b", Some(false), now);
     let shown = node_shown(&fixture, "agent-b", "en").await;
-    assert!(shown.contains(&("1 shells · hung?".into(), "warning".into())), "{shown:?}");
+    assert!(shown.contains(&("1 shell · hung?".into(), "warning".into())), "{shown:?}");
     assert_ne!(shown[0].0, "Working", "a shell whose process is gone is not work");
 }
 

@@ -4537,11 +4537,34 @@ fn node_detail_names_its_folder_and_what_it_is_doing_right_now() {
     assert_eq!(now.title.as_deref(), Some("Right now"));
     let Item::Row(row) = &now.items[0] else { panic!("thread row") };
     assert_eq!(row.title, "Reading the localization catalog");
-    assert_eq!(row.subtitle.as_deref(), Some("Task Check the Spanish strings"));
+    assert_eq!(row.subtitle.as_deref(), Some("Subagent · general-purpose · Task Check the Spanish strings"));
     let idle = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "node:d887a34b-249e-4487-a89b-57de38c26372", "");
     assert!(idle.sections.iter().all(|section| section.id != "now"));
     assert!(header_facts(&idle).iter().all(|fact| fact.label != "Folder"));
+}
+
+#[test]
+fn right_now_names_the_task_by_its_title_and_not_at_all_in_that_tasks_own_detail() {
+    let agent = "d887a34b-249e-4487-a89b-57de38c26372";
+    let mut state = golden_fixture();
+    state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
+    let task = "t-651c38484cd2f34e74d5107ba05f7f15".to_owned();
+    let current = state.tasks.get_mut(&task.as_str().into()).unwrap();
+    current.agent_id = Some(agent.into());
+    current.state = TaskState::Running;
+    let title = current.title.clone();
+    let mut live = golden_live();
+    live.activity.get_mut(agent).unwrap()[0].task = Some(task.clone());
+    let row = |view: &View, section: &str| view.sections.iter().find(|found| found.id == section)
+        .and_then(|found| match &found.items[0] { Item::Row(row) => Some(row.clone()), _ => None })
+        .unwrap_or_else(|| panic!("no «Right now» row in {section}"));
+    let node = render(&state, &live, Client::Ios, Lang::En, &format!("node:{agent}"), "");
+    assert_eq!(row(&node, "now").subtitle, Some(format!("Subagent · general-purpose · Task {title}")), "never the task's id");
+    let detail = render(&state, &live, Client::Ios, Lang::En, &format!("task:{task}"), "");
+    let own = row(&detail, "activity");
+    assert_eq!(own.title, "Reading the localization catalog");
+    assert_eq!(own.subtitle.as_deref(), Some("Subagent · general-purpose"), "the detail is that task's already");
 }
 
 #[test]

@@ -62,17 +62,17 @@ pub(crate) enum Report {
 
 #[derive(Deserialize, Debug, PartialEq)]
 pub(crate) struct TaskIn {
-    id: String,
+    pub id: String,
     #[serde(rename = "type", default)]
-    kind: String,
+    pub kind: String,
     #[serde(default)]
-    description: String,
+    pub description: String,
     #[serde(default)]
-    command: Option<String>,
+    pub command: Option<String>,
     #[serde(default)]
-    agent_type: Option<String>,
+    pub agent_type: Option<String>,
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// One report as `alondra node event` hands it over.
@@ -143,6 +143,8 @@ pub(crate) struct Reported {
     /// rather than what this daemon heard of since it started.
     pub background_known: bool,
     pub work: crate::node_work::NodeWork,
+    /// What only the Agent SDK host's events say, for a node that runs through it.
+    pub sdk: Option<crate::sdk_live::Readings>,
 }
 
 const LABEL_LIMIT: usize = 80;
@@ -175,7 +177,7 @@ impl Reported {
             Some(crate::job_state::Phase::Working) => return if self.silent(now) { Activity::Stalled } else { Activity::Working },
             _ => {}
         }
-        let call_overran = self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name));
+        let call_overran = self.sdk.is_none() && self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name));
         if (call_overran && self.shell_alive != Some(true)) || self.silent(now) {
             Activity::Stalled
         } else if self.working_since.is_some() || self.tool.is_some() || self.background.iter().any(|(_, item)| !self.shell_gone(item)) {
@@ -228,10 +230,19 @@ impl Reported {
         self.connection.is_some() && job.tasks == 0 && still_for(Some(job.updated_at)) && still_for(self.cpu_busy_at)
     }
 
-    /// What the node has running in the background, each flagged when it is a command whose shell
-    /// a look taken after it started found gone.
-    pub(crate) fn background_items(&self) -> Vec<BackgroundItem> {
-        self.background.iter().map(|(_, item)| BackgroundItem { suspect: self.shell_gone(item), ..item.clone() }).collect()
+    /// What the node has running in the background, each flagged when it may be hung: a command
+    /// whose shell a look taken after it started found gone or, for a node of the Agent SDK, which
+    /// gives no process to look at, work running past the suspect window while the node has shown
+    /// nothing else for as long.
+    pub(crate) fn background_items(&self, now: Millis) -> Vec<BackgroundItem> {
+        let window = alondra_core::states::BACKGROUND_SUSPECT_MS;
+        let quiet = self.sdk.is_some()
+            && !self.tool.as_ref().is_some_and(|tool| now - tool.since <= alondra_core::states::call_limit(&tool.name))
+            && self.last_event_at.is_none_or(|at| now - at > window);
+        self.background.iter().map(|(_, item)| BackgroundItem {
+            suspect: self.shell_gone(item) || (quiet && now - item.started_at > window),
+            ..item.clone()
+        }).collect()
     }
 
     fn shell_gone(&self, item: &BackgroundItem) -> bool {
@@ -248,6 +259,86 @@ impl Reported {
     /// the node back (`node_revival`), never something Fleet shows as the node's state.
     pub(crate) fn connection_lost(&self) -> bool {
         self.started_at.is_some() && !self.ended && self.connection.is_none()
+    }
+
+    /// What one report says of the session, but its start, which only `Reports` records.
+    pub(crate) fn record(&mut self, report: Report, now: Millis) {
+        match report {
+            Report::SessionStart { .. } => {}
+            Report::SessionEnd => {
+                self.ended = true;
+                self.connection = None;
+                self.tool = None;
+                self.working_since = None;
+                self.background.clear();
+                self.background_known = true;
+                self.work.ended(now);
+            }
+            Report::Model { model, agent_id: None } => self.model = Some(model),
+            Report::Model { model, agent_id: Some(agent) } => self.work.agent_model(&agent, model),
+            Report::TurnStart => self.working_since = Some(now),
+            Report::TurnComplete { answer, aborted } => {
+                self.working_since = None;
+                self.tool = None;
+                self.answer = Some(Answer { text: answer, at: now, aborted });
+            }
+            Report::ToolStart { tool, tool_use_id, input } => {
+                let summary = crate::hook_text::tool_summary(Some(&tool), Some(&input));
+                self.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
+            }
+            Report::Background { tasks } => {
+                let listed: Vec<_> = tasks.iter().map(|task| crate::node_work::Listed {
+                    id: &task.id,
+                    kind: &task.kind,
+                    description: &task.description,
+                    agent_type: task.agent_type.as_deref(),
+                    name: task.name.as_deref(),
+                }).collect();
+                self.work.listed(&listed, now);
+                self.background_known = true;
+                let known = std::mem::take(&mut self.background);
+                self.background = tasks.into_iter().map(|task| {
+                    let started_at = known.iter().find(|(id, _)| *id == task.id).map_or(now, |(_, item)| item.started_at);
+                    let (kind, label) = match task.kind.as_str() {
+                        "subagent" => (BackgroundKind::Agent, task.description),
+                        "shell" => (BackgroundKind::Shell, task.command.unwrap_or(task.description)),
+                        "workflow" => (BackgroundKind::Other, task.name.filter(|name| !name.is_empty()).unwrap_or(task.description)),
+                        _ => (BackgroundKind::Other, task.description),
+                    };
+                    (task.id, BackgroundItem { kind, label: short_label(&label), started_at, suspect: false })
+                }).collect();
+            }
+            Report::SubagentStart { id, description, kind, model } => {
+                if !self.background.iter().any(|(known, _)| *known == id) {
+                    let label = short_label(description.as_deref().unwrap_or("subagent"));
+                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
+                }
+                self.work.agent_started(id, description, kind, model, now);
+            }
+            Report::SubagentEnd { id } => {
+                self.background.retain(|(known, _)| *known != id);
+                self.work.agent_finished(&id, now);
+            }
+            Report::WorkflowStart { id, name, transcript_dir } => {
+                if !self.background.iter().any(|(known, _)| *known == id) {
+                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Other, label: short_label(&name), started_at: now, suspect: false }));
+                }
+                self.work.workflow_started(id, name, transcript_dir, now);
+            }
+            Report::StepCreate(step) => self.work.step_created(step),
+            Report::StepUpdate(step) => self.work.step_updated(step),
+            Report::Steps { steps } => self.work.steps_listed(steps),
+            Report::ShellStart { id, command } => {
+                if !self.background.iter().any(|(known, _)| *known == id) {
+                    self.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now, suspect: false }));
+                }
+            }
+            Report::ToolEnd { tool_use_id } => {
+                if self.tool.as_ref().is_some_and(|tool| tool.tool_use_id == tool_use_id) {
+                    self.tool = None;
+                }
+            }
+        }
     }
 }
 
@@ -282,92 +373,38 @@ impl Reports {
         let mut sessions = self.sessions.lock().expect("node reports poisoned");
         let session = sessions.entry(session_id).or_default();
         session.last_event_at = Some(now);
-        match report {
-            Report::SessionStart { version, cwd, launch_key } => {
-                if let Some(key) = launch_key {
-                    self.launches.lock().expect("launch keys poisoned").insert(key, id);
-                }
-                session.version = Some(version);
-                session.cwd = cwd;
-                session.started_at = Some(now);
-                session.ended = false;
-                drop(sessions);
-                self.started.notify_waiters();
+        if let Report::SessionStart { version, cwd, launch_key } = report {
+            if let Some(key) = launch_key {
+                self.launches.lock().expect("launch keys poisoned").insert(key, id);
             }
-            Report::SessionEnd => {
-                session.ended = true;
-                session.connection = None;
-                session.tool = None;
-                session.working_since = None;
-                session.background.clear();
-                session.background_known = true;
-                session.work.ended(now);
-            }
-            Report::Model { model, agent_id: None } => session.model = Some(model),
-            Report::Model { model, agent_id: Some(agent) } => session.work.agent_model(&agent, model),
-            Report::TurnStart => session.working_since = Some(now),
-            Report::TurnComplete { answer, aborted } => {
-                session.working_since = None;
-                session.tool = None;
-                session.answer = Some(Answer { text: answer, at: now, aborted });
-            }
-            Report::ToolStart { tool, tool_use_id, input } => {
-                let summary = crate::hook_text::tool_summary(Some(&tool), Some(&input));
-                session.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
-            }
-            Report::Background { tasks } => {
-                let listed: Vec<_> = tasks.iter().map(|task| crate::node_work::Listed {
-                    id: &task.id,
-                    kind: &task.kind,
-                    description: &task.description,
-                    agent_type: task.agent_type.as_deref(),
-                    name: task.name.as_deref(),
-                }).collect();
-                session.work.listed(&listed, now);
-                session.background_known = true;
-                let known = std::mem::take(&mut session.background);
-                session.background = tasks.into_iter().map(|task| {
-                    let started_at = known.iter().find(|(id, _)| *id == task.id).map_or(now, |(_, item)| item.started_at);
-                    let (kind, label) = match task.kind.as_str() {
-                        "subagent" => (BackgroundKind::Agent, task.description),
-                        "shell" => (BackgroundKind::Shell, task.command.unwrap_or(task.description)),
-                        "workflow" => (BackgroundKind::Other, task.name.filter(|name| !name.is_empty()).unwrap_or(task.description)),
-                        _ => (BackgroundKind::Other, task.description),
-                    };
-                    (task.id, BackgroundItem { kind, label: short_label(&label), started_at, suspect: false })
-                }).collect();
-            }
-            Report::SubagentStart { id, description, kind, model } => {
-                if !session.background.iter().any(|(known, _)| *known == id) {
-                    let label = short_label(description.as_deref().unwrap_or("subagent"));
-                    session.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
-                }
-                session.work.agent_started(id, description, kind, model, now);
-            }
-            Report::SubagentEnd { id } => {
-                session.background.retain(|(known, _)| *known != id);
-                session.work.agent_finished(&id, now);
-            }
-            Report::WorkflowStart { id, name, transcript_dir } => {
-                if !session.background.iter().any(|(known, _)| *known == id) {
-                    session.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Other, label: short_label(&name), started_at: now, suspect: false }));
-                }
-                session.work.workflow_started(id, name, transcript_dir, now);
-            }
-            Report::StepCreate(step) => session.work.step_created(step),
-            Report::StepUpdate(step) => session.work.step_updated(step),
-            Report::Steps { steps } => session.work.steps_listed(steps),
-            Report::ShellStart { id, command } => {
-                if !session.background.iter().any(|(known, _)| *known == id) {
-                    session.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now, suspect: false }));
-                }
-            }
-            Report::ToolEnd { tool_use_id } => {
-                if session.tool.as_ref().is_some_and(|tool| tool.tool_use_id == tool_use_id) {
-                    session.tool = None;
-                }
-            }
+            session.version = Some(version);
+            session.cwd = cwd;
+            session.started_at = Some(now);
+            session.ended = false;
+            drop(sessions);
+            self.started.notify_waiters();
+            return;
         }
+        session.record(report, now);
+    }
+
+    /// What a node's Agent SDK host observed, as the SDK gave it. It never makes the node
+    /// connected: only a mod's connection does.
+    pub(crate) fn apply_sdk(&self, session_id: &str, message: &Value, now: Millis) {
+        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let session = sessions.entry(session_id.to_owned()).or_default();
+        session.last_event_at = Some(now);
+        crate::sdk_live::observe(session, message, now);
+        drop(sessions);
+        self.changed.publish();
+    }
+
+    /// The node's Agent SDK host is gone, and with it everything it ran.
+    pub(crate) fn sdk_ended(&self, session_id: &str, now: Millis) {
+        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            crate::sdk_live::ended(session, now);
+        }
+        self.changed.publish();
     }
 
     pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
@@ -697,12 +734,12 @@ mod tests {
         let session = || reports.session("s").unwrap();
         reports.set_shell_alive("s", Some(true), 3);
         assert_eq!(session().activity(2 * HOUR), Activity::Working, "an hour-long wait on a live shell is not a hung one");
-        assert!(session().background_items().iter().all(|item| !item.suspect));
+        assert!(session().background_items(2 * HOUR).iter().all(|item| !item.suspect));
         assert!(!session().silent(2 * HOUR));
         reports.set_shell_alive("s", Some(false), 3);
         assert_eq!(session().activity(2 * HOUR), Activity::Stalled, "its shell is gone, no turn and nothing reported since");
         assert!(session().silent(2 * HOUR));
-        assert!(session().background_items().iter().all(|item| item.suspect), "a look after it started found its shell gone");
+        assert!(session().background_items(2 * HOUR).iter().all(|item| item.suspect), "a look after it started found its shell gone");
         assert_eq!(session().activity(alondra_core::states::TURN_QUIET_MS), Activity::Idle, "nothing runs, yet it is not quiet long enough to be stalled");
     }
 
@@ -939,7 +976,7 @@ mod tests {
                 let said = |reports: &Reports| {
                     let session = reports.session("s").unwrap();
                     let items: Vec<(String, BackgroundKind, bool)> = session.background.iter().map(|(id, _)| id.clone())
-                        .zip(session.background_items()).map(|(id, item)| (id, item.kind, item.suspect)).collect();
+                        .zip(session.background_items(0)).map(|(id, item)| (id, item.kind, item.suspect)).collect();
                     (session.work_gone(), items)
                 };
                 assert_eq!(said(&fast), said(&slow), "run {run}, after {fact}");

@@ -457,6 +457,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         let (normalizer, home) = (worker.normalizer(), domain.home());
         commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home)
             .map_err(failed("committing what the ended host observed"))?;
+        crate::sdk_live::feed(&domain, &agent, &batch);
     }
     let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
         Ok(match journal.retained(command).map_err(adapter("reading the ended host's receipt"))? {
@@ -676,7 +677,9 @@ pub(crate) fn own_worktree_edits(worktree: &std::path::Path) -> Vec<String> {
 
 /// How the task's Claude reaches Alondra through the node plugin's MCP server: as its node, with
 /// the capability issued to it, by the daemon's own address. The plugin's hooks stay inert: the
-/// host reports what Claude does.
+/// host reports what Claude does. Outside a terminal Claude Code offers no task list unless
+/// `CLAUDE_CODE_ENABLE_TODO_TOOLS` asks for it; with it the node plans in steps, as it did as a
+/// `claude --bg` session, and the task's detail shows them.
 fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -> BTreeMap<String, String> {
     let mut environment = BTreeMap::from([
         ("ALONDRA_HOME".to_owned(), home.display().to_string()),
@@ -684,6 +687,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
         ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), capability.to_owned()),
         ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
         ("ALONDRA_SDK_HOST".to_owned(), "1".to_owned()),
+        ("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()),
     ]);
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
         if let Ok(value) = std::env::var(name) {
@@ -830,6 +834,7 @@ impl Driver {
         if let Some(event) = context_event(&batch) {
             self.domain.contexts.observed(&self.task, event, alondra_core::now_millis());
         }
+        crate::sdk_live::feed(&self.domain, &self.agent, &batch);
         for observation in self.sealed().observations {
             #[cfg(test)]
             self.domain.before_acknowledge();
@@ -1013,6 +1018,7 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         self.domain.contexts.forget(&self.task);
+        self.domain.live.mods.sdk_ended(&self.agent.0, alondra_core::now_millis());
     }
 }
 
