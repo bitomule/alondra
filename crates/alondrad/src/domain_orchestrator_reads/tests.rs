@@ -137,3 +137,43 @@ fn the_orchestrator_reads_the_node_machine_s_state_never_an_older_guess() {
     let t1 = paused["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t1").unwrap().clone();
     assert_eq!(t1["activity"], "paused_by_machine");
 }
+
+fn apply(state: &mut DomainState, actor: Actor, command: Command) {
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+        command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command };
+    state.execute(&actor, &envelope).unwrap();
+}
+
+/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
+/// and ended its turn. Its turn-ended card stayed out of David's sight, but the fleet the
+/// orchestrator and Claude read listed it as an open question, “…” stopped without del…. A card
+/// the node's wait covers waits on nobody; once nothing covers it, it does.
+#[test]
+fn the_fleet_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_nothing_explains_the_stop() {
+    use alondra_core::domain::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX};
+    let mut state = DomainState::new("epoch");
+    apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
+    apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Keyboard".into(), auto_merge: false, maintenance: false, message: false });
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Keyboard".into() });
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+    apply(&mut state, Actor::System, Command::AdmitExecution { task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
+        instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None });
+    let LifecycleRecord::Planned { input } = state.lifecycle_journal[&TaskId::from("t3")][0].clone() else { panic!("planned first") };
+    apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+    ] });
+    apply(&mut state, Actor::Agent { agent_id: "agent-b".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q-keyboard".into(),
+        scope: Scope::Task { task_id: "t3".into() }, recipient: Recipient::User, body: "Close without changes in simpool?".into(), blocking: true,
+        options: vec![QuestionOption { id: "close".into(), label: "Close".into(), description: None },
+            QuestionOption { id: "reset".into(), label: "Reset the keyboard".into(), description: None }],
+        card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose what simpool does with the keyboard") });
+    apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    let card = format!("{TURN_ENDED_PREFIX}t3-1-turn-1");
+    assert!(state.interactions.contains_key(&card.as_str().into()), "the lifecycle keeps its card, out of sight");
+    let open = |state: &DomainState| -> Vec<String> { open_questions(state).iter().map(|q| q["id"].as_str().unwrap().to_owned()).collect() };
+    assert_eq!(open(&state), ["q-keyboard"], "the node waits on David's answer, not on a stop");
+
+    apply(&mut state, Actor::Agent { agent_id: "agent-b".into() }, Command::Withdraw { interaction_id: "q-keyboard".into() });
+    assert_eq!(open(&state), [card], "with nothing to wait for, the stop waits on someone");
+}

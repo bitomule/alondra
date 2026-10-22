@@ -285,7 +285,7 @@ e2e-allow-always:
 # in tmux, with no card for the user (tools/e2e_turn_end_wait.py). E2E_CAPTURES=<dir> keeps each screen.
 e2e-turn-end-wait:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
-	$(SDK_HOST_ENV) python3 tools/e2e_turn_end_wait.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) $(call exe,//crates/alondrad) \
+	$(SDK_HOST_ENV) python3 tools/e2e_turn_end_wait.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) $(if $(TO_USER),--to-user) $(call exe,//crates/alondrad) \
 		$(call exe,//crates/alondra) $(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # The iOS app loses its Mac with the app open (daemon frozen) and finds it again by itself, and at

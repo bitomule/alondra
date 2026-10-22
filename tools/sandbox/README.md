@@ -13,6 +13,7 @@ make e2e-journeys                  # opt-in: fresh sandbox with the fakes + scri
 make e2e-explore                   # the tester agent drives each Mac's TUI and writes a report
 make e2e-doc-review                # a document reviewed in the real TUI (tmux): the node gets the comments
 make e2e-turn-end-wait             # a turn that ends on a message to the orchestrator waits for it, in the real TUI (tmux)
+make e2e-turn-end-wait TO_USER=1   # the same with a question to the user: no card says the task stopped
 bazelisk test //tests/sandbox:doc_review  # the same, opt-in through Bazel
 ```
 

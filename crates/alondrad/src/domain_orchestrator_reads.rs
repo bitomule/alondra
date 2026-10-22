@@ -122,21 +122,27 @@ fn requests(state: &DomainState) -> Vec<Value> {
     }).collect()
 }
 
+/// The questions that wait on the user or the orchestrator. A card that asks the user how a task
+/// goes on while its node waits on something recorded waits on nobody.
+fn open_questions(state: &DomainState) -> Vec<Value> {
+    state.interactions.values()
+        .filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator) && !state.covered_by_recorded_wait(i))
+        .filter_map(|i| question(i, state))
+        .filter(|q| q["status"] == "open").collect()
+}
+
 /// `fleet`: the live Agents and everything that waits on someone, in the legacy overview's shape.
 pub(crate) fn fleet(domain: &DomainRuntime, machine: Value, usage: Value) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let nodes: Vec<Value> = domain.live.nodes().iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
         .map(|n| node_row(n, &state, domain)).collect();
-    let interactions = || state.interactions.values().filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator));
-    let open_questions: Vec<Value> = interactions().filter_map(|i| question(i, &state))
-        .filter(|q| q["status"] == "open").collect();
-    let reports: Vec<Value> = interactions().filter(|i| i.recipient == Recipient::User).filter_map(|i| report(i, &state)).collect();
+    let reports: Vec<Value> = state.interactions.values().filter(|i| i.recipient == Recipient::User).filter_map(|i| report(i, &state)).collect();
     let pending = domain.store.lock().expect("domain store poisoned").pending_messages()
         .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
     let orchestrator_messages: Vec<Value> = pending.iter().filter(|m| m.recipient_kind == "orchestrator")
         .map(|m| json!({"id": m.id, "text": m.message, "handed_at": null})).collect();
-    Ok(json!({"nodes": nodes, "open_questions": open_questions, "reports": reports, "orchestrator_messages": orchestrator_messages,
+    Ok(json!({"nodes": nodes, "open_questions": open_questions(&state), "reports": reports, "orchestrator_messages": orchestrator_messages,
         "requests": requests(&state), "tasks": tasks(&state), "machine": machine, "usage": usage}))
 }
 

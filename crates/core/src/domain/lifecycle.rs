@@ -1235,7 +1235,7 @@ impl DomainState {
     /// A card that says a turn ended with nothing that explains the task's next step, while
     /// something Alondra recorded does (`recorded_wait`). The card waits out of sight until what
     /// ends that wait reaches the node and ends the card, and shows only once nothing covers it.
-    pub(super) fn covered_by_recorded_wait(&self, card: &Interaction) -> bool {
+    pub fn covered_by_recorded_wait(&self, card: &Interaction) -> bool {
         let Scope::Task { task_id } = &card.scope else { return false };
         card.author == Author::System && card.id.0.starts_with(TURN_ENDED_PREFIX) && card.card.why == TURN_ENDED_WHY
             && self.recorded_wait(task_id, card.revision).is_some()

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""A turn that ends on a message to the orchestrator, seen in the real TUI in tmux.
+"""A turn that ends on a message to the orchestrator, or on a question to the user, seen in the
+real TUI in tmux.
 
 The task's node is the sandbox's scripted native Claude in the Mac's Agent SDK host. It tells the
 orchestrator, without blocking, to create one task per phase, and its turn ends there. The task
 must read «Esperando al orquestador» in the TUI and on the phone, with no card for the user and
-nothing «Te necesita». No model, no account, no tokens; everything is removed at the end.
+nothing «Te necesita». With --to-user it asks the user instead, blocking: the user's queue holds
+that question and no card says the task stopped. No model, no account, no tokens; everything is
+removed at the end.
 
-  tools/e2e_turn_end_wait.py [--captures DIR] <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
+  tools/e2e_turn_end_wait.py [--captures DIR] [--to-user] <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
   (SDK_NODE and SDK_HOST name the pinned Node and the host bundle)
 """
 
@@ -52,25 +55,55 @@ def start_node(sandbox, phone):
         time.sleep(0.2)
 
 
-def message_the_orchestrator(sandbox):
+QUESTION = "t-phases-ask-1"
+# What a task whose turn ended on the user's question reads: while its turn runs it reads «Trabajando».
+NEEDS_YOU = "Te necesita"
+
+
+def ask(sandbox, to_user):
+    recipient, interaction = ({"kind": "user"}, QUESTION) if to_user else ({"kind": "orchestrator"}, "t-phases-1")
     step = {"do": "call", "tool": "ask", "arguments": {
-        "interaction_id": "t-phases-1", "scope": {"kind": "task", "task_id": TASK}, "recipient": {"kind": "orchestrator"},
-        "need": "Create one task per phase 2-7", "why": "The user approved a plan in phases", "blocking": False,
+        "interaction_id": interaction, "scope": {"kind": "task", "task_id": TASK}, "recipient": recipient,
+        "need": "Create one task per phase 2-7", "why": "The user approved a plan in phases", "blocking": to_user,
         "body": "The plan is approved: create one task per phase 2-7.",
         "options": [{"id": "create", "label": "Create them", "description": "One task per phase"},
                     {"id": "decline", "label": "Do not create them", "description": "This task does every phase"}]}}
     run = subprocess.run([sandbox.tool, "--sandbox", sandbox.dir, "fake", "node", TASK, "call", "--step", json.dumps(step)],
                          env=dict(os.environ, SANDBOX_DIR=sandbox.dir), capture_output=True, text=True, timeout=TIMEOUT * 2)
-    assert run.returncode == 0 and run.stdout.startswith("ok "), f"the node could not message the orchestrator: {run.stdout}\n{run.stderr}"
+    assert run.returncode == 0 and run.stdout.startswith("ok "), f"the node could not ask: {run.stdout}\n{run.stderr}"
 
 
 def task_says(phone):
     return json.dumps(phone.view(f"task:{TASK}"), ensure_ascii=False)
 
 
+def ended_on_a_question_to_the_user(sandbox, phone, tui):
+    deadline = time.time() + TIMEOUT
+    while NEEDS_YOU not in (said := task_says(phone)):
+        assert time.time() < deadline, f"the task never read «{NEEDS_YOU}» once its turn ended: {said[:3000]}"
+        time.sleep(0.3)
+    queue, _ = phone.queue()
+    assert QUESTION in queue and not any(card.startswith("turn-ended-") for card in queue), f"the queue: {queue}"
+    print("ok (phone): the user's queue holds the question and no card says the task stopped", file=sys.stderr, flush=True)
+    tui.keys(":")
+    tui.type("tasks")
+    tui.keys("Enter")
+    tui.until(lambda s: "Estado: " + NEEDS_YOU in s, f"the task's detail never read «{NEEDS_YOU}»")
+    screen = tui.screen()
+    assert "sin entregar ni preguntar" not in screen, f"the tasks screen says the task stopped:\n{screen}"
+    tui.capture("tasks-question")
+    tui.keys("Tab")
+    tui.until(lambda s: "Create one task per phase 2-7" in s and "Bandeja" in s, "the inbox never showed the question")
+    screen = tui.screen()
+    assert "sin entregar ni preguntar" not in screen, f"the inbox says the task stopped:\n{screen}"
+    tui.capture("inbox-question")
+    print("e2e turn end wait: a turn that ended on a question to the user waits for its answer, with no card saying it stopped.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--captures", help="keep what the TUI showed at each step here")
+    parser.add_argument("--to-user", action="store_true", help="the node asks the user, blocking, instead of the orchestrator")
     parser.add_argument("binaries", nargs="+")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
@@ -81,7 +114,11 @@ def main():
     try:
         phone = Phone(sandbox)
         start_node(sandbox, phone)
-        message_the_orchestrator(sandbox)
+        ask(sandbox, args.to_user)
+        if args.to_user:
+            tui = Terminal([sandbox.alondra], sandbox.env, args.captures)
+            ended_on_a_question_to_the_user(sandbox, phone, tui)
+            return
         deadline = time.time() + TIMEOUT
         while WAITING not in (said := task_says(phone)):
             assert time.time() < deadline, f"the task never read «{WAITING}»: {said[:3000]}"

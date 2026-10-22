@@ -289,3 +289,119 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
     resumes(&mut s, &card);
 }
+
+fn ask_user(s: &mut DomainState, id: &str) {
+    must(s, node("a"), Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User,
+        body: "Keyboard keys do not break the captures: close without changes in simpool?".into(), blocking: true,
+        options: vec![
+            QuestionOption { id: "close".into(), label: "Close without changes".into(), description: None },
+            QuestionOption { id: "reset".into(), label: "Reset the keyboard".into(), description: None },
+        ],
+        card: CardSpec::new(CardKind::Decide, "Choose what simpool does with the keyboard").why("The captures pass with the keys set"),
+    });
+}
+fn decision(s: &mut DomainState, hold: Hold, tool: &str, body: &str, card: CardSpec) -> InteractionId {
+    must(s, Actor::System, Command::RecordDecisionRequest {
+        task_id: "t".into(), generation: 1, epoch: 3, hold, tool: Some(tool.into()), input: json!({"command": "make"}), mcp_server: None,
+        prompt: DecisionPrompt::Card { body: body.into(), options: hold.options(), card },
+    });
+    decision_card_id(&"t".into(), 1, 3)
+}
+
+/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
+/// whether to change simpool and ended its turn. The turn end is that question: no card says it
+/// stopped, and David's answer reaching the node ends the card the lifecycle keeps.
+#[test]
+fn the_22_october_turn_that_ended_on_a_question_to_the_user_waits_for_the_answer() {
+    let mut s = world();
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    ask_user(&mut s, "t-simpool-slot-keyboard-state-ask-1");
+    let ended = end_turn(&mut s, "turn-1");
+    assert!(!notified(&ended, &card), "David hears of no stop");
+    assert_eq!(pending(&s), ["t-simpool-slot-keyboard-state-ask-1"], "only his question waits for him");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for said in [render(&s, "task:t", client), render(&s, "tasks", client), render(&s, "fleet", client)] {
+            assert!(!said.contains("sin entregar ni preguntar"), "{client:?}: {said}");
+        }
+    }
+    assert_aggregate_rules(&s);
+
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "t-simpool-slot-keyboard-state-ask-1".into(),
+        option_id: "close".into(), inputs: BTreeMap::new() });
+    assert!(pending(&s).is_empty(), "the answer is on its way: still no stop: {:?}", pending(&s));
+    resumes(&mut s, &card);
+}
+
+/// 21 October: “MealScale · mejora semanal” asked the orchestrator whether to wait for the task
+/// that fixes main's tests, the orchestrator made it depend on that task, and the node's next
+/// turn, started with that answer, ended while the dependency had not even started.
+#[test]
+fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_task_waits_for_it() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    let first = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    ask_orchestrator(&mut s, "t-85fa-ask-depend-1", true);
+    end_turn(&mut s, "turn-1");
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
+    answer_as_orchestrator(&mut s, "t-85fa-ask-depend-1");
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into() });
+    assert!(s.interactions[&first].withdrawn);
+    let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
+    ] });
+    let card = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    let ended = end_turn(&mut s, "turn-2");
+    assert!(!notified(&ended, &card), "David hears of no stop");
+    assert!(pending(&s).is_empty(), "{:?}", pending(&s));
+    shows_waiting(&s, "Task d");
+    assert_aggregate_rules(&s);
+}
+
+/// A plan or a permission Claude asks for is the decision the task waits on: the turn that ends
+/// behind it creates no card at all.
+#[test]
+fn a_turn_that_ends_behind_an_open_plan_or_permission_creates_no_card() {
+    for (hold, tool, body, spec) in [
+        (Hold::Plan, "ExitPlanMode", PLAN, CardSpec::new(CardKind::Review, "Remove the Fleet").content(ContentKind::Plan, PLAN)),
+        (Hold::Permission, "Bash", "Run make", CardSpec::new(CardKind::Authorize, "Run make")),
+    ] {
+        let mut s = world();
+        let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+        let asked = decision(&mut s, hold, tool, body, spec);
+        let ended = end_turn(&mut s, "turn-1");
+        assert!(!notified(&ended, &card) && !s.interactions.contains_key(&card), "{hold:?}: no card at all");
+        assert!(s.open(&s.interactions[&asked]), "{hold:?}: the decision waits for David");
+        assert!(pending(&s).iter().all(|id| *id == asked.0), "{hold:?}: nothing else does: {:?}", pending(&s));
+        assert_aggregate_rules(&s);
+    }
+}
+
+/// With nothing open, the stop is the user's to decide: the card shows and David hears of it.
+#[test]
+fn a_turn_that_ends_with_nothing_open_asks_the_user() {
+    let mut s = world();
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    let ended = end_turn(&mut s, "turn-1");
+    assert!(notified(&ended, &card));
+    assert_eq!(pending(&s), [card.0.clone()]);
+}
+
+/// The card and its notification on the iPhone say all they ask in Spanish: the task's title is
+/// what gets shortened, never the verb.
+#[test]
+fn the_stop_of_a_task_with_a_long_title_reads_whole_in_spanish_on_the_card_and_its_notification() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    s.tasks.get_mut(&TaskId::from("t")).unwrap().title = "simpool: un simulador reutilizado no arrastra el estado del teclado".into();
+    end_turn(&mut s, "turn-1");
+    let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
+    let alert = crate::views::push_content(&read, &card, Lang::Es).unwrap().alert.expect("an alert");
+    let shown = [alert.title.clone(), render(&s, &format!("card:{card}"), Client::Ios)];
+    for said in &shown {
+        assert!(said.contains("«simpool: un simulador") && said.contains("…» paró sin entregar ni preguntar: dile cómo seguir"), "{said}");
+        assert!(!said.contains("stopped"), "{said}");
+    }
+    assert!(alert.title.chars().count() <= CardSpec::TITLED_NEED_MAX, "{}", alert.title);
+}
