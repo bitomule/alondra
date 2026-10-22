@@ -15,7 +15,8 @@ import zipfile
 
 from prepare import (GateError, IOS, EXT, MAC, TEAM, only_identity, prepare_output, read_versions, uncommitted,
                      validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust,
-                     validate_store_metadata, normalize_bundle, bom_problems, pkg_problems, verify_pkg_contents)
+                     validate_store_metadata, normalize_bundle, bom_problems, pkg_problems, verify_pkg_contents,
+                     stripped_components)
 
 
 class DistributionInputTests(unittest.TestCase):
@@ -212,23 +213,25 @@ class BetaInputTests(unittest.TestCase):
 
 
 class PackageContentsTests(unittest.TestCase):
-    def build_pkg(self, directory, normalize):
+    def build_app(self, directory, normalize):
         previous = os.umask(0o077)
         try:
             root = Path(directory) / "root"
             app = root / "Alondra.app"
             (app / "Contents/MacOS").mkdir(parents=True)
-            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "Alondra"}))
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "Alondra", "CFBundleIdentifier": "test.alondra",
+                                                                     "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1"}))
             (app / "Contents/MacOS/Alondra").write_text("#!/bin/sh\n")
             os.chmod(app / "Contents/MacOS/Alondra", 0o700)
+            (app / "Contents/Frameworks/Kit.framework/Versions/A").mkdir(parents=True)
+            (app / "Contents/Frameworks/Kit.framework/Versions/A/Kit").write_text("kit\n")
+            os.symlink("A", app / "Contents/Frameworks/Kit.framework/Versions/Current")
+            # Stands in for com.apple.provenance, which macOS puts on every file a node writes.
             subprocess.run(["xattr", "-w", "com.apple.quarantine", "0081;0;x;", app / "Contents/Info.plist"], check=True)
             if normalize:
                 normalize_bundle(app)
                 os.chmod(root, 0o755)
-            pkg = Path(directory) / "Alondra.pkg"
-            subprocess.run(["pkgbuild", "--root", root, "--identifier", "test.alondra", "--install-location", "/Applications", pkg],
-                           check=True, capture_output=True)
-            return pkg, app
+            return root, app
         finally:
             os.umask(previous)
 
@@ -237,21 +240,39 @@ class PackageContentsTests(unittest.TestCase):
                               "./Alondra.app/Contents/Info.plist\t-rw-r--r--", "./Alondra.app/Contents/Secret\t-rw-------",
                               "./Alondra.app/Contents/._Info.plist\t-rw-r--r--", "./Alondra.app/Locked\tdrw-r--r--"])
         self.assertEqual(len(bom_problems(listing)), 4)
-        self.assertEqual(bom_problems("./Alondra.app\tdrwxr-xr-x\n./Alondra.app/x\t-rwxr-xr-x"), [])
+        self.assertEqual(bom_problems(".\t?---------\n./Alondra.app\tdrwxr-xr-x\n./Alondra.app/x\t-rwxr-xr-x"), [])
 
     def test_package_built_under_a_private_umask_is_refused_until_normalized(self):
         with tempfile.TemporaryDirectory() as directory:
-            pkg, _ = self.build_pkg(directory, normalize=False)
+            root, _ = self.build_app(directory, normalize=False)
+            pkg = Path(directory) / "Alondra.pkg"
+            subprocess.run(["pkgbuild", "--root", root, "--identifier", "test.alondra", "--install-location", "/Applications", pkg],
+                           check=True, capture_output=True)
             self.assertTrue(any(p.startswith("drwx------") for p in pkg_problems(pkg)))
             with self.assertRaises(GateError):
                 verify_pkg_contents(pkg)
         with tempfile.TemporaryDirectory() as directory:
-            pkg, app = self.build_pkg(directory, normalize=True)
-            self.assertEqual([p for p in pkg_problems(pkg) if "AppleDouble" not in p], [])
+            _, app = self.build_app(directory, normalize=True)
             self.assertEqual((app / "Contents").stat().st_mode & 0o777, 0o755)
             self.assertEqual((app / "Contents/Info.plist").stat().st_mode & 0o777, 0o644)
             self.assertEqual((app / "Contents/MacOS/Alondra").stat().st_mode & 0o777, 0o755)
-            self.assertNotIn("com.apple.quarantine", subprocess.run(["xattr", app / "Contents/Info.plist"], capture_output=True, text=True).stdout)
+
+    def test_package_of_an_app_with_extended_attributes_has_no_appledouble_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, app = self.build_app(directory, normalize=True)
+            productbuild = Path(directory) / "productbuild.pkg"
+            subprocess.run(["productbuild", "--component", app, "/Applications", productbuild], check=True, capture_output=True)
+            self.assertIn("AppleDouble payload entry: ./Alondra.app/Contents/._Info.plist", pkg_problems(productbuild))
+            work = Path(directory) / "work"
+            work.mkdir()
+            distribution, packages = stripped_components(app, work)
+            pkg = Path(directory) / "Alondra.pkg"
+            subprocess.run(["productbuild", "--distribution", distribution, "--package-path", packages, pkg], check=True, capture_output=True)
+            self.assertEqual(pkg_problems(pkg), [])
+            verify_pkg_contents(pkg)
+            files = subprocess.run(["pkgutil", "--payload-files", pkg], check=True, capture_output=True, text=True).stdout.split()
+            self.assertIn("./Alondra.app/Contents/Frameworks/Kit.framework/Versions/Current", files)
+            self.assertFalse([f for f in files if "/._" in f])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 import argparse
 import base64
 import datetime as dt
+import gzip
 import hashlib
 import json
 import os
@@ -49,7 +50,7 @@ def run(*args):
         log = directory / "failure.log"
         # security cms stdout can contain a complete profile; never log it.
         text = result.stderr.decode(errors="replace")
-        if Path(str(args[0])).name in {"bazelisk", "codesign", "productbuild", "pkgutil", "xcrun", "lsbom"}:
+        if Path(str(args[0])).name in {"bazelisk", "codesign", "productbuild", "pkgutil", "xcrun", "lsbom", "mkbom"}:
             text += result.stdout.decode(errors="replace")
         text = re.sub(r"(?im)^.*(?:authorization|bearer |password|token|secret|api.?key|remote_header).*$", "[redacted]", text)
         with log.open("x") as stream:
@@ -161,20 +162,81 @@ def verify_pkg_leaf(toc, fingerprint):
 
 
 def normalize_bundle(bundle):
-    """Make the unpacked app readable by everyone and free of extended attributes.
+    """Make the unpacked app readable by everyone.
 
-    Mode bits and extended attributes are outside the code signature, so this does not invalidate it."""
-    run("xattr", "-cr", bundle)
+    Mode bits are outside the code signature, so this does not invalidate it."""
     for directory, directories, files in os.walk(bundle):
-        for name in directories:
+        for name in directories + files:
             path = Path(directory) / name
-            if not path.is_symlink():
+            if path.is_symlink():
+                os.chmod(path, 0o755, follow_symlinks=False)
+            elif path.is_dir():
                 os.chmod(path, 0o755)
-        for name in files:
-            path = Path(directory) / name
-            if not path.is_symlink():
+            else:
                 os.chmod(path, 0o755 if path.stat().st_mode & 0o111 else 0o644)
     os.chmod(bundle, 0o755)
+
+
+def is_appledouble(path):
+    return PurePosixPath(path).name.startswith("._")
+
+
+def cpio_entries(payload):
+    """(name, bytes) of each entry of an odc cpio stream, its trailer included."""
+    offset = 0
+    while True:
+        header = payload[offset:offset + 76]
+        require(len(header) == 76 and header[:6] == b"070707", "Installer payload is not an odc cpio archive")
+        name_size, file_size = int(header[59:65], 8), int(header[65:76], 8)
+        name = payload[offset + 76:offset + 76 + name_size].rstrip(b"\0").decode()
+        end = offset + 76 + name_size + file_size
+        require(end <= len(payload), "Truncated installer payload")
+        yield name, payload[offset:end]
+        offset = end
+        if name == "TRAILER!!!":
+            return
+
+
+def read_payload(path):
+    compressed = path.read_bytes()
+    require(compressed[:2] == b"\x1f\x8b", "Installer payload is not gzip-compressed")
+    return gzip.decompress(compressed)
+
+
+def strip_appledouble(component):
+    """Drop the ._ entries productbuild archives for extended attributes from Payload and Bom.
+
+    macOS gives every file a node creates com.apple.provenance, which cannot be removed, so
+    stripping attributes from the app beforehand does not stop them."""
+    payload = component / "Payload"
+    entries = cpio_entries(read_payload(payload))
+    payload.write_bytes(gzip.compress(b"".join(data for name, data in entries if not is_appledouble(name)), mtime=0))
+    bom = component / "Bom"
+    listing = component.parent / (component.name + ".bom.txt")
+    # productbuild writes the root with mode 0, which mkbom -i cannot read; the payload's root is 40755.
+    kept = [".\t40755\t0/0" if line == ".\t0\t0/0" else line
+            for line in run("lsbom", bom).decode().splitlines() if not is_appledouble(line.split("\t", 1)[0])]
+    listing.write_text("".join(line + "\n" for line in kept))
+    # mkbom -i skips the lines it cannot insert and still exits 0.
+    run("mkbom", "-i", listing, bom)
+    listing.unlink()
+    require(run("lsbom", bom).decode().splitlines() == kept, "Rebuilt installer Bom differs from its listing")
+
+
+def stripped_components(app, directory):
+    """productbuild the app's pkg; return its Distribution and a folder with its components without AppleDouble entries."""
+    unsigned = directory / "unsigned.pkg"
+    run("productbuild", "--component", app, "/Applications", unsigned)
+    expanded = directory / "expanded"
+    run("pkgutil", "--expand", unsigned, expanded)
+    components = sorted(path for path in expanded.iterdir() if path.suffix == ".pkg")
+    require(components, "Installer package has no component")
+    packages = directory / "packages"
+    packages.mkdir()
+    for component in components:
+        strip_appledouble(component)
+        run("pkgutil", "--flatten", component, packages / component.name)
+    return expanded / "Distribution", packages
 
 
 def bom_problems(listing):
@@ -182,7 +244,9 @@ def bom_problems(listing):
     for line in listing.splitlines():
         path, _, mode = line.rpartition("\t")
         mode = mode.strip()
-        if PurePosixPath(path).name.startswith("._"):
+        if path == ".":
+            continue
+        if is_appledouble(path):
             problems.append("AppleDouble entry: " + path)
         elif len(mode) == 10 and (mode[7] != "r" or (mode[0] == "d" and mode[9] != "x")):
             problems.append(mode + " " + path)
@@ -195,11 +259,13 @@ def pkg_problems(pkg):
         run("pkgutil", "--expand", pkg, expanded)
         boms = sorted(expanded.rglob("Bom"))
         require(boms, "Installer package has no Bom")
-        return [problem for bom in boms for problem in bom_problems(run("lsbom", "-p", "fM", bom).decode())]
+        return ([problem for bom in boms for problem in bom_problems(run("lsbom", "-p", "fM", bom).decode())]
+                + ["AppleDouble payload entry: " + name for bom in boms
+                   for name, _ in cpio_entries(read_payload(bom.parent / "Payload")) if is_appledouble(name)])
 
 
 def verify_pkg_contents(pkg):
-    """Refuse the package App Store Connect rejects: ITMS-90255 (root-only entries) and AppleDouble files."""
+    """Refuse the package App Store Connect rejects: ITMS-90255 (root-only entries) and AppleDouble files in Bom or Payload."""
     problems = pkg_problems(pkg)
     require(not problems, "Installer package would be rejected by App Store Connect: " + "; ".join(problems[:5]))
 
@@ -358,9 +424,10 @@ def main():
             shutil.copyfile(snapshot, artifact)
         else:
             artifact = output / "Alondra.pkg"
+            distribution, packages = stripped_components(unpacked / app, private)
             # Recheck the exact valid identity immediately before signing.
             local_identity(args.installer_identity.upper(), installer=True)
-            run("productbuild", "--component", unpacked / app, "/Applications", "--sign", installer, artifact)
+            run("productbuild", "--distribution", distribution, "--package-path", packages, "--sign", installer, artifact)
             verify_pkg_contents(artifact)
             verify_pkg_trust(run("pkgutil", "--check-signature", artifact))
             verify_pkg_leaf(run("xar", "--dump-toc=-", "-f", artifact), args.installer_identity.upper())
