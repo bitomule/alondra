@@ -1079,8 +1079,15 @@ fn stale(error: &anyhow::Error) -> bool {
     )
 }
 
+fn failed_step(driver: &Driver, error: &Failed) {
+    log!("the SDK owner of {} stopped: {error}", driver.task);
+    #[cfg(test)]
+    driver.domain.owner_failed(error.to_string());
+}
+
 /// Runs the owner on a thread of its own until it is told to stop or the host goes.
 pub(crate) struct Owner {
+    /// Set before its host is asked to stop: the end of the host that follows is the owner's own.
     stopped: Arc<AtomicBool>,
     /// The owner ended on its own, its host stopped: it owns nothing any more.
     ended: Arc<AtomicBool>,
@@ -1113,7 +1120,11 @@ impl Owner {
                 loop {
                     while !told() {
                         if let Err(error) = driver.step(&told) {
-                            log!("the SDK owner of {} stopped: {error}", driver.task);
+                            // Told to stop, the owner ended its host itself: what the host's end
+                            // breaks in the step it was reading is that end, not a failure.
+                            if !told() {
+                                failed_step(&driver, &error);
+                            }
                             break;
                         }
                     }

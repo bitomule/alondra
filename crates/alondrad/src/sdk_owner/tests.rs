@@ -3132,3 +3132,131 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
         driver.stop().unwrap();
     }
 }
+
+/// The owner of a node that just started, held on the first thing its host says until every
+/// process of that host has exited: it is in the middle of reading its host when the host ends.
+fn owner_reading_when_its_host_ends(slice: &Slice) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
+    let driver = slice.launch_with("consume-and-hold");
+    let agent = driver.agent().clone();
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    for process in &processes {
+        exits.watch(process).unwrap();
+    }
+    let (held, holding) = std::sync::mpsc::channel();
+    let mut hold = Some((exits, held));
+    slice.on_acknowledge(move || {
+        if let Some((mut exits, held)) = hold.take() {
+            held.send(()).unwrap();
+            exits.wait().unwrap();
+        }
+    });
+    let failures = slice.domain.owner_failures();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    holding.recv().unwrap();
+    (agent, failures, processes)
+}
+
+/// Alondra ended the host itself: its owner reported no failure, no card asks the user, no host
+/// took its place and none of its processes is left.
+fn assert_ended_quietly(slice: &Slice, agent: &AgentId, failures: &std::sync::mpsc::Receiver<String>, processes: &[alondra_process_group::Member]) {
+    assert_eq!(failures.try_iter().collect::<Vec<_>>(), Vec::<String>::new(), "the owner reported the end it caused as a failure");
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card asks to try again");
+    assert_eq!(slice.starts().len(), 1, "no host resumed the session: {:?}", slice.starts());
+    assert!(!slice.domain.owns_sdk_host(agent));
+    let left: Vec<String> = processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the host's processes survived: {left:?}");
+}
+
+fn deliver_and_accept(slice: &Slice, agent: &AgentId, targets: Vec<DeliveryTarget>) {
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+}
+
+async fn close_pass(slice: &Slice) {
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+}
+
+// 22 October: the user accepted a task and Alondra closed its node; the node's owner was reading
+// its host when the host ended and logged «the SDK owner of … stopped: the connection to the SDK
+// host failed». Alondra ended that host itself: its owner stops as a closed execution, quietly.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_done_task_ends_its_host_with_no_failure_of_its_owner() {
+    let slice = Slice::new();
+    let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
+    deliver_and_accept(&slice, &agent, vec![DeliveryTarget::Text { text: "The notes".into() }]);
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    close_pass(&slice).await;
+    let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)));
+    assert_ended_quietly(&slice, &agent, &failures, &processes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_task_ends_its_host_with_no_failure_of_its_owner() {
+    let slice = Slice::new();
+    let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    close_pass(&slice).await;
+    let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)));
+    assert_ended_quietly(&slice, &agent, &failures, &processes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_task_whose_pr_merged_ends_its_host_with_no_failure_of_its_owner() {
+    let slice = Slice::new();
+    let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
+    let node = Actor::Agent { agent_id: agent.clone() };
+    slice.run(&node, "register", Command::RegisterPr {
+        task_id: TASK.into(), pr_id: "pr-notes".into(), host: "github.example.invalid".into(), repository: "synthetic/notes".into(),
+        number: 7, head: "head-a".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    deliver_and_accept(&slice, &agent, vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }]);
+    slice.run(&Actor::System, "merged", Command::ObservePrState {
+        pr_id: "pr-notes".into(), head: "head-a".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head-a".into()),
+    });
+    slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    close_pass(&slice).await;
+    let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)));
+    assert_ended_quietly(&slice, &agent, &failures, &processes);
+}
+
+// The orchestrator's replace and a node's move to another host stop the old host through its owner.
+#[test]
+fn replacing_a_node_ends_its_host_with_no_failure_of_its_owner() {
+    let slice = Slice::new();
+    let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
+    slice.domain.stop_sdk_host(&agent).unwrap();
+    assert_ended_quietly(&slice, &agent, &failures, &processes);
+}
+
+// A daemon that exits for its upgrade stops every host it owns.
+#[test]
+fn a_daemon_that_stops_ends_its_hosts_with_no_failure_of_their_owners() {
+    let slice = Slice::new();
+    let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
+    slice.domain.stop_sdk_owners();
+    assert_ended_quietly(&slice, &agent, &failures, &processes);
+}
+
+// A host that dies by itself while its task is open is a failure: its owner says so and, with no
+// host to take its place in this daemon, the task asks the user on its card.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_dies_while_its_task_is_open_is_a_failure_of_its_owner() {
+    let slice = Slice::new();
+    let driver = slice.launch_working();
+    let group = driver.worker.host_group().unwrap();
+    let failures = slice.domain.owner_failures();
+    let mut changed = slice.domain.subscribe();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
+    let reader = Arc::clone(&slice.domain);
+    changed.wait_for(|_| open_card(&reader, HOST_LOST_PREFIX).is_some()).await.unwrap();
+    let failure = failures.try_recv().unwrap();
+    assert!(failure.starts_with("the SDK host closed") || failure.starts_with("the connection to the SDK host failed"), "{failure}");
+}

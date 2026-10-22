@@ -52,6 +52,8 @@ pub struct DomainRuntime {
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    #[cfg(test)]
+    owner_failures: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     /// How many read indexes publication built: one per commit that changed the domain.
     #[cfg(test)]
     pub(crate) index_builds: std::sync::atomic::AtomicU64,
@@ -119,6 +121,8 @@ impl DomainRuntime {
             before_owner_publish: Default::default(),
             #[cfg(test)]
             before_acknowledge: Default::default(),
+            #[cfg(test)]
+            owner_failures: Default::default(),
             #[cfg(test)]
             index_builds: Default::default(),
         })
@@ -298,6 +302,19 @@ impl DomainRuntime {
     #[cfg(test)]
     pub(crate) fn on_acknowledge(&self, hook: impl FnMut() + Send + 'static) {
         *self.before_acknowledge.lock().unwrap() = Some(Box::new(hook));
+    }
+    /// Every failure an SDK owner reports from now on.
+    #[cfg(test)]
+    pub(crate) fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
+        let (sender, failures) = std::sync::mpsc::channel();
+        *self.owner_failures.lock().unwrap() = Some(sender);
+        failures
+    }
+    #[cfg(test)]
+    pub(crate) fn owner_failed(&self, why: String) {
+        if let Some(sender) = self.owner_failures.lock().unwrap().as_ref() {
+            let _ = sender.send(why);
+        }
     }
     #[cfg(test)]
     pub(crate) fn before_acknowledge(&self) {
