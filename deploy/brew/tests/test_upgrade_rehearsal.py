@@ -10,6 +10,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import types
 import tarfile
 import tempfile
 import time
@@ -194,6 +195,16 @@ class HandoverWorldTests(Fixture):
         self.addCleanup(world.supervisor.close)
         self.assertEqual(world.env().get('ALONDRA_IGNORE_MAC_LOAD'), '1',
                          'other builds keep the Mac busy: the gate must not hold the case\'s nodes')
+
+    def test_the_claude_of_a_case_is_signed_in_so_the_daemon_has_an_account_to_start_on(self):
+        tool = self.work / 'alondra-sandbox'
+        tool.write_text('')
+        world = u.HandoverWorld(self.rehearsal, self.work / 'case', types.SimpleNamespace(tool=tool))
+        self.addCleanup(world.supervisor.close)
+        world.root.mkdir()
+        world.lay_out(None, world.root / 'Cellar/alondra/0.3.5', lambda keg: keg.mkdir(parents=True))
+        self.assertEqual((world.claude_home / '.sandbox-account').read_text(), 'default@sandbox.test\n',
+                         'the sandbox\'s claude says signed out without it, and a signed-out account starts nothing')
 
 
 class HandoverCaseTests(unittest.TestCase):

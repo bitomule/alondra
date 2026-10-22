@@ -1102,17 +1102,17 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     let title = domain.tasks.get(task_id)?.title.as_str();
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_STOPPED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "You stopped “{title}” during its work after the merge: tell it how to go on",
-            "Paraste «{title}» durante su trabajo tras fusionar: dile cómo seguir"));
+            "Paraste «{title}» durante su trabajo tras el merge: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged and you stopped what it ran after the merge. Tell it to go on, with all its context, or close the task if that work is done.",
-            "Su PR está fusionado y paraste lo que hacía tras fusionar. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
+            "Su PR ya tiene el merge hecho y paraste lo que hacía tras el merge. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_ENDED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped its work after the merge when its session closed: tell it how to go on",
-            "«{title}» dejó a medias su trabajo tras fusionar al cerrarse su sesión: dile cómo seguir"));
+            "«{title}» dejó a medias su trabajo tras el merge al cerrarse su sesión: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged. Its session closed while it ran what it said comes after the merge, and whatever ran in the background stopped. Tell it to go on, with all its context, or close the task if that work is done.",
-            "Su PR está fusionado. Su sesión se cerró mientras hacía lo que dijo que venía tras fusionar, y lo que corría en segundo plano se paró. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
+            "Su PR ya tiene el merge hecho. Su sesión se cerró mientras hacía lo que dijo que venía tras el merge, y lo que corría en segundo plano se paró. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
     if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
@@ -1273,7 +1273,7 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         (crate::domain::CLOSE_TASK, crate::domain::CLOSE_TASK_LABEL) => (
             t!(lang, "Close the task", "Cerrar la tarea"),
             Some(t!(lang, "Its work after the merge counts as done: the task is completed and Alondra closes its session",
-                "Su trabajo tras fusionar se da por terminado: la tarea se completa y Alondra cierra su sesión")),
+                "Su trabajo tras el merge se da por terminado: la tarea se completa y Alondra cierra su sesión")),
         ),
         (crate::domain::CANCEL_TASK, crate::domain::CANCEL_TASK_LABEL) => (
             t!(lang, "Cancel the task", "Cancelar la tarea"),

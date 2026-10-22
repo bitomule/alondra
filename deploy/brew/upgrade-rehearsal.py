@@ -749,6 +749,8 @@ class HandoverWorld:
                                               f'[ "$1" = --prefix ] && echo "{root}"\nexit 0\n')
         for name in STUBBED_FOR_FAKES:
             write_executable(root / 'stubs' / name, f'#!/bin/sh\nprintf "%s\\n" "{name} $*" >> "{root}/stub-calls.log"\nexit 0\n')
+        # Signed in as the sandbox's fake answers `claude auth status`: a signed-out account starts nothing.
+        (self.claude_home / '.sandbox-account').write_text('default@sandbox.test\n')
         (self.claude_home / 'plugins/known_marketplaces.json').write_text(
             json.dumps({'alondra': {'installLocation': str(root / 'opt/alondra/libexec/alondra')}}))
         repo = root / 'repo'

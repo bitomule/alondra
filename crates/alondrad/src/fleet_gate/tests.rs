@@ -237,6 +237,31 @@ fn a_macos_warning_with_31_percent_free_and_6_nodes_working_holds_new_starts_and
     assert!(domain.live.gate.live(&domain, now).unwrap().tight, "no room for new starts");
 }
 
+/// A rehearsal's daemon (`ALONDRA_IGNORE_MAC_LOAD=1`) shares the Mac with the user's fleet and
+/// builds: their memory pressure and load never hold its starts, which the same samples hold for
+/// a daemon that reads the Mac.
+#[test]
+fn a_daemon_that_ignores_the_mac_starts_a_task_under_macos_memory_warning_and_a_busy_cpu() {
+    let base = alondra_core::now_millis();
+    let ask = |ignores: bool| {
+        let (_home, domain) = world();
+        if ignores {
+            domain.live.gate.ignore_mac();
+        }
+        create(&domain, "t-fresh");
+        let mut now = base;
+        while now <= base + 2 * MIN {
+            let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Warning),
+                cpus: 11, load: [60.0; 3], ..Machine::default() };
+            crate::machine_watch::pace(&domain, &machine);
+            now += SAMPLE;
+        }
+        domain.live.gate.ask(&domain, waiting("t-fresh", TaskPriority::Normal, false, base), now)
+    };
+    assert!(matches!(ask(false), Err(Hold::Memory { why: NoRoom::Pressure(alondra_core::MemoryPressure::Warning), .. })), "the live daemon waits for room");
+    assert_eq!(ask(true), Ok(()), "the rehearsal's daemon starts it");
+}
+
 #[test]
 fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_until_the_user_answers() {
     let (_home, domain) = world();

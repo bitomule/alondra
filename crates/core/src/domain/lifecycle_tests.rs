@@ -1595,7 +1595,7 @@ fn a_host_force_stopped_during_the_work_after_the_merge_tells_the_user_and_offer
     assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)), "the user hears of it");
     assert!(s.open(&s.interactions[&card]));
     let es = turn_end_shown(&s, "t", Lang::Es);
-    assert!(es.contains("Paraste «Task t» durante su trabajo tras fusionar: dile cómo seguir"), "{es}");
+    assert!(es.contains("Paraste «Task t» durante su trabajo tras el merge: dile cómo seguir"), "{es}");
     let shown = card_shown(&s, &card, Lang::Es);
     assert!(shown.contains("\"label\":\"Cerrar la tarea\"") && shown.contains("\"label\":\"Que siga\""), "{shown}");
     assert_aggregate_rules(&s);
