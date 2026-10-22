@@ -24,7 +24,7 @@ function bounded(promise, label) {
 }
 
 function actualSpawn(options) {
-  assert.ok(children.length < 2, 'One native Claude per account');
+  assert.ok(children.length < 4, 'One native Claude per turn');
   assert.equal(options.command, config.native);
   assert.equal(options.cwd, config.work);
   assert.deepEqual(options.env, { ...expected, CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', CLAUDE_AGENT_SDK_VERSION: '0.3.300', CLAUDE_CODE_SDK_READS_SESSION_STATE: '1' }, 'Only the account\'s own environment');
@@ -82,10 +82,13 @@ async function turn(query, account, prompt, resume) {
   }
   const init = messages.find((message) => message.type === 'system' && message.subtype === 'init');
   const result = messages.find((message) => message.type === 'result');
+  const refusal = messages.find((message) => message.type === 'assistant' && message.error);
   const value = {
     account, resumed: resume ?? null, session: init?.session_id, resultSession: result?.session_id, model: init?.model,
     version: init?.claude_code_version, skills: init?.skills, agents: init?.agents, slashCommands: init?.slash_commands,
     result: result?.result, subtype: result?.subtype, isError: result?.is_error,
+    error: refusal?.error ?? null, apiErrorStatus: result?.api_error_status ?? null, terminalReason: result?.terminal_reason ?? null,
+    rateLimits: messages.filter((message) => message.type === 'rate_limit_event').map((message) => message.rate_limit_info),
   };
   report.turns.push(value);
   report.links[account + ' after its turn'] = links(config.accounts[account]);
@@ -103,6 +106,10 @@ async function main() {
     assert.equal(first.result, config.first.response);
     const second = await turn(query, 'b', config.second.prompt, first.session);
     assert.equal(second.result, config.second.response);
+    const limited = await turn(query, 'a', config.limited.prompt);
+    assert.equal(limited.isError, true, 'The usage limit refuses the turn');
+    const after = await turn(query, 'b', config.after.prompt, limited.session);
+    assert.equal(after.result, config.after.response);
     report.links['a after both turns'] = links(config.accounts.a);
     report = { ...report, status: 'passed', sdkVersion: sdkPackage.version };
   } catch (error) {

@@ -353,11 +353,12 @@ async fn accounts_read(
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
 ) -> Response {
-    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
-        return refused;
-    }
+    let lang = match settings_caller(&state, &peer, &headers, &signed) {
+        Ok(lang) => lang,
+        Err(refused) => return refused,
+    };
     let (domain, home) = (state.domain(), state.home.clone());
-    match tokio::task::spawn_blocking(move || crate::accounts::read(&domain, &home)).await {
+    match tokio::task::spawn_blocking(move || crate::accounts::read(&domain, &home, lang)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -390,13 +391,14 @@ async fn accounts_check(
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
 ) -> Response {
-    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
-        return refused;
-    }
+    let lang = match settings_caller(&state, &peer, &headers, &signed) {
+        Ok(lang) => lang,
+        Err(refused) => return refused,
+    };
     let (domain, home) = (state.domain(), state.home.clone());
     match tokio::task::spawn_blocking(move || {
         crate::accounts::check(&domain, &home);
-        crate::accounts::read(&domain, &home)
+        crate::accounts::read(&domain, &home, lang)
     }).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),

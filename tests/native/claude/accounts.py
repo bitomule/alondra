@@ -2,8 +2,10 @@
 user set up in ~/.claude, with the unmodified native Claude and a loopback model double.
 
 It checks that (a) the linked skills, agents, commands, rules, instructions and settings are loaded,
-(b) a session created with folder A is resumed with folder B under the same id, and (c) the linked
-settings.json, and every other link, is still a link after each turn.
+(b) a session created with folder A is resumed with folder B under the same id, (c) the linked
+settings.json, and every other link, is still a link after each turn, and (d) a session whose turn
+the API refused with the usage limit on A goes on with B under the same id, as Alondra moves a
+node whose account reached its limit.
 """
 import http.server
 import importlib.util
@@ -67,6 +69,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(raw)
         self.wfile.flush()
 
+    def limited(self):
+        """The API's answer once the account's usage limit is reached: a 429 it says not to retry."""
+        raw = json.dumps({'type': 'error', 'error': {'type': 'rate_limit_error', 'message': 'This request would exceed your account\'s rate limit.'}}).encode()
+        self.send_response(429)
+        for name, value in [('content-type', 'application/json'), ('content-length', str(len(raw))), ('connection', 'close'),
+                            ('retry-after', '0'), ('x-should-retry', 'false')]:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(raw)
+        self.wfile.flush()
+
     def do_GET(self):
         self.server.errors.append('Unexpected GET ' + self.path)
         self.reply(404, b'{}', 'application/json')
@@ -86,7 +99,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             text = json.dumps(body)
             users = [json.dumps(m.get('content')) for m in body.get('messages', []) if m.get('role') == 'user']
             last = users[-1] if users else ''
-            if markers['second'] in last:
+            if markers['after'] in last:
+                turn = 'after'
+            elif markers['limited'] in last:
+                turn = 'limited'
+            elif markers['second'] in last:
                 turn = 'second'
             elif markers['first'] in last:
                 turn = 'first'
@@ -94,7 +111,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 turn = 'side'
             entry = {'turn': turn, 'model': body.get('model'), 'stream': body.get('stream'),
                      'instructions': markers['instructions'] in text, 'rule': markers['rule'] in text,
-                     'first_prompt_in_history': markers['first'] in text, 'first_answer_in_history': markers['first_answer'] in text}
+                     'first_prompt_in_history': markers['first'] in text, 'first_answer_in_history': markers['first_answer'] in text,
+                     'limited_prompt_in_history': markers['limited'] in text}
             with server.guard:
                 assert len(server.requests) < 32, 'Bounded request journal'
                 server.requests.append(entry)
@@ -102,7 +120,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps({'id': 'msg_side', 'type': 'message', 'role': 'assistant', 'model': body.get('model'),
                     'content': [{'type': 'text', 'text': 'side'}], 'stop_reason': 'end_turn', 'stop_sequence': None,
                     'usage': {'input_tokens': 1, 'output_tokens': 1}}).encode(), 'application/json')
-            answer = {'first': markers['first_answer'], 'second': markers['second_answer'], 'side': 'side'}[turn]
+            if turn == 'limited':
+                return self.limited()
+            answer = {'first': markers['first_answer'], 'second': markers['second_answer'], 'after': markers['after_answer'], 'side': 'side'}[turn]
             self.reply(200, sse(body.get('model'), uuid.uuid4().hex, answer), 'text/event-stream')
         except Exception as error:
             server.errors.append(str(error))
@@ -171,7 +191,7 @@ def main(fixture, interruptions):
             'client_sha256': fixture.copy_verified(client, runtime / 'client.cjs'),
             'bundle_metadata_sha256': fixture.checksum(metadata),
         }
-        markers = {key: key + '-' + uuid.uuid4().hex for key in ['first', 'second', 'first_answer', 'second_answer', 'instructions', 'rule', 'skill']}
+        markers = {key: key + '-' + uuid.uuid4().hex for key in ['first', 'second', 'first_answer', 'second_answer', 'limited', 'after', 'after_answer', 'instructions', 'rule', 'skill']}
         claude = runtime / 'home/.claude'
         claude.mkdir()
         seed_shared(claude, markers)
@@ -184,11 +204,13 @@ def main(fixture, interruptions):
         thread.start()
         env = {'HOME': str(runtime / 'home'), 'TMPDIR': str(runtime / 'tmp'), 'CLAUDE_CODE_TMPDIR': str(runtime / 'tmp'), 'PATH': '/usr/bin:/bin',
                'LANG': 'C.UTF-8', 'TZ': 'UTC', 'ANTHROPIC_API_KEY': fixture.TOKEN, 'ANTHROPIC_BASE_URL': 'http://127.0.0.1:' + str(model.server_port),
-               'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'DISABLE_AUTOUPDATER': '1'}
+               'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'DISABLE_AUTOUPDATER': '1', 'CLAUDE_CODE_MAX_RETRIES': '0'}
         config = {'env': env, 'native': str(runtime / 'claude'), 'work': str(runtime / 'work'), 'report': str(runtime / 'report.json'),
                   'accounts': {name: str(folder) for name, folder in accounts.items()}, 'shared': SHARED,
                   'first': {'prompt': 'First turn, account A: ' + markers['first'], 'response': markers['first_answer']},
-                  'second': {'prompt': 'Second turn, account B: ' + markers['second'], 'response': markers['second_answer']}}
+                  'second': {'prompt': 'Second turn, account B: ' + markers['second'], 'response': markers['second_answer']},
+                  'limited': {'prompt': 'A turn the usage limit of account A refuses: ' + markers['limited']},
+                  'after': {'prompt': 'The same session goes on with account B: ' + markers['after'], 'response': markers['after_answer']}}
         (runtime / 'config.json').write_text(json.dumps(config))
         (runtime / 'sandbox.sb').write_text(profile(runtime, model.server_port))
         command = ['/usr/bin/sandbox-exec', '-f', str(runtime / 'sandbox.sb'), str(runtime / 'node'), str(runtime / 'client.cjs'), str(runtime / 'config.json')]
@@ -199,19 +221,23 @@ def main(fixture, interruptions):
         evidence['model_requests'] = model.requests
         assert code == 0 and report['status'] == 'passed', 'The two turns did not finish'
         assert fixture.native_exit_evidence(report), 'Every native Claude exited'
-        first, second = report['turns']
+        first, second, limited, after = report['turns']
         checks = {}
         checks['a_skills_agents_commands_loaded'] = 'accounts-fixture' in (first['skills'] or []) and 'accounts-agent' in (first['agents'] or []) and 'accounts-command' in (first['slashCommands'] or [])
         checks['b_skills_agents_commands_loaded'] = 'accounts-fixture' in (second['skills'] or []) and 'accounts-agent' in (second['agents'] or []) and 'accounts-command' in (second['slashCommands'] or [])
         checks['settings_model_used'] = first['model'] == SETTINGS_MODEL == second['model']
-        main_requests = {turn: [r for r in model.requests if r['turn'] == turn] for turn in ['first', 'second']}
-        checks['one_request_per_turn'] = len(main_requests['first']) == 1 and len(main_requests['second']) == 1
+        main_requests = {turn: [r for r in model.requests if r['turn'] == turn] for turn in ['first', 'second', 'limited', 'after']}
+        checks['one_request_per_turn'] = all(len(main_requests[turn]) == 1 for turn in ['first', 'second', 'limited', 'after'])
         checks['instructions_and_rules_reached_the_model'] = all(r['instructions'] and r['rule'] and r['model'] == SETTINGS_MODEL for r in main_requests['first'] + main_requests['second'])
         checks['b_resumed_a_session_with_the_same_id'] = bool(first['session']) and second['session'] == first['session'] == second['resultSession']
         checks['b_saw_the_conversation_of_a'] = all(r['first_prompt_in_history'] and r['first_answer_in_history'] for r in main_requests['second'])
+        checks['a_turn_refused_by_the_usage_limit'] = limited['isError'] is True and limited['error'] == 'rate_limit'
+        checks['b_went_on_with_the_refused_session_under_the_same_id'] = bool(limited['session']) and after['session'] == limited['session'] == after['resultSession'] and after['resumed'] == limited['session']
+        checks['b_saw_the_refused_prompt'] = all(r['limited_prompt_in_history'] for r in main_requests['after'])
+        checks['b_answered_after_the_limit'] = after['result'] == config['after']['response'] and after['isError'] is False
         transcripts = sorted(str(p.relative_to(claude)) for p in (claude / 'projects').rglob('*.jsonl'))
         evidence['transcripts_in_shared_projects'] = transcripts
-        checks['transcript_kept_in_the_shared_projects'] = any(p.endswith(first['session'] + '.jsonl') for p in transcripts)
+        checks['transcript_kept_in_the_shared_projects'] = all(any(p.endswith(session + '.jsonl') for p in transcripts) for session in [first['session'], limited['session']])
         linked = lambda folder: {name: {'link': str(claude / name)} for name in SHARED}
         checks['every_name_still_a_link'] = all(links == linked(None) for links in report['links'].values())
         checks['shared_settings_unchanged'] = (claude / 'settings.json').read_text() == settings_before

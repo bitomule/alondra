@@ -27,7 +27,8 @@ pub const TRY_NOW: &str = "try_now";
 pub const TRY_NOW_LABEL: &str = "Try now";
 const SIGNED_IN_MEANS: &str = "One waiting task goes on; when Claude answers it, the rest of its account go on too";
 const TRY_NOW_MEANS: &str = "One waiting task tries again now; when Claude answers it, the rest go on too";
-const GO_ON: &str = "Claude answers again: go on with your task from where it stopped.";
+/// What a task Claude held is told when it goes on, on its account or on the one it moved to.
+pub const GO_ON: &str ="Claude answers again: go on with your task from where it stopped.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -267,6 +268,54 @@ impl DomainState {
             self.resume_held(&held, lifecycles)?;
         }
         Ok(true)
+    }
+
+    /// The task's hold on its account's usage limit, when its session can go on with another
+    /// account now: its turn ended on the limit, nothing else holds it and it runs through the
+    /// SDK. The daemon moves only such a task (`move_when_exhausted`), and the admission that
+    /// moves it is judged again.
+    pub fn held_by_limit(&self, task: &TaskId) -> Option<ClaudeHeld> {
+        let held = self.claude_held().into_iter().find(|held| held.task == *task && held.hold == ClaudeHold::Usage)?;
+        let node = self.tasks.get(task)?.agent_id.clone()?;
+        let mut lifecycle = self.lifecycle_of(task).ok()?;
+        if lifecycle.execution()?.host().as_str() == alondra_domain::CLAUDE_BG_HOST {
+            return None;
+        }
+        let placeholder = String::from("account-move");
+        let identity = ExecutionIdentity { conversation: placeholder.clone(), instance: placeholder.clone(), host: placeholder };
+        let records = [
+            LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(task), text: None },
+            LifecycleRecord::ExecutionReleased { input: self.next_input(task) },
+            LifecycleRecord::Admitted { node, execution: Some(identity) },
+        ];
+        for record in &records {
+            self.judge(task, &mut lifecycle, record).ok()?;
+        }
+        Some(held)
+    }
+
+    /// The execution admitted for `task` on `to` leaves the usage limit its account holds it on
+    /// with `card`: the card is withdrawn and the task goes on with an input of its own, whose
+    /// words are the ones the new execution is launched with.
+    pub(super) fn leave_limit(&mut self, task: &TaskId, card: &InteractionId, to: &AccountId, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let Some(held) = self.claude_held().into_iter().find(|held| held.task == *task && held.card == *card && held.hold == ClaudeHold::Usage) else {
+            return Err(DomainError::new("conflict", "The task no longer waits on that usage limit"));
+        };
+        if held.account == *to {
+            return Err(DomainError::new("invalid_input", "A task leaves its account's usage limit only for another account"));
+        }
+        match self.accounts.iter().find(|status| status.id == *to) {
+            Some(status) if matches!(status.state, AccountState::Disabled | AccountState::SignedOut) || status.billing == crate::accounts::AccountBilling::PayPerUse => {
+                return Err(DomainError::new("conflict", "That account cannot take the task's work now"));
+            }
+            None if !to.is_default() || !self.accounts.is_empty() => {
+                return Err(DomainError::new("not_found", "That account is not one of the accounts Alondra knows"));
+            }
+            _ => {}
+        }
+        self.withdraw_hold(&held.card);
+        let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(task), text: None };
+        self.decide(lifecycles, task, record)
     }
 
     fn account_signed_out(&mut self, account: &AccountId) {

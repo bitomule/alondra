@@ -138,3 +138,28 @@ fn the_default_account_runs_with_the_configured_profile_and_an_added_one_with_it
     assert_eq!(settings_file(None, user_home), PathBuf::from("/u/.claude.json"));
     assert_eq!(settings_file(Some(explicit), user_home), PathBuf::from("/u/.claude-work/.claude.json"));
 }
+
+// A session moves between accounts only while both read the user's own conversations: an account
+// whose folder holds a `projects/` of its own would resume nothing of it.
+#[test]
+fn accounts_share_sessions_only_through_the_linked_projects_folder() {
+    let scratch = Directory::new();
+    let user_home = scratch.join("user");
+    let claude = seed_claude(&user_home);
+    let home = user_home.join(".alondra");
+    let (default, work, own, none) = (AccountId::default_account(), AccountId::parse("work").unwrap(), AccountId::parse("own").unwrap(), AccountId::parse("none").unwrap());
+    prepare(&home, &work, &claude).unwrap();
+    let separate = prepare(&home, &own, &claude).unwrap();
+    std::fs::remove_file(separate.join("projects")).unwrap();
+    std::fs::create_dir(separate.join("projects")).unwrap();
+    assert!(shares_sessions(&home, &user_home, None, &default, &work));
+    assert!(shares_sessions(&home, &user_home, None, &work, &default));
+    assert!(!shares_sessions(&home, &user_home, None, &default, &own), "its own projects folder");
+    assert!(!shares_sessions(&home, &user_home, None, &work, &none), "an account with no folder");
+    let profile = user_home.join(".claude-work");
+    std::fs::create_dir_all(profile.join("projects")).unwrap();
+    let linked = prepare(&home, &AccountId::parse("linked").unwrap(), &profile).unwrap();
+    assert!(shares_sessions(&home, &user_home, Some(&profile), &default, &AccountId::parse("linked").unwrap()), "the default profile the daemon was set up with");
+    assert!(!shares_sessions(&home, &user_home, Some(&profile), &default, &work), "an account linked to ~/.claude while the default profile is another");
+    assert!(linked.join("projects").exists());
+}

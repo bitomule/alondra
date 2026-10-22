@@ -23,6 +23,7 @@ pub use ended::{EndedJournal, Retained};
 pub use batch::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;
+pub use records::conversation_session;
 
 #[cfg(test)]
 mod controller_tests;

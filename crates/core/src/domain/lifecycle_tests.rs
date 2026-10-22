@@ -310,7 +310,7 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
     let mut s = world();
     task(&mut s, "t", None);
     let admit = |host: &str| Command::AdmitExecution {
-        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None, account: None,
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None, account: None, leaves_limit: None,
     };
     assert_eq!(exec(&mut s, Actor::System, admit(alondra_domain::CLAUDE_BG_HOST)).unwrap_err().code, "invalid_input", "the claude --bg node is assigned instead");
     assert_eq!(exec(&mut s, user(), admit("sdk-host")).unwrap_err().code, "forbidden");
@@ -344,7 +344,7 @@ fn sdk_turn_on(s: &mut DomainState, id: &str, node: &str, turn: &str, account: O
     task(s, id, None);
     must(s, Actor::System, Command::AdmitExecution {
         task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(), model: None,
-        account: account.map(|account| crate::accounts::AccountId::parse(account).unwrap()),
+        account: account.map(|account| crate::accounts::AccountId::parse(account).unwrap()), leaves_limit: None,
     });
     let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(id)][0].clone() else { panic!("planned first") };
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
@@ -863,6 +863,71 @@ fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage), ("u".into(), ClaudeHold::Usage)], "the default account is still out: its tasks wait");
     assert_eq!(kinds(&s, "w").last().map(String::as_str), Some("resumed"), "the rest of the work account goes on");
     assert_eq!(listed_holds(&s).len(), 1, "the default account's card is still listed");
+    assert_aggregate_rules(&s);
+}
+
+fn admit_off_limit(s: &mut DomainState, id: &str, node: &str, account: &str, card: &InteractionId) -> Result<CommandOutcome, DomainError> {
+    exec(s, Actor::System, Command::AdmitExecution {
+        task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{node}"), instance: format!("instance-{node}"), host: "sdk-host".into(),
+        model: None, account: Some(crate::accounts::AccountId::parse(account).unwrap()), leaves_limit: Some(card.clone()),
+    })
+}
+
+// A task whose turn ended on its account's usage limit goes on with another account: a new
+// execution there takes it past the limit, and its card is withdrawn. Only an account that can
+// take work does, never the one it leaves, and only for the card that holds it.
+#[test]
+fn an_execution_on_another_account_takes_the_task_past_its_accounts_usage_limit() {
+    use crate::accounts::AccountState::{Disabled, SignedIn, SignedOut};
+    let mut s = world();
+    for node in ["m", "n"] {
+        must(&mut s, Actor::System, Command::RegisterAgent { agent_id: node.into(), name: node.into(), at: 0 });
+    }
+    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn), ("off", Disabled), ("out", SignedOut)]);
+    sdk_turn_on(&mut s, "t", "a", "turn-1", Some("work"));
+    assert_eq!(s.held_by_limit(&"t".into()), None, "in its turn nothing holds it");
+    usage_turn(&mut s, "t", 4_102_444_800);
+    let card = s.held_by_limit(&"t".into()).expect("its turn ended on the limit").card;
+    for (account, code) in [("work", "invalid_input"), ("off", "conflict"), ("out", "conflict"), ("ghost", "not_found")] {
+        assert_eq!(admit_off_limit(&mut s, "t", "m", account, &card).unwrap_err().code, code, "{account}");
+    }
+    assert_eq!(admit_off_limit(&mut s, "t", "m", "default", &InteractionId::from("claude-usage-limit-other")).unwrap_err().code, "conflict");
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "a refused move changes nothing");
+
+    admit_off_limit(&mut s, "t", "m", "default", &card).unwrap();
+    assert!(s.claude_held().is_empty(), "nothing holds it any more");
+    assert!(s.interactions[&card].withdrawn, "its card is withdrawn");
+    assert_eq!(s.task_account(&"t".into()), crate::accounts::AccountId::default_account());
+    assert_eq!(s.tasks[&TaskId::from("t")].agent_id, Some("m".into()));
+    let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert_eq!(lifecycle.execution().map(|stamp| (stamp.instance().as_str().to_owned(), stamp.generation())), Some(("instance-m".into(), 2)));
+    assert_eq!(kinds(&s, "t").iter().rev().take(3).map(String::as_str).collect::<Vec<_>>(), ["admitted", "execution_released", "resumed"]);
+    let LifecycleRecord::Resumed { input, text, .. } = s.lifecycle_journal[&TaskId::from("t")].iter().rev().nth(2).unwrap() else { panic!("resumed") };
+    assert_eq!(lifecycle.pending_inputs().first().map(|pending| pending.as_str()), Some(input.as_str()), "the new execution starts with the input the move gave it");
+    assert_eq!(*text, None, "whose words are the ones it is launched with");
+    assert_eq!(admit_off_limit(&mut s, "t", "n", "work", &card).unwrap_err().code, "conflict", "a card left behind takes no second move");
+    assert_aggregate_rules(&s);
+}
+
+// A question the node asked before its turn ended on the limit is the task's, not its
+// execution's: it stays open when the task goes on with another account, and its answer reaches
+// the new execution.
+#[test]
+fn a_question_the_node_asked_stays_open_when_its_task_leaves_its_accounts_limit() {
+    use crate::accounts::AccountState::SignedIn;
+    let mut s = world();
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "m".into(), name: "m".into(), at: 0 });
+    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn)]);
+    sdk_turn_on(&mut s, "t", "a", "turn-1", Some("work"));
+    let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+    must(&mut s, node("a"), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name") });
+    usage_turn(&mut s, "t", 4_102_444_800);
+    let card = s.held_by_limit(&"t".into()).expect("only the limit holds its execution").card;
+    admit_off_limit(&mut s, "t", "m", "default", &card).unwrap();
+    assert!(!s.interactions[&InteractionId::from("q")].withdrawn, "the question is still the user's to answer");
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "short".into(), inputs: BTreeMap::new() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into() });
     assert_aggregate_rules(&s);
 }
 

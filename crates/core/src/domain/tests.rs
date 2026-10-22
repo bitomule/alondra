@@ -3163,7 +3163,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
         (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
-            instance: "instance".into(), host: "sdk-host".into(), model: None, account: None }, false),
+            instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }, false),
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
         (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }, false),
@@ -4436,7 +4436,7 @@ fn guards_refuse_what_the_commands_refuse() {
         title: "SDK".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
     exec(&mut sdk, Actor::System, Command::AdmitExecution { task_id: "sdk".into(), agent_id: "s".into(),
-        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None }).unwrap();
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }).unwrap();
     let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
     exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },

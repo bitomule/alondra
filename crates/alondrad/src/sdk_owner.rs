@@ -108,7 +108,7 @@ impl LaunchOptions {
         std::fs::write(state_directory.join(LAUNCH_OPTIONS), text).map_err(|error| Failed(format!("keeping the launch options: {error}")))
     }
 
-    fn load(state_directory: &std::path::Path) -> Result<Self, Failed> {
+    pub(crate) fn load(state_directory: &std::path::Path) -> Result<Self, Failed> {
         match std::fs::read(state_directory.join(LAUNCH_OPTIONS)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| Failed(format!("reading the launch options: {error}"))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -176,14 +176,28 @@ pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: La
     start_bound(domain, backend, launch, capabilities(), None)
 }
 
-/// The `claude --bg` node whose session an SDK execution continues: its id, which is the session.
-pub(crate) struct Continuation {
-    pub(crate) node: AgentId,
+/// The existing Claude session an SDK execution continues instead of starting one.
+pub(crate) enum Continuation {
+    /// A `claude --bg` node's: its id is the session.
+    Node(AgentId),
+    /// The task's own, which its execution on another account takes past `card`, the usage limit
+    /// of the account it leaves, as the task's move `number`.
+    Moved { session: String, card: InteractionId, number: i64 },
 }
 
-/// Admits an SDK execution that continues the existing Claude session of `continuation`'s node, in
-/// the node's own folder, and records the move's admission in the same transaction. The launch's
-/// prompt is the first input: it opens that session with `resume`.
+impl Continuation {
+    fn session(&self) -> &str {
+        match self {
+            Self::Node(node) => &node.0,
+            Self::Moved { session, .. } => session,
+        }
+    }
+}
+
+/// Admits an SDK execution that continues the existing Claude session `continuation` names, in
+/// the folder of the launch, and records the admission in the same transaction, in the journal
+/// of the move it is part of. The launch's prompt is the first input: it opens that session with
+/// `resume`.
 pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, continuation: Continuation) -> Result<Driver, Failed> {
     start_bound(domain, backend, launch, capabilities(), Some(continuation))
 }
@@ -216,7 +230,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = ClaudeWorker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     if let Some(continuation) = &continuation {
-        worker.continue_session(&continuation.node.0).map_err(adapter("continuing the node's session"))?;
+        worker.continue_session(continuation.session()).map_err(adapter("continuing the node's session"))?;
     }
     let admit = envelope("admit", Command::AdmitExecution {
         task_id: launch.task.clone(),
@@ -226,20 +240,30 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         host: HOST.into(),
         model: launch.model.clone(),
         account: Some(launch.account.clone()),
+        leaves_limit: match &continuation {
+            Some(Continuation::Moved { card, .. }) => Some(card.clone()),
+            _ => None,
+        },
     });
     let (first, _) = domain
         .own(scope.clone(), |owner| {
             owner.stage_command(&Actor::System, &admit, Attached::None)?;
             owner.launch(&launch.task, &launch.prompt, &launch.directory, &binding, &mut worker)?;
-            if let Some(continuation) = &continuation {
-                owner.record_sdk_admitted(&continuation.node, &launch.task, &agent)?;
+            match &continuation {
+                Some(Continuation::Node(node)) => owner.record_sdk_admitted(node, &launch.task, &agent)?,
+                Some(Continuation::Moved { number, .. }) => owner.record_move_admitted(&launch.task, *number, &agent)?,
+                None => {}
             }
             let lifecycle = owner.lifecycle(&launch.task)?;
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
         })
         .map_err(failed("admitting the execution"))?;
     #[cfg(test)]
-    if continuation.is_some() && *domain.handovers.crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted) {
+    if match &continuation {
+        Some(Continuation::Node(_)) => *domain.handovers.crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
+        Some(Continuation::Moved { .. }) => *domain.moves.crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
+        None => false,
+    } {
         return Err(Failed("the daemon died after the admission's commit".into()));
     }
     let mut driver = Driver::new(domain, worker, scope, launch.task, agent);
@@ -585,6 +609,7 @@ fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskId, R
         .values()
         .filter(|task| {
             task.agent_id.as_ref().is_some_and(|agent| !domain.owns_sdk_host(agent))
+                && !crate::account_move::holds_execution(domain, &task.id)
                 && state.lifecycle_of(&task.id).ok().is_some_and(|lifecycle| {
                     lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
                         && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)

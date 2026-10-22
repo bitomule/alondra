@@ -11,6 +11,8 @@ pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 pub(crate) use owner::{Refuse, refuse_next};
 pub(crate) mod model_metrics;
 mod lifecycle_migration;
+mod account_move;
+pub(crate) use account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};
 mod handover;
 pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
 mod repository;
@@ -608,6 +610,7 @@ impl DomainStore {
         tx.execute_batch(TASK_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
+        tx.execute_batch(account_move::ACCOUNT_MOVE_STEPS)?;
         tx.execute_batch(EVENTS_VIEW)?;
         retention::upgrade(&tx)?;
         if version != 0 {

@@ -90,3 +90,15 @@ fn every_accounts_verb_parses_and_only_list_takes_json() {
     assert!(crate::takes_json(parse(&["accounts", "list"]).unwrap().command.as_ref()));
     assert!(!crate::takes_json(parse(&["accounts", "add", "Work"]).unwrap().command.as_ref()));
 }
+
+#[test]
+fn moving_to_another_account_says_whether_it_is_on_and_its_risk() {
+    let english = ["Move a node to another account when its own reaches its limit: off",
+        "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed."];
+    let spanish = ["Mover un nodo a otra cuenta cuando la suya llega al límite: desactivado",
+        "Anthropic no dice si cambiar de cuenta al llegar al límite está permitido."];
+    let off = moving_lines(false);
+    assert!(off == english || off == spanish, "{off:?}");
+    let on = moving_lines(true);
+    assert!(on[0].ends_with(": on") || on[0].ends_with(": activado"), "{on:?}");
+}

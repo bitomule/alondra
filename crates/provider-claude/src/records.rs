@@ -15,3 +15,8 @@ pub(super) struct SessionRecord {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub continued: bool,
 }
+
+/// The native Claude session a conversation's metadata names: the one each of its hosts runs.
+pub fn conversation_session(metadata: &[u8]) -> Option<String> {
+    serde_json::from_slice::<SessionRecord>(metadata).ok().map(|record| record.session_id.as_str().to_owned())
+}

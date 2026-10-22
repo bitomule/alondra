@@ -4,6 +4,7 @@ mod test_support;
 
 #[macro_use]
 mod log;
+mod account_move;
 mod accounts;
 mod allow_always;
 mod approval_lease;
@@ -595,6 +596,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
     tokio::spawn(node_revival::run(state_domain.clone(), revival));
     tokio::spawn(sdk_handover::run(state_domain.clone()));
+    tokio::spawn(account_move::run(state_domain.clone()));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tokio::spawn(idle_compaction::run(state_domain.clone(), compaction));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };

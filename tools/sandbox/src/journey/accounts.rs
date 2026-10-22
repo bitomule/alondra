@@ -1,7 +1,8 @@
 //! Two Claude accounts on one Mac: its own profile, the default account, and Trabajo, one the
 //! user added. New work starts on the account with the most margin; a task whose account ran out
 //! or lost its sign-in waits on that account's card while new work starts on the other; the whole
-//! Mac waits only while no account can work, and goes on on the first that can again.
+//! Mac waits only while no account can work, and goes on on the first that can again. With
+//! moving on, a task whose account ran out goes on with the other one in the same session.
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
@@ -42,6 +43,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     let Ok(user) = report.step("a phone pairs directly with Mac 1", || User::paired(sandbox, "accounts", 1, true)) else {
         return;
     };
+    report.setup("The Mac's Claude keeps its conversations in ~/.claude/projects, as on any Mac that used it", |report| {
+        report.step("the user's Claude has its conversations folder", || Ok(std::fs::create_dir_all(sandbox.dir.join("sdk/home/.claude/projects"))?))
+    });
     report.case("A1", "New work starts on the account with the most margin: Trabajo at 10 % of its week, then the default once Trabajo is at 90 %", |report| {
         nodes_at_once(report, &user, None)?;
         let listing = report.step("the Mac's own Claude profile is the default account, signed in", || {
@@ -186,6 +190,51 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
+    report.case("A5", "With moving on, a task whose account runs out goes on with Trabajo in the same Claude session, told to go on, and its card leaves Inbox", |report| {
+        mac.refuse(WORK, None)?;
+        let fourth = user.view("task:t-acc4")?;
+        press(report, &user, &fourth, "cancel:", None, None, "the user cancels t-acc4, which waited for Trabajo's sign-in")?;
+        report.step("Trabajo signs in to Claude again", || mac.claude(WORK, &["auth", "login"]))?;
+        wait(report, "the daemon sees Trabajo signed in", || {
+            let listing = mac.exchange("POST", CHECK, None)?;
+            Ok(((state_of(&listing, WORK) == "signed_in").then_some(()), format!("{listing}")))
+        })?;
+        mac.write_usage(WORK, 5.0, 30.0, now_ms() + 3 * HOUR)?;
+        let listing = report.step("moving is off by default, and the setting says its risk", || {
+            let listing = mac.accounts()?;
+            ensure!(listing["move_when_exhausted"] == json!({"on": false, "risk": "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed."}),
+                "the accounts are {listing}");
+            Ok(listing)
+        })?;
+        report.step("the user turns moving on", || {
+            let mut accounts = listing["config"].clone();
+            accounts["distribution"]["move_when_exhausted"] = json!(true);
+            let after = mac.exchange("PUT", ACCOUNTS, Some(json!({"version": listing["version"], "accounts": accounts})))?;
+            ensure!(after["move_when_exhausted"]["on"] == json!(true), "the accounts are {after}");
+            Ok(())
+        })?;
+        let fifth = launched_on(report, fakes, "t-acc5", DEFAULT)?;
+        mac.write_usage(DEFAULT, 100.0, 30.0, now_ms() + HOUR)?;
+        mac.refuse(DEFAULT, Some("rate_limit"))?;
+        message(report, &user, "t-acc5", "Also check the alt texts")?;
+        let resumed = wait(report, "t-acc5's session goes on with Trabajo, resumed with its transcript", || {
+            let start = fakes.starts(&fifth.short)?.pop();
+            Ok((start.filter(|start| start.resume.as_deref() == Some(fifth.session_id.as_str()) && start.account == WORK && start.history > 0), format!("{:?}", fakes.starts(&fifth.short)?)))
+        })?;
+        report.step("in the folder it worked in", || {
+            ensure!(resumed.cwd == fifth.cwd, "it resumed in {}", resumed.cwd.display());
+            Ok(())
+        })?;
+        wait(report, "the session is told to go on", || {
+            let received = fakes.received(&fifth.short)?;
+            Ok((received.last().filter(|input| input.text.contains("go on with your task from where it stopped")).map(drop), format!("{:?}", received.last())))
+        })?;
+        wait(report, "t-acc5's usage card leaves Inbox", || {
+            let inbox = user.inbox()?;
+            Ok(((!inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc5-"))).then_some(()), format!("{inbox:?}")))
+        })?;
+        on_account(report, &session(fakes, "t-acc5")?, "t-acc5", WORK)
+    });
     report.setup("After accounts: every task is cancelled, Trabajo is removed and the API refuses nothing", |report| {
         super::clear_fleet(report, sandbox, fakes)?;
         report.step("the API refuses nothing and the usage endpoint says what it says by default", || {
@@ -203,6 +252,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             if let Some(list) = accounts["claude"].as_array_mut() {
                 list.retain(|account| account["id"] != WORK);
             }
+            accounts["distribution"]["move_when_exhausted"] = json!(false);
             let after = mac.exchange("PUT", ACCOUNTS, Some(json!({"version": listing["version"], "accounts": accounts})))?;
             ensure!(after["accounts"].as_array().is_some_and(|rows| rows.iter().all(|row| row["id"] != WORK)), "the accounts are {after}");
             ensure!(!mac.folder(WORK).exists(), "{} is still there", mac.folder(WORK).display());

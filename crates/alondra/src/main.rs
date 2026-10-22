@@ -314,6 +314,14 @@ enum AccountsCmd {
         #[arg(required = true)]
         name: Vec<String>,
     },
+    #[command(about = tr!(
+        "Whether a node whose account reaches its limit goes on with another account (off by default)",
+        "Si un nodo cuya cuenta llega al límite sigue con otra cuenta (desactivado por defecto)"
+    ))]
+    Move {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -450,6 +458,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             AccountsCmd::Enable { name } => provider_accounts::set_enabled(&name.join(" "), true),
             AccountsCmd::Disable { name } => provider_accounts::set_enabled(&name.join(" "), false),
             AccountsCmd::Remove { name } => provider_accounts::remove(&name.join(" ")),
+            AccountsCmd::Move { state } => provider_accounts::moving(state.map(|state| state == "on")),
         },
         Some(Cmd::Relay { command }) => match command {
             RelayCmd::Status => commands::relay_status(json),

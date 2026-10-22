@@ -274,8 +274,10 @@ async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
     assert_eq!(body["accounts"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!((&body["accounts"][0]["id"], &body["accounts"][0]["default"]), (&json!("default"), &json!(true)));
     assert_eq!(body["config"], json!({"distribution": {"policy": "margin", "reserve": 0.9, "move_when_exhausted": false}, "claude": []}));
+    assert_eq!(body["move_when_exhausted"], json!({"on": false, "risk": "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed."}),
+        "moving a node off its account's limit is off, and says its risk");
     let version = body["version"].clone();
-    let chain = json!({"distribution": {"policy": "chain", "reserve": 0.9, "move_when_exhausted": false}, "claude": []});
+    let chain = json!({"distribution": {"policy": "chain", "reserve": 0.9, "move_when_exhausted": true}, "claude": []});
     let (status, body) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": "0", "accounts": chain})), false).await;
     assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("stale")), "{body}");
     let (status, _) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": version, "accounts": chain})), true).await;
@@ -283,9 +285,11 @@ async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
     let (status, body) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": version, "accounts": chain})), false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["config"]["distribution"]["policy"], "chain");
+    assert_eq!(body["move_when_exhausted"]["on"], true, "{body}");
     assert_ne!(body["version"], version);
     let options = std::fs::read_to_string(alondra_core::options::path_in(&fixture.home)).unwrap();
     assert!(options.contains("[accounts.distribution]\npolicy = \"chain\""), "{options}");
+    assert!(options.contains("move_when_exhausted = true"), "{options}");
     let (status, body) = unsigned(&fixture, reqwest::Method::POST, crate::accounts::CHECK, None, false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accounts"][0]["state"], "unavailable", "without Claude Code no sign-in can be checked: {body}");

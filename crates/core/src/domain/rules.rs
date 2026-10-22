@@ -4149,7 +4149,7 @@ impl DomainState {
                 }
                 self.release(task_id, lifecycles)?;
             }
-            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account } => {
+            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account, leaves_limit } => {
                 system(actor)?;
                 self.not_held_for_plan_review(task_id)?;
                 self.not_ending(task_id)?;
@@ -4162,6 +4162,10 @@ impl DomainState {
                     self.free(agent_id, task_id)?;
                 }
                 self.invalidate(task_id);
+                if let Some(card) = leaves_limit {
+                    let to = account.clone().unwrap_or_else(crate::accounts::AccountId::default_account);
+                    self.leave_limit(task_id, card, &to, lifecycles)?;
+                }
                 let identity = ExecutionIdentity { conversation: conversation.clone(), instance: instance.clone(), host: host.clone() };
                 self.admit_execution(task_id, agent_id, identity, lifecycles)?;
                 let task = self.tasks.get_mut(task_id).expect("admitted above");

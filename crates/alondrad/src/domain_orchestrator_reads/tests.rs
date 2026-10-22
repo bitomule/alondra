@@ -158,7 +158,7 @@ fn the_fleet_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_not
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
-        instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None });
+        instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
     let LifecycleRecord::Planned { input } = state.lifecycle_journal[&TaskId::from("t3")][0].clone() else { panic!("planned first") };
     apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },

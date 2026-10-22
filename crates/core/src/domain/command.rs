@@ -484,6 +484,10 @@ pub enum Command {
         /// The provider account the execution runs on; none for the provider's own sign-in.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<crate::accounts::AccountId>,
+        /// The card of the usage limit the Task waits on between turns, which this execution, on
+        /// another account, leaves behind: it resumes the same session there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        leaves_limit: Option<InteractionId>,
     },
     /// What the SDK observed of the Task's execution of `generation`, in order, normalized from
     /// one accepted observation.

@@ -266,6 +266,34 @@ pub fn set_enabled(name: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether moving to another account is on, and the risk the user takes with it.
+pub(crate) fn moving_lines(on: bool) -> [String; 2] {
+    let state = if on { tr!("on", "activado") } else { tr!("off", "desactivado") };
+    [
+        format!("{}: {state}", tr!("Move a node to another account when its own reaches its limit", "Mover un nodo a otra cuenta cuando la suya llega al límite")),
+        tr!(
+            "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+            "Anthropic no dice si cambiar de cuenta al llegar al límite está permitido."
+        ).to_owned(),
+    ]
+}
+
+/// Shows whether a node whose account reaches its limit goes on with another account, or turns it
+/// on or off.
+pub fn moving(on: Option<bool>) -> Result<()> {
+    let client = daemon();
+    let mut seen = listing(&client)?;
+    if let Some(on) = on.filter(|on| *on != seen.config.distribution.move_when_exhausted) {
+        let mut next = seen.config.clone();
+        next.distribution.move_when_exhausted = on;
+        seen = save(&client, &seen, &next)?;
+    }
+    for line in moving_lines(seen.config.distribution.move_when_exhausted) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 pub fn remove(name: &str) -> Result<()> {
     let client = daemon();
     let seen = listing(&client)?;

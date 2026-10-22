@@ -112,7 +112,7 @@ fn unit(shape: Shape) -> DomainState {
     });
     if through_sdk {
         seed.run(Actor::System, Command::AdmitExecution { task_id: task.as_str().into(), agent_id: agent.as_str().into(),
-            conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None, account: None });
+            conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
         let Some(LifecycleRecord::Planned { input }) = seed.0.lifecycle_journal[&task.as_str().into()].first().cloned() else { panic!("planned first") };
         seed.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.as_str().into(), generation: 1, facts: vec![
             RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },

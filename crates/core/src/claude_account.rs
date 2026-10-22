@@ -77,6 +77,14 @@ pub fn prepare(home: &Path, id: &AccountId, shared_from: &Path) -> std::io::Resu
     Ok(folder)
 }
 
+/// Whether a session one account started resumes with the other: both keep their conversations
+/// in the same `projects/` folder, the default profile's, which every account links. One whose
+/// folder has a `projects/` of its own, or none, does not.
+pub fn shares_sessions(home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool {
+    let projects = |id: &AccountId| config_folder(profile(home, id, default_profile).as_deref(), user_home).join("projects").canonicalize().ok();
+    projects(one).is_some_and(|one| Some(one) == projects(other))
+}
+
 /// Deletes the account's folder: the links go, never what they point to.
 pub fn remove(home: &Path, id: &AccountId) -> std::io::Result<()> {
     let Some(folder) = accounts::folder(home, id) else {

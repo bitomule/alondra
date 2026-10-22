@@ -26,7 +26,7 @@ history = sum(1 for _ in open(transcript)) if os.path.exists(transcript) else 0
 if resumed and not history:
     raise RuntimeError('No conversation found with session ID: ' + resumed)
 with open(capture + '.starts', 'a') as stream:
-    stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history, cwd=os.getcwd())) + '\n')
+    stream.write(json.dumps(dict(pid=os.getpid(), session=session_id, resume=resumed, history=history, cwd=os.getcwd(), config=os.environ.get('CLAUDE_CONFIG_DIR'))) + '\n')
     stream.flush()
     os.fsync(stream.fileno())
 # Like a command Claude runs, it creates a folder and a file under the umask it inherited.
@@ -72,7 +72,10 @@ def lifecycle(message, state):
               uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
 
 REFUSALS = {401: ('authentication_failed', 'Failed to authenticate. API Error: 401 OAuth token has expired'),
+            429: ('rate_limit', "You've hit your limit"),
             529: ('server_error', 'API Error: 529 Overloaded')}
+# When the session window a 429 rejects resets, in Unix seconds: far ahead, so it never resets in a test.
+LIMIT_RESETS_AT = 4102444800
 
 SMALL_USAGE = dict(input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0)
 # What the API reports for a long conversation whose request read most of it from the prompt cache
@@ -99,12 +102,16 @@ def refuse(message, status):
     global serial
     error, text = REFUSALS[status]
     assistant(message, error=error, text=text)
+    if status == 429:
+        serial += 1
+        send(dict(type='rate_limit_event', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+                  rate_limit_info=dict(status='rejected', rateLimitType='five_hour', utilization=1.0, resetsAt=LIMIT_RESETS_AT)))
     serial += 1
     send(dict(type='result', subtype='success', is_error=True, api_error_status=status,
               session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
               duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={},
               permission_denials=[], result=text,
-              terminal_reason='api_error', stop_reason=None,
+              terminal_reason='blocking_limit' if status == 429 else 'api_error', stop_reason=None,
               user_message_uuid=message['uuid'], user_message_uuids=[entry['uuid'] for entry in pending]))
     for entry in pending:
         lifecycle(entry, 'completed')
@@ -375,6 +382,8 @@ for raw in sys.stdin:
             refused = 401
         elif text.endswith('overloaded'):
             refused = 529
+        elif text.endswith('rate-limited'):
+            refused = 429
         if refused and os.path.exists(capture + '.recovered'):
             refused = None
             assistant(message)

@@ -42,13 +42,18 @@ impl Claude {
         let (backend, _) = domain.sdk()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
-        let user_home = backend.native_environment.get("HOME").map(PathBuf::from).unwrap_or_else(crate::options::user_home);
+        let user_home = Self::user_home(domain);
         Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
     fn default_profile(&self) -> Option<PathBuf> {
         claude_account::configured_profile(&|key: &str| self.environment.get(key).cloned())
+    }
+
+    /// The HOME the nodes' Claude runs in, whose `~/.claude` the default account is.
+    pub(crate) fn user_home(domain: &DomainRuntime) -> PathBuf {
+        domain.sdk().and_then(|(backend, _)| backend.native_environment.get("HOME").map(PathBuf::from)).unwrap_or_else(crate::options::user_home)
     }
 
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
@@ -58,6 +63,12 @@ impl Claude {
     fn logout(&self, folder: &Path) -> Result<(), String> {
         claude_account::logout(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
     }
+}
+
+/// Whether a session one account started resumes with the other: both read the same conversations.
+pub(crate) fn share_sessions(domain: &DomainRuntime, one: &AccountId, other: &AccountId) -> bool {
+    let default_profile = domain.sdk().and_then(|(backend, _)| claude_account::configured_profile(&|key: &str| backend.native_environment.get(key).cloned()));
+    claude_account::shares_sessions(domain.home(), &Claude::user_home(domain), default_profile.as_deref(), one, other)
 }
 
 pub(crate) fn config(home: &Path) -> Result<AccountsConfig, String> {
@@ -194,7 +205,15 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     }
 }
 
-pub(crate) fn read(domain: &DomainRuntime, home: &Path) -> Reply {
+/// What the user is told about moving a node to another account when its own reaches its limit.
+pub(crate) fn move_risk(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Es => "Anthropic no dice si cambiar de cuenta al llegar al límite está permitido.",
+        Lang::En => "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+    }
+}
+
+pub(crate) fn read(domain: &DomainRuntime, home: &Path, lang: Lang) -> Reply {
     let config = match config(home) {
         Ok(config) => config,
         Err(why) => return Reply { status: StatusCode::INTERNAL_SERVER_ERROR, body: json!({"error": "file", "message": why}) },
@@ -218,7 +237,8 @@ pub(crate) fn read(domain: &DomainRuntime, home: &Path) -> Reply {
             })
         })
         .collect();
-    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts}) }
+    let moving = json!({"on": config.distribution.move_when_exhausted, "risk": move_risk(lang)});
+    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts, "move_when_exhausted": moving}) }
 }
 
 #[derive(Deserialize)]
@@ -243,7 +263,7 @@ pub(crate) fn write(domain: &DomainRuntime, home: &Path, body: &serde_json::Valu
         return refused.reply(lang);
     }
     check(domain, home);
-    read(domain, home)
+    read(domain, home, lang)
 }
 
 /// The accounts the open tasks' executions run on.

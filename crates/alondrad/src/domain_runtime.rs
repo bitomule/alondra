@@ -44,6 +44,8 @@ pub struct DomainRuntime {
     pub(crate) retakes: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// Each `claude --bg` node's move to the SDK, once this daemon has an SDK backend.
     pub(crate) handovers: crate::sdk_handover::Handovers,
+    /// Each move of an SDK task to another account when its own reaches its usage limit.
+    pub(crate) moves: crate::account_move::Moves,
     /// What each SDK task's conversation measured, to compact it while it rests.
     pub(crate) contexts: crate::idle_compaction::Contexts,
     #[cfg(test)]
@@ -111,6 +113,7 @@ impl DomainRuntime {
             sdk_owners: Default::default(),
             retakes: Default::default(),
             handovers: Default::default(),
+            moves: Default::default(),
             contexts: Default::default(),
             #[cfg(test)]
             before_owner_publish: Default::default(),
