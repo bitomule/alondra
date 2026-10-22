@@ -4,7 +4,7 @@ import ComposableArchitecture
 import Foundation
 import OSLog
 
-/// One card of Waiting for You: it observes its own view, owns the reply draft, and decides what
+/// One card of Waiting for You: it observes its own view, owns its reply field, and decides what
 /// each control on the card does. The daemon decides which buttons the card has and in which order.
 @Reducer
 public struct TriageCardFeature: Sendable {
@@ -20,7 +20,7 @@ public struct TriageCardFeature: Sendable {
         public var screen: ScreenFeature.State
         public var actions: ActionFeature.State
         public var attachments = AttachmentFeature.State()
-        public var replyDraft = ""
+        public var reply = ""
         public var composition: Composition?
         public var awaitingAttachments = false
 
@@ -142,7 +142,7 @@ public struct TriageCardFeature: Sendable {
             case .opened(let key):
                 return .send(.delegate(.open(key)))
             case .replyChanged(let text):
-                state.replyDraft = text
+                state.reply = text
                 return .none
             case .menuOptionPicked(let action, let optionID):
                 return .concatenate(
@@ -151,7 +151,7 @@ public struct TriageCardFeature: Sendable {
             case .replySent(let action):
                 return .concatenate(
                     state.actions.action == action ? .none : .send(.actions(.present(action))),
-                    state.replyDraft.isEmpty ? .none : .send(.actions(.textChanged(state.replyDraft))),
+                    state.reply.isEmpty ? .none : .send(.actions(.textChanged(state.reply))),
                     .send(.submit)
                 )
             case .actionTapped(let action):
@@ -199,7 +199,7 @@ public struct TriageCardFeature: Sendable {
                 return state.attachments.allReady ? .send(.submit) : .none
             case .actions(.response(let response)):
                 guard response.outcome == .applied else { return .none }
-                state.replyDraft = ""
+                state.reply = ""
                 return .send(.attachments(.reset))
             case .actions:
                 return .none
@@ -223,7 +223,7 @@ public struct TriageCardFeature: Sendable {
         }
         var effects: [Effect<Action>] = []
         if state.actions.action != action { effects.append(.send(.actions(.present(action)))) }
-        if let words = action.carrying(state.replyDraft) {
+        if let words = action.carrying(state.reply) {
             effects.append(.send(.actions(.textChanged(words))))
         }
         if action.presentation == .button { effects.append(.send(.submit)) }

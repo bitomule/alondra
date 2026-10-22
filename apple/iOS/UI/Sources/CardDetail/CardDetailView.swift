@@ -257,12 +257,12 @@ public struct CardDetailView: View {
                     if store.canComment {
                         switch segment {
                         case .block(let block):
-                            BlockRow(block: block, comment: store.comments[block.draftKey]?.text, tint: kind.tint) {
-                                store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+                            BlockRow(block: block, comment: store.comments[block.anchor]?.text, tint: kind.tint) {
+                                store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
                             }
                         case .table(let rows):
                             TableRows(rows: rows, comments: store.comments.mapValues(\.text), tint: kind.tint) {
-                                store.send(.blockTapped(anchor: $0.draftKey, quote: $0.plainText))
+                                store.send(.blockTapped(anchor: $0.anchor, quote: $0.plainText))
                             }
                         }
                     } else {
@@ -287,12 +287,12 @@ public struct CardDetailView: View {
                 Text("You haven’t commented on any block yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
-            ForEach(store.blocks.filter { store.comments[$0.draftKey] != nil }) { block in
-                Button { store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText)) } label: {
+            ForEach(store.blocks.filter { store.comments[$0.anchor] != nil }) { block in
+                Button { store.send(.blockTapped(anchor: block.anchor, quote: block.plainText)) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("“\(ReviewFeedback.quote(block.plainText))”")
                             .font(.footnote.italic()).foregroundStyle(.secondary).lineLimit(3)
-                        Text(store.comments[block.draftKey]?.text ?? "")
+                        Text(store.comments[block.anchor]?.text ?? "")
                             .font(.subheadline).foregroundStyle(Palette.ink)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading).padding(14)

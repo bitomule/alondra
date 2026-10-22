@@ -195,7 +195,7 @@ public struct NodeDetailView: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     AttachButton(store: store.scope(state: \.composer.attachmentPicker, action: \.composer.attachmentPicker))
                         .padding(.leading, 6).padding(.bottom, 4)
-                    TextField(composerPlaceholder(detail.message), text: Binding(get: { store.draft }, set: { store.send(.draftChanged($0)) }),
+                    TextField(composerPlaceholder(detail.message), text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }),
                               axis: .vertical)
                         .lineLimit(1...5)
                         .padding(.trailing, 16).padding(.vertical, 12)

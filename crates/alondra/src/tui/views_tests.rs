@@ -358,7 +358,7 @@ fn connect_away_from_the_mac_asks_for_where_the_browser_came_back_to_and_keeps_i
     app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
     app.on_paste(address);
     press(&mut app, KeyCode::Esc);
-    assert!(app.drafts.is_empty(), "nor is it kept as a draft");
+    assert!(app.composer.is_none(), "Esc drops it");
     app.mcp_opened("mcp-sign-in-t-7".into(), "linear".into(), sign_in_page(true));
     app.on_paste(address);
     press(&mut app, KeyCode::Enter);

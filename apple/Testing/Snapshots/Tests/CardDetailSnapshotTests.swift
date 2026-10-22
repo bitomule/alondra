@@ -184,8 +184,8 @@ final class CardDetailSnapshotTests: XCTestCase {
     func test_planWithComments() throws {
         let store = try fetchedPlan { state in
             for block in state.blocks.filter(\.isCommentable).prefix(2) {
-                state.comments[block.draftKey] = ActionComment(
-                    anchor: block.draftKey, text: "Say which simulator", quote: block.plainText
+                state.comments[block.anchor] = ActionComment(
+                    anchor: block.anchor, text: "Say which simulator", quote: block.plainText
                 )
             }
             state.reply = "Looks right overall."
@@ -196,8 +196,8 @@ final class CardDetailSnapshotTests: XCTestCase {
     func test_planWithComments_es() throws {
         let store = try fetchedPlan(spanish: true) { state in
             if let block = state.blocks.first(where: \.isCommentable) {
-                state.comments[block.draftKey] = ActionComment(
-                    anchor: block.draftKey, text: "Indica el simulador", quote: block.plainText
+                state.comments[block.anchor] = ActionComment(
+                    anchor: block.anchor, text: "Indica el simulador", quote: block.plainText
                 )
             }
         }
@@ -227,7 +227,7 @@ final class CardDetailSnapshotTests: XCTestCase {
             state.content = text
             let notes = spanish ? ["Indica el simulador", "¿Quién aprueba las notas?"] : ["Say which simulator", "Who approves the notes?"]
             for (block, note) in zip(state.blocks.filter(\.isCommentable).dropFirst(), notes).prefix(count) {
-                state.comments[block.draftKey] = ActionComment(anchor: block.draftKey, text: note, quote: block.plainText)
+                state.comments[block.anchor] = ActionComment(anchor: block.anchor, text: note, quote: block.plainText)
             }
             edit(&state)
         }
@@ -268,7 +268,7 @@ final class CardDetailSnapshotTests: XCTestCase {
         let store = try fetchedPlan { state in
             let block = state.blocks.first(where: \.isCommentable)!
             state.composing = CardDetailFeature.Composing(
-                anchor: block.draftKey, quote: block.plainText, text: "Which simulator was it?"
+                anchor: block.anchor, quote: block.plainText, text: "Which simulator was it?"
             )
         }
         let composing = store.withState { $0.composing! }

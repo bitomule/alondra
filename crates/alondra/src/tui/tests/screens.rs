@@ -716,25 +716,100 @@ fn pressing_an_option_answers_at_once_even_on_a_card_that_asked_for_a_note() {
 }
 
 #[test]
-fn what_is_written_in_the_cards_field_goes_with_the_option_pressed() {
-    let mut app = english(fixture_view("card-question.json"));
+fn a_field_opens_empty_after_its_words_were_sent_or_closed_with_esc() {
+    let mut app = english(question_whose_reply_stays());
     press(&mut app, KeyCode::Char('r'));
     typed(&mut app, "Rotated both keys");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.posted.borrow().len(), 1, "{:?}", app.posted.borrow());
+    press(&mut app, KeyCode::Char('r'));
+    assert_eq!(app.composer.as_ref().map(|c| c.input.text()), Some(String::new()), "after sending");
+    typed(&mut app, "Half a thought");
     press(&mut app, KeyCode::Esc);
-    assert!(app.composer.is_none() && app.posted.borrow().is_empty(), "Esc keeps the words as a draft");
-    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("press an option to send it with it")));
-    app.flash = None;
+    assert!(app.composer.is_none());
+    press(&mut app, KeyCode::Char('r'));
+    assert_eq!(app.composer.as_ref().map(|c| c.input.text()), Some(String::new()), "after Esc");
+}
+
+fn question_whose_reply_stays() -> views::View {
+    edited("card-question.json", |card| card["reply"]["resolves_card"] = serde_json::json!(false))
+}
+
+#[test]
+fn what_is_sent_is_what_the_field_holds_when_it_is_sent() {
+    let mut app = english(question_whose_reply_stays());
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "First words");
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "What I mean now");
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].1["input"]["text"], "What I mean now");
+
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "An older thought");
+    press(&mut app, KeyCode::Esc);
     let screen = rendered(&mut app, 120, 60);
-    dump("detail: a draft waiting for an option", &screen);
-    assert!(screen.contains("«Rotated both keys» — goes with the option you press"), "{screen}");
+    assert!(!screen.contains("An older thought"), "{screen}");
     press(&mut app, KeyCode::Char('1'));
     let sent = app.posted.borrow().clone();
-    assert!(app.composer.is_none(), "the option answers at once");
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[1].1["option_id"].is_string(), "{sent:?}");
+    assert_eq!(sent[1].1["input"], serde_json::json!({}), "nothing closed with Esc goes with the option");
+}
+
+fn commented_plan() -> views::View {
+    let mut value = super::parity::view_fixture("card-delivery-plan.json");
+    for section in value["sections"].as_array_mut().unwrap() {
+        for item in section["items"].as_array_mut().unwrap() {
+            if item["type"] == "markdown" {
+                item["commentable"] = serde_json::json!(true);
+            }
+        }
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+fn comment_on(app: &mut App, block: usize, text: &str) {
+    app.reader.as_mut().unwrap().cursor = block;
+    press(app, KeyCode::Char('c'));
+    typed(app, text);
+    press(app, KeyCode::Enter);
+}
+
+#[test]
+fn a_review_sends_every_comment_written_even_after_its_send_field_was_closed_once() {
+    let mut app = english(commented_plan());
+    app.open_reader();
+    let blocks: Vec<usize> = app.reader.as_ref().unwrap().blocks.iter().enumerate()
+        .filter(|(_, block)| block.commentable()).map(|(index, _)| index).collect();
+    assert!(blocks.len() >= 3, "{blocks:?}");
+    comment_on(&mut app, blocks[0], "Say which store");
+    press(&mut app, KeyCode::Char('s'));
+    assert!(app.composer.as_ref().is_some_and(|c| c.input.text().contains("Say which store")));
+    press(&mut app, KeyCode::Esc);
+
+    comment_on(&mut app, blocks[1], "Only on Wi-Fi");
+    comment_on(&mut app, blocks[2], "Hide it when done");
+    press(&mut app, KeyCode::Char('C'));
+    typed(&mut app, "Otherwise good");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('s'));
+    let field = app.composer.as_ref().map(|c| c.input.text()).unwrap_or_default();
+    let screen = rendered(&mut app, 120, 60);
+    dump("reader: the send field holds every comment", &screen);
+    press(&mut app, KeyCode::Enter);
+
+    let sent = app.posted.borrow().clone();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("ans:"), "{sent:?}");
-    assert!(sent[0].1["option_id"].is_string(), "{sent:?}");
-    assert_eq!(sent[0].1["input"]["text"], "Rotated both keys");
-    assert!(app.drafts.is_empty(), "the words were sent once");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("changes:"), "{sent:?}");
+    let text = sent[0].1["input"]["text"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(text, field.trim(), "what is sent is what the field showed");
+    for comment in ["Say which store", "Only on Wi-Fi", "Hide it when done", "Otherwise good"] {
+        assert!(text.contains(comment), "{comment} is missing from {text:?}");
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use alondra_core::views::Service;
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::restore::{Draft, Restore};
+use super::restore::{OpenComposer, Restore};
 use super::version_watch::{self, Decision, Disk, Inputs, Side, Warning};
 use super::{App, Composer, Flow, Msg, Pane, Screen, now_millis};
 
@@ -81,7 +81,6 @@ impl App {
         };
         self.updated.actions_out > 0
             || self.composer.as_ref().is_some_and(|c| sending(&c.chips))
-            || self.drafts.values().any(|(_, chips)| sending(chips))
     }
 
     fn confirming(&self) -> bool {
@@ -250,15 +249,14 @@ impl App {
             agent_scroll: self.agent_scroll,
             agent_detail_scroll: self.agent_detail_scroll,
             composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. }))
-                .map(|c| Draft { text: c.input.text(), chips: c.chips, target: c.target }),
-            drafts: self.drafts.iter().map(|(k, (text, chips))| (k.clone(), text.clone(), chips.clone())).collect(),
+                .map(|c| OpenComposer { text: c.input.text(), chips: c.chips, target: c.target }),
         }
     }
 
     /// The `exec` failed: the composer is where it was.
     pub(super) fn exec_failed(&mut self, restore: Restore, error: &std::io::Error) {
-        if let Some(draft) = restore.composer {
-            self.reopen(draft);
+        if let Some(composer) = restore.composer {
+            self.reopen(composer);
         }
         self.updated.restarted_for = Some(restore.restarted_for);
         self.updated.restart = false;
@@ -291,18 +289,16 @@ impl App {
         self.agent_sel = r.agent_sel;
         self.agent_scroll = r.agent_scroll;
         self.agent_detail_scroll = r.agent_detail_scroll;
-        self.drafts.extend(r.drafts.into_iter().map(|(k, text, chips)| (k, (text, chips))));
-        if let Some(draft) = r.composer {
-            self.reopen(draft);
+        if let Some(composer) = r.composer {
+            self.reopen(composer);
         }
         self.updated.restarted_for = Some(r.restarted_for);
     }
 
-    fn reopen(&mut self, draft: Draft) {
-        self.compose(draft.target, &draft.text);
-        if let Some(Composer { input, chips, .. }) = self.composer.as_mut() {
-            *input = super::input::TextInput::with(&draft.text);
-            *chips = draft.chips;
+    fn reopen(&mut self, open: OpenComposer) {
+        self.compose(open.target, &open.text);
+        if let Some(Composer { chips, .. }) = self.composer.as_mut() {
+            *chips = open.chips;
         }
     }
 }
@@ -510,8 +506,7 @@ mod tests {
             agent_sel: None,
             agent_scroll: 3,
             agent_detail_scroll: 0,
-            composer: Some(Draft { target: super::super::Target::General { send: false }, text: "still here".into(), chips: vec![] }),
-            drafts: vec![],
+            composer: Some(OpenComposer { target: super::super::Target::General { send: false }, text: "still here".into(), chips: vec![] }),
         };
         app.restore(state);
         assert!(app.screen == Screen::Tasks);

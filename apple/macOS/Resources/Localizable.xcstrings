@@ -262,10 +262,8 @@
     "The document changed. Review it again before sending comments.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El documento ha cambiado. Revísalo de nuevo antes de enviar comentarios."}}}},
     "This PR is no longer open": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este PR ya no está abierto"}}}},
     "This diff is too large to verify; review was not sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado grande para comprobarlo; la revisión no se envió"}}}},
-    "We couldn’t confirm the request. Your draft is kept; sending it again won’t create it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar la petición. Tu borrador se conserva; enviarla de nuevo no la creará dos veces."}}}},
     "We couldn’t confirm the result. Sending it again won’t apply it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Enviarlo de nuevo no lo aplicará dos veces."}}}},
     "We couldn’t confirm the result. Try again; it won’t be applied twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Inténtalo de nuevo; no se aplicará dos veces."}}}},
-    "We couldn’t confirm the result. Your draft is kept; sending it again won’t apply it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Tu borrador se conserva; enviarlo de nuevo no lo aplicará dos veces."}}}},
     "document: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "documento: %@"}}}},
     "question: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "pregunta: %@"}}}},
     "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera a que se fusione el PR #%@"}}}},
@@ -275,7 +273,6 @@
     "· %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "· %@"}}}},
     "· for %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "· desde hace %@"}}}},
     "Edit Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Editar de nuevo"}}}},
-    "Discard Draft": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar borrador"}}}},
     "This diff is too long to show in full. Open the PR on GitHub for the rest.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado largo para mostrarlo entero. Abre la PR en GitHub para ver el resto."}}}},
     "No internet connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin conexión a internet"}}}},
     "Can’t reach the Alondra server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se puede contactar con el servidor de Alondra"}}}},
@@ -331,16 +328,6 @@
     "Retry the interrupted work?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Reintentar el trabajo interrumpido?"}}}},
     "Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que algunas acciones ya se hayan completado. Revisa la actividad y las tareas antes de reintentar para evitar repetir trabajo."}}}},
 
-    "%lld feedback messages were not sent; review your drafts": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mensajes de comentarios no enviados: %lld; revisa tus borradores"
-          }
-        }
-      }
-    },
     "%lld operations are still unconfirmed": {
       "localizations": {
         "es": {

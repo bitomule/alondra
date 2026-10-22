@@ -54,15 +54,15 @@ import Testing
     ]
 
     @Test(arguments: keyCases)
-    func aDraftKeyFollowsItsBlock(_ testCase: KeyCase) throws {
+    func anAnchorFollowsItsBlock(_ testCase: KeyCase) throws {
         let before = try #require(MarkdownParser.blocks(from: testCase.before).first { $0.plainText == testCase.block })
         let after = try #require(MarkdownParser.blocks(from: testCase.after).first { $0.plainText == testCase.block })
         #expect(before.id != after.id)
-        #expect(before.draftKey == after.draftKey)
+        #expect(before.anchor == after.anchor)
     }
 
     @Test func repeatedBlocksGetTheirOccurrence() {
-        let keys = MarkdownParser.blocks(from: "Same\n\nSame\n\n- Same").map(\.draftKey)
+        let keys = MarkdownParser.blocks(from: "Same\n\nSame\n\n- Same").map(\.anchor)
         #expect(Set(keys).count == 3)
         #expect(keys[0].hasSuffix(":0"))
         #expect(keys[1].hasSuffix(":1"))
@@ -71,10 +71,10 @@ import Testing
     }
 
     @Test func theKeyDependsOnKindAndText() {
-        let first = MarkdownParser.blocks(from: "Alpha").map(\.draftKey)
-        let again = MarkdownParser.blocks(from: "Alpha").map(\.draftKey)
-        let other = MarkdownParser.blocks(from: "Beta").map(\.draftKey)
-        let quoted = MarkdownParser.blocks(from: "> Alpha").map(\.draftKey)
+        let first = MarkdownParser.blocks(from: "Alpha").map(\.anchor)
+        let again = MarkdownParser.blocks(from: "Alpha").map(\.anchor)
+        let other = MarkdownParser.blocks(from: "Beta").map(\.anchor)
+        let quoted = MarkdownParser.blocks(from: "> Alpha").map(\.anchor)
         #expect(first == again)
         #expect(first != other)
         #expect(first != quoted)

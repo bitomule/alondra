@@ -387,7 +387,7 @@ impl App {
             label: option.map_or_else(|| action.label.clone(), |option| option.label.clone()),
         };
         if option.is_none() && action.option_id.is_some() {
-            let (text, chips, review) = self.take_card_words();
+            let (text, chips, review) = self.card_words();
             let mut input = serde_json::json!({});
             if !text.trim().is_empty() {
                 input["text"] = serde_json::Value::String(text.trim().to_owned());
@@ -428,18 +428,15 @@ impl App {
     }
 
     /// What the user wrote on the open card, which goes with the option they press: the comments
-    /// left in the reader, or else the draft of the card's own field. Taken, so it is sent once.
-    fn take_card_words(&mut self) -> (String, Vec<super::Chip>, Option<Key>) {
-        let Some(view) = self.card_view.as_ref() else { return (String::new(), vec![], None) };
-        if let Some(key) = self.reader.as_ref().map(|reader| reader.key.clone()).filter(|key| key.0 == view.key)
-            && let Some(review) = self.reviews.get(&key).filter(|review| !review.is_empty())
-        {
-            return (review.feedback(), review.chips.clone(), Some(key));
-        }
-        let draft = super::view_render::card_reply(view).and_then(|reply| {
-            self.drafts.remove(&format!("view-action:{}:", reply.id))
-        });
-        draft.map_or((String::new(), vec![], None), |(text, chips)| (text, chips, None))
+    /// left in the reader.
+    fn card_words(&self) -> (String, Vec<super::Chip>, Option<Key>) {
+        let view = self.card_view.as_ref();
+        self.reader
+            .as_ref()
+            .map(|reader| reader.key.clone())
+            .filter(|key| view.is_some_and(|view| key.0 == view.key))
+            .and_then(|key| self.reviews.get(&key).filter(|review| !review.is_empty()).map(|review| (review.feedback(), review.chips.clone(), Some(key))))
+            .unwrap_or_default()
     }
 }
 

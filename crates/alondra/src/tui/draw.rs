@@ -717,10 +717,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(card) = super::view_render::typed_card(document) {
         keys = match &app.card_menu {
             Some(menu) => super::view_render::menu_lines(menu),
-            None => {
-                let draft = card.reply.as_ref().and_then(|reply| app.drafts.get(&format!("view-action:{}:", reply.id)));
-                super::view_render::button_lines(card, inner.width as usize, draft.map(|(text, _)| text.as_str()))
-            }
+            None => super::view_render::button_lines(card, inner.width as usize),
         };
     } else {
         let mut actions = action_menu(&app.bindings());

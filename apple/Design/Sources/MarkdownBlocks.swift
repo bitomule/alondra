@@ -42,7 +42,7 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
     public let depth: Int
     public let content: AttributedString
     public let plainText: String
-    public let draftKey: String
+    public let anchor: String
 
     public static func inline(_ source: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
@@ -170,7 +170,7 @@ public enum MarkdownParser {
             let base = "\(MarkdownBlock.name(of: kind)):\(MarkdownParser.hash(plainText))"
             let occurrence = occurrences[base, default: 0]
             occurrences[base] = occurrence + 1
-            blocks.append(MarkdownBlock(id: blocks.count, kind: kind, depth: depth, content: content, plainText: plainText, draftKey: "\(base):\(occurrence)"))
+            blocks.append(MarkdownBlock(id: blocks.count, kind: kind, depth: depth, content: content, plainText: plainText, anchor: "\(base):\(occurrence)"))
         }
 
         mutating func add(_ content: AttributedString, intent components: [PresentationIntent.IntentType]) {

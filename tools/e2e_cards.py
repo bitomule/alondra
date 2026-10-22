@@ -441,11 +441,12 @@ def check_tui(sandbox, captures):
             elif prefix == "accept:":
                 tui.keys("1")
             elif text:
-                tui.keys("r")
+                tui.keys("o")
+                tui.until(lambda s: "comentario general" in s, f"{card}: the reader did not open")
+                tui.keys("C")
                 tui.type(text)
-                tui.keys("Escape")
-                tui.until(lambda s: "va con la opción que pulses" in s, f"{card}: the draft is not shown going with the option")
-                tui.capture(f"draft-{card}")
+                tui.keys("Enter")
+                tui.capture(f"commented-{card}")
                 tui.keys(key)
             else:
                 tui.keys(key)

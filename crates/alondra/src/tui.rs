@@ -493,7 +493,7 @@ pub enum Target {
         send: bool,
     },
     /// Where the browser came back to after signing in to an MCP server away from the daemon's
-    /// Mac: it carries a one-time code, so it is never kept as a draft.
+    /// Mac: it carries a one-time code, so it never travels to a restarted process.
     McpReturn {
         card: String,
         server: String,
@@ -506,31 +506,6 @@ pub struct Composer {
     pub input: TextInput,
     pub chips: Vec<Chip>,
     pub form: Option<work::OptionsForm>,
-}
-
-impl Target {
-    fn draft_key(&self) -> Option<String> {
-        match self {
-            Target::ViewAction {
-                action_id,
-                option_id,
-                ..
-            } => Some(format!(
-                "view-action:{action_id}:{}",
-                option_id.as_deref().unwrap_or("")
-            )),
-            Target::Message { message: m, .. } => {
-                let (agent, interaction, pr) = (
-                    m.agent.as_ref().map_or("orchestrator", |a| a.0.as_str()),
-                    m.interaction.as_ref().map_or("", |i| i.0.as_str()),
-                    m.pr.as_ref().map_or("", |p| p.0.as_str()),
-                );
-                Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
-            }
-            Target::Form { view } => Some(format!("form:{view}")),
-            Target::Comment { .. } | Target::General { .. } | Target::McpReturn { .. } => None,
-        }
-    }
 }
 
 /// What the daemon found for a search nothing local matched.
@@ -713,7 +688,6 @@ pub struct App {
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
     pub reviews: HashMap<Key, Review>,
-    drafts: HashMap<String, (String, Vec<Chip>)>,
     chip_seq: u64,
     /// What alondrad knows about the Mac and its sessions beyond the domain.
     pub runtime: Option<Runtime>,
@@ -932,7 +906,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
     }
 }
 
-/// Hands the screen and the draft to the new binary and becomes it. Only comes back when `exec`
+/// Hands the screen and the open composer to the new binary and becomes it. Only comes back when `exec`
 /// failed, with the terminal and the composer where they were.
 fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     let state = app.to_restore();
@@ -1154,7 +1128,6 @@ impl App {
             composer: None,
             reader: None,
             reviews: HashMap::new(),
-            drafts: HashMap::new(),
             chip_seq: 0,
             runtime: None,
             daemon: None,
@@ -1836,7 +1809,6 @@ impl App {
             .composer
             .iter_mut()
             .flat_map(|c| c.chips.iter_mut())
-            .chain(self.drafts.values_mut().flat_map(|(_, c)| c.iter_mut()))
             .chain(self.reviews.values_mut().flat_map(|r| r.chips.iter_mut()));
         let mut failed = None;
         for chip in chips.filter(|c| c.seq == seq) {
@@ -1848,9 +1820,6 @@ impl App {
         if let Some((name, e)) = failed {
             if let Some(c) = self.composer.as_mut() {
                 c.chips.retain(|c| c.seq != seq);
-            }
-            for (_, chips) in self.drafts.values_mut() {
-                chips.retain(|c| c.seq != seq);
             }
             for r in self.reviews.values_mut() {
                 r.chips.retain(|c| c.seq != seq);
@@ -2582,10 +2551,6 @@ impl App {
     }
 
     fn compose(&mut self, target: Target, prefill: &str) {
-        let (text, chips) = target
-            .draft_key()
-            .and_then(|k| self.drafts.remove(&k))
-            .unwrap_or_else(|| (prefill.to_string(), vec![]));
         let view = match &target {
             Target::Form { view } => Some(view.clone()),
             _ => None,
@@ -2593,8 +2558,8 @@ impl App {
         let form = view.as_deref().map(work::OptionsForm::new);
         self.composer = Some(Composer {
             target,
-            input: TextInput::with(&text),
-            chips,
+            input: TextInput::with(prefill),
+            chips: vec![],
             form,
         });
         if let Some(view) = view {
@@ -2668,32 +2633,6 @@ impl App {
         });
     }
 
-    fn cancel_composer(&mut self) {
-        let Some(c) = self.composer.take() else {
-            return;
-        };
-        let text = c.input.text();
-        if let Some(k) = c.target.draft_key()
-            && (!text.trim().is_empty() || !c.chips.is_empty())
-        {
-            let goes_with_an_option = matches!(&c.target, Target::ViewAction { action_id, .. }
-                if self.card_view.as_ref().and_then(view_render::card_reply).is_some_and(|reply| &reply.id == action_id)
-                    && self.card_view.as_ref().and_then(view_render::typed_card)
-                        .is_some_and(|card| card.actions.iter().any(|action| action.option_id.is_some())));
-            self.drafts.insert(k, (text, c.chips));
-            self.flash(if goes_with_an_option {
-                tr!(
-                    "Draft saved: press an option to send it with it, or r to keep writing",
-                    "Borrador guardado: pulsa una opción para enviarlo con ella, o r para seguir escribiendo"
-                )
-            } else {
-                tr!(
-                    "Draft saved: open it again to pick up where you left off",
-                    "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"
-                )
-            });
-        }
-    }
 
     fn composer_key(&mut self, k: KeyEvent) {
         let Some(c) = self.composer.as_mut() else {
@@ -2711,7 +2650,7 @@ impl App {
             }
         }
         match k.code {
-            KeyCode::Esc => self.cancel_composer(),
+            KeyCode::Esc => self.composer = None,
             KeyCode::Enter
                 if k.modifiers
                     .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>

@@ -402,9 +402,8 @@ pub fn card_reply(view: &View) -> Option<Action> {
     typed_card(view).and_then(|card| card.reply.clone()).map(Action::from)
 }
 
-/// What the keys of a card do: its buttons numbered from 1, the menu of the rest, the reply, and
-/// the words already written in the reply, which go with the option pressed.
-pub fn button_lines(card: &Card, width: usize, draft: Option<&str>) -> Vec<Line<'static>> {
+/// What the keys of a card do: its buttons numbered from 1, the menu of the rest and the reply.
+pub fn button_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, action) in card.actions.iter().take(BUTTONS).enumerate() {
         lines.extend(button_line(&(index + 1).to_string(), action));
@@ -420,21 +419,6 @@ pub fn button_lines(card: &Card, width: usize, draft: Option<&str>) -> Vec<Line<
     }
     if let Some(reply) = &card.reply {
         lines.extend(button_line("r", reply));
-        if let Some(draft) = draft.map(str::trim).filter(|draft| !draft.is_empty()) {
-            let goes = if card.actions.iter().any(|action| action.option_id.is_some()) {
-                tr!("goes with the option you press", "va con la opción que pulses")
-            } else {
-                tr!("r to send it", "r para enviarlo")
-            };
-            let first = draft.lines().next().unwrap_or_default();
-            let room = width.saturating_sub(goes.chars().count() + 8).max(8);
-            let shown: String = if first.chars().count() > room || draft.lines().nth(1).is_some() {
-                format!("{}…", first.chars().take(room.saturating_sub(1)).collect::<String>())
-            } else {
-                first.to_owned()
-            };
-            lines.push(Line::from(Span::styled(format!("    «{shown}» — {goes}"), Style::new().fg(Color::DarkGray))));
-        }
     }
     lines
 }

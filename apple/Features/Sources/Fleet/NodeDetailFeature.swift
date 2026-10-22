@@ -14,7 +14,7 @@ public struct NodeDetailFeature: Sendable {
         public var screen: ScreenFeature.State
         public var composer: ActionFeature.State
         public var actions: ActionFeature.State
-        public var draft = ""
+        public var message = ""
         public var optimistic = Optimistic()
 
         public init(key: ViewKey) {
@@ -27,7 +27,7 @@ public struct NodeDetailFeature: Sendable {
 
         public var canSend: Bool {
             composer.action != nil
-                && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachmentPicker.entries.isEmpty)
+                && (!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachmentPicker.entries.isEmpty)
         }
     }
 
@@ -36,7 +36,7 @@ public struct NodeDetailFeature: Sendable {
         case screen(ScreenFeature.Action)
         case composer(ActionFeature.Action)
         case actions(ActionFeature.Action)
-        case draftChanged(String)
+        case messageChanged(String)
         case send
         case perform(WireAction)
         case follow(AlondraContract.Link)
@@ -72,20 +72,20 @@ public struct NodeDetailFeature: Sendable {
                 return .none
             case .screen:
                 return .none
-            case .draftChanged(let text):
-                state.draft = text
+            case .messageChanged(let text):
+                state.message = text
                 return .none
             case .send:
                 guard state.canSend else { return .none }
-                return .concatenate(.send(.composer(.textChanged(state.draft))), .send(.composer(.submit)))
+                return .concatenate(.send(.composer(.textChanged(state.message))), .send(.composer(.submit)))
             case .composer(.sent(let request)):
                 guard request.dataEpoch == state.composer.dataEpoch else { return .none }
-                state.draft = ""
+                state.message = ""
                 guard let message = state.composer.action else { return .none }
                 return .send(.composer(.present(message)))
             case .composer(.settled(let request, applied: false)):
                 guard request.dataEpoch == state.composer.dataEpoch else { return .none }
-                if state.draft.isEmpty { state.draft = request.input.text ?? "" }
+                if state.message.isEmpty { state.message = request.input.text ?? "" }
                 return .none
             case .composer(.delegate(let delegate)), .actions(.delegate(let delegate)):
                 return .send(.delegate(ScreenDelegate(delegate)))

@@ -144,19 +144,19 @@ final class CardDetailFeatureTests: XCTestCase {
         let store = try await planStore()
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
 
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         XCTAssertEqual(store.state.composing?.text, "")
         await store.send(.composingChanged("  Needs a number  "))
         await store.send(.commentSaved)
         XCTAssertNil(store.state.composing)
-        XCTAssertEqual(store.state.comments[block.draftKey]?.text, "Needs a number")
-        XCTAssertEqual(store.state.comments[block.draftKey]?.quote, block.plainText)
+        XCTAssertEqual(store.state.comments[block.anchor]?.text, "Needs a number")
+        XCTAssertEqual(store.state.comments[block.anchor]?.quote, block.plainText)
 
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         XCTAssertEqual(store.state.composing?.text, "Needs a number", "editing starts from the saved comment")
         await store.send(.composingChanged("   "))
         await store.send(.commentSaved)
-        XCTAssertNil(store.state.comments[block.draftKey])
+        XCTAssertNil(store.state.comments[block.anchor])
     }
 
     @MainActor
@@ -165,19 +165,19 @@ final class CardDetailFeatureTests: XCTestCase {
         let blocks = store.state.blocks.filter(\.isCommentable)
         let first = try XCTUnwrap(blocks.first), second = try XCTUnwrap(blocks.dropFirst().first)
         for block in [first, second] {
-            await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+            await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
             await store.send(.composingChanged("note on \(block.plainText)"))
             await store.send(.commentSaved)
         }
 
-        await store.send(.blockTapped(anchor: first.draftKey, quote: first.plainText))
+        await store.send(.blockTapped(anchor: first.anchor, quote: first.plainText))
         await store.send(.commentDeleted)
-        XCTAssertEqual(Set(store.state.comments.keys), [second.draftKey])
+        XCTAssertEqual(Set(store.state.comments.keys), [second.anchor])
 
-        await store.send(.blockTapped(anchor: second.draftKey, quote: second.plainText))
+        await store.send(.blockTapped(anchor: second.anchor, quote: second.plainText))
         await store.send(.composingChanged("something else"))
         await store.send(.commentCancelled)
-        XCTAssertEqual(store.state.comments[second.draftKey]?.text, "note on \(second.plainText)")
+        XCTAssertEqual(store.state.comments[second.anchor]?.text, "note on \(second.plainText)")
     }
 
     // MARK: A plan Claude Code holds, carried inside the card
@@ -205,12 +205,12 @@ final class CardDetailFeatureTests: XCTestCase {
         let store = try await heldPlanStore()
         let block = try XCTUnwrap(store.state.blocks.first { $0.plainText.hasPrefix("Build the form") })
 
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         await store.send(.composingChanged("Which form?"))
         await store.send(.commentSaved)
         XCTAssertEqual(store.state.feedback.map(\.text), ["Which form?"])
 
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         await store.send(.commentDeleted)
         XCTAssertTrue(store.state.feedback.isEmpty)
         XCTAssertFalse(store.state.hasFeedback)
@@ -223,7 +223,7 @@ final class CardDetailFeatureTests: XCTestCase {
         let blocks = store.state.blocks.filter(\.isCommentable)
         let first = try XCTUnwrap(blocks.first), last = try XCTUnwrap(blocks.last)
         for block in [last, first] {
-            await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+            await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
             await store.send(.composingChanged("note on \(block.plainText)"))
             await store.send(.commentSaved)
         }
@@ -233,7 +233,7 @@ final class CardDetailFeatureTests: XCTestCase {
         await store.skipReceivedActions()
 
         let comments = try XCTUnwrap(feed.requests.first?.input.comments)
-        XCTAssertEqual(comments.map(\.anchor), [first.draftKey, last.draftKey])
+        XCTAssertEqual(comments.map(\.anchor), [first.anchor, last.anchor])
         XCTAssertEqual(comments.map(\.quote), [first.plainText, last.plainText])
     }
 
@@ -252,7 +252,7 @@ final class CardDetailFeatureTests: XCTestCase {
         let blocks = store.state.blocks.filter(\.isCommentable)
         let first = try XCTUnwrap(blocks.first), last = try XCTUnwrap(blocks.last)
         for block in [last, first] {
-            await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+            await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
             await store.send(.composingChanged("note on \(block.plainText)"))
             await store.send(.commentSaved)
         }
@@ -263,11 +263,48 @@ final class CardDetailFeatureTests: XCTestCase {
 
         let request = try XCTUnwrap(feed.requests.first)
         XCTAssertEqual(request.actionId, changes.id)
-        XCTAssertEqual(request.input.comments?.map(\.anchor), [first.draftKey, last.draftKey])
+        XCTAssertEqual(request.input.comments?.map(\.anchor), [first.anchor, last.anchor])
         XCTAssertEqual(request.input.text, "Overall: good")
         XCTAssertEqual(dismissed.value, 1, "the detail closes as it sends")
         XCTAssertTrue(store.state.comments.isEmpty)
         XCTAssertEqual(store.state.reply, "")
+    }
+
+    @MainActor
+    func testAReviewSendsExactlyEveryCommentAsItIsWhenSentAndOpensEmptyAfterwards() async throws {
+        let feed = FeedStub()
+        let store = try await planStore(feed: feed)
+        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let blocks = store.state.blocks.filter(\.isCommentable)
+        XCTAssertGreaterThanOrEqual(blocks.count, 2)
+        for block in blocks {
+            await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
+            await store.send(.composingChanged("first thought on \(block.plainText)"))
+            await store.send(.commentSaved)
+        }
+        let edited = try XCTUnwrap(blocks.first)
+        await store.send(.blockTapped(anchor: edited.anchor, quote: edited.plainText))
+        await store.send(.composingChanged("what I mean now"))
+        await store.send(.commentSaved)
+        await store.send(.replyChanged("Overall"))
+        await store.send(.replyChanged("Overall: ship it"))
+
+        await store.send(.actionTapped(changes))
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.input.comments?.map(\.anchor), blocks.map(\.anchor), "every comment goes")
+        XCTAssertEqual(request.input.comments?.map(\.text),
+                       ["what I mean now"] + blocks.dropFirst().map { "first thought on \($0.plainText)" })
+        XCTAssertEqual(request.input.text, "Overall: ship it")
+
+        XCTAssertTrue(store.state.comments.isEmpty, "the detail keeps nothing after sending")
+        XCTAssertEqual(store.state.reply, "")
+        let reopened = try await planStore()
+        XCTAssertTrue(reopened.state.comments.isEmpty)
+        XCTAssertEqual(reopened.state.reply, "", "the same card opened again starts empty")
+        await reopened.send(.blockTapped(anchor: edited.anchor, quote: edited.plainText))
+        XCTAssertEqual(reopened.state.composing?.text, "", "a comment field opens empty")
     }
 
     @MainActor
@@ -278,7 +315,7 @@ final class CardDetailFeatureTests: XCTestCase {
         guard case .text(_, let required, _) = changes.input else { return XCTFail("the server asks for text") }
         XCTAssertTrue(required)
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         await store.send(.composingChanged("Needs a number"))
         await store.send(.commentSaved)
 
@@ -319,7 +356,7 @@ final class CardDetailFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         await store.send(.composingChanged("keep me"))
         await store.send(.commentSaved)
         let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })

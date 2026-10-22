@@ -54,8 +54,8 @@ final class TriageCardFocusTests: XCTestCase {
         try await settle()
         XCTAssertEqual(store.cards[id: id]?.card?.meta, "Alondra · iOS · refreshed")
         XCTAssertTrue(responder(in: window) === field, "the field lost the keyboard when the card refreshed")
-        XCTAssertEqual(store.cards[id: id]?.replyDraft, "Only if the title stays on one line")
-        print("[focus-proof] after keyboard and refresh: responder=\(responder(in: window).map { "\(type(of: $0))" } ?? "none"), same field=\(responder(in: window) === field), draft=\"\(store.cards[id: id]?.replyDraft ?? "")\"")
+        XCTAssertEqual(store.cards[id: id]?.reply, "Only if the title stays on one line")
+        print("[focus-proof] after keyboard and refresh: responder=\(responder(in: window).map { "\(type(of: $0))" } ?? "none"), same field=\(responder(in: window) === field), reply=\"\(store.cards[id: id]?.reply ?? "")\"")
     }
 
     private func settle() async throws {

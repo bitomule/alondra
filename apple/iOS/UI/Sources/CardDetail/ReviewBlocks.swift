@@ -61,7 +61,7 @@ struct TableRows: View {
 
     var body: some View {
         TableBlock(rows: rows) { block, cell in
-            let comment = comments[block.draftKey]
+            let comment = comments[block.anchor]
             Button { onTap(block) } label: {
                 cell
                     .frame(maxHeight: .infinity, alignment: .top)
@@ -70,14 +70,14 @@ struct TableRows: View {
             .buttonStyle(.plain)
             .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
         } below: { block in
-            if let comment = comments[block.draftKey] {
+            if let comment = comments[block.anchor] {
                 bubble(comment)
                     .padding(.vertical, 4)
                     .gridCellUnsizedAxes(.horizontal)
                     .onTapGesture { onTap(block) }
             }
         } card: { block, card in
-            let comment = comments[block.draftKey]
+            let comment = comments[block.anchor]
             Button { onTap(block) } label: {
                 VStack(alignment: .leading, spacing: 6) {
                     card

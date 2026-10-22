@@ -13,7 +13,7 @@ struct CardComposer: View {
     let tint: Color
     let focus: FocusState<Bool>.Binding
 
-    private var empty: Bool { store.replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var empty: Bool { store.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -21,7 +21,7 @@ struct CardComposer: View {
                 AttachButton(store: store.scope(state: \.attachments, action: \.attachments)).padding(.leading, 6).padding(.bottom, 4)
             }
             TextField(action.replyPlaceholder, text: Binding(
-                get: { store.replyDraft }, set: { store.send(.replyChanged($0)) }
+                get: { store.reply }, set: { store.send(.replyChanged($0)) }
             ), axis: .vertical)
                 .lineLimit(1...5).focused(focus)
                 .padding(.leading, 16).padding(.vertical, 12)

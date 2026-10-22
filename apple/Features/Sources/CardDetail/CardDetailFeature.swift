@@ -7,8 +7,8 @@ import Foundation
 
 /// A card opened in full, whatever it is: the sections the daemon sends (content, context,
 /// history) and the same actions the card has, pinned at the bottom with the reply field. The text
-/// of a document or a plan can be commented block by block; the comments, the reply and the attachments are
-/// drafts until one of the actions is sent.
+/// of a document or a plan can be commented block by block; the comments, the reply and the attachments
+/// live only while the detail is open and are cleared when one of the actions is sent.
 @Reducer
 public struct CardDetailFeature: Sendable {
     public init() {}
@@ -41,7 +41,7 @@ public struct CardDetailFeature: Sendable {
         public var contentPending: Bool { contentDigest != nil && content == nil && !contentFailed }
         public var markdown: String { content ?? "" }
         public var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdown) }
-        public var feedback: [ActionComment] { blocks.compactMap { comments[$0.draftKey] } }
+        public var feedback: [ActionComment] { blocks.compactMap { comments[$0.anchor] } }
         public var canComment: Bool { subject?.allActions.contains { $0.comments?.kind == .blocks } == true }
         public var hasFeedback: Bool {
             !comments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

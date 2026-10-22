@@ -123,14 +123,14 @@ final class NodeDetailFeatureTests: XCTestCase {
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
-        await store.send(.draftChanged("Almost done"))
+        await store.send(.messageChanged("Almost done"))
         await store.send(.composer(.textChanged("Almost done")))
 
         await store.send(.screen(.loaded(try document(revision: 7))))
 
         XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@7")
         XCTAssertEqual(store.state.composer.text, "Almost done")
-        XCTAssertEqual(store.state.draft, "Almost done")
+        XCTAssertEqual(store.state.message, "Almost done")
         await store.send(.send)
         await store.skipReceivedActions()
         XCTAssertEqual(requests.value.map(\.actionId), ["msg:\(node)@7"])
@@ -141,28 +141,28 @@ final class NodeDetailFeatureTests: XCTestCase {
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
-        await store.send(.draftChanged("Use the new copy"))
+        await store.send(.messageChanged("Use the new copy"))
 
         await store.send(.send)
         await store.receive(\.delegate.completed, "Sent")
 
         XCTAssertEqual(requests.value.map(\.input.text), ["Use the new copy"])
-        XCTAssertEqual(store.state.draft, "")
+        XCTAssertEqual(store.state.message, "")
         XCTAssertEqual(store.state.composer.text, "")
         XCTAssertNil(store.state.composer.stamp)
         XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@6", "the composer stays ready for the next message")
     }
 
-    func testAFailedSendKeepsTheDraftAndSaysSo() async throws {
+    func testAFailedSendKeepsTheMessageAndSaysSo() async throws {
         let store = store(fail: true)
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
-        await store.send(.draftChanged("Use the new copy"))
+        await store.send(.messageChanged("Use the new copy"))
 
         await store.send(.send)
         await store.receive(\.delegate.failed, "Couldn’t reach your Mac. Nothing was sent; try again.")
 
-        XCTAssertEqual(store.state.draft, "Use the new copy")
+        XCTAssertEqual(store.state.message, "Use the new copy")
         XCTAssertTrue(store.state.canSend)
     }
 
@@ -176,18 +176,18 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
 
-        await store.send(.draftChanged("Ship it"))
+        await store.send(.messageChanged("Ship it"))
         await store.send(.send)
         await store.receive(\.composer.sent)
-        XCTAssertEqual(store.state.draft, "", "the composer clears before the daemon answers")
+        XCTAssertEqual(store.state.message, "", "the composer clears before the daemon answers")
         await store.receive(\.composer.present)
-        await store.send(.draftChanged("And then"))
+        await store.send(.messageChanged("And then"))
         XCTAssertTrue(store.state.canSend, "the next message does not wait for the first")
-        await store.send(.draftChanged(""))
+        await store.send(.messageChanged(""))
 
         await gate.open()
         await store.receive(\.composer.settled)
-        XCTAssertEqual(store.state.draft, "Ship it")
+        XCTAssertEqual(store.state.message, "Ship it")
     }
 
     func testABlankMessageCannotBeSent() async throws {
@@ -195,7 +195,7 @@ final class NodeDetailFeatureTests: XCTestCase {
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
-        await store.send(.draftChanged("  \n "))
+        await store.send(.messageChanged("  \n "))
 
         XCTAssertFalse(store.state.canSend)
         await store.send(.send)

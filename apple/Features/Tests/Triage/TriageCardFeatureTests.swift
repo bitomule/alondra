@@ -353,13 +353,13 @@ final class TriageCardFeatureTests: XCTestCase {
     // MARK: Writing to the node
 
     @MainActor
-    func testASentReplyCarriesTheDraftAndTheDraftIsClearedOnceApplied() async throws {
+    func testASentReplyCarriesTheFieldAndTheFieldIsClearedOnceApplied() async throws {
         let feed = FeedStub()
         let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
         let reply = try XCTUnwrap(store.state.replyAction)
 
         await store.send(.replyChanged("Ship the warmer one"))
-        XCTAssertEqual(store.state.replyDraft, "Ship the warmer one")
+        XCTAssertEqual(store.state.reply, "Ship the warmer one")
         await store.send(.replySent(reply))
         await store.skipReceivedActions()
 
@@ -367,7 +367,27 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertEqual(request.actionId, reply.id)
         XCTAssertNil(request.optionId, "a reply answers no option")
         XCTAssertEqual(request.input.text, "Ship the warmer one")
-        XCTAssertEqual(store.state.replyDraft, "")
+        XCTAssertEqual(store.state.reply, "")
+    }
+
+    @MainActor
+    func testEachReplySendsWhatTheFieldHoldsThenAndNothingWrittenBefore() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let reply = try XCTUnwrap(store.state.replyAction)
+
+        await store.send(.replyChanged("An older thought"))
+        await store.send(.replyChanged("Ship the warmer one"))
+        await store.send(.replySent(reply))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.reply, "", "the field is empty after sending")
+
+        await store.send(.replyChanged("And keep the title short"))
+        await store.send(.replySent(reply))
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(feed.requests.map(\.input.text), ["Ship the warmer one", "And keep the title short"])
+        XCTAssertEqual(store.state.reply, "")
     }
 
     @MainActor
@@ -383,7 +403,7 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAFailedReplyKeepsTheDraftAndReportsUpward() async throws {
+    func testAFailedReplyKeepsItsWordsAndReportsUpward() async throws {
         struct Offline: Error {}
         var state = TriageCardFeature.State(id: Fixtures.questionID)
         state.screen.document = try Fixtures.card(Fixtures.questionID)
@@ -397,7 +417,7 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.replySent(reply))
         await store.receive(\.actions.undelivered)
         await store.receive(\.actions.delegate.failed)
-        XCTAssertEqual(store.state.replyDraft, "Ship the warmer one")
+        XCTAssertEqual(store.state.reply, "Ship the warmer one")
         XCTAssertNil(store.state.stamp)
         XCTAssertFalse(store.state.actions.inFlight, "the card can be answered again")
     }
@@ -473,7 +493,7 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertEqual(request.actionId, warm.id)
         XCTAssertEqual(request.optionId, "warm")
         XCTAssertEqual(request.input.text, "Only for the onboarding screen")
-        XCTAssertEqual(store.state.replyDraft, "", "the words went with the answer")
+        XCTAssertEqual(store.state.reply, "", "the words went with the answer")
     }
 
     @MainActor

@@ -31,12 +31,11 @@ pub struct Restore {
     pub agent_sel: Option<AgentId>,
     pub agent_scroll: usize,
     pub agent_detail_scroll: usize,
-    pub composer: Option<Draft>,
-    pub drafts: Vec<(String, String, Vec<Chip>)>,
+    pub composer: Option<OpenComposer>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Draft {
+pub struct OpenComposer {
     pub target: Target,
     pub text: String,
     pub chips: Vec<Chip>,
@@ -77,7 +76,7 @@ mod tests {
     use crate::tui::dropped::Upload;
 
     #[test]
-    fn the_draft_travels_to_the_new_process_and_the_file_is_gone_after_it_is_read() {
+    fn the_open_composer_travels_to_the_new_process_and_the_file_is_gone_after_it_is_read() {
         let root = crate::test_support::Directory::new();
         let dir = root.join("tmp");
         std::fs::create_dir_all(&dir).unwrap();
@@ -105,8 +104,7 @@ mod tests {
             agent_sel: None,
             agent_scroll: 0,
             agent_detail_scroll: 0,
-            composer: Some(Draft { target: Target::General { send: true }, text: "half a reply".into(), chips: vec![chip] }),
-            drafts: vec![("action:a-1".into(), "an older draft".into(), vec![])],
+            composer: Some(OpenComposer { target: Target::General { send: true }, text: "half a reply".into(), chips: vec![chip] }),
         };
         let path = save_in(&dir, &restore).unwrap();
 
@@ -117,11 +115,10 @@ mod tests {
         assert_eq!(back.screen, "tasks");
         assert_eq!(back.sel, Some(Key("card-1".into())));
         assert_eq!((back.list_scroll, back.detail_scroll), (4, 9));
-        let draft = back.composer.unwrap();
-        assert_eq!(draft.text, "half a reply");
-        assert!(matches!(draft.target, Target::General { send: true }));
-        assert_eq!(draft.chips[0].name, "shot.png");
-        assert_eq!(back.drafts[0].1, "an older draft");
+        let composer = back.composer.unwrap();
+        assert_eq!(composer.text, "half a reply");
+        assert!(matches!(composer.target, Target::General { send: true }));
+        assert_eq!(composer.chips[0].name, "shot.png");
         assert!(take_from(&path).is_none());
     }
 }
