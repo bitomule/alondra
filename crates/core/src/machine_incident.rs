@@ -42,6 +42,14 @@ pub struct MachineCard {
     /// The user said they fixed it and the gauge still measures the problem.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub still: bool,
+    /// Space macOS could purge by itself but has not, when that is why the disk is low: then
+    /// `disk_free` is the space free right now.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub purgeable: u64,
+}
+
+fn is_zero(bytes: &u64) -> bool {
+    *bytes == 0
 }
 
 /// "0 B", "450 MB", "4.2 GB".
@@ -81,7 +89,12 @@ impl MachineCard {
     pub fn text(&self, lang: Lang) -> (String, String) {
         let free = bytes_text(self.disk_free, lang);
         let on = self.disk.as_ref().map(|disk| tf!(lang, " on {disk}", " en {disk}")).unwrap_or_default();
+        let purgeable = bytes_text(self.purgeable, lang);
+        let unpurged = self.purgeable > 0;
         let need = match self.cause {
+            MachineCause::Disk if unpurged && self.still => tf!(lang, "Still: {free} free right now{on}", "Sigue: {free} libres ahora mismo{on}"),
+            MachineCause::Disk if unpurged && self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} free right now{on}", "Libera espacio en disco: solo {free} libres ahora mismo{on}"),
+            MachineCause::Disk if unpurged => tf!(lang, "Free up disk space: {free} free right now{on}", "Libera espacio en disco: {free} libres ahora mismo{on}"),
             MachineCause::Disk if self.still => tf!(lang, "Still: {free} free left{on}", "Sigue: quedan {free} libres{on}"),
             MachineCause::Disk if self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} left{on}", "Libera espacio en disco: solo quedan {free}{on}"),
             MachineCause::Disk => tf!(lang, "Free up disk space: {free} left{on}", "Libera espacio en disco: quedan {free}{on}"),
@@ -95,6 +108,8 @@ impl MachineCard {
             _ => tf!(lang, "Stopped: {names}.", "Parados: {names}.", names = self.names(lang)),
         };
         let cause = match self.cause {
+            MachineCause::Disk if unpurged => tf!(lang, "Only {free} free: macOS has not yet freed {purgeable} of snapshots and caches. Alondra starts no new node until there is space.",
+                "Solo {free} libres: macOS aún no ha liberado {purgeable} de instantáneas y cachés. Alondra no lanzará nodos nuevos hasta que haya espacio."),
             MachineCause::Disk => match &self.disk {
                 Some(disk) => tf!(lang, "{disk} nearly full ({free} free). Alondra starts no new node until there is space.",
                     "{disk} casi lleno ({free} libres). Alondra no lanzará nodos nuevos hasta que haya espacio."),
@@ -119,7 +134,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, still: false }
+        MachineCard { cause, disk_free: 0, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, still: false, purgeable: 0 }
     }
 
     #[test]
@@ -154,7 +169,20 @@ mod tests {
 
     #[test]
     fn a_card_written_before_the_disk_field_still_reads() {
-        assert_eq!(MachineCard::from_body(r#"{"cause":"disk","disk_free":0}"#).unwrap().disk, None);
+        let old = MachineCard::from_body(r#"{"cause":"disk","disk_free":0}"#).unwrap();
+        assert_eq!((old.disk, old.purgeable), (None, 0));
+    }
+
+    #[test]
+    fn a_disk_low_because_macos_has_not_purged_says_what_it_could_free() {
+        let unpurged = MachineCard { disk_free: 1_200_000_000, purgeable: 14_300_000_000, ..card(MachineCause::Disk, &[]) };
+        assert_eq!(MachineCard::from_body(&unpurged.to_body()), Some(unpurged.clone()));
+        assert_eq!(unpurged.text(Lang::En), ("Free up disk space: only 1.2 GB free right now".into(),
+            "Only 1.2 GB free: macOS has not yet freed 14.3 GB of snapshots and caches. Alondra starts no new node until there is space. No node has stopped yet; past this point they fail. They carry on by themselves once it recovers.".into()));
+        assert_eq!(unpurged.text(Lang::Es), ("Libera espacio en disco: solo 1,2 GB libres ahora mismo".into(),
+            "Solo 1,2 GB libres: macOS aún no ha liberado 14,3 GB de instantáneas y cachés. Alondra no lanzará nodos nuevos hasta que haya espacio. Aún no se ha parado ningún nodo; a partir de aquí empiezan a fallar. Continúan solos cuando se recupere.".into()));
+        let still = MachineCard { still: true, disk: Some("Externo".into()), ..unpurged };
+        assert_eq!(still.text(Lang::Es).0, "Sigue: 1,2 GB libres ahora mismo en Externo");
     }
 
     #[test]

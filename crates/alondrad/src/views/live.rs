@@ -1576,9 +1576,12 @@ fn gauges(
         },
     });
     if machine.disk_total > 0 {
-        let used = machine.disk_total.saturating_sub(machine.disk_available);
+        let usable = machine.disk_available.saturating_add(machine.disk_purgeable);
+        let used = machine.disk_total.saturating_sub(usable);
         let ratio = used as f64 / machine.disk_total as f64;
-        let free = machine.disk_available as f64 / 1_000_000_000.0;
+        let free = usable as f64 / 1_000_000_000.0;
+        let purgeable = machine.disk_purgeable as f64 / 1_000_000_000.0;
+        let shown = |text: String, purgeable_text: String| if machine.disk_purgeable >= 1_000_000_000 { format!("{text} ({purgeable_text})") } else { text };
         out.push(Gauge {
             id: "disk".into(),
             label: match lang {
@@ -1588,8 +1591,8 @@ fn gauges(
             .into(),
             value: ratio,
             text: match lang {
-                Lang::En => format!("{free:.0} GB free"),
-                Lang::Es => format!("{free:.0} GB libres"),
+                Lang::En => shown(format!("{free:.0} GB free"), format!("{purgeable:.0} GB purgeable")),
+                Lang::Es => shown(format!("{free:.0} GB libres"), format!("{purgeable:.0} GB purgables")),
             },
             detail: None,
             level: if ratio >= 0.95 {
@@ -1686,7 +1689,7 @@ mod tests {
     fn a_minute_of_ram_and_cpu_wiggle_keeps_the_published_set() {
         let machine = |memory_free: u32, cpu: f32| alondra_core::Machine { at: 0, memory_total: 100,
             memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8,
-            cpu_usage: cpu, disk_total: 1_000, disk_available: 120, unreliable: false };
+            cpu_usage: cpu, disk_total: 1_000, disk_available: 120, disk_purgeable: 0, unreliable: false };
         let usage = |week: f64| alondra_core::usage::Usage { week_percent: week, week_resets_at: 0,
             today_spent: None, today_share: None, per_day_left: 0.0, over_pace: false, five_hour_percent: Some(10.0),
             five_hour_resets_at: Some(0), measured_at: 0, margin: None };
@@ -1709,7 +1712,7 @@ mod tests {
     fn machine_gauges_measure_cpu_after_memory_like_the_header_did() {
         let mut machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
             memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
-            disk_total: 100, disk_available: 50, unreliable: false };
+            disk_total: 100, disk_available: 50, disk_purgeable: 0, unreliable: false };
         let english = gauges(&machine, None, Lang::En, 0);
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
         let cpu = &english[1];
@@ -1729,6 +1732,20 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_gauge_counts_what_macos_can_purge_and_names_it_apart() {
+        const GB: u64 = 1_000_000_000;
+        let mut machine = alondra_core::Machine { disk_total: 500 * GB, disk_available: 10_800_000_000,
+            disk_purgeable: 16_600_000_000, ..Default::default() };
+        let disk = |machine: &alondra_core::Machine, lang: Lang| gauges(machine, None, lang, 0).into_iter().find(|gauge| gauge.id == "disk").unwrap();
+        let english = disk(&machine, Lang::En);
+        assert_eq!((english.text.as_str(), english.level), ("27 GB free (17 GB purgeable)", Level::Warm));
+        assert_eq!(english.value, 1.0 - 27_400_000_000.0 / 500e9);
+        assert_eq!(disk(&machine, Lang::Es).text, "27 GB libres (17 GB purgables)");
+        machine.disk_purgeable = 400_000_000;
+        assert_eq!(disk(&machine, Lang::Es).text, "11 GB libres");
+    }
+
+    #[test]
     fn cpu_wakes_clients_only_on_a_meaningful_change() {
         let cpu = |value: f64, level: Level| Gauge { id: "cpu".into(), label: "CPU".into(), value,
             text: format!("{}%", (value * 100.0).round()), detail: None, level };
@@ -1741,7 +1758,7 @@ mod tests {
     fn usage_gauges_keep_reset_daily_share_and_over_pace_warning() {
         let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
             memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
-            disk_total: 100, disk_available: 50, unreliable: false };
+            disk_total: 100, disk_available: 50, disk_purgeable: 0, unreliable: false };
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
             today_spent: Some(41.0), today_share: Some(18.0), over_pace: true,
             five_hour_percent: Some(10.0), five_hour_resets_at: Some(1_790_959_200_000), ..Default::default() };
@@ -1759,7 +1776,7 @@ mod tests {
     fn an_old_reading_says_how_old_it_is_in_both_languages() {
         let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
             memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
-            disk_total: 100, disk_available: 50, unreliable: false };
+            disk_total: 100, disk_available: 50, disk_purgeable: 0, unreliable: false };
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
             today_spent: Some(3.0), today_share: Some(10.0), five_hour_percent: Some(10.0),
             five_hour_resets_at: Some(1_790_959_200_000), measured_at: 1_000, ..Default::default() };

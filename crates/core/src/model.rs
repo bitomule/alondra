@@ -672,6 +672,9 @@ pub struct Machine {
     pub cpu_usage: f32,
     pub disk_total: u64,
     pub disk_available: u64,
+    /// Space macOS can free by itself (Time Machine snapshots, caches) on top of `disk_available`.
+    #[serde(default)]
+    pub disk_purgeable: u64,
     pub unreliable: bool,
 }
 

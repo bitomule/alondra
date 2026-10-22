@@ -41,7 +41,7 @@ toml.workspace = true
 block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSError", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "NSURL", "NSValue", "block2"] }
 
 [dev-dependencies]
 h2 = "0.4.19"

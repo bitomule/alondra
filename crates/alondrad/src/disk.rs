@@ -1,7 +1,9 @@
-//! Free disk space as a process that writes sees it: `statvfs`'s blocks available to an
-//! unprivileged user, the number `df` prints. macOS's "available for important usage", which
-//! `sysinfo` reports, also counts purgeable space the system may never free in time: a build can
-//! fill the disk while that number still shows tens of gigabytes.
+//! Free disk space, measured twice. `free` is `statvfs`'s blocks available to an unprivileged
+//! user, the number `df` prints: what a write can use right now. `purgeable` is what macOS's
+//! "available for important usage" adds on top, mostly Time Machine's local snapshots and caches,
+//! which macOS deletes by itself when space runs short, though not always in time: on 7 October a
+//! build filled the disk while that number still showed tens of gigabytes. So the disk is low when
+//! the space counting purgeable is short, or when the space free right now is under a floor.
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -9,15 +11,47 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub(crate) const LOW_DISK_BYTES: u64 = 5_000_000_000;
+pub(crate) const FLOOR_DISK_BYTES: u64 = 2_000_000_000;
 const RECOVERY_MARGIN_BYTES: u64 = 2_000_000_000;
+const FLOOR_RECOVERY_MARGIN_BYTES: u64 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Space {
     pub free: u64,
+    pub purgeable: u64,
     pub total: u64,
 }
 
+impl Space {
+    pub(crate) fn usable(&self) -> u64 {
+        self.free.saturating_add(self.purgeable)
+    }
+
+    /// Low by the line it was measured against: little usable space, or little free right now.
+    pub(crate) fn low(&self, was_low: bool) -> bool {
+        let lines = if was_low { recovered_lines() } else { low_lines() };
+        self.usable() < lines.usable || self.free < lines.free
+    }
+
+    /// Low only because macOS has not freed the purgeable space yet.
+    pub(crate) fn short_now(&self) -> bool {
+        self.purgeable > 0 && self.free < low_lines().free && self.usable() >= low_lines().usable
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Lines {
+    pub usable: u64,
+    pub free: u64,
+}
+
 pub(crate) fn space(path: &Path) -> Option<Space> {
+    let free = free_space(path)?;
+    let purgeable = platform::usable(path).map_or(0, |usable| usable.saturating_sub(free.free));
+    Some(Space { purgeable, ..free })
+}
+
+fn free_space(path: &Path) -> Option<Space> {
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
@@ -25,7 +59,29 @@ pub(crate) fn space(path: &Path) -> Option<Space> {
     }
     let stats = unsafe { stats.assume_init() };
     let block = stats.f_frsize as u64;
-    Some(Space { free: stats.f_bavail as u64 * block, total: stats.f_blocks as u64 * block })
+    Some(Space { free: stats.f_bavail as u64 * block, purgeable: 0, total: stats.f_blocks as u64 * block })
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use objc2_foundation::{NSNumber, NSString, NSURL, NSURLVolumeAvailableCapacityForImportantUsageKey};
+    use std::path::Path;
+
+    /// macOS's "available for important usage": free space plus what it can purge by itself.
+    pub(super) fn usable(path: &Path) -> Option<u64> {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?));
+        let mut value = None;
+        unsafe { url.getResourceValue_forKey_error(&mut value, NSURLVolumeAvailableCapacityForImportantUsageKey) }.ok()?;
+        let number = value?.downcast::<NSNumber>().ok()?;
+        u64::try_from(number.longLongValue()).ok()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod platform {
+    pub(super) fn usable(_path: &std::path::Path) -> Option<u64> {
+        None
+    }
 }
 
 /// The volume's mount point: the highest ancestor still on the same device.
@@ -48,16 +104,19 @@ pub(crate) fn same_volume(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Below this many free bytes Alondra starts no node and puts a card in front of the user.
-/// `ALONDRA_LOW_DISK_BYTES` moves the line, so a sandbox can try the guard on a healthy disk.
-pub(crate) fn low_line() -> u64 {
-    static LINE: OnceLock<u64> = OnceLock::new();
-    *LINE.get_or_init(|| std::env::var("ALONDRA_LOW_DISK_BYTES").ok().and_then(|value| value.parse().ok()).unwrap_or(LOW_DISK_BYTES))
+/// Below these lines Alondra starts no node and puts a card in front of the user.
+/// `ALONDRA_LOW_DISK_BYTES` and `ALONDRA_LOW_DISK_FLOOR_BYTES` move them, so a sandbox can try the
+/// guard on a healthy disk.
+pub(crate) fn low_lines() -> Lines {
+    static LINES: OnceLock<Lines> = OnceLock::new();
+    let bytes = |name: &str, default: u64| std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default);
+    *LINES.get_or_init(|| Lines { usable: bytes("ALONDRA_LOW_DISK_BYTES", LOW_DISK_BYTES), free: bytes("ALONDRA_LOW_DISK_FLOOR_BYTES", FLOOR_DISK_BYTES) })
 }
 
-/// Once low, the disk must climb past this line to count as fine, so it does not flap at the line.
-pub(crate) fn recovered_line() -> u64 {
-    low_line() + RECOVERY_MARGIN_BYTES
+/// Once low, the disk must climb past these lines to count as fine, so it does not flap at them.
+pub(crate) fn recovered_lines() -> Lines {
+    let low = low_lines();
+    Lines { usable: low.usable + RECOVERY_MARGIN_BYTES, free: low.free + FLOOR_RECOVERY_MARGIN_BYTES }
 }
 
 #[cfg(test)]
@@ -75,6 +134,46 @@ mod tests {
         let available_kb: u64 = line.split_whitespace().nth(3).unwrap().parse().unwrap();
         let difference = (measured.free / 1024).abs_diff(available_kb);
         assert!(difference < 1024 * 1024, "statvfs {} KB, df {available_kb} KB", measured.free / 1024);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reports_the_space_available_for_important_usage_of_a_real_folder() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir(&dir).unwrap();
+        let usable = platform::usable(&dir).expect("NSURL gives the volume's capacity for important usage");
+        assert!(usable > 0 && usable <= space(&dir).unwrap().total, "{usable}");
+    }
+
+    const GB: u64 = 1_000_000_000;
+
+    fn disk(free: f64, purgeable: f64) -> Space {
+        Space { free: (free * GB as f64) as u64, purgeable: (purgeable * GB as f64) as u64, total: 500 * GB }
+    }
+
+    #[test]
+    fn purgeable_space_counts_as_usable_while_enough_is_free_right_now() {
+        let snapshots = disk(4.8, 16.6);
+        assert_eq!(snapshots.usable(), 21_400_000_000);
+        assert!(!snapshots.low(false), "15 October: Time Machine snapshots held the space; no card");
+        assert!(disk(4.8, 0.0).low(false), "without purgeable space the same free space is low");
+    }
+
+    #[test]
+    fn a_disk_with_little_free_right_now_is_low_however_much_macos_could_purge() {
+        let unpurged = disk(1.0, 14.0);
+        assert!(unpurged.low(false), "7 October: the disk filled while macOS still counted 14 GB purgeable");
+        assert!(unpurged.short_now());
+        assert!(!disk(1.0, 2.0).short_now(), "little usable space: low for the usual reason");
+        assert!(disk(3.0, 1.0).low(false) && !disk(3.0, 1.0).short_now());
+    }
+
+    #[test]
+    fn once_low_the_disk_needs_margin_on_both_lines_to_count_as_fine() {
+        assert!(!disk(4.0, 2.5).low(false));
+        assert!(disk(4.0, 2.5).low(true), "6.5 GB usable is under the recovery line");
+        assert!(disk(2.5, 10.0).low(true), "2.5 GB free is under the recovered floor");
+        assert!(!disk(3.0, 4.5).low(true));
     }
 
     #[test]

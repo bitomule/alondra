@@ -3009,7 +3009,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
     use crate::domain::CardKind;
     use crate::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MachineCard, MachineCause};
     let mut state = fixture();
-    let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, minutes: None, disk: None, still: false };
+    let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, minutes: None, disk: None, still: false, purgeable: 0 };
     let (need, why) = disk.text(Lang::En);
     state.interactions.insert("machine-1000".into(), Interaction {
         attachments: vec![], id: "machine-1000".into(), scope: Scope::Orchestrator { request_id: None },

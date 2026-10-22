@@ -48,6 +48,7 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
                 cpu_usage: sys.global_cpu_usage(),
                 disk_total: root.map_or(0, |space| space.total),
                 disk_available: root.map_or(0, |space| space.free),
+                disk_purgeable: root.map_or(0, |space| space.purgeable),
                 unreliable: load.one > UNRELIABLE_LOAD,
             };
             (sys, pressure, machine)

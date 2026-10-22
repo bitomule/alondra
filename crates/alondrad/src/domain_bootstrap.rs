@@ -2447,6 +2447,7 @@ mod tests {
                 cpu_usage: 12.5,
                 disk_total: 100,
                 disk_available: 40,
+                disk_purgeable: 0,
                 unreliable: false,
             },
             None,

@@ -3,7 +3,7 @@
 //! time puts one Problem in front of the user, reminds once after
 //! `REMIND_AFTER_MS` and, once the Mac recovers, withdraws the card. The nodes that waited are not
 //! woken here: they wait paused at the fleet gate, which brings them back one at a time within the
-//! limit (`fleet_pause`). A disk below `disk::low_line()` opens an incident before any node fails,
+//! limit (`fleet_pause`). A disk below `disk::low_lines()` opens an incident before any node fails,
 //! and while it is open no node starts. The disk watched is the Mac's own and every volume a node
 //! was launched on, so a repository on an external disk is watched too.
 //!
@@ -101,17 +101,23 @@ pub(crate) const USAGE_WAIT_REFUSED: &str = "wait_for_machine is only for the Ma
     and the user decides whether to keep going. Carry on with your task.";
 
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
-/// `disk::recovered_line()` to count as fine, so a disk hovering at the line does not flap. Memory
+/// `disk::recovered_lines()` to count as fine, so a disk hovering at the line does not flap. Memory
 /// and the CPU load open none: they only pace the fleet at the gate.
 pub(crate) fn failing(machine: &Machine, previous: Option<MachineCause>) -> Option<MachineCause> {
-    let line = if previous == Some(MachineCause::Disk) { crate::disk::recovered_line() } else { crate::disk::low_line() };
-    (machine.disk_total > 0 && machine.disk_available < line).then_some(MachineCause::Disk)
+    (machine.disk_total > 0 && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
+}
+
+fn disk_space(machine: &Machine) -> crate::disk::Space {
+    crate::disk::Space { free: machine.disk_available, purgeable: machine.disk_purgeable, total: machine.disk_total }
 }
 
 fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], minutes: Option<u64>) -> MachineCard {
+    let space = disk_space(machine);
+    let short_now = cause == MachineCause::Disk && space.short_now();
     MachineCard {
         cause,
-        disk_free: machine.disk_available,
+        disk_free: if short_now { space.free } else { space.usable() },
+        purgeable: if short_now { space.purgeable } else { 0 },
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
         minutes,
@@ -122,10 +128,13 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
 
 /// The machine with the disk gauge of its fullest volume: the Mac's own, or one a node works on,
 /// named when it is not the Mac's own.
+/// The fullest is the one with the least usable space, or, when one is low only because macOS has
+/// not purged yet, that one.
 pub(crate) fn tightest(machine: Machine, volumes: &[(String, crate::disk::Space)]) -> (Machine, Option<String>) {
-    match volumes.iter().min_by_key(|(_, space)| space.free) {
-        Some((name, space)) if space.free < machine.disk_available || machine.disk_total == 0 =>
-            (Machine { disk_available: space.free, disk_total: space.total, ..machine }, Some(name.clone())),
+    let fullness = |space: &crate::disk::Space| (!space.low(false), space.usable());
+    match volumes.iter().min_by_key(|(_, space)| fullness(space)) {
+        Some((name, space)) if fullness(space) < fullness(&disk_space(&machine)) || machine.disk_total == 0 =>
+            (Machine { disk_available: space.free, disk_purgeable: space.purgeable, disk_total: space.total, ..machine }, Some(name.clone())),
         _ => (machine, None),
     }
 }
@@ -287,14 +296,14 @@ impl MachineWatch {
     pub(crate) fn refuse_launch(&self, cwd: &Path) -> Option<String> {
         self.watch_volume(cwd);
         let space = crate::disk::space(cwd);
-        let low_here = space.is_some_and(|space| space.free < crate::disk::low_line());
+        let low_here = space.is_some_and(|space| space.low(false));
         if !self.disk_low() && !low_here {
             return None;
         }
         if low_here {
             self.changed.notify_one();
         }
-        let free = space.filter(|_| low_here).map(|space| format!(" ({} free where it works)", alondra_core::machine_incident::bytes_text(space.free, Lang::En))).unwrap_or_default();
+        let free = space.filter(|_| low_here).map(|space| format!(" ({} free where it works)", alondra_core::machine_incident::bytes_text(if space.short_now() { space.free } else { space.usable() }, Lang::En))).unwrap_or_default();
         Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", crate::domain_messages::user_name()))
     }
 
@@ -495,7 +504,11 @@ mod tests {
 
     fn machine(disk_free: u64, memory_free: u32) -> Machine {
         Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [1.0; 3], cpus: 8,
-            cpu_usage: 10.0, disk_total: 500 * GB, disk_available: disk_free, unreliable: false }
+            cpu_usage: 10.0, disk_total: 500 * GB, disk_available: disk_free, disk_purgeable: 0, unreliable: false }
+    }
+
+    fn purging(free: u64, purgeable: u64) -> Machine {
+        Machine { disk_purgeable: purgeable, ..machine(free, 50) }
     }
 
     fn waiter(session: &str, name: &str, at: Millis) -> Waiter {
@@ -537,8 +550,8 @@ mod tests {
 
     #[test]
     fn a_volume_nodes_work_on_running_low_opens_the_card_and_names_it_while_the_macs_own_disk_is_fine() {
-        let external = [("Externo".to_owned(), crate::disk::Space { free: 3 * GB, total: 900 * GB }),
-            ("Fotos".to_owned(), crate::disk::Space { free: 400 * GB, total: 900 * GB })];
+        let external = [("Externo".to_owned(), crate::disk::Space { free: 3 * GB, purgeable: 0, total: 900 * GB }),
+            ("Fotos".to_owned(), crate::disk::Space { free: 400 * GB, purgeable: 0, total: 900 * GB })];
         let (measured, disk) = tightest(machine(80 * GB, 50), &external);
         assert_eq!((measured.disk_available, disk.as_deref()), (3 * GB, Some("Externo")));
         let (incident, actions) = step_on(None, &measured, disk.as_deref(), &[], false, 0);
@@ -548,6 +561,35 @@ mod tests {
         let (measured, disk) = tightest(machine(2 * GB, 50), &external);
         assert_eq!((measured.disk_available, disk), (2 * GB, None), "the Mac's own disk is the fuller one: not named");
         assert_eq!(tightest(machine(80 * GB, 50), &[]).1, None);
+    }
+
+    #[test]
+    fn time_machine_snapshots_macos_can_purge_open_no_card_and_stop_no_node() {
+        let (incident, actions) = step(None, &purging(4_800_000_000, 16_600_000_000), &[], false, 0);
+        assert_eq!((incident, actions), (None, vec![]), "15 October: 4.8 GB free and 16.6 GB of snapshots");
+        let (incident, _) = step(None, &machine(4_800_000_000, 50), &[], false, 0);
+        assert!(incident.is_some(), "the same free space with nothing purgeable is low");
+    }
+
+    #[test]
+    fn a_disk_macos_has_not_purged_in_time_opens_the_card_with_what_it_could_free() {
+        let (incident, actions) = step(None, &purging(GB, 14 * GB), &[], false, 0);
+        assert_eq!(incident.unwrap().cause, MachineCause::Disk, "7 October: 1 GB free, 14 GB purgeable not freed");
+        let card = raised(&actions)[0];
+        assert_eq!((card.disk_free, card.purgeable), (GB, 14 * GB));
+        assert_eq!(card.text(Lang::En).0, "Free up disk space: only 1.0 GB free right now");
+        let (_, actions) = step(None, &purging(GB, 3 * GB), &[], false, 0);
+        assert_eq!((raised(&actions)[0].disk_free, raised(&actions)[0].purgeable), (4 * GB, 0), "little usable space: the usual card");
+    }
+
+    #[test]
+    fn the_fullest_volume_counts_purgeable_space_but_not_purgeable_space_macos_has_not_freed() {
+        let space = |free: u64, purgeable: u64| crate::disk::Space { free, purgeable, total: 900 * GB };
+        let snapshots = [("Externo".to_owned(), space(3 * GB, 40 * GB))];
+        assert_eq!(tightest(machine(20 * GB, 50), &snapshots).1, None, "43 GB usable on Externo beats 20 GB on the Mac");
+        let unpurged = [("Externo".to_owned(), space(GB, 40 * GB))];
+        let (measured, disk) = tightest(machine(20 * GB, 50), &unpurged);
+        assert_eq!((measured.disk_available, measured.disk_purgeable, disk.as_deref()), (GB, 40 * GB, Some("Externo")));
     }
 
     #[test]
