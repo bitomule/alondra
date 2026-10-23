@@ -7,7 +7,8 @@ sh_test(
         "//launchd:alondra.plist.in",
     ],
     size = "small",
-    tags = ["local"],
+    # Runs fake daemons outside Bazel's sandbox; unlike `local`, its result is still cached.
+    tags = ["no-sandbox"],
 )
 
 sh_test(

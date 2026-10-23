@@ -13,5 +13,6 @@ sh_test(
         "//crates/alondrad:alondrad",
     ],
     size = "small",
-    tags = ["local"],
+    # Starts daemons on loopback outside Bazel's sandbox; unlike `local`, its result is still cached.
+    tags = ["no-sandbox"],
 )

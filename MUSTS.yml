@@ -1,25 +1,10 @@
 version: 1
 
-# Brew, `make build/install/test/e2e-sandbox` and the tests all use the Bazel build. These
-# checks run Bazel whenever a Rust source, manifest or build file changes.
+# Brew, `make build/install/test/e2e-sandbox` and the tests all use the Bazel build. Every
+# bazel/test check below joins one `bazel test` command, which waits once in the build queue;
+# without --build_tests_only it also builds every non-test target of //crates/..., so no
+# separate `bazel build` check is needed.
 checks:
-  bazel-build:
-    uses: bazel/build
-    paths:
-      - "crates/**"
-      - "apple/**"
-      - "launchd/**"
-      - "**/*.bazel"
-      - "MODULE.bazel"
-      - ".bazelrc"
-      - ".bazelversion"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "clippy.toml"
-      - "Makefile"
-    with:
-      target: //crates/...
-
   bazel-test:
     uses: bazel/test
     paths:
@@ -34,14 +19,7 @@ checks:
       - "Cargo.lock"
       - "clippy.toml"
       - "Makefile"
-      - "apple/**/*.xcstrings"
-      - "apple/no_sleep_wording_test.sh"
-      - "apple/release_bonjour_test.sh"
-      - "apple/Bonjour/*.plist"
-      - "apple/push_keychain_group_test.py"
-      - "apple/update_keeps_session_test.py"
-      - "apple/**/*.entitlements"
-      - "apple/**/Info.plist"
+      - "apple/**"
       - "plugin/**"
       - "tools/plugin-mod-test.sh"
       - "deploy/brew/**"
@@ -65,6 +43,32 @@ checks:
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
         - //deploy/pi/iroh-relay:relay_access_test
+
+  sdk-host:
+    uses: bazel/test
+    paths:
+      - "agent-host/**"
+    with:
+      targets:
+        - //agent-host:sdk_test
+        - //agent-host:sea_test
+        - //agent-host:frame_test
+        - //agent-host:ownership_test
+        - //agent-host:journal_test
+        - //agent-host:journal_compaction_test
+        - //agent-host:channel_test
+        - //agent-host:sdk_cleanup_test
+        - //agent-host:host_stop_test
+        - //agent-host:sdk_descendant_test
+        - //agent-host:host_flush_test
+        - //agent-host:sdk_retry_test
+        - //agent-host:sdk_orchestrator_test
+        - //agent-host:reconcile_test
+        - //agent-host:sdk_worker_test
+        - //agent-host:controls_test
+        - //agent-host:decisions_test
+        - //agent-host:umask_test
+        - //agent-host:probe_test
 
   # The brew release builds with Cargo: a crate a production Bazel target links must also be
   # a normal dependency in its Cargo.toml, or Bazel passes and the release fails.
