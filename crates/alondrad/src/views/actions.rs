@@ -1836,8 +1836,8 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
             (Verb::Msg, Some("handed"), false) => "Message delivered",
             (Verb::Msg, Some("handed"), true) => "Mensaje entregado",
             (Verb::Msg, Some("dispatching"), es) if reaches.is_some() => sdk_message_stamp(reaches, es),
-            (Verb::Msg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends",
-            (Verb::Msg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno",
+            (Verb::Msg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends. If it does not move on, Interrupt ends the turn",
+            (Verb::Msg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno",
             _ => stamp,
         };
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
@@ -2385,8 +2385,9 @@ mod tests {
         assert_eq!((handed["outcome"].as_str(), handed["stamp"].as_str()), (Some("applied"), Some("Message delivered")));
         assert_eq!(reply(Lang::Es, 200, json!({"delivery_state": "handed"}))["stamp"], "Mensaje entregado");
         let busy = reply(Lang::En, 200, json!({"delivery_state": "dispatching"}));
-        assert_eq!(busy["stamp"], "Message queued: the node is busy and takes it when its turn ends");
-        assert!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"].as_str().unwrap().starts_with("Mensaje en cola"));
+        assert_eq!(busy["stamp"], "Message queued: the node is busy and takes it when its turn ends. If it does not move on, Interrupt ends the turn");
+        assert_eq!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"],
+            "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno");
         for (reaches, english, spanish) in [
             ("now", "Message sent: the node starts on it now", "Mensaje enviado: el nodo se pone con él ahora"),
             ("turn", "Message sent: the node reads it during its current turn", "Mensaje enviado: el nodo lo lee durante su turno actual"),

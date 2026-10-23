@@ -49,8 +49,9 @@ pub struct NodeReading {
     /// Its task's execution runs through the Agent SDK: no terminal to attach to, and what it
     /// is told reaches it through its cards.
     pub through_sdk: bool,
-    /// Its SDK execution is connected and runs a turn, or work of its own: what an interrupt stops.
-    pub sdk_running: bool,
+    /// Its SDK execution is connected and an interrupt has something to stop: a turn, work of its
+    /// own, a wait for that work to wake it, or input Claude was handed and has not taken.
+    pub sdk_interruptible: bool,
     /// How far stopping the turn its connected SDK execution runs went: once Claude accepted the
     /// interrupt, stopping it ends Claude's process; once that was asked, nothing more stops it.
     pub sdk_turn_stop: Option<alondra_domain::TurnStop>,
@@ -647,8 +648,9 @@ impl<'a> Builder<'a> {
             let mine = || all.iter().copied().filter(|t| !t.archived);
             let task = mine().filter(|t| !t.state.terminal()).max_by_key(|t| t.revision)
                 .or_else(|| mine().max_by_key(|t| t.revision));
-            let (sdk_running, sdk_turn_stop) = task.filter(|t| admitted_through_sdk(state, &t.id, &agent.id))
+            let (stoppable, sdk_turn_stop) = task.filter(|t| admitted_through_sdk(state, &t.id, &agent.id))
                 .map_or((false, None), |t| sdk_stopping(state, &t.id));
+            let sdk_interruptible = stoppable && task.is_some_and(|t| !t.over());
             index.nodes.insert(agent.id.clone(), NodeReading {
                 phase: agent.phase.clone(),
                 tasks: mine().map(|t| t.id.clone()).collect(),
@@ -659,7 +661,7 @@ impl<'a> Builder<'a> {
                 post_merge_work: all.iter().filter(|t| !t.state.terminal())
                     .find_map(|t| t.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())),
                 through_sdk: task.is_some_and(|t| admitted_through_sdk(state, &t.id, &agent.id)),
-                sdk_running,
+                sdk_interruptible,
                 sdk_turn_stop,
             });
         }
@@ -681,15 +683,15 @@ pub(super) fn admitted_through_sdk(state: &DomainState, task: &TaskId, node: &Ag
     })) == Some(true)
 }
 
-/// Whether the SDK execution of `task` is connected and runs a turn or work of its own, and how
+/// Whether the SDK execution of `task` is connected with something an interrupt stops, and how
 /// far stopping its turn went.
 fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_domain::TurnStop>) {
     let Ok(lifecycle) = state.lifecycle_of(task) else { return (false, None) };
     if lifecycle.resource() != Some(alondra_domain::ResourceEvidence::Available) {
         return (false, None);
     }
-    let running = matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork);
-    (running, lifecycle.turn_stop().filter(|_| lifecycle.activity() == alondra_domain::ActivityView::Working))
+    let interruptible = !matches!(lifecycle.activity(), alondra_domain::ActivityView::None | alondra_domain::ActivityView::Resting);
+    (interruptible, lifecycle.turn_stop().filter(|_| lifecycle.activity() == alondra_domain::ActivityView::Working))
 }
 
 /// Every state a core test commits is read both ways: the index must say what the state answers
@@ -860,12 +862,11 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             })
         });
         assert_eq!(read.through_sdk, through_sdk, "whether {} runs through the SDK", agent.id);
-        let running = through_sdk && task.is_some_and(|t| {
-            let lifecycle = replay(&t.id, &state.lifecycle_journal[&t.id]).unwrap();
-            lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available)
-                && matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)
-        });
-        assert_eq!(read.sdk_running, running, "whether {} runs something an interrupt stops", agent.id);
+        let interrupt = CommandEnvelope { protocol_version: crate::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: "index-check".into(), expected_revision: state.revision, command: Command::InterruptTurn { agent_id: agent.id.clone() } };
+        let guarded = state.guard(&Actor::System, &interrupt);
+        assert_eq!(read.sdk_interruptible, through_sdk && guarded.is_ok(),
+            "whether {} offers Interrupt exactly when its guard lets it: {guarded:?}", agent.id);
         let force_stop = CommandEnvelope { protocol_version: crate::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: "index-check".into(), expected_revision: state.revision, command: Command::ForceStopTurn { agent_id: agent.id.clone() } };
         assert_eq!(read.sdk_turn_stop == Some(alondra_domain::TurnStop::InterruptAccepted), through_sdk && state.guard(&Actor::System, &force_stop).is_ok(),

@@ -2130,6 +2130,26 @@ fn an_interrupt_names_exactly_what_runs_and_a_model_or_mcp_server_must_be_a_name
     control(&mut task, "own-work", Control::Interrupt { turn: None }).unwrap();
 }
 
+// What holds Claude while no root turn is open is interrupted without naming a turn: the wait for
+// background work to wake it, or input it was handed and has not taken. Nothing else changes.
+#[test]
+fn an_execution_waiting_for_its_background_work_or_its_input_is_interrupted_without_a_turn() {
+    let mut handed = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    admit(&mut handed, "instance");
+    fact(&mut handed, RuntimeFact::ResourceAvailable);
+    let mut waking = running();
+    fact(&mut waking, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
+    fact(&mut waking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into() });
+    fact(&mut waking, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
+    for (name, mut task, activity) in [("handed", handed, ActivityView::Starting), ("waking", waking, ActivityView::Continuation)] {
+        assert_eq!(task.activity(), activity, "{name}");
+        assert_eq!(control(&mut task, "named", Control::Interrupt { turn: Some(turn("root")) }), Err(Refusal::CorrelationMismatch), "{name}: no turn is open");
+        let before = (task.phase(), task.activity(), task.cursor(), task.pending_inputs().len(), task.holds_slot());
+        control(&mut task, "interrupt", Control::Interrupt { turn: None }).unwrap();
+        assert_eq!((task.phase(), task.activity(), task.cursor(), task.pending_inputs().len(), task.holds_slot()), before, "{name}");
+    }
+}
+
 #[test]
 fn a_turn_is_forced_to_stop_only_after_claude_accepted_its_interrupt_and_only_once() {
     let mut task = running();

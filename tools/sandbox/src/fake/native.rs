@@ -487,7 +487,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         Some(task) => fakes.task_script(task)?,
         None => None,
     };
-    let mut native = Native { fakes, out, session, script, turn: None, own: None, fresh: history == 0, asked, servers, dir, log };
+    let mut native = Native { fakes, out, session, script, turn: None, own: None, background: None, unheard: None, fresh: history == 0, asked, servers, dir, log };
     let ended = native.live(inbox);
     let _ = fs::remove_file(&socket);
     if native.session.state == State::Running {
@@ -521,6 +521,10 @@ struct Native<'a> {
     turn: Option<Vec<String>>,
     /// The inputs that wait queued behind a turn Claude started by itself, while it runs.
     own: Option<Vec<String>>,
+    /// The command the last turn left running in the background: its task and tool use.
+    background: Option<(String, String)>,
+    /// The inputs Claude holds once its background command ended unheard, until it is interrupted.
+    unheard: Option<Vec<String>>,
     /// Its next input is the mission of a session that never ran before.
     fresh: bool,
     asked: Asked,
@@ -604,7 +608,7 @@ impl Native<'_> {
             };
         }
         self.lifecycle(input, "queued")?;
-        if let Some(queued) = self.own.as_mut() {
+        if let Some(queued) = self.own.as_mut().or(self.unheard.as_mut()) {
             queued.push(input.into());
             return Ok(());
         }
@@ -647,6 +651,9 @@ impl Native<'_> {
     fn interrupted(&mut self) -> Result<()> {
         if self.fakes.dir.join(HOLD_INTERRUPT).exists() {
             return Ok(());
+        }
+        if let Some(held) = self.unheard.take() {
+            return self.take_queued(held);
         }
         let Some(inputs) = self.turn.take() else { return Ok(()) };
         let last = inputs.last().cloned().unwrap_or_default();
@@ -760,9 +767,11 @@ impl Native<'_> {
                     self.assistant(json!([{"type": "text", "text": said}]))?;
                     if let Some(command) = behind {
                         let id = format!("toolu_{}", hex(&random::<6>()?));
+                        let task = format!("bg-{}", hex(&random::<4>()?));
                         self.assistant(json!([{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": command, "run_in_background": true}}]))?;
+                        self.background = Some((task.clone(), id.clone()));
                         self.send(json!({
-                            "type": "system", "subtype": "task_started", "task_id": format!("bg-{}", hex(&random::<4>()?)), "tool_use_id": id,
+                            "type": "system", "subtype": "task_started", "task_id": task, "tool_use_id": id,
                             "description": command, "task_type": "local_bash", "is_backgrounded": true, "uuid": uuid()?, "session_id": self.session.session_id,
                         }))?;
                     }
@@ -773,6 +782,7 @@ impl Native<'_> {
             Step::OwnTurn { said } => (self.own_turn(said), Leave::Stay),
             Step::LeavePlanMode { points } => (self.leave_plan_mode(*points), Leave::Stay),
             Step::EndOwnTurn => (self.end_own_turn(), Leave::Stay),
+            Step::BackgroundEndsUnheard => (self.background_ends_unheard(), Leave::Stay),
             Step::RateLimit { info } => (self.rate_limit(info.clone()).map(|()| work::done("reported")), Leave::Stay),
             Step::Emit { message } => (self.emit(message.clone()).map(|()| work::done("emitted")), Leave::Stay),
             Step::End => (Ok(work::done("ended")), Leave::Exit),
@@ -904,15 +914,35 @@ impl Native<'_> {
             "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
             "result": "Done.", "terminal_reason": "completed", "user_message_uuid": uuid()?,
         }))?;
-        if !queued.is_empty() {
-            for input in &queued {
-                self.lifecycle(input, "started")?;
-            }
-            self.turn = Some(queued);
-            self.assistant(json!([{"type": "text", "text": "On it."}]))?;
-            self.end_turn("Done.")?;
-        }
+        self.take_queued(queued)?;
         Ok(work::done("ended its own turn"))
+    }
+
+    /// What waited queued runs as a turn of its own.
+    fn take_queued(&mut self, queued: Vec<String>) -> Result<()> {
+        if queued.is_empty() {
+            return Ok(());
+        }
+        for input in &queued {
+            self.lifecycle(input, "started")?;
+        }
+        self.turn = Some(queued);
+        self.assistant(json!([{"type": "text", "text": "On it."}]))?;
+        self.end_turn("Done.")
+    }
+
+    /// The background command ends with its notification, and Claude never takes it up.
+    fn background_ends_unheard(&mut self) -> Result<mcp::Reply> {
+        if self.turn.is_some() || self.own.is_some() {
+            bail!("a turn is open");
+        }
+        let (task, tool_use) = self.background.take().context("no command runs in the background")?;
+        self.send(json!({
+            "type": "system", "subtype": "task_notification", "task_id": task, "tool_use_id": tool_use, "status": "completed",
+            "output_file": "", "summary": "Background command finished", "uuid": uuid()?, "session_id": self.session.session_id,
+        }))?;
+        self.unheard = Some(vec![]);
+        Ok(work::done("its background command ended unheard"))
     }
 
     /// Dies at once, without a word, as a crashed Claude does; its SDK host goes on.

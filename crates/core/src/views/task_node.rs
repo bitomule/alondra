@@ -16,7 +16,7 @@ pub(super) fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<
         Some(alondra_domain::TurnStop::Running) | None => {}
     }
     let working = match node {
-        Some(node) if node.through_sdk => node.sdk_running,
+        Some(node) if node.through_sdk => node.sdk_interruptible,
         _ => common::working(id, context),
     };
     working.then_some(())?;

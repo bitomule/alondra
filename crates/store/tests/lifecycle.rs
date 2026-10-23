@@ -3126,6 +3126,23 @@ fn an_interrupt_whose_turn_ended_is_revoked_instead_of_claimed() {
     assert_eq!(control_status(&fixture, "interrupt"), "revoked");
 }
 
+// The wait for background work to wake Claude is interrupted without a turn, and that interrupt
+// still reaches the host: before, the store revoked it as if nothing ran.
+#[test]
+fn an_interrupt_of_the_wait_for_background_work_is_claimed() {
+    let mut fixture = Fixture::new();
+    running_sdk(&mut fixture, &control_binding(every_control()));
+    fixture.runtime("task", RuntimeFact::WorkStarted { turn: TurnId::new("root").unwrap(), work: WorkId::new("child").unwrap() });
+    fixture.card("task", "unheard");
+    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+    fixture.runtime("task", RuntimeFact::WorkEnded { work: WorkId::new("child").unwrap(), continuation: ContinuationId::new("wake").unwrap() });
+    assert_eq!(fixture.transaction().load(&"task".into()).unwrap().activity(), ActivityView::Continuation);
+    let permit = request(&mut fixture, "interrupt", Control::Interrupt { turn: None }).unwrap().control_permits.pop().unwrap();
+    let mut tx = fixture.transaction();
+    assert!(tx.claim_control(permit).unwrap(), "the interrupt goes to the host");
+    assert_eq!(tx.commit().unwrap().control_attempts.len(), 1);
+}
+
 #[test]
 fn an_adopting_owner_reconciles_a_recorded_control_under_its_own_generation() {
     let mut fixture = Fixture::new();

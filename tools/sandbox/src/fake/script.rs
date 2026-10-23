@@ -90,6 +90,9 @@ pub enum Step {
     LeavePlanMode { points: usize },
     /// The turn Claude started by itself ends; what waited behind it then runs as a turn of its own.
     EndOwnTurn,
+    /// The command a turn left in the background ends, and Claude never wakes up with its
+    /// notification: it holds what it is told until it is interrupted, then takes it.
+    BackgroundEndsUnheard,
     /// Claude Code reports its account's usage as an answer's headers carry it: a
     /// `rate_limit_event` with this `rate_limit_info`.
     RateLimit { info: serde_json::Value },

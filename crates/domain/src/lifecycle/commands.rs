@@ -556,8 +556,8 @@ impl TaskLifecycle {
                 }
                 match (&kind, &execution.activity) {
                     (Control::Interrupt { turn: Some(turn) }, Activity::Turn { id, .. }) if turn == id => {}
-                    (Control::Interrupt { turn: None }, Activity::OwnWork { .. }) => {}
-                    (Control::Interrupt { .. }, Activity::Turn { .. } | Activity::OwnWork { .. }) => {
+                    (Control::Interrupt { turn: None }, Activity::OwnWork { .. } | Activity::Continuation(_) | Activity::InputPending(_)) => {}
+                    (Control::Interrupt { .. }, Activity::Turn { .. } | Activity::OwnWork { .. } | Activity::Continuation(_) | Activity::InputPending(_)) => {
                         return Err(Refusal::CorrelationMismatch);
                     }
                     (Control::Interrupt { .. }, _) => return Err(Refusal::InvalidState),

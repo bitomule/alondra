@@ -61,7 +61,7 @@ pub(super) fn pause_queued_action(task: &Task, context: &RenderContext<'_>) -> O
 /// Stops a working node and keeps it stopped until the user resumes it.
 pub(super) fn pause_node_action(agent: &AgentId, context: &RenderContext<'_>) -> Option<super::Action> {
     let working = match context.index.node(agent) {
-        Some(node) if node.through_sdk => node.sdk_running,
+        Some(node) if node.through_sdk => node.sdk_interruptible,
         _ => common::working(&agent.0, context),
     };
     working.then_some(())?;

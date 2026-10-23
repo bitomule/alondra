@@ -280,7 +280,9 @@ impl DomainState {
         Ok(t.id.clone())
     }
 
-    /// The user, or Alondra, stops the turn or the work the node's SDK task runs now.
+    /// The user, or Alondra, stops the turn or the work the node's SDK task runs now, or what
+    /// holds Claude while the task waits for its background work to wake it or for Claude to take
+    /// what it was handed.
     pub(super) fn interrupt_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
         if !matches!(actor, Actor::User { .. } | Actor::System) {
             return fail("forbidden", "Only the user or Alondra interrupts a node");
@@ -291,7 +293,8 @@ impl DomainState {
         let (task, lifecycle) = self.sdk_task_of(agent_id)?;
         let turn = match lifecycle.activity() {
             alondra_domain::ActivityView::Working => lifecycle.turn().map(|turn| turn.as_str().to_owned()),
-            alondra_domain::ActivityView::OwnWork => None,
+            alondra_domain::ActivityView::OwnWork | alondra_domain::ActivityView::Continuation => None,
+            alondra_domain::ActivityView::Starting if lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available) => None,
             _ => {
                 return Err(DomainError::new("conflict", format!("Nothing is running on node {agent_id} to interrupt"))
                     .because(Refusal::NothingToInterrupt));

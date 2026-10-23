@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f6bcbd2280846046b16eeb17bc2edb12fa2b7f26eb4c3356a0b92761ccb31d0a # shrinks to steps = [Cancel(2)]
+cc 08f01785ed8ab8911a5a6c5b5aea55aaf9af6ae2a5242609181f9dbd7e2a5d6c # shrinks to steps = [Cancel(2)]

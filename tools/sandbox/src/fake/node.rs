@@ -536,7 +536,7 @@ fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
             kill(fakes, &node.short, State::Dead)?;
             Ok(work::done("killed"))
         }
-        Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::RateLimit { .. } | Step::Emit { .. } => Err(anyhow!("only a native Claude of the Agent SDK takes this step")),
+        Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::BackgroundEndsUnheard | Step::RateLimit { .. } | Step::Emit { .. } => Err(anyhow!("only a native Claude of the Agent SDK takes this step")),
         _ => unreachable!("work::perform takes every other step"),
     }
 }

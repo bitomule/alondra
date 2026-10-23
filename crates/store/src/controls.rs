@@ -311,11 +311,12 @@ fn status_of(receipt: DispatchReceipt) -> &'static str {
         DispatchReceipt::Uncertain => "uncertain",
     }
 }
-/// Whether an interrupt still names what the execution runs: its root turn, or its own work.
+/// Whether an interrupt still names what the execution runs: its root turn, or, without a turn,
+/// its own work, the wait for that work to wake Claude, or input Claude has not taken.
 fn still_running(aggregate: &TaskLifecycle, turn: Option<&TurnId>) -> bool {
     match aggregate.activity() {
         ActivityView::Working => turn.is_some() && aggregate.turn() == turn,
-        ActivityView::OwnWork => turn.is_none(),
+        ActivityView::OwnWork | ActivityView::Continuation | ActivityView::Starting => turn.is_none(),
         _ => false,
     }
 }

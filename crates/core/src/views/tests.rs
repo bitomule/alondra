@@ -6909,6 +6909,53 @@ fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() 
     }
 }
 
+/// 22 October: «Parcel: widget de issues abiertos» ended its turn with a background command
+/// running; once the command ended, the task waited for Claude to wake up with its notification,
+/// which never came. Its screen offered only message, priority and cancel, and what it was told
+/// stayed queued. Waiting for that wake-up, or for Claude to take what it was handed, offers
+/// Interrupt and Pause on every client, as a turn does; a resting node offers neither.
+#[test]
+fn the_task_of_an_sdk_node_that_waits_for_its_background_work_or_its_input_offers_interrupt_and_pause() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let handed = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+    ];
+    let background = [handed.clone(), vec![
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+        LifecycleRecord::WorkStarted { turn: "turn".into(), work: "claude-task:snapshots".into() },
+        LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "turn-ended-t-1".into() },
+    ]].concat();
+    let waking = [background.clone(), vec![
+        LifecycleRecord::WorkEnded { work: "claude-task:snapshots".into(), continuation: "claude-notification:snapshots".into() },
+    ]].concat();
+    let resting = [waking.clone(), vec![
+        LifecycleRecord::TurnResumed { turn: "woken".into(), continuation: "claude-notification:snapshots".into() },
+        LifecycleRecord::TurnEnded { turn: "woken".into(), unheard_card: "turn-ended-t-1-woken".into() },
+    ]].concat();
+    let live = pacing_live(vec![], vec![], None);
+    for (name, journal, offered) in [
+        ("handed what it was told", handed, true),
+        ("running background work", background, true),
+        ("waiting for its background work to wake it", waking, true),
+        ("resting", resting, false),
+    ] {
+        let mut state = fixture();
+        node_in(&mut state, NodePhase::Working);
+        state.lifecycle_journal.insert("t-1".into(), journal);
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let ids = action_ids(&render(&state, &live, client, Lang::Es, "task:t-1", ""));
+            for prefix in ["interrupt:a-1", "pause:a-1"] {
+                assert_eq!(ids.iter().any(|id| id.starts_with(prefix)), offered, "{client:?}: a node {name} offers {prefix} only while something runs: {ids:?}");
+            }
+        }
+    }
+}
+
 // The phase `claude --bg` reports never moves for a node that runs through the SDK: the task reads its
 // state from its task and execution, never «Starting» while its turn runs.
 fn mcp_card(client: Client, lang: Lang) -> (DomainState, Card) {

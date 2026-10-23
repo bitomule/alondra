@@ -1218,6 +1218,36 @@ fn interrupting_the_work_a_task_runs_on_its_own_names_no_turn() {
     assert_aggregate_rules(&s);
 }
 
+// 22 October: a task whose background command ended waited for Claude to wake up with its
+// notification, which never came, and nothing could stop it. That wait, and input Claude was handed
+// and has not taken, are interrupted without naming a turn.
+#[test]
+fn interrupting_a_task_that_waits_for_its_background_work_or_its_input_names_no_turn() {
+    let mut waking = world();
+    sdk_turn(&mut waking, "t", "a");
+    must(&mut waking, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:bash".into() },
+    ] });
+    must(&mut waking, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(&mut waking, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:bash".into(), continuation: "claude-notification:bash".into() },
+    ] });
+    let mut handed = world();
+    task(&mut handed, "t", None);
+    must(&mut handed, Actor::System, Command::AdmitExecution {
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation-t".into(), instance: "instance-t".into(), host: "sdk-host".into(), model: None,
+        account: None, leaves_limit: None,
+    });
+    must(&mut handed, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] });
+    for (mut s, activity) in [(waking, alondra_domain::ActivityView::Continuation), (handed, alondra_domain::ActivityView::Starting)] {
+        assert_eq!(s.lifecycle_of(&TaskId::from("t")).unwrap().activity(), activity);
+        must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
+        assert!(matches!(last(&s, "t"), LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: None }, .. }), "{activity:?}");
+        assert_eq!(s.lifecycle_of(&TaskId::from("t")).unwrap().activity(), activity, "the interrupt reaches Claude; what it ends comes back as Claude's facts");
+        assert_aggregate_rules(&s);
+    }
+}
+
 #[test]
 fn only_alondra_sets_the_model_and_mode_or_reads_mcp_status_of_an_sdk_task() {
     let mut s = world();
