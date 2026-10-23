@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v86b0b2d830fe255a",
+  "version": "vd63342fca3140793",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
@@ -83,6 +83,60 @@
       "id": "settings",
       "collapsed": false,
       "items": [
+        {
+          "type": "row",
+          "id": "merge_method",
+          "icon": "merge",
+          "title": "Merge de las PR",
+          "subtitle": "Squash and merge · si el repositorio lo permite",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "set_merge_method:merge_method@6",
+              "label": "Merge de las PR",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "squash",
+                  "label": "Squash and merge · ahora",
+                  "description": "Un solo commit en la rama base",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge",
+                  "description": "Conserva todos los commits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "rebase",
+                  "label": "Rebase and merge",
+                  "description": "Los commits se reaplican sobre la rama base",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Modo de merge cambiado",
+              "resolves_card": false
+            }
+          ]
+        },
         {
           "type": "row",
           "id": "node_limit",

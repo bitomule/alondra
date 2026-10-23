@@ -3038,9 +3038,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordAccountUsage { .. } => 96,
         Command::CompactEndedTasks { .. } => 97,
         Command::ClearCompleted { .. } => 98,
+        Command::SetMergeMethod { .. } => 99,
     }
 }
-const COMMAND_KINDS: usize = 99;
+const COMMAND_KINDS: usize = 100;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3191,6 +3192,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CompactConversation { task_id: ids.task.into() }, false),
         (Command::CompactEndedTasks { task_ids: vec![ids.task.into()] }, false),
         (Command::ClearCompleted { seen: 0 }, false),
+        (Command::SetMergeMethod { method: MergeMethod::Rebase }, true),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
@@ -4413,6 +4415,8 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::ClearCompleted { seen: 0 },
         Command::ClearCompleted { seen: cancelled.revision },
         Command::ClearCompleted { seen: MAX_REVISION },
+        Command::SetMergeMethod { method: MergeMethod::Merge },
+        Command::SetMergeMethod { method: MergeMethod::Squash },
         Command::InterruptTurn { agent_id: "a".into() },
         Command::InterruptTurn { agent_id: "s".into() },
         Command::InterruptTurn { agent_id: "missing".into() },
@@ -4614,4 +4618,46 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     assert_eq!((restored.account_usage, restored.account_reserve), (s.account_usage.clone(), Share::of(0.8)), "the readings survive a restart");
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![account("default")], reserve: Share::of(0.8) }).unwrap();
     assert_eq!(s.account_usage.iter().map(|u| u.account.as_str()).collect::<Vec<_>>(), ["default"], "a removed account's usage goes with it");
+}
+#[test]
+fn a_pr_merges_by_the_preferred_method_or_the_first_its_repository_allows() {
+    use MergeMethod::{Merge, Rebase, Squash};
+    assert_eq!(MergeMethod::default(), Squash);
+    assert_eq!(MergeMethod::for_pr(Merge, &[Squash, Merge, Rebase]), Some(Merge));
+    assert_eq!(MergeMethod::for_pr(Merge, &[Rebase, Squash]), Some(Squash));
+    assert_eq!(MergeMethod::for_pr(Squash, &[Rebase, Merge]), Some(Merge));
+    assert_eq!(MergeMethod::for_pr(Squash, &[Rebase]), Some(Rebase));
+    assert_eq!(MergeMethod::for_pr(Rebase, &[]), None, "no button until GitHub says how the repository merges");
+}
+#[test]
+fn accepting_a_pr_authorizes_its_merge_by_the_method_set_in_settings() {
+    use MergeMethod::{Merge, Rebase, Squash};
+    for (preferred, allowed, expected) in [
+        (Rebase, vec![Squash, Merge, Rebase], Rebase),
+        (Merge, vec![Squash, Rebase], Squash),
+        (Squash, vec![Merge, Rebase], Merge),
+    ] {
+        let mut s = fixture();
+        exec(&mut s, user(), Command::SetMergeMethod { method: preferred }).unwrap();
+        assert_eq!(s.merge_method, preferred);
+        exec(&mut s, agent(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
+            repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(), allowed_methods: allowed.clone() }).unwrap();
+        present(&mut s, "d", pr_targets());
+        exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+        let methods: Vec<MergeMethod> = s.merge_authorizations.values().map(|a| a.method).collect();
+        assert_eq!(methods, vec![expected], "preferred {preferred:?}, the repository allows {allowed:?}");
+    }
+}
+#[test]
+fn only_the_user_sets_the_merge_method_and_merges_already_authorized_keep_theirs() {
+    let mut s = fixture();
+    for actor in [agent(), orchestrator(), Actor::System] {
+        reject_unchanged(&mut s, actor, Command::SetMergeMethod { method: MergeMethod::Rebase }, "forbidden");
+    }
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    exec(&mut s, user(), Command::SetMergeMethod { method: MergeMethod::Rebase }).unwrap();
+    assert_eq!(s.merge_method, MergeMethod::Rebase);
+    assert_eq!(s.merge_authorizations[&AuthorizationId::from("auth")].method, MergeMethod::Squash);
 }

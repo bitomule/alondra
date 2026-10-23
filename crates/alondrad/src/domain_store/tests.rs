@@ -841,6 +841,20 @@ fn a_requests_auto_merge_choice_survives_restart() {
 }
 
 #[test]
+fn the_merge_method_set_in_settings_survives_restart_and_a_database_without_one_merges_with_squash() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().merge_method, MergeMethod::Squash);
+    execute(&mut store, &user(), "rebase", Command::SetMergeMethod { method: MergeMethod::Rebase });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().merge_method, MergeMethod::Rebase);
+    execute(&mut store, &user(), "merge", Command::SetMergeMethod { method: MergeMethod::Merge });
+    drop(store);
+    assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap().merge_method, MergeMethod::Merge);
+}
+
+#[test]
 fn restart_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

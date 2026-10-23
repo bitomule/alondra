@@ -1397,7 +1397,7 @@ impl App {
         if let Some(view) = self.rules.as_ref().and_then(|rules| rules.view.as_ref()) {
             open.insert(view.key.clone(), view.version.clone());
         }
-        if let Some(view) = self.mcp_servers.as_ref().and_then(|screen| screen.view.as_ref()) {
+        for view in self.mcp_servers.iter().flat_map(|screen| [&screen.view, &screen.general]).flatten() {
             open.insert(view.key.clone(), view.version.clone());
         }
     }
@@ -1928,6 +1928,9 @@ impl App {
                 }
                 if key == mcp_servers::VIEW {
                     self.mcp_servers_loaded(Ok(&view));
+                }
+                if key == mcp_servers::GENERAL {
+                    self.general_loaded(&view);
                 }
                 if view.view == alondra_core::views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {

@@ -1457,6 +1457,10 @@ fn map_action(
             };
             Some((Command::SetPriority { task_id: task.id.clone(), priority }, stamp("Priority changed", "Prioridad cambiada")))
         }
+        Verb::SetMergeMethod => {
+            let method = MergeMethod::parse(request.option_id.as_deref()?)?;
+            Some((Command::SetMergeMethod { method }, stamp("Merge method changed", "Modo de merge cambiado")))
+        }
         Verb::Cancel => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
             Some((Command::CancelTask { task_id: task.id.clone() }, stamp("Cancelled", "Cancelada")))
@@ -1690,6 +1694,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::SetLimit => Outcome::done(say("Limit changed: it counts from now on.", "Límite cambiado: cuenta desde ahora.")),
         Verb::RemoveRule => Outcome::done(say("Removed: the next call of that command asks again.", "Quitado: la próxima llamada de ese comando vuelve a preguntar.")),
         Verb::SetPriority => Outcome::done(say("Priority changed. The queue follows it now.", "Prioridad cambiada. La cola ya la sigue.")),
+        Verb::SetMergeMethod => Outcome::done(say("Merge method changed: PRs merge this way from now on.",
+            "Modo de merge cambiado: las PR se mergean así desde ahora.")),
         _ => Outcome::done(stamp.to_owned()),
     }
 }
@@ -2158,6 +2164,15 @@ mod tests {
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let task = &domain.state().unwrap().tasks[&TaskId("task-a".into())];
         assert_eq!(task.priority, alondra_core::domain::TaskPriority::High);
+
+        let state = domain.state().unwrap();
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "rebase", "es"), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(reply["result"]["title"], "Modo de merge cambiado: las PR se mergean así desde ahora.", "{reply}");
+        assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "octopus", "en"), None, || Ok(())).await.unwrap();
+        assert_ne!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
     }
 
     #[tokio::test]

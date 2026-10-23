@@ -366,12 +366,35 @@ pub enum PrState {
     Closed,
     Merged,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeMethod {
     Merge,
+    #[default]
     Squash,
     Rebase,
+}
+impl MergeMethod {
+    /// The order Alondra falls back in when a repository does not allow the preferred method.
+    pub const ALL: [MergeMethod; 3] = [MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase];
+    /// The method a PR merges by: the preferred one when its repository allows it, else the first
+    /// it allows in [`MergeMethod::ALL`]'s order; none while GitHub has not said what it allows.
+    pub fn for_pr(preferred: MergeMethod, allowed: &[MergeMethod]) -> Option<MergeMethod> {
+        std::iter::once(preferred).chain(Self::ALL).find(|method| allowed.contains(method))
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            MergeMethod::Squash => "squash",
+            MergeMethod::Merge => "merge",
+            MergeMethod::Rebase => "rebase",
+        }
+    }
+    pub fn parse(id: &str) -> Option<MergeMethod> {
+        Self::ALL.into_iter().find(|method| method.id() == id)
+    }
+    pub fn is_default(&self) -> bool {
+        *self == MergeMethod::default()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {
@@ -1108,6 +1131,10 @@ pub struct DomainState {
     /// What each account last said of its usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_usage: Vec<crate::usage::AccountUsage>,
+    /// How this Mac merges PRs when the user presses merge or accepts a result, if the PR's
+    /// repository allows it (`MergeMethod::for_pr`).
+    #[serde(default, skip_serializing_if = "MergeMethod::is_default")]
+    pub merge_method: MergeMethod,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1139,6 +1166,7 @@ impl DomainState {
             accounts: Vec::new(),
             account_reserve: crate::usage::default_reserve(),
             account_usage: Vec::new(),
+            merge_method: MergeMethod::default(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

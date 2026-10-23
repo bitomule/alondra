@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "vd80f817d41bf8ac1",
+  "version": "v0aca4a6d9fbc2ef5",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -96,6 +96,21 @@
           },
           "more": [
             {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Merge with a merge commit",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "merge",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merging…",
+              "resolves_card": true
+            },
+            {
               "id": "close_unmerged:hf-weekly-2026-09-30@1",
               "label": "Close without merging",
               "style": "destructive",
@@ -151,30 +166,11 @@
           "actions": [
             {
               "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-              "label": "Merge",
+              "label": "Squash and merge",
               "style": "primary",
               "role": "advance",
-              "presentation": "menu",
-              "options": [
-                {
-                  "id": "squash",
-                  "label": "Squash and merge",
-                  "description": "One commit on main",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "merge",
-                  "label": "Merge commit",
-                  "description": "Keeps every commit",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
+              "option_id": "squash",
+              "presentation": "button",
               "input": {
                 "kind": "none"
               },

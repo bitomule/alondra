@@ -4007,7 +4007,7 @@ fn string_leaves(value: &serde_json::Value, path: &str, out: &mut Vec<(String, S
 #[test]
 fn every_builder_string_has_spanish() {
     const NAMES_AND_DATA: &[&str] = &[
-        "Squash and merge", "Merge commit", "Rebase and merge", "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
+        "Squash and merge", "Merge commit", "Rebase and merge", "Merge", "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
         "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
@@ -6256,7 +6256,10 @@ fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_fleet() {
 
     let machine = render(&state, &live, Client::Ios, Lang::Es, "machine", "");
     let settings = machine.sections.iter().find(|section| section.id == "settings").expect("this Mac's settings");
-    let Item::Row(row) = &settings.items[0] else { panic!("{settings:?}") };
+    let row = settings.items.iter().find_map(|item| match item {
+        Item::Row(row) if row.id == "node_limit" => Some(row),
+        _ => None,
+    }).unwrap_or_else(|| panic!("{settings:?}"));
     assert_eq!((row.title.as_str(), row.subtitle.as_deref()), ("Nodos a la vez", Some("Límite: automático (6)")));
     let limit = find_action(&machine, "set_limit:limit").expect("the limit is changed from this Mac's settings");
     let labels: Vec<&str> = limit.options.iter().map(|option| option.label.as_str()).collect();
@@ -6681,8 +6684,8 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     ]), "a notice leaves when read; a reply to it is a message to its node");
     assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
         ("merge:hf-weekly-2026-09-30", true), ("changes:github.com/example/repo#12", true),
-        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", false),
-    ]), "merging, asking for changes and closing settle the delivery; the link opens GitHub; with no node to act on it, a reply leaves it in place");
+        ("merge:hf-weekly-2026-09-30", true), ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", false),
+    ]), "merging (either way), asking for changes and closing settle the delivery; the link opens GitHub; with no node to act on it, a reply leaves it in place");
 
     let mut group = group_state(&[0]);
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[
@@ -7492,4 +7495,76 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
 
     let empty = render(&DomainState::new("test-epoch"), &LiveSnapshot::default(), Client::Tui, Lang::En, "mcp_servers", "");
     assert_eq!(empty.empty.map(|notice| notice.text), Some("No task uses an MCP server now".into()));
+}
+
+#[test]
+fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() {
+    use crate::domain::{Actor, Command, MergeMethod};
+    let live = LiveSnapshot::default();
+    let mut state = presented_pr();
+    state.pull_requests.get_mut(&"pr".into()).unwrap().allowed_methods = vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase];
+    let merge_of = |state: &DomainState, client, lang| {
+        let view = render(state, &live, client, lang, "card:d", "");
+        let card = card_of(&view).clone();
+        let merge = card.actions.iter().find(|action| action.id.starts_with("merge:")).cloned().expect("the card offers the merge");
+        let others: Vec<(String, Option<String>)> = card.more.iter().filter(|action| action.id.starts_with("merge:"))
+            .map(|action| (action.label.clone(), action.option_id.clone())).collect();
+        (merge, others)
+    };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (merge, others) = merge_of(&state, client, Lang::En);
+        assert_eq!((merge.label.as_str(), merge.option_id.as_deref()), ("Squash and merge", Some("squash")), "{client:?}");
+        assert_eq!(merge.presentation, Presentation::Button, "{client:?}: no menu");
+        assert!(merge.options.is_empty() && merge.confirm.is_none() && merge.description.is_none(), "{client:?}: {merge:?}");
+        assert_eq!(others, [("Merge with a merge commit".to_owned(), Some("merge".to_owned())), ("Merge with rebase".to_owned(), Some("rebase".to_owned()))],
+            "{client:?}: the other ways are under More");
+    }
+    for (method, english, spanish) in [
+        (MergeMethod::Merge, "Merge", "Hacer merge"),
+        (MergeMethod::Rebase, "Rebase and merge", "Rebase and merge"),
+        (MergeMethod::Squash, "Squash and merge", "Squash and merge"),
+    ] {
+        execute(&mut state, Actor::User { user_id: "u".into() }, Command::SetMergeMethod { method });
+        let (merge, _) = merge_of(&state, Client::Tui, Lang::En);
+        assert_eq!((merge.label.as_str(), merge.option_id.as_deref()), (english, Some(method.id())), "the open card follows the setting");
+        assert_eq!(merge_of(&state, Client::Ios, Lang::Es).0.label, spanish);
+    }
+    state.pull_requests.get_mut(&"pr".into()).unwrap().allowed_methods = vec![MergeMethod::Merge, MergeMethod::Rebase];
+    let (merge, others) = merge_of(&state, Client::Ios, Lang::Es);
+    assert_eq!((merge.label.as_str(), merge.option_id.as_deref()), ("Hacer merge", Some("merge")));
+    assert_eq!(merge.description.as_deref(), Some("Este repositorio no permite squash: se hará con merge commit"));
+    assert_eq!(others, [("Hacer merge con rebase".to_owned(), Some("rebase".to_owned()))]);
+    let english = merge_of(&state, Client::Mac, Lang::En).0;
+    assert_eq!(english.description.as_deref(), Some("This repository does not allow squash: it merges with a merge commit"));
+}
+
+#[test]
+fn the_merge_method_is_picked_in_this_macs_settings_above_the_node_limit() {
+    use crate::domain::MergeMethod;
+    let mut state = fixture();
+    let machine = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "machine", "");
+    let settings = machine.sections.iter().find(|section| section.id == "settings").expect("this Mac's settings");
+    let Item::Row(row) = &settings.items[0] else { panic!("{settings:?}") };
+    assert_eq!((row.id.as_str(), row.title.as_str(), row.subtitle.as_deref()),
+        ("merge_method", "Merge de las PR", Some("Squash and merge · si el repositorio lo permite")));
+    let pick = find_action(&machine, "set_merge_method:").expect("the merge method is changed from this Mac's settings");
+    assert_eq!(pick.presentation, Presentation::Menu);
+    let options: Vec<(&str, &str, Option<&str>)> = pick.options.iter()
+        .map(|option| (option.id.as_str(), option.label.as_str(), option.description.as_deref())).collect();
+    assert_eq!(options, [
+        ("squash", "Squash and merge · ahora", Some("Un solo commit en la rama base")),
+        ("merge", "Merge", Some("Conserva todos los commits")),
+        ("rebase", "Rebase and merge", Some("Los commits se reaplican sobre la rama base")),
+    ]);
+    state.merge_method = MergeMethod::Rebase;
+    let live = pacing_live(vec![], vec![], None);
+    let machine = render(&state, &live, Client::Tui, Lang::En, "machine", "");
+    let settings = machine.sections.iter().find(|section| section.id == "settings").unwrap();
+    let rows: Vec<(&str, Option<&str>)> = settings.items.iter().filter_map(|item| match item {
+        Item::Row(row) => Some((row.id.as_str(), row.subtitle.as_deref())),
+        _ => None,
+    }).collect();
+    assert_eq!(rows, [("merge_method", Some("Rebase and merge · if the repository allows it")), ("node_limit", Some("Limit: automatic (6)"))]);
+    let pick = find_action(&machine, "set_merge_method:").unwrap();
+    assert_eq!(pick.options[2].label, "Rebase and merge · now");
 }

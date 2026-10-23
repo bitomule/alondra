@@ -12,12 +12,9 @@ const HEIGHT: u16 = 34;
 const CARD: &str = "hf-weekly-2026-09-30";
 
 /// The card's own words as the server writes them in Spanish (`views/card.rs`).
-const SPANISH: [(&str, &str); 10] = [
-    ("Merge", "Hacer merge"),
+const SPANISH: [(&str, &str); 7] = [
     ("Squash and merge", "Squash and merge"),
-    ("One commit on main", "Un solo commit en main"),
-    ("Merge commit", "Merge commit"),
-    ("Keeps every commit", "Conserva todos los commits"),
+    ("Merge with a merge commit", "Hacer merge con merge commit"),
     ("Merging…", "Haciendo merge…"),
     ("Request changes", "Pedir cambios"),
     ("Close without merging", "Cerrar sin hacer merge"),
@@ -58,14 +55,8 @@ fn the_card_arrives(app: &mut App, lang: crate::i18n::Lang) {
     app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
 }
 
-fn merge_pressed(lang: crate::i18n::Lang) -> App {
-    let mut app = app_with_the_pr_card(lang);
-    app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
-    app
-}
-
 fn merge_sent(lang: crate::i18n::Lang) -> (App, serde_json::Value) {
-    let mut app = merge_pressed(lang);
+    let mut app = app_with_the_pr_card(lang);
     app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
     let request = app.posted.borrow().last().unwrap().1.clone();
     (app, request)
@@ -113,7 +104,7 @@ fn tui_shots() {
             ),
         );
         let shots = [
-            ("1-merge-method", merge_pressed(lang)),
+            ("1-pr-card", app_with_the_pr_card(lang)),
             ("2-merging", merge_sent(lang).0),
             ("3-refused", answered(lang, Outcome::refused(&Refusal::UpstreamPrOpen { number: 11 }, view_lang))),
             ("4-changed", answered(lang, changed)),

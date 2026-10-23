@@ -888,6 +888,10 @@ pub(super) fn save_changes(
         exec(c, "INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts,reserve=excluded.reserve",
             params![serde_json::to_string(&after.accounts)?, after.account_reserve.parts()])?;
     }
+    if before.merge_method != after.merge_method {
+        exec(c, "INSERT INTO merge_method(singleton,method) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET method=excluded.method",
+            params![after.merge_method.id()])?;
+    }
     if before.account_usage != after.account_usage {
         let key = |usage: &alondra_core::usage::AccountUsage| (usage.provider.as_str(), usage.account.as_str().to_owned());
         for gone in before.account_usage.iter().filter(|old| !after.account_usage.iter().any(|new| key(new) == key(old))) {
@@ -1362,6 +1366,10 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     if let Some((accounts, reserve)) = accounts {
         state.accounts = serde_json::from_str(&accounts)?;
         state.account_reserve = alondra_core::usage::Share::from_parts(reserve).context("an account reserve above 10000")?;
+    }
+    let stored: bool = c.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='merge_method'", [], |r| r.get::<_, i64>(0))? == 1;
+    if stored && let Some(method) = c.query_row("SELECT method FROM merge_method WHERE singleton=1", [], |r| r.get::<_, String>(0)).optional()? {
+        state.merge_method = MergeMethod::parse(&method).with_context(|| format!("an unknown merge method {method:?}"))?;
     }
     let mut usage = c.prepare("SELECT usage FROM account_usage ORDER BY rowid")?;
     for row in usage.query_map([], |r| r.get::<_, String>(0))? {

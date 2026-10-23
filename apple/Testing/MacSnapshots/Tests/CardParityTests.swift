@@ -52,12 +52,14 @@ final class CardParityTests: XCTestCase {
         let red = card.filter { $0.paintedRole == .risk }
         XCTAssertEqual(red.map(\.label), ["Close without merging"])
         XCTAssertEqual(card.filter { $0.confirm != nil }.map(\.label), ["Close without merging"])
-        XCTAssertEqual(card.first { $0.label == "Merge" }?.paintedRole, .advance)
+        XCTAssertEqual(card.first { $0.label == "Squash and merge" }?.paintedRole, .advance)
     }
 
-    func testAMenuOffersTwoOrMoreDescribedMethods() throws {
-        let merge = try XCTUnwrap(try mac(try document("card-pr-mac")).first { $0.presentation == .menu })
-        XCTAssertGreaterThanOrEqual(merge.options.count, 2)
-        XCTAssertTrue(merge.options.allSatisfy { $0.description?.isEmpty == false })
+    func testMergingIsOnePressWithTheMethodTheButtonSays() throws {
+        let merge = try XCTUnwrap(try mac(try document("card-pr-mac")).first { $0.label == "Squash and merge" })
+        XCTAssertEqual(merge.optionId, "squash")
+        XCTAssertNotEqual(merge.presentation, .menu)
+        XCTAssertTrue(merge.options.isEmpty)
+        XCTAssertNil(merge.confirm)
     }
 }

@@ -2198,6 +2198,8 @@ impl DomainState {
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
             // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
             Command::ClearCompleted { .. } => Some(0),
+            // A setting of this Mac's, not of anything the client read: any snapshot may change it.
+            Command::SetMergeMethod { .. } => Some(0),
             Command::DeleteSchedule {
                 expected_schedule_revision: Some(_),
                 ..
@@ -4490,6 +4492,10 @@ impl DomainState {
                 for id in requests {
                     self.requests.get_mut(&id).unwrap().cleared = true;
                 }
+            }
+            Command::SetMergeMethod { method } => {
+                user(actor)?;
+                self.merge_method = *method;
             }
         }
         Ok(())

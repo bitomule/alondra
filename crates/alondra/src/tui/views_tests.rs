@@ -378,6 +378,39 @@ fn mcp_servers_open() -> App {
 }
 
 #[test]
+fn settings_open_on_general_where_the_merge_method_set_in_settings_is_picked_with_one_post() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = mcp_servers_open();
+    let machine: ViewDocument = serde_json::from_value(super::parity::view_fixture("machine-settings-ios.json")).unwrap();
+    app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
+    let screen = drawn(&mut app, 140, 60);
+    for shown in ["GENERAL", "PR merges", "Squash and merge · if the repository allows it", "1 Change…", "Nodes at once", "MCP SERVERS", "linear  Needs sign-in"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    assert!(screen.find("PR merges") < screen.find("linear"), "General comes first: {screen}");
+    assert_eq!(app.mcp_servers.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("merge_method"));
+
+    press(&mut app, KeyCode::Enter);
+    assert!(app.posted.borrow().is_empty(), "Enter opens the menu");
+    let menu = drawn(&mut app, 140, 60);
+    for shown in [" 1  Squash and merge · now", "One commit on the base branch", " 2  Merge", " 3  Rebase and merge", "1-3 pick"] {
+        assert!(menu.contains(shown), "{shown}: {menu}");
+    }
+    press(&mut app, KeyCode::Esc);
+    assert!(app.card_menu.is_none() && app.mcp_servers.is_some(), "Esc closes the menu only");
+    assert!(app.posted.borrow().is_empty());
+
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('3'));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "/actions");
+    assert!(sent[0].1["action_id"].as_str().is_some_and(|id| id.starts_with("set_merge_method:")), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "rebase");
+    assert!(app.mcp_servers.is_some(), "Settings stay open");
+}
+
+#[test]
 fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one_s_buttons() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = mcp_servers_open();

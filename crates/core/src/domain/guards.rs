@@ -31,6 +31,7 @@ impl DomainState {
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
             Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
+            Command::SetMergeMethod { .. } => user(actor).map(drop),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
             Command::ForceStopTurn { agent_id } => self.force_stop_guard(actor, agent_id).map(drop),
             Command::SetModel { task_id, model } => {
@@ -153,7 +154,7 @@ impl DomainState {
             if already_merged || locally_authorized {
                 continue;
             }
-            let Some(method) = pr.allowed_methods.first().copied() else {
+            let Some(method) = MergeMethod::for_pr(self.merge_method, &pr.allowed_methods) else {
                 return fail("invalid_input", "Merge methods required");
             };
             merges.push((pr_id, head.as_str(), method));

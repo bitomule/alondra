@@ -128,6 +128,25 @@ async fn the_users_merge_button_is_merged_with_the_method_they_chose() {
 }
 
 #[tokio::test]
+async fn an_accepted_delivery_is_merged_with_the_method_set_in_settings() {
+    let (_home, domain, github) = presented("accept-method", false);
+    command(&domain, user(), "method", Command::SetMergeMethod { method: MergeMethod::Merge });
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)]);
+}
+
+#[tokio::test]
+async fn auto_merge_uses_the_method_set_in_settings_or_the_first_the_repository_allows() {
+    for (preferred, merged) in [(MergeMethod::Merge, MergeMethod::Merge), (MergeMethod::Rebase, MergeMethod::Squash)] {
+        let (_home, domain, github) = presented("auto-method", true);
+        command(&domain, user(), "method", Command::SetMergeMethod { method: preferred });
+        now().merge_due(&domain, &github).await.unwrap();
+        assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), merged)], "preferred {preferred:?}, allowed squash and merge");
+    }
+}
+
+#[tokio::test]
 async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     let (_home, domain, github) = presented("auto", true);
     github.open(7, HEAD, Checks::Pending);

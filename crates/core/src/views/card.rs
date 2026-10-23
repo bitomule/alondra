@@ -14,7 +14,7 @@ use super::{
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip, fit_title,
+    InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip, fit_title,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -573,14 +573,16 @@ fn claudes_worded_options(interaction: &Interaction, domain: &DomainState) -> Ve
 
 /// How a card's button reads is settled here, once, for every client: red only when its style is
 /// destructive, and words under it only for «Allow always», which says exactly what stops asking,
-/// and for the options of Claude's question that Claude explained.
+/// for the options of Claude's question that Claude explained, and for a merge whose repository
+/// does not allow the method set in Settings.
 fn painted(mut action: Action, worded: &[String]) -> Action {
     action.role = Some(match (action.style, action.role) {
         (Style::Destructive, _) => Role::Risk,
         (_, Some(Role::Advance)) | (Style::Primary, _) => Role::Advance,
         _ => Role::Neutral,
     });
-    if !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || worded.iter().any(|worded| worded == id)) {
+    let merge = ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Merge);
+    if !merge && !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || worded.iter().any(|worded| worded == id)) {
         action.description = None;
     }
     action
@@ -1487,8 +1489,11 @@ fn delivery_actions(
         // The task shows what it waits for; the card has nothing to press until that is over.
     } else if let Some(available) = find("authorize_merge").filter(|available| available.enabled) {
         let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
-        if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head) {
-            visible.push(merge_action(id.to_string(), pr, context));
+        if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head)
+            && let Some((merge, others)) = super::merge_method::pr_actions(id.to_string(), pr, context)
+        {
+            visible.push(merge);
+            more.extend(others);
         }
     } else if find("authorize_merge").is_none() {
         visible.extend(accept(Role::Advance, accept_label));
@@ -1505,51 +1510,6 @@ fn delivery_actions(
         more.extend(close_unmerged_action(pr, &interaction.id.0, interaction.revision, context));
     }
     (visible, more)
-}
-
-fn method_text(method: MergeMethod, lang: Lang) -> (&'static str, &'static str) {
-    match method {
-        MergeMethod::Squash => (t!(lang, "Squash and merge", "Squash and merge"), t!(lang, "squash", "squash")),
-        MergeMethod::Merge => (t!(lang, "Merge commit", "Merge commit"), t!(lang, "a merge commit", "un merge commit")),
-        MergeMethod::Rebase => (t!(lang, "Rebase and merge", "Rebase and merge"), t!(lang, "rebase", "rebase")),
-    }
-}
-
-fn method_id(method: MergeMethod) -> &'static str {
-    match method {
-        MergeMethod::Squash => "squash",
-        MergeMethod::Merge => "merge",
-        MergeMethod::Rebase => "rebase",
-    }
-}
-
-/// Merge the PR with a way its repository admits: a plain button when only one is, a menu of
-/// described ways when there are several. The server words every label; clients paint them.
-fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Action {
-    let lang = context.lang;
-    let mut merge = button(id, t!(lang, "Merge", "Hacer merge"), Role::Advance);
-    merge.stamp = Some(t!(lang, "Merging…", "Haciendo merge…").into());
-    if let [only] = pr.allowed_methods.as_slice() {
-        merge.label = tf!(lang, "Merge PR #{number}", "Hacer merge de la PR #{number}", number = pr.number);
-        merge.option_id = Some(method_id(*only).into());
-        merge.description = Some(tf!(lang, "{method}: the only way this repository allows",
-            "{method}: la única forma que permite este repositorio", method = method_text(*only, lang).0));
-        return merge;
-    }
-    merge.presentation = Presentation::Menu;
-    merge.options = pr.allowed_methods.iter().enumerate().map(|(index, method)| ActionOption {
-        id: method_id(*method).into(),
-        label: method_text(*method, lang).0.into(),
-        description: Some(match method {
-            MergeMethod::Squash => tf!(lang, "One commit on {base}", "Un solo commit en {base}", base = pr.base),
-            MergeMethod::Merge => t!(lang, "Keeps every commit", "Conserva todos los commits").into(),
-            MergeMethod::Rebase => tf!(lang, "Commits replayed on {base}", "Los commits se reaplican sobre {base}", base = pr.base),
-        }),
-        style: Style::Secondary,
-        input: Input::None,
-        key: (context.client != Client::Ios && index < 9).then(|| (index + 1).to_string()),
-    }).collect();
-    merge
 }
 
 /// The way out when the user does not want the PR: close it on GitHub and cancel the task.

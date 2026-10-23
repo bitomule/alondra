@@ -256,9 +256,9 @@ pub(crate) fn due(state: &DomainState) -> Vec<Due> {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
                     && matches!(a.attempt, MergeAttemptState::Unclaimed | MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             });
-            let (method, authorization) = match (authorization, pr.allowed_methods.first()) {
+            let (method, authorization) = match (authorization, MergeMethod::for_pr(state.merge_method, &pr.allowed_methods)) {
                 (Some(a), _) => (a.method, Some(a.id.clone())),
-                (None, Some(method)) if auto => (*method, None),
+                (None, Some(method)) if auto => (method, None),
                 _ => continue,
             };
             due.push(Due { presentation: p.id.clone(), targets: targets.clone(), pr: pr.clone(), head: head.clone(), method, authorization });

@@ -418,12 +418,14 @@ impl App {
         if screen.rows().len() > 1 {
             t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
         }
-        for (index, action) in screen.selected().map(super::mcp_servers::actions).unwrap_or_default().into_iter().enumerate() {
-            let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
-            if index == 0 {
-                keys.push(plain(KeyCode::Enter));
+        if let Some(row) = screen.selected() {
+            for (index, action) in super::mcp_servers::actions(row).into_iter().enumerate() {
+                let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
+                if index == 0 {
+                    keys.push(plain(KeyCode::Enter));
+                }
+                t.add(keys, &(index + 1).to_string(), super::mcp_servers::button_label(row, action).to_owned(), Act::McpAction(index));
             }
-            t.add(keys, &(index + 1).to_string(), action.label.clone(), Act::McpAction(index));
         }
         t.add(vec![plain(KeyCode::Esc), char(',')], "Esc", tr!("back", "volver"), Act::CloseMcpServers);
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);

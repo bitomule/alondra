@@ -86,6 +86,7 @@ pub struct ReadIndex {
     mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
     account_reserve: crate::usage::Share,
+    merge_method: super::MergeMethod,
     account_usage: Vec<crate::usage::AccountUsage>,
 }
 
@@ -226,6 +227,10 @@ impl ReadIndex {
     pub fn mcp_wait_of_task(&self, task: &TaskId) -> Option<&McpWaiting> {
         self.mcp_waiting.iter().find(|waiting| waiting.task == *task)
     }
+    /// How this Mac merges PRs, when their repository allows it.
+    pub fn merge_method(&self) -> super::MergeMethod {
+        self.merge_method
+    }
     /// The provider accounts in the user's order, each with its state and plan.
     pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
         &self.accounts
@@ -351,6 +356,7 @@ impl<'a> Builder<'a> {
         index.mcp_nodes = state.mcp_nodes();
         index.accounts = state.accounts.clone();
         index.account_reserve = state.account_reserve;
+        index.merge_method = state.merge_method;
         index.account_usage = state.account_usage.clone();
         self.cards(&mut index);
         self.blockers();
@@ -709,6 +715,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
     assert_eq!(index.account_usage(), state.account_usage.as_slice(), "the accounts' usage");
     assert_eq!(index.account_reserve, state.account_reserve, "the accounts' reserve");
+    assert_eq!(index.merge_method, state.merge_method, "the merge method");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {

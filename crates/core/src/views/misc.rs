@@ -415,13 +415,17 @@ pub(super) fn machine(context: &RenderContext<'_>) -> View {
     view
 }
 
-/// This Mac's settings the apps show in Settings: for now, how many nodes work at once.
+/// This Mac's settings the apps show in Settings: how it merges PRs and how many nodes work at once.
 fn settings_section(context: &RenderContext<'_>) -> Option<super::Section> {
-    let pacing = context.live.pacing.as_ref()?;
-    let limit = super::pacing::limit_action(pacing, context)?;
-    let mut row = common::row("node_limit", "machine", Icon::Machine, limit.label.clone(),
-        Some(super::pacing::limit_text(pacing, context.lang)));
-    row.link = None;
-    row.actions.push(limit);
-    Some(common::section("settings", None, vec![Item::Row(row)]))
+    let mut items: Vec<Item> = super::merge_method::settings_row(context).into_iter().collect();
+    if let Some(pacing) = context.live.pacing.as_ref()
+        && let Some(limit) = super::pacing::limit_action(pacing, context)
+    {
+        let mut row = common::row("node_limit", "machine", Icon::Machine, limit.label.clone(),
+            Some(super::pacing::limit_text(pacing, context.lang)));
+        row.link = None;
+        row.actions.push(limit);
+        items.push(Item::Row(row));
+    }
+    (!items.is_empty()).then(|| common::section("settings", None, items))
 }

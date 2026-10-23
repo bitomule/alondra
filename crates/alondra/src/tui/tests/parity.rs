@@ -151,20 +151,13 @@ fn merge_card(app: &mut App, merge: impl FnOnce(&str) -> serde_json::Value) -> (
     (id.into(), action_id)
 }
 
-fn one_method_merge_card(app: &mut App) -> (String, String) {
-    merge_card(app, |action_id| {
-        let mut merge = server_merge_action(action_id);
-        let object = merge.as_object_mut().unwrap();
-        object.remove("options");
-        object.insert("presentation".into(), "button".into());
-        object.insert("option_id".into(), "squash".into());
-        object.insert("label".into(), "Merge PR #12".into());
-        merge
-    })
+fn served_merge_card(app: &mut App) -> (String, String) {
+    merge_card(app, server_merge_action)
 }
 
-fn methods_merge_card(app: &mut App) -> (String, String) {
-    merge_card(app, server_merge_action)
+/// What "More" offers on `card-pr.json`, in order: the other ways to merge come first.
+fn served_more() -> Vec<serde_json::Value> {
+    view_fixture("card-pr.json")["sections"][0]["items"][0]["more"].as_array().cloned().unwrap_or_default()
 }
 
 fn applied(kind: &str, title: &str) -> Result<ViewActionReply, Delivery> {
@@ -178,10 +171,12 @@ fn merge_end_to_end_one_press_one_post_then_started() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (pr_id, action_id) = one_method_merge_card(&mut app);
+    let (pr_id, action_id) = served_merge_card(&mut app);
+    let before = screen(&mut app, 120, 30);
+    assert!(before.contains("Squash and merge"), "the button says the method: {before}");
 
     press(&mut app, KeyCode::Char('1'));
-    assert!(app.modal.is_none(), "merging asks nothing");
+    assert!(app.modal.is_none() && app.card_menu.is_none(), "merging asks nothing");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "/actions");
@@ -205,33 +200,35 @@ fn merge_end_to_end_one_press_one_post_then_started() {
 }
 
 #[test]
-fn merge_with_several_methods_asks_the_method_then_posts_with_no_confirmation() {
+fn another_method_is_one_press_from_more_with_no_confirmation() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (_, action_id) = methods_merge_card(&mut app);
+    served_merge_card(&mut app);
+    let more = served_more();
+    let index = more.iter().position(|action| action["label"] == "Merge with a merge commit").expect("More offers the merge commit");
+    let other = &more[index];
 
-    press(&mut app, KeyCode::Char('1'));
-    assert!(posted(&app).is_empty(), "the first press asks the method");
+    press(&mut app, KeyCode::Char('m'));
+    assert!(posted(&app).is_empty());
     let drawn = screen(&mut app, 120, 30);
-    assert!(drawn.contains("Squash and merge"), "{drawn}");
-    assert!(drawn.contains("Merge commit"), "{drawn}");
+    assert!(drawn.contains("Merge with a merge commit"), "{drawn}");
 
-    press(&mut app, KeyCode::Char('2'));
-    assert!(app.modal.is_none(), "choosing the method is the decision");
+    press(&mut app, KeyCode::Char(char::from(b'1' + index as u8)));
+    assert!(app.modal.is_none(), "the other method merges with one press too");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].1["action_id"], action_id);
+    assert_eq!(sent[0].1["action_id"], other["id"]);
     assert_eq!(sent[0].1["option_id"], "merge");
     assert_eq!(flash(&app), "Merging…");
 }
 
 #[test]
-fn escape_on_the_method_menu_sends_nothing() {
+fn escape_on_the_more_menu_sends_nothing() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    methods_merge_card(&mut app);
-    press(&mut app, KeyCode::Char('1'));
+    served_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('m'));
     press(&mut app, KeyCode::Esc);
     assert!(app.card_menu.is_none());
     assert!(posted(&app).is_empty());
@@ -242,7 +239,7 @@ fn a_refused_action_brings_the_card_back_with_the_servers_words() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (pr_id, _) = one_method_merge_card(&mut app);
+    let (pr_id, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     assert!(app.optimistic.hides(&Key(pr_id.clone())));
@@ -268,7 +265,7 @@ fn an_answer_that_does_not_reach_the_mac_is_tried_again_in_silence_with_the_same
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (pr_id, _) = one_method_merge_card(&mut app);
+    let (pr_id, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let shown = flash(&app).to_owned();
@@ -1425,7 +1422,7 @@ fn task_footer_offers_only_the_keys_the_selected_task_answers() {
 fn a_changed_modal_hides_the_card_it_came_from_not_the_selected_one() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let changed = view_action_result(serde_json::json!({
@@ -1450,7 +1447,7 @@ fn a_daemon_error_is_not_reported_as_nothing_sent() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let error = anyhow::Error::new(crate::client::Answered { status: 500, message: "disk full".into() });
@@ -1465,7 +1462,7 @@ fn an_answer_the_terminal_cannot_read_is_not_reported_as_nothing_sent() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    one_method_merge_card(&mut app);
+    served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let result = view_action_result(serde_json::json!({"something": "else"}));
@@ -1478,7 +1475,7 @@ fn an_answer_unconfirmed_for_thirty_seconds_brings_its_card_back_saying_which_an
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     let title = app.card_title(&Key(origin.clone()));
     press(&mut app, KeyCode::Char('1'));
     let first = posted(&app)[0].1.clone();
@@ -1498,7 +1495,7 @@ fn an_answer_unconfirmed_for_thirty_seconds_brings_its_card_back_saying_which_an
     assert!(notice.starts_with("Tu respuesta «") && notice.contains(&format!("» a «{title}» no llegó a tu Mac")), "{notice}");
     assert_eq!(app.flash.as_ref().map(|f| (f.kind, f.ttl)), Some((FlashKind::Error, NOTICE_MS)));
 
-    one_method_merge_card(&mut app);
+    served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let sent = posted(&app);
     assert_eq!(sent.len(), 3, "the retry after the failure, then the answer again");
@@ -1567,7 +1564,7 @@ fn views_that_arrive_before_the_mac_confirms_never_bring_the_card_back() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let mut home: ViewDocument = serde_json::from_value(view_fixture("home-tui.json")).unwrap();
@@ -1595,7 +1592,7 @@ fn views_that_arrive_before_the_mac_confirms_never_bring_the_card_back() {
 fn a_different_action_after_a_timeout_gets_its_own_command_id() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    one_method_merge_card(&mut app);
+    served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let first = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
@@ -1723,24 +1720,12 @@ fn the_pr_card_fixture_reads_in_the_terminal_with_the_servers_labels_order_and_o
     press(&mut app, KeyCode::Esc);
 
     press(&mut app, KeyCode::Char('1'));
-    let options: Vec<String> = merge["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-        .flat_map(|(index, option)| {
-            [format!(" {}  {}", index + 1, text(&option["label"])), format!("    {}", text(&option["description"]))]
-        })
-        .collect();
-    assert_in_order(&screen(&mut app, 120, 40), &options);
-
-    press(&mut app, KeyCode::Char('1'));
-    assert!(merge.get("confirm").is_none(), "{merge}");
-    assert!(app.modal.is_none(), "the method is the only question");
+    assert!(merge.get("confirm").is_none() && merge.get("options").is_none(), "{merge}");
+    assert!(app.modal.is_none() && app.card_menu.is_none(), "one press merges");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1["action_id"], merge["id"]);
-    assert_eq!(sent[0].1["option_id"], merge["options"][0]["id"]);
+    assert_eq!(sent[0].1["option_id"], merge["option_id"]);
     assert_eq!(flash(&app), text(&merge["stamp"]));
     assert!(!app.inbox_keys().contains(&Key(origin)));
 
@@ -1778,7 +1763,7 @@ fn a_done_card_stays_away_and_comes_back_only_if_the_server_still_has_it() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction { request, result: applied("started", "PR #12 is merging.") });
@@ -1835,7 +1820,7 @@ fn a_changed_question_waits_for_the_open_one_and_enter_answers_the_one_on_screen
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (a, _) = one_method_merge_card(&mut app);
+    let (a, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let merge_a = posted(&app)[0].1.clone();
 
@@ -1899,7 +1884,7 @@ fn a_card_that_comes_back_leaves_the_selection_where_the_user_moved_it() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let (origin, _) = one_method_merge_card(&mut app);
+    let (origin, _) = served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
     let landed = app.sel.clone();
@@ -1984,59 +1969,29 @@ fn reader_comments_on_a_question_go_with_the_option_pressed_at_once() {
     assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Only on the onboarding screen"), "{sent:?}");
 }
 
-fn pull_request_detail(app: &mut App, options: serde_json::Value) -> String {
-    let mut view = view_fixture("pull-request-mac.json");
+fn pull_request_detail(app: &mut App) -> String {
+    let view = view_fixture("pull-request-mac.json");
     let key = view["key"].as_str().unwrap().to_owned();
-    let merge = view["sections"]
-        .as_array_mut()
+    let action_id = view["sections"].as_array().unwrap().iter()
+        .flat_map(|section| section["items"].as_array().unwrap())
+        .filter_map(|item| item["actions"].as_array())
+        .flatten()
+        .find_map(|action| action["id"].as_str().filter(|id| id.starts_with("merge:")))
         .unwrap()
-        .iter_mut()
-        .flat_map(|section| section["items"].as_array_mut().unwrap().iter_mut())
-        .filter_map(|item| item["actions"].as_array_mut())
-        .flat_map(|actions| actions.iter_mut())
-        .find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("merge:")))
-        .unwrap();
-    merge["options"] = options;
-    let action_id = merge["id"].as_str().unwrap().to_owned();
+        .to_owned();
     app.view_navigation.push(key);
     app.card_view = Some(serde_json::from_value(view).unwrap());
     action_id
 }
 
-fn method(id: &str, label: &str) -> serde_json::Value {
-    serde_json::json!({"id":id, "label":label, "style":"secondary", "input":{"kind":"none"}})
-}
-
 #[test]
-fn merge_from_a_pull_request_detail_asks_the_method_when_there_are_several() {
+fn merge_from_a_pull_request_detail_sends_the_method_its_button_says() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let action_id = pull_request_detail(&mut app, serde_json::json!([
-        method("squash", "Squash and merge"), method("merge", "Merge commit"), method("rebase", "Rebase and merge")
-    ]));
+    let action_id = pull_request_detail(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    assert!(posted(&app).is_empty(), "the method comes first");
-    assert_eq!(app.card_menu.as_ref().map(|menu| menu.entries.len()), Some(3));
-    let menu = crate::tui::view_render::menu_lines(app.card_menu.as_ref().unwrap());
-    assert!(format!("{menu:?}").contains("Rebase and merge"));
-    press(&mut app, KeyCode::Char('3'));
-    assert!(app.card_menu.is_none());
-    press(&mut app, KeyCode::Enter);
-    let sent = posted(&app);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].1["action_id"], action_id.as_str());
-    assert_eq!(sent[0].1["option_id"], "rebase");
-}
-
-#[test]
-fn merge_from_a_pull_request_detail_sends_the_only_method_directly() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let action_id = pull_request_detail(&mut app, serde_json::json!([method("squash", "Squash and merge")]));
-    press(&mut app, KeyCode::Char('1'));
-    assert!(app.card_menu.is_none(), "one method needs no menu");
+    assert!(app.card_menu.is_none(), "the method is set in Settings: no menu");
     press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);

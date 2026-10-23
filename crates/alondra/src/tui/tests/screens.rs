@@ -452,6 +452,7 @@ fn blocked_pr() -> views::View {
             "link": {"kind": "view", "key": format!("card:{question}")},
         }]);
         card["actions"].as_array_mut().unwrap().remove(0);
+        card["more"].as_array_mut().unwrap().retain(|action| !action["id"].as_str().is_some_and(|id| id.starts_with("merge:")));
     })
 }
 
@@ -835,6 +836,13 @@ fn a_button_with_options_asks_which_before_it_sends() {
             action.as_object_mut().unwrap().remove("disabled_reason");
         }
         card["actions"][0].as_object_mut().unwrap().remove("confirm");
+        card["actions"][0].as_object_mut().unwrap().remove("option_id");
+        card["actions"][0]["label"] = "Merge".into();
+        card["actions"][0]["presentation"] = "menu".into();
+        card["actions"][0]["options"] = serde_json::json!([
+            {"id": "squash", "label": "Squash and merge", "style": "secondary", "input": {"kind": "none"}},
+            {"id": "merge", "label": "Merge commit", "style": "secondary", "input": {"kind": "none"}},
+        ]);
     }));
     press(&mut app, KeyCode::Char('1'));
     assert!(app.posted.borrow().is_empty());

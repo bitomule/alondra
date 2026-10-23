@@ -50,9 +50,11 @@ pub enum Verb {
     McpSignOut,
     /// Check the MCP servers of a project no node runs in, named by its target.
     McpCheck,
+    /// Set how this Mac merges PRs: `squash`, `merge` or `rebase`, as `option_id`.
+    SetMergeMethod,
 }
 impl Verb {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -91,6 +93,7 @@ impl Verb {
         Self::ForceStop,
         Self::McpSignOut,
         Self::McpCheck,
+        Self::SetMergeMethod,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -132,6 +135,7 @@ impl Verb {
             Self::ForceStop => "force_stop",
             Self::McpSignOut => "mcp_sign_out",
             Self::McpCheck => "mcp_check",
+            Self::SetMergeMethod => "set_merge_method",
         }
     }
     fn parse(value: &str) -> Option<Self> {

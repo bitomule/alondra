@@ -254,6 +254,11 @@ impl App {
                 };
                 let (action, option) = (action.clone(), option.clone());
                 self.card_menu = None;
+                if let Some(screen) = self.mcp_servers.as_ref() {
+                    let (Some(epoch), Some(row)) = (screen.epoch(), screen.selected()) else { return Flow::Go };
+                    let selected = Key(row.id.clone());
+                    return self.press_card_action(action, option, &selected, epoch);
+                }
                 let Some(view) = self.card_view.as_ref().or(self.home_view.as_ref()) else {
                     return Flow::Go;
                 };

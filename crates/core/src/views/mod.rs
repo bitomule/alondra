@@ -12,6 +12,7 @@ pub mod id;
 pub mod live;
 pub mod resolves;
 pub mod review_export;
+mod merge_method;
 mod messages;
 mod misc;
 mod pacing;

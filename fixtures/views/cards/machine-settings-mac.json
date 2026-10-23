@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v59846c3bee7d30c9",
+  "version": "va4c4a61c868d9847",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -83,6 +83,60 @@
       "id": "settings",
       "collapsed": false,
       "items": [
+        {
+          "type": "row",
+          "id": "merge_method",
+          "icon": "merge",
+          "title": "PR merges",
+          "subtitle": "Squash and merge · if the repository allows it",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "set_merge_method:merge_method@6",
+              "label": "PR merges",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "squash",
+                  "label": "Squash and merge · now",
+                  "description": "One commit on the base branch",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge",
+                  "description": "Keeps every commit",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "rebase",
+                  "label": "Rebase and merge",
+                  "description": "Commits replayed on the base branch",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merge method changed",
+              "resolves_card": false
+            }
+          ]
+        },
         {
           "type": "row",
           "id": "node_limit",

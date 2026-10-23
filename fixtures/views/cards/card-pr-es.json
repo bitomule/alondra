@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vdac4d305260ae2d1",
+  "version": "vc9a147daf7df24b7",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -96,6 +96,21 @@
           },
           "more": [
             {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Hacer merge con merge commit",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "merge",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Haciendo merge…",
+              "resolves_card": true
+            },
+            {
               "id": "close_unmerged:hf-weekly-2026-09-30@1",
               "label": "Cerrar sin hacer merge",
               "style": "destructive",
@@ -151,30 +166,11 @@
           "actions": [
             {
               "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-              "label": "Hacer merge",
+              "label": "Squash and merge",
               "style": "primary",
               "role": "advance",
-              "presentation": "menu",
-              "options": [
-                {
-                  "id": "squash",
-                  "label": "Squash and merge",
-                  "description": "Un solo commit en main",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "merge",
-                  "label": "Merge commit",
-                  "description": "Conserva todos los commits",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
+              "option_id": "squash",
+              "presentation": "button",
               "input": {
                 "kind": "none"
               },

@@ -462,6 +462,10 @@ pub enum Command {
     ClearCompleted {
         seen: Revision,
     },
+    /// The user picks how this Mac merges PRs from now on. Merges already authorized keep theirs.
+    SetMergeMethod {
+        method: MergeMethod,
+    },
     /// The Agent working on the Task was closed by the user: the Task goes back to not started with
     /// no Agent, and stays open for a new one.
     ReleaseTask {

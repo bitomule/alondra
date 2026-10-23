@@ -104,6 +104,10 @@ impl DomainState {
     pub fn clear_completed_action(&self) -> AvailableAction {
         self.action("clear_completed", Command::ClearCompleted { seen: self.revision }, None, None, self)
     }
+    /// The button that makes `method` this Mac's way of merging PRs, judged by the rule setting it runs.
+    pub fn set_merge_method_action(&self, method: MergeMethod) -> AvailableAction {
+        self.action("set_merge_method", Command::SetMergeMethod { method }, None, None, self)
+    }
     fn action(
         &self,
         kind: &str,
@@ -327,7 +331,7 @@ impl DomainState {
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
                         if let Some(pr) = self.pull_requests.get(pr_id) {
-                            if let Some(method) = pr.allowed_methods.first() {
+                            if let Some(method) = MergeMethod::for_pr(self.merge_method, &pr.allowed_methods) {
                                 let mut token = "projection-authorization".to_owned();
                                 while self
                                     .merge_authorizations
@@ -342,7 +346,7 @@ impl DomainState {
                                         presentation_id: i.id.clone(),
                                         pr_id: pr_id.clone(),
                                         expected_head: head.clone(),
-                                        method: *method,
+                                        method,
                                     },
                                     Some(i.id.clone()),
                                     Some(head.clone()),

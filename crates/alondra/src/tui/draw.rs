@@ -794,7 +794,10 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.mcp_servers.as_mut() else { return };
-    let title = format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP")));
+    let title = match screen.general.is_some() {
+        true => tr!("Settings", "Ajustes").to_owned(),
+        false => format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP"))),
+    };
     let block = panel(Line::from(format!(" {title} ").bold()), true);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -804,6 +807,12 @@ fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let mut index = 0;
     for entry in screen.entries() {
         match entry {
+            super::mcp_servers::Entry::Group(title) => {
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                lines.push(Line::from(title.to_uppercase().bold().fg(ACCENT)));
+            }
             super::mcp_servers::Entry::Heading(title) => {
                 if !lines.is_empty() {
                     lines.push(Line::default());
@@ -830,11 +839,25 @@ fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
         centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
         return;
     }
+    let (inner, menu) = match &app.card_menu {
+        Some(menu) => {
+            let menu = super::view_render::menu_lines(menu);
+            let height = (menu.len() as u16 + 1).min(inner.height / 2);
+            let [list, keys] = Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(inner);
+            (list, Some((menu, keys)))
+        }
+        None => (inner, None),
+    };
     let total = lines.len();
     keep_visible(&mut screen.scroll, selected, inner.height as usize, total);
     f.render_widget(Paragraph::new(lines).scroll((screen.scroll as u16, 0)), inner);
     highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, selected.0..selected.1, screen.scroll);
     scrollbar(f, inner, total, screen.scroll);
+    if let Some((menu, area)) = menu {
+        let mut text = vec![Line::default()];
+        text.extend(menu);
+        f.render_widget(Paragraph::new(text), area);
+    }
 }
 
 /// What a row says first: a child's own text, a root's name.

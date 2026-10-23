@@ -1,6 +1,8 @@
-//! Settings › MCP servers, the terminal's settings screen (`,` or `:settings` from any screen): per project, each server its nodes use with how it is, and the
-//! projects no node runs in, each checked on demand. Its buttons are the view's: Connect opens
-//! the sign-in as a card's does, Reconnect, Sign out and Check go to the daemon.
+//! Settings, the terminal's settings screen (`,` or `:settings` from any screen). General first:
+//! this Mac's settings, the `settings` section of the machine view (how PRs merge, nodes at once),
+//! each picked from its menu. Then MCP servers: per project, each server its nodes use with how it
+//! is, and the projects no node runs in, each checked on demand. Its buttons are the view's:
+//! Connect opens the sign-in as a card's does, Reconnect, Sign out and Check go to the daemon.
 
 use std::time::Duration;
 
@@ -12,10 +14,13 @@ use super::keys::Motion;
 use super::{App, Client, Key, Msg};
 
 pub const VIEW: &str = alondra_core::views::mcp_servers::KEY;
+pub const GENERAL: &str = "machine";
+const GENERAL_SECTION: &str = "settings";
 const ACCENT: Color = Color::LightCyan;
 
 /// A line of the screen: a project's heading, what a section says of itself, or one of its rows.
 pub enum Entry<'a> {
+    Group(&'static str),
     Heading(&'a str),
     Note(&'a str),
     Row(&'a Row),
@@ -23,6 +28,7 @@ pub enum Entry<'a> {
 
 #[derive(Default)]
 pub struct McpServers {
+    pub general: Option<View>,
     pub view: Option<View>,
     pub failed: Option<String>,
     pub sel: usize,
@@ -36,6 +42,21 @@ impl McpServers {
 
     pub fn entries(&self) -> Vec<Entry<'_>> {
         let mut entries = vec![];
+        let general: Vec<&Row> = self.general.iter().flat_map(|view| &view.sections)
+            .filter(|section| section.id == GENERAL_SECTION)
+            .flat_map(|section| &section.items)
+            .filter_map(|item| match item {
+                Item::Row(row) => Some(row),
+                _ => None,
+            })
+            .collect();
+        if !general.is_empty() {
+            entries.push(Entry::Group(tr!("General", "General")));
+            entries.extend(general.into_iter().map(Entry::Row));
+            if self.view.as_ref().is_some_and(|view| !view.sections.is_empty()) {
+                entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
+            }
+        }
         for section in self.view.iter().flat_map(|view| &view.sections) {
             if let Some(title) = &section.title {
                 entries.push(Entry::Heading(title));
@@ -52,7 +73,7 @@ impl McpServers {
     pub fn rows(&self) -> Vec<&Row> {
         self.entries().into_iter().filter_map(|entry| match entry {
             Entry::Row(row) => Some(row),
-            Entry::Heading(_) | Entry::Note(_) => None,
+            Entry::Group(_) | Entry::Heading(_) | Entry::Note(_) => None,
         }).collect()
     }
 
@@ -72,6 +93,11 @@ impl McpServers {
         .min(last);
     }
 
+    /// The data epoch the screen's buttons act on.
+    pub fn epoch(&self) -> Option<String> {
+        self.view.as_ref().or(self.general.as_ref()).map(|view| view.data_epoch.clone())
+    }
+
     fn clamp(&mut self) {
         self.sel = self.sel.min(self.rows().len().saturating_sub(1));
     }
@@ -80,6 +106,14 @@ impl McpServers {
 /// The buttons of a row, numbered from 1 in the order the view gives them.
 pub fn actions(row: &Row) -> Vec<&Action> {
     row.actions.iter().filter(|action| action.enabled).take(9).collect()
+}
+
+/// What a row's button says: a setting's menu is named like its row, so it reads «Change…».
+pub fn button_label<'a>(row: &Row, action: &'a Action) -> &'a str {
+    match action.label == row.title {
+        true => tr!("Change…", "Cambiar…"),
+        false => &action.label,
+    }
 }
 
 fn badge(row: &Row) -> Option<Span<'static>> {
@@ -115,7 +149,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
     if selected {
         let buttons: Vec<Span<'static>> = actions(row).into_iter().enumerate().flat_map(|(index, action)| [
             Span::styled(format!("{}", index + 1), Style::new().fg(ACCENT).bold()),
-            Span::raw(format!(" {}   ", action.label)),
+            Span::raw(format!(" {}   ", button_label(row, action))),
         ]).collect();
         if !buttons.is_empty() {
             lines.extend(super::md::wrap(buttons, text_width, lead.clone(), lead));
@@ -128,6 +162,23 @@ impl App {
     pub(super) fn open_mcp_servers(&mut self) {
         self.mcp_servers = Some(McpServers::default());
         self.load_mcp_servers();
+        self.load_general();
+    }
+
+    fn load_general(&mut self) {
+        self.spawn(|tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
+                .views(GENERAL, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ViewCard { key: GENERAL.into(), result });
+        });
+    }
+
+    pub(super) fn general_loaded(&mut self, view: &View) {
+        let Some(screen) = self.mcp_servers.as_mut() else { return };
+        screen.general = Some(view.clone());
+        screen.clamp();
+        self.sync_open_views();
     }
 
     pub(super) fn close_mcp_servers(&mut self) {
@@ -158,16 +209,14 @@ impl App {
         }
     }
 
-    /// The selected row's button `index`, from 0: through the view's confirmation when it asks
-    /// for one.
+    /// The selected row's button `index`, from 0: its menu of options first when it has one, and
+    /// through the view's confirmation when it asks for one.
     pub(super) fn mcp_server_action(&mut self, index: usize) {
         let Some(screen) = self.mcp_servers.as_ref() else { return };
-        let Some((row, action, epoch)) = screen.view.as_ref().and_then(|view| {
-            let row = screen.selected()?;
-            Some((row.id.clone(), (*actions(row).get(index)?).clone(), view.data_epoch.clone()))
-        }) else {
+        let Some(epoch) = screen.epoch() else { return };
+        let Some((row, action)) = screen.selected().and_then(|row| Some((row.id.clone(), (*actions(row).get(index)?).clone()))) else {
             return;
         };
-        self.run_view_action(&action, None, &Key(row), epoch);
+        self.press_card_action(action, None, &Key(row), epoch);
     }
 }

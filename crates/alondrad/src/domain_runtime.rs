@@ -873,7 +873,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::InterruptTurn { .. }
         | Command::ForceStopTurn { .. }
         | Command::CompactEndedTasks { .. }
-        | Command::ClearCompleted { .. } => None,
+        | Command::ClearCompleted { .. }
+        | Command::SetMergeMethod { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {
