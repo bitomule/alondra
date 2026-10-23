@@ -13,14 +13,13 @@ public enum DetailRoute {
     case scheduleEditor(ScheduleEditorFeature)
     case cardDetail(CardDetailFeature)
     case prReview(PRReviewFeature)
-    case nodeDetail(NodeDetailFeature)
 }
 
 public extension DetailRoute {
     /// The screen a server link opens. A key outside this table opens nothing, so a view the app
     /// does not know shows up as a failing test instead of an unexplained generic screen.
     enum Kind: Equatable, Sendable, CaseIterable {
-        case card, document, pullRequest, task, node, schedules, schedule, tasksPage
+        case card, document, pullRequest, task, schedules, schedule, tasksPage
 
         public init?(key: ViewKey) {
             let raw = key.rawValue
@@ -30,7 +29,6 @@ public extension DetailRoute {
             case _ where raw.hasPrefix("document:"): self = .document
             case _ where raw.hasPrefix("pull_request:"): self = .pullRequest
             case _ where raw.hasPrefix("task:"): self = .task
-            case _ where raw.hasPrefix("node:"): self = .node
             case _ where raw.hasPrefix("schedule:"): self = .schedule
             case _ where raw.hasPrefix("tasks?"): self = .tasksPage
             default: return nil
@@ -54,7 +52,6 @@ public extension DetailRoute.State {
         case .schedules: self = .schedules(SchedulesFeature.State())
         case .schedule: self = .scheduleEditor(ScheduleEditorFeature.State(key: key))
         case .pullRequest: self = .prReview(PRReviewFeature.State(key: key))
-        case .node: self = .nodeDetail(NodeDetailFeature.State(key: key))
         case nil: return nil
         default: self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
         }
@@ -68,7 +65,6 @@ public extension DetailRoute.State {
         case .schedules(let state): state.screen.key
         case .scheduleEditor(let state): state.screen.key
         case .prReview(let state): state.screen.key
-        case .nodeDetail(let state): state.screen.key
         }
     }
 }
@@ -85,8 +81,7 @@ public extension DetailRoute.Action {
         case .taskDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),
              .scheduleEditor(.delegate(let delegate)),
-             .prReview(.delegate(let delegate)),
-             .nodeDetail(.delegate(let delegate)):
+             .prReview(.delegate(let delegate)):
             delegate
         default: nil
         }

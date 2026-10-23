@@ -207,13 +207,6 @@ struct RootView<AccountContent: View>: View {
                     detail(route, tab: .tasks)
                 }
             }
-            Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
-                NavigationStack(path: $store.scope(state: \.fleetPath, action: \.fleetPath)) {
-                    FleetView(store: store.scope(state: \.fleet, action: \.fleet))
-                } destination: { route in
-                    detail(route, tab: .fleet)
-                }
-            }
             Tab("New", systemImage: "plus.bubble", value: .newRequest) {
                 NavigationStack(path: $store.scope(state: \.newRequestPath, action: \.newRequestPath)) {
                     NewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
@@ -223,9 +216,6 @@ struct RootView<AccountContent: View>: View {
             }
         }
         .overlay(alignment: .bottom) { NoticeToast(store: store) }
-        .closeRefusalAlert(Binding(get: { store.closeRefusal }, set: {
-            if $0 == nil { store.send(.dismissCloseRefusal) }
-        }))
         .tabBarMinimizeBehavior(.onScrollDown)
         .environment(\.mcpLinks, McpLinks(signIn: { store.send(.mcpSignInRequested(card: $0, server: $1)) },
                                           reconnect: { store.send(.mcpReconnectRequested(card: $0)) }))
@@ -255,8 +245,6 @@ struct RootView<AccountContent: View>: View {
             ScheduleEditorView(store: screen)
         case .prReview(let screen):
             PRReviewView(store: screen)
-        case .nodeDetail(let screen):
-            NodeDetailView(store: screen)
         case .cardDetail(let review):
             if tab == .inbox {
                 CardDetailView(store: review).navigationTransition(.zoom(sourceID: String(review.screen.key.rawValue.dropFirst("card:".count)), in: triageZoom))

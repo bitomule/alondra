@@ -23,11 +23,11 @@ final class FeedRecoveryTests: XCTestCase {
         let session = FeedSession(transport: transport, client: .ios, lang: "en", retryDelay: { await delays.record($0) })
         let stopper = watchdog(session)
         defer { stopper.cancel() }
-        var fleet = ViewObservation.stream(session: session, key: .fleet).makeAsyncIterator()
+        var schedules = ViewObservation.stream(session: session, key: .schedules).makeAsyncIterator()
 
-        let before = try await version(&fleet)
+        let before = try await version(&schedules)
         XCTAssertEqual(before, "v-old")
-        let after = try await version(&fleet)
+        let after = try await version(&schedules)
 
         XCTAssertEqual(after, "v-new", "the poll after the failure is answered with a reset and the view reloads")
         let attempts = await delays.attempts
@@ -43,9 +43,9 @@ final class FeedRecoveryTests: XCTestCase {
         let session = FeedSession(transport: transport, client: .ios, lang: "en", retryDelay: { await delays.record($0) })
         let stopper = watchdog(session)
         defer { stopper.cancel() }
-        var fleet = ViewObservation.stream(session: session, key: .fleet).makeAsyncIterator()
+        var schedules = ViewObservation.stream(session: session, key: .schedules).makeAsyncIterator()
 
-        _ = try await version(&fleet)
+        _ = try await version(&schedules)
         try await Task.sleep(for: .milliseconds(200))
 
         let attempts = await delays.attempts

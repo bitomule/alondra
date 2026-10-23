@@ -1,6 +1,6 @@
 import Foundation
 
-/// Why the app cannot reach the fleet, in terms a person can act on. Every surface that shows a
+/// Why the app cannot reach the Mac, in terms a person can act on. Every surface that shows a
 /// connection failure reads this instead of an error's description.
 public enum ConnectionProblem: Equatable, Sendable {
     /// The device itself has no network.

@@ -28,14 +28,14 @@ final class ViewObservationTests: XCTestCase {
     }
 
     func testChangesToOtherKeysAndUnchangedRefreshesYieldNothing() async throws {
-        let transport = ScriptedTransport(versions: ["tasks": "v1", "fleet": "f1"])
+        let transport = ScriptedTransport(versions: ["tasks": "v1", "schedules": "f1"])
         let session = session(transport)
-        _ = try await session.open("fleet")
+        _ = try await session.open("schedules")
         var documents = ViewObservation.stream(session: session, key: ViewKey(rawValue: "tasks")).makeAsyncIterator()
         let version = try await nextVersion(&documents)
         XCTAssertEqual(version, "v1")
 
-        await transport.changed(["fleet"])
+        await transport.changed(["schedules"])
         await transport.changed(["tasks"])
         await transport.serve("tasks", version: "v3")
         await transport.changed(["tasks"])
@@ -43,7 +43,7 @@ final class ViewObservationTests: XCTestCase {
         let refreshed = try await nextVersion(&documents)
         XCTAssertEqual(
             refreshed, "v3",
-            "the stale for fleet and the stale that found tasks unchanged must not produce a document"
+            "the stale for schedules and the stale that found tasks unchanged must not produce a document"
         )
         await session.stop()
     }

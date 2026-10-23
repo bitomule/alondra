@@ -87,13 +87,7 @@ import Testing
         }.first
         let taskID = linkedID(taskFact?.link)
         #expect(linkedID(questionCard.context.first { $0.icon == .task }?.link) == taskID)
-        guard case let .document(fleet) = try await client.load(.fleet, nil),
-              case let .row(firstNode)? = fleet.sections.flatMap(\.items).first(where: { if case .row = $0 { true } else { false } }) else {
-            Issue.record("The demo fleet must list a node")
-            return
-        }
-        let nodeID = linkedID(firstNode.link)
-        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID),
+        for key in [ViewKey.tasks, .task(taskID),
                     .newRequest(), .machine, .schedules, .schedule("new")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo destination \(key.rawValue)")
@@ -103,7 +97,7 @@ import Testing
             #expect(!screen.sections.isEmpty)
         }
 
-        for (key, expectedLink) in [(ViewKey.tasks, "task:\(taskID)"), (.fleet, "node:\(nodeID)")] {
+        for (key, expectedLink) in [(ViewKey.tasks, "task:\(taskID)")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo list \(key.rawValue)")
                 continue

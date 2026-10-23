@@ -7,20 +7,20 @@ final class FeedRefreshOrderingTests: XCTestCase {
     func testAnIndependentViewIsVisibleWhileTheFirstRefreshRemainsPending() async throws {
         let transport = RefreshViewPeer()
         let session = FeedSession(transport: transport, client: .ios, lang: "en")
-        let fleet = try await session.open("fleet")
+        let schedules = try await session.open("schedules")
         let tasks = try await session.open("tasks")
         await transport.beginRefresh()
         let freshTasks = try refreshDocument("tasks", version: "new")
         let (refresh, beforeRelease) = try await Self.startRefreshAndCompleteTasks(in: session, response: freshTasks)
-        await transport.releaseFleet()
+        await transport.releaseSchedules()
         try await refresh.value
-        XCTAssertEqual(beforeRelease.documents["fleet"]?.version, "seed", "the first key remains pending at the observation boundary")
+        XCTAssertEqual(beforeRelease.documents["schedules"]?.version, "seed", "the first key remains pending at the observation boundary")
         XCTAssertEqual(beforeRelease.documents["tasks"]?.version, "new", "the independent key must be published before the first key is released")
         let completed = await session.currentSnapshot()
-        XCTAssertEqual(completed.documents["fleet"]?.version, "new")
+        XCTAssertEqual(completed.documents["schedules"]?.version, "new")
         XCTAssertEqual(completed.documents["tasks"]?.version, "new")
         XCTAssertEqual(completed.dataEpoch, "epoch")
-        await session.close(fleet.lease)
+        await session.close(schedules.lease)
         await session.close(tasks.lease)
         await session.stop()
         await transport.finish()
@@ -47,7 +47,7 @@ final class FeedRefreshOrderingTests: XCTestCase {
     func testAnAlreadyCancelledRefreshStartsNoTransports() async throws {
         let transport = BudgetViewPeer(holding: false)
         let session = FeedSession(transport: transport, client: .ios, lang: "en")
-        _ = try await session.open("fleet")
+        _ = try await session.open("schedules")
         _ = try await session.open("tasks")
         let before = await transport.keys
         let refresh = await Self.cancelBeforeRefreshEntry(in: session)
@@ -61,7 +61,7 @@ final class FeedRefreshOrderingTests: XCTestCase {
 
     private static func cancelBeforeRefreshEntry(in session: isolated FeedSession) -> Task<Void, any Error> {
         let current = session.generation
-        let task = Task { try await session.refresh(["fleet", "tasks"], generation: current) }
+        let task = Task { try await session.refresh(["schedules", "tasks"], generation: current) }
         task.cancel()
         return task
     }
@@ -129,7 +129,7 @@ final class FeedRefreshOrderingTests: XCTestCase {
     func testResetRecoveryUsesTheSameSlotsUntilOldTransportsActuallyExit() async throws {
         let transport = BudgetViewPeer(holding: false, controlsChanges: true)
         let session = FeedSession(transport: transport, client: .ios, lang: "en")
-        _ = try await session.open("fleet")
+        _ = try await session.open("schedules")
         _ = try await session.open("tasks")
         var events = await session.events().makeAsyncIterator()
         var polls = await transport.polls().makeAsyncIterator()
@@ -171,7 +171,7 @@ final class FeedRefreshOrderingTests: XCTestCase {
     func testCancellingAnEnteredRefreshKeepsTheForegroundConsumerAndOwnsItsChildren() async throws {
         let transport = BudgetViewPeer(holding: false)
         let session = FeedSession(transport: transport, client: .ios, lang: "en")
-        let fleet = try await session.open("fleet")
+        let schedules = try await session.open("schedules")
         let tasks = try await session.open("tasks")
         await transport.hold(version: "late")
         var starts = await transport.starts().makeAsyncIterator()
@@ -193,21 +193,21 @@ final class FeedRefreshOrderingTests: XCTestCase {
         guard case let .document(document) = returned else { XCTFail("the independent consumer must receive its document"); await session.stop(); return }
         XCTAssertEqual(document.version, "late")
         let snapshot = await session.currentSnapshot()
-        XCTAssertEqual(snapshot.documents["fleet"]?.version, "late")
+        XCTAssertEqual(snapshot.documents["schedules"]?.version, "late")
         XCTAssertNil(snapshot.documents["tasks"], "the group's cancelled child cannot repopulate a closed key with its late response")
         let requests = await transport.requests.filter { $0.known == "new" }
-        XCTAssertEqual(requests.filter { $0.key == "fleet" }.count, 1)
+        XCTAssertEqual(requests.filter { $0.key == "schedules" }.count, 1)
         XCTAssertEqual(requests.filter { $0.key == "tasks" }.count, 1)
         let remaining = await session.runningLoadIDs.count
         XCTAssertEqual(remaining, 0)
-        await session.close(fleet.lease)
+        await session.close(schedules.lease)
         await session.stop()
     }
 
     private static func startSharedRefresh(in session: isolated FeedSession) -> (Task<Void, any Error>, Task<ViewFetch, any Error>, [Task<Void, Never>]) {
         let current = session.generation
-        let refresh = Task.immediate { try await session.refresh(["fleet", "tasks"], generation: current) }
-        let foreground = Task.immediate { try await session.load("fleet", known: "new") }
+        let refresh = Task.immediate { try await session.refresh(["schedules", "tasks"], generation: current) }
+        let foreground = Task.immediate { try await session.load("schedules", known: "new") }
         return (refresh, foreground, Array(session.runningLoadTasks.values))
     }
 
@@ -238,7 +238,7 @@ final class FeedRefreshOrderingTests: XCTestCase {
     private static func startRefreshAndCompleteTasks(in session: isolated FeedSession, response: ViewFetch) throws -> (Task<Void, any Error>, FeedSnapshot) {
         let prior = session.loadOwners["tasks"]
         let current = session.generation
-        let refresh = Task.immediate { try await session.refresh(["fleet", "tasks"], generation: current) }
+        let refresh = Task.immediate { try await session.refresh(["schedules", "tasks"], generation: current) }
         if let owner = session.loadOwners["tasks"], owner != prior {
             session.completeLoad(FeedSession.LoadKey(key: "tasks", known: "seed"), id: owner, result: .success(response))
         }
@@ -258,25 +258,25 @@ private func refreshDocument(_ key: String, version: String, epoch: String = "ep
 private actor RefreshViewPeer: ViewTransport {
     private var refreshing = false
     private var released = false
-    private var fleetWaiters: [CheckedContinuation<Void, Never>] = []
+    private var schedulesWaiters: [CheckedContinuation<Void, Never>] = []
 
     func beginRefresh() { refreshing = true }
 
     func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
-        if refreshing, key == "fleet", !released {
-            await withCheckedContinuation { fleetWaiters.append($0) }
+        if refreshing, key == "schedules", !released {
+            await withCheckedContinuation { schedulesWaiters.append($0) }
         }
         return try refreshDocument(key, version: refreshing ? "new" : "seed")
     }
 
-    func releaseFleet() {
+    func releaseSchedules() {
         released = true
-        let waiters = fleetWaiters
-        fleetWaiters.removeAll()
+        let waiters = schedulesWaiters
+        schedulesWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
     }
 
-    func finish() { releaseFleet() }
+    func finish() { releaseSchedules() }
 
     func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
         throw CancellationError()

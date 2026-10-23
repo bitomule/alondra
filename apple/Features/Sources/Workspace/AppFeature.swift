@@ -3,7 +3,7 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// The iPhone's root: four tabs, each with its own stack of pushed screens, the settings sheet, the
+/// The iPhone's root: three tabs, each with its own stack of pushed screens, the settings sheet, the
 /// toast, where a tapped notification lands, and the delivery of what a screen sent as it left. It keeps
 /// the Waiting for You queue observed on every tab, since its badge counts that queue, and subscribes
 /// to the feed for the screens that still refresh through the root (`legacy`); the rebuilt screens
@@ -15,20 +15,17 @@ public struct AppFeature: Sendable {
     @ObservableState
     public struct State: Equatable {
         public init() {}
-        public enum Tab: Hashable, CaseIterable, Sendable { case inbox, tasks, fleet, newRequest }
+        public enum Tab: Hashable, CaseIterable, Sendable { case inbox, tasks, newRequest }
         public var tab = Tab.inbox
         /// Whether the Mac is answering: every connection indicator in the app derives from it.
         public var connection = ConnectionState.connecting
         public var settingsPresented = false
         public var notice: WorkspaceNotice?
-        public var closeRefusal: String?
         public var triage = TriageFeature.State()
         public var tasks = TasksFeature.State()
-        public var fleet = FleetFeature.State()
         public var newRequest = NewRequestFeature.State()
         public var inboxPath = StackState<DetailRoute.State>()
         public var tasksPath = StackState<DetailRoute.State>()
-        public var fleetPath = StackState<DetailRoute.State>()
         public var newRequestPath = StackState<DetailRoute.State>()
         @Presents public var mcpSignIn: McpSignInFeature.State?
     }
@@ -43,14 +40,11 @@ public struct AppFeature: Sendable {
         /// A notification was tapped: show that card at the front of Waiting for You.
         case notificationOpened(cardID: String)
         case dismissNotice(UUID)
-        case dismissCloseRefusal
         case triage(TriageFeature.Action)
         case tasks(TasksFeature.Action)
-        case fleet(FleetFeature.Action)
         case newRequest(NewRequestFeature.Action)
         case inboxPath(StackActionOf<DetailRoute>)
         case tasksPath(StackActionOf<DetailRoute>)
-        case fleetPath(StackActionOf<DetailRoute>)
         case newRequestPath(StackActionOf<DetailRoute>)
         case viewsFeed(FeedEvent)
         case connectionChanged(ConnectionState)
@@ -71,7 +65,6 @@ public struct AppFeature: Sendable {
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
-        Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
             guard let toast = Self.toast(for: action) else { return reduce(&state, action) }
@@ -84,7 +77,6 @@ public struct AppFeature: Sendable {
         }
         .forEach(\.inboxPath, action: \.inboxPath)
         .forEach(\.tasksPath, action: \.tasksPath)
-        .forEach(\.fleetPath, action: \.fleetPath)
         .forEach(\.newRequestPath, action: \.newRequestPath)
         .ifLet(\.$mcpSignIn, action: \.mcpSignIn) { McpSignInFeature() }
     }
@@ -121,9 +113,6 @@ public struct AppFeature: Sendable {
             guard state.notice?.id == id else { return .none }
             state.notice = nil
             return .cancel(id: CancelID.notice)
-        case .dismissCloseRefusal:
-            state.closeRefusal = nil
-            return .none
         case .notificationOpened(let cardID):
             state.tab = .inbox
             state.settingsPresented = false
@@ -140,15 +129,8 @@ public struct AppFeature: Sendable {
             switch tab {
             case .inbox: Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
             case .tasks: Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
-            case .fleet: Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
             case .newRequest: Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
             }
-            return .none
-        case .fleet(.delegate(.closeRefused(let message))):
-            state.closeRefusal = message
-            return .none
-        case .fleet(.delegate(.screen(.open(let key)))):
-            Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
             return .none
         case .viewsFeed(.stale(let keys)):
             return Self.refreshPaths(state, .stale(keys))
@@ -170,21 +152,14 @@ public struct AppFeature: Sendable {
             if case .handOff(let request)? = route.delegate { return deliver(request, from: state.tasksPath[id: id]?.key) }
             if case .open(let key)? = route.delegate { Self.push(key, onto: &state.tasksPath, owner: "ios.tasks") }
             return .none
-        case .fleetPath(.element(id: let id, action: let route)):
-            if case .handOff(let request)? = route.delegate { return deliver(request, from: state.fleetPath[id: id]?.key) }
-            if case .open(let key)? = route.delegate { Self.push(key, onto: &state.fleetPath, owner: "ios.fleet") }
-            return .none
         case .newRequestPath(.element(id: let id, action: let route)):
             if case .handOff(let request)? = route.delegate { return deliver(request, from: state.newRequestPath[id: id]?.key) }
             if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
             return .none
         case .handOffAnswered(let request, let reply):
-            let applied = reply.outcome == .applied
-            return .merge(.send(.triage(.handOffSettled(request, applied: applied))),
-                          .send(.fleet(.handOffSettled(request, applied: applied))))
+            return .send(.triage(.handOffSettled(request, applied: reply.outcome == .applied)))
         case .handOffFailed(let request, let failure):
-            return .merge(.send(.triage(.handOffUndelivered(request, failure))),
-                          .send(.fleet(.handOffSettled(request, applied: false))))
+            return .send(.triage(.handOffUndelivered(request, failure)))
         case let .mcpSignInRequested(card, server):
             state.mcpSignIn = McpSignInFeature.State(card: card, server: server)
             return .none
@@ -195,13 +170,13 @@ public struct AppFeature: Sendable {
                     await send(.mcpReconnected(nil))
                 } catch { await send(.mcpReconnected(McpSignInFeature.failure(of: error, opening: true))) }
             }
-        case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath, .mcpReconnected, .mcpSignIn:
+        case .triage, .tasks, .newRequest, .inboxPath, .tasksPath, .newRequestPath, .mcpReconnected, .mcpSignIn:
             return .none
         }
     }
 
-    /// A screen that left as it sent its action, before preparing it: the queue and the fleet show
-    /// the result at once, and the action is prepared, delivered and settled here, where it outlives
+    /// A screen that left as it sent its action, before preparing it: the queue shows the result
+    /// at once, and the action is prepared, delivered and settled here, where it outlives
     /// the screen.
     private func deliver(_ request: ActionRequest, from key: ViewKey?) -> Effect<Action> {
         let cardID = key.flatMap { key in
@@ -209,7 +184,6 @@ public struct AppFeature: Sendable {
         }
         return .merge(
             cardID.map { .send(.triage(.handedOff(request, cardID: $0))) } ?? .none,
-            .send(.fleet(.handedOff(request))),
             .run { [viewsClient] send in
                 let prepared: ActionRequest
                 do { prepared = try await viewsClient.prepare(request) }
@@ -236,7 +210,6 @@ public struct AppFeature: Sendable {
         return .merge(
             legacyIDs(state.inboxPath).map { .send(.inboxPath(.element(id: $0, action: .legacy(action)))) }
             + legacyIDs(state.tasksPath).map { .send(.tasksPath(.element(id: $0, action: .legacy(action)))) }
-            + legacyIDs(state.fleetPath).map { .send(.fleetPath(.element(id: $0, action: .legacy(action)))) }
             + legacyIDs(state.newRequestPath).map { .send(.newRequestPath(.element(id: $0, action: .legacy(action)))) }
         )
     }
@@ -246,7 +219,7 @@ public struct AppFeature: Sendable {
         switch action {
         case .triage(.cards(.element(id: _, action: .actions(.delegate(let value))))):
             delegate = value
-        case .tasks(.delegate(let value)), .fleet(.delegate(.screen(let value))), .newRequest(.delegate(let value)):
+        case .tasks(.delegate(let value)), .newRequest(.delegate(let value)):
             return value.event
         case .triage(.delegate(.noLongerPending(let why))):
             return .actionCompleted(why ?? String(localized: "That’s no longer pending"))
@@ -264,7 +237,6 @@ public struct AppFeature: Sendable {
             return McpSignInFeature.reconnectNotice(failure)
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
-             .fleetPath(.element(id: _, action: let route)),
              .newRequestPath(.element(id: _, action: let route)):
             return route.delegate?.event
         default:

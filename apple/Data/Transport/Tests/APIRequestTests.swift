@@ -11,7 +11,7 @@ final class APIRequestTests: XCTestCase {
     }
 
     func testEveryShippingViewFamilyIsAccepted() throws {
-        for key in ["home", "sidebar", "tasks", "fleet", "schedules", "machine", "new_request",
+        for key in ["home", "sidebar", "tasks", "schedules", "machine", "new_request",
                     "issue_picker", "search", "card:i-1", "task:hf-weekly-2026-09-30",
                     "request:r-1", "document:rev-1", "node:550e8400-e29b-41d4-a716-446655440000",
                     "schedule:hf-weekly-2026-09-30", "pull_request:github.com/bitomule/alondra#154",
@@ -31,7 +31,8 @@ final class APIRequestTests: XCTestCase {
             XCTAssertThrowsError(try request(key), key)
         }
         XCTAssertThrowsError(try request("tasks", extra: [("section", "invalid"), ("after", "20")]))
-        XCTAssertThrowsError(try request("fleet", extra: [("after", "20")]))
+        XCTAssertThrowsError(try request("schedules", extra: [("after", "20")]))
+        XCTAssertThrowsError(try request("fleet"), "the app no longer asks for the fleet")
         XCTAssertThrowsError(try request("home", extra: [("focus", "../secret")]))
     }
 }

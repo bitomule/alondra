@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v7d61cc0459ead4e9",
+  "version": "vb92e3624eeab2265",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "v29e230088bd2c22c",
+    "version": "vf84c4996f0984c30",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -24,8 +24,8 @@
       },
       {
         "id": "agents",
-        "label": "Fleet",
-        "value": 1
+        "label": "In progress",
+        "value": 0
       },
       {
         "id": "working",
@@ -69,7 +69,7 @@
           "items": [
             {
               "label": "State",
-              "value": "Needs you",
+              "value": "Needs you · 5 open questions",
               "tone": "warning"
             },
             {
@@ -183,18 +183,18 @@
           "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
           "context": [
             {
-              "icon": "node",
-              "text": "Alondra · iOS",
+              "icon": "task",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               },
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for an answer",
+                "text": "Needs you",
                 "tone": "warning"
               }
             }
@@ -307,18 +307,18 @@
           "title": "The pull request checks passed",
           "context": [
             {
-              "icon": "node",
-              "text": "Alondra · iOS",
+              "icon": "task",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               },
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for an answer",
+                "text": "Needs you",
                 "tone": "warning"
               }
             }
@@ -378,7 +378,7 @@
             },
             {
               "label": "PR handling",
-              "value": "No PR review; merge still needs your authorization"
+              "value": "Auto-merge: Alondra merges it once its checks pass"
             }
           ]
         }
@@ -395,6 +395,7 @@
               "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Priority",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "menu",
               "options": [
                 {
@@ -429,12 +430,14 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Cancel Task",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -445,7 +448,8 @@
                 "message": "Cancel this task?",
                 "button": "Cancel Task"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

@@ -15,7 +15,6 @@ public struct ViewKey: RawRepresentable, Hashable, Codable, Sendable {
     public static func request(_ id: String) -> ViewKey { ViewKey(rawValue: "request:\(id)") }
     public static func document(_ id: String) -> ViewKey { ViewKey(rawValue: "document:\(id)") }
     public static func pullRequest(_ id: String) -> ViewKey { ViewKey(rawValue: "pull_request:\(id)") }
-    public static let fleet = ViewKey(rawValue: "fleet")
     public static func node(_ id: String) -> ViewKey { ViewKey(rawValue: "node:\(id)") }
     public static let schedules = ViewKey(rawValue: "schedules")
     public static func schedule(_ id: String) -> ViewKey { ViewKey(rawValue: "schedule:\(id)") }

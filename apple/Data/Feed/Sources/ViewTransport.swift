@@ -233,7 +233,7 @@ struct ViewRoute {
         guard !key.isEmpty, key.utf8.count <= 1024 else { return nil }
         let parts = key.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let path = String(parts[0])
-        if !["home", "sidebar", "tasks", "fleet", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers"].contains(path) {
+        if !["home", "sidebar", "tasks", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers"].contains(path) {
             let named = ["card", "document", "pull_request", "task", "request", "node", "schedule"]
             guard let colon = path.firstIndex(of: ":"), named.contains(String(path[..<colon])) else { return nil }
             let id = String(path[path.index(after: colon)...])

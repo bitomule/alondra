@@ -1,6 +1,66 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Keep up with your tasks, answer a question, and help your work move forward.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sigue tus tareas, responde preguntas y haz avanzar tu trabajo."
+          }
+        }
+      }
+    },
+    "Your tasks carry on by themselves. When one needs you, it will show up here.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tus tareas siguen solas. Cuando una te necesite, aparecerá aquí."
+          }
+        }
+      }
+    },
+    "What it needs": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué necesita"
+          }
+        }
+      }
+    },
+    "Workflows": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flujos de trabajo"
+          }
+        }
+      }
+    },
+    "Subagents": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subagentes"
+          }
+        }
+      }
+    },
+    "Steps": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pasos"
+          }
+        }
+      }
+    },
     "Update Alondra to use this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esto"}}}},
     "Update Alondra to see this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para ver esto"}}}},
     "Your Mac could not do it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. Vuelve a intentarlo."}}}},
@@ -215,7 +275,6 @@
     "Saving…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Guardando…"}}}},
     "This pull request is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta solicitud de cambios ya no está disponible"}}}},
     "Running in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En segundo plano"}}}},
-    "Summary": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Resumen"}}}},
     "Couldn’t load the diff. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el diff. Inténtalo de nuevo."}}}},
     "Could not open attachment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo abrir el adjunto"}}}},
     "Couldn’t close the node": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cerrar el nodo"}}}},
@@ -239,7 +298,6 @@
     "Uses this device’s local time zone. Missed runs are sent once when Alondra starts again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Usa la zona horaria local. Si se pierde una ejecución, Alondra la crea una sola vez al arrancar."}}}},
     "Disallowed tools (one pattern per line)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Herramientas no permitidas (un patrón por línea)"}}}},
     "These tool patterns are passed to Claude as disallowed tools for every run.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Estos patrones se pasan a Claude como herramientas no permitidas en cada ejecución."}}}},
-    "Search fleet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscar en la flota"}}}},
     "Couldn’t reach your Mac. Open Alondra to answer.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo llegar a tu Mac. Abre Alondra para responder."}}}},
     "Service is no longer active": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio ya no está activo"}}}},
     "Choose a non-empty file no larger than 20 MiB.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un archivo que no esté vacío y no supere los 20 MiB."}}}},
@@ -919,16 +977,6 @@
         }
       }
     },
-    "Close Node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerrar nodo"
-          }
-        }
-      }
-    },
     "Code": {
       "localizations": {
         "es": {
@@ -965,16 +1013,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Conectado"
-          }
-        }
-      }
-    },
-    "Connecting to the fleet…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conectando con la flota…"
           }
         }
       }
@@ -1157,16 +1195,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Terminada sin tareas"
-          }
-        }
-      }
-    },
-    "Fleet": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Flota"
           }
         }
       }
@@ -1387,16 +1415,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Más"
-          }
-        }
-      }
-    },
-    "Needs": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Necesita"
           }
         }
       }
@@ -2042,16 +2060,6 @@
         }
       }
     },
-    "The fleet carries on by itself. When a node needs you, it will show up here.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La flota sigue sola. Cuando un nodo te necesite, aparecerá aquí."
-          }
-        }
-      }
-    },
     "The node asks": {
       "localizations": {
         "es": {
@@ -2118,16 +2126,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Se borra la clave de este iPhone. Para volver a conectarte fuera de este Mac tendrás que vincularlo otra vez."
-          }
-        }
-      }
-    },
-    "This node is gone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este nodo ya no está"
           }
         }
       }
@@ -3828,16 +3826,6 @@
         }
       }
     },
-    "Keep up with your fleet, answer a question, and help your work move forward.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sigue a tu flota, responde preguntas y haz avanzar tu trabajo."
-          }
-        }
-      }
-    },
     "Your Mac": {
       "localizations": {
         "es": {
@@ -4064,16 +4052,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Un lugar para tu trabajo."
-          }
-        }
-      }
-    },
-    "Connect your account and the Mac running your fleet. Your questions, tasks and conversations come together here.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conecta tu cuenta y el Mac donde se ejecuta tu flota. Aquí encontrarás tus preguntas, tareas y conversaciones."
           }
         }
       }
@@ -4396,16 +4374,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Revisa Alondra"
-          }
-        }
-      }
-    },
-    "Could not connect to the fleet": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se pudo conectar con la flota"
           }
         }
       }

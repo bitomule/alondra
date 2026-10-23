@@ -42,7 +42,7 @@ public struct SignInView: View {
         PairingLayout(store: store, glow: Palette.dawn, step: 0) {
             Text("Your work.\nWithin reach.")
         } subtitle: {
-            Text("Keep up with your fleet, answer a question, and help your work move forward.")
+            Text("Keep up with your tasks, answer a question, and help your work move forward.")
         } content: {
             switch store.phase {
             case .signedOut:

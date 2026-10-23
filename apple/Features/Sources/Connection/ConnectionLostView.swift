@@ -2,7 +2,7 @@ import AlondraContract
 import AlondraDesign
 import SwiftUI
 
-/// The one screen both apps show while the fleet is out of reach. It says what is wrong in
+/// The one screen both apps show while the Mac is out of reach. It says what is wrong in
 /// plain words and keeps retrying by itself; signing out lives only in Settings.
 public struct ConnectionLostView: View {
     let problem: ConnectionProblem?

@@ -28,7 +28,7 @@ final class AppFeatureTests: XCTestCase {
     @MainActor
     func testATappedNotificationShowsItsCardAtTheFrontOfWaitingForYou() async {
         var state = AppFeature.State()
-        state.tab = .fleet
+        state.tab = .tasks
         let store = makeStore(state)
 
         await store.send(.notificationOpened(cardID: "card:a98d034b"))
@@ -71,9 +71,9 @@ final class AppFeatureTests: XCTestCase {
     func testOpeningFromACardInWaitingForYouPushesItsScreenAsTheOnlyOne() async {
         let store = makeStore()
         await store.send(.open(.inbox, key("task:t-1")))
-        await store.send(.triage(.delegate(.open(key("node:a-1")))))
+        await store.send(.triage(.delegate(.open(key("card:i-1")))))
         await store.receive(\.openFromTriage)
-        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("node:a-1")])
+        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("card:i-1")])
     }
 
     @MainActor
@@ -94,8 +94,8 @@ final class AppFeatureTests: XCTestCase {
     func testATriageCardReplacesWhateverWasPushedInWaitingForYou() async {
         let store = makeStore()
         await store.send(.open(.inbox, key("task:t-1")))
-        await store.send(.open(.inbox, key("node:a-1")))
-        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("task:t-1"), key("node:a-1")])
+        await store.send(.open(.inbox, key("card:i-1")))
+        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("task:t-1"), key("card:i-1")])
 
         await store.send(.openFromTriage(key("card:i-9")))
         XCTAssertEqual(store.state.inboxPath.map(\.key), [key("card:i-9")])
@@ -105,12 +105,10 @@ final class AppFeatureTests: XCTestCase {
     func testEachTabKeepsItsOwnStack() async {
         let store = makeStore()
         await store.send(.open(.tasks, key("task:t-1")))
-        await store.send(.open(.fleet, key("node:a-1")))
-        await store.send(.open(.newRequest, key("node:a-2")))
+        await store.send(.open(.newRequest, key("task:t-2")))
 
         XCTAssertEqual(store.state.tasksPath.map(\.key), [key("task:t-1")])
-        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("node:a-1")])
-        XCTAssertEqual(store.state.newRequestPath.map(\.key), [key("node:a-2")])
+        XCTAssertEqual(store.state.newRequestPath.map(\.key), [key("task:t-2")])
         XCTAssertTrue(store.state.inboxPath.isEmpty)
     }
 
@@ -149,7 +147,7 @@ final class AppFeatureTests: XCTestCase {
         await clock.advance(by: .seconds(3))
         XCTAssertNotNil(store.state.notice)
 
-        await store.send(.fleet(.delegate(.screen(.completed("Done")))))
+        await store.send(.newRequest(.delegate(.completed("Done"))))
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("Done"))
         await clock.advance(by: .seconds(2.2))
         await store.receive(\.dismissNotice)
@@ -169,9 +167,6 @@ final class AppFeatureTests: XCTestCase {
             case .tasks:
                 let id = try XCTUnwrap(store.state.tasksPath.ids.first)
                 await store.send(.tasksPath(.element(id: id, action: .legacy(delegate))))
-            case .fleet:
-                let id = try XCTUnwrap(store.state.fleetPath.ids.first)
-                await store.send(.fleetPath(.element(id: id, action: .legacy(delegate))))
             case .newRequest:
                 let id = try XCTUnwrap(store.state.newRequestPath.ids.first)
                 await store.send(.newRequestPath(.element(id: id, action: .legacy(delegate))))
@@ -187,7 +182,6 @@ final class AppFeatureTests: XCTestCase {
             ("schedules", .schedules(.delegate(.failed("No")))),
             ("schedule:new", .scheduleEditor(.delegate(.failed("No")))),
             ("pull_request:github.com/o/r#1", .prReview(.delegate(.failed("No")))),
-            ("node:a-1", .nodeDetail(.delegate(.failed("No")))),
         ]
         for tab in AppFeature.State.Tab.allCases {
             for (screen, action) in routes {
@@ -196,7 +190,6 @@ final class AppFeatureTests: XCTestCase {
                 switch tab {
                 case .inbox: await store.send(.inboxPath(.element(id: try XCTUnwrap(store.state.inboxPath.ids.first), action: action)))
                 case .tasks: await store.send(.tasksPath(.element(id: try XCTUnwrap(store.state.tasksPath.ids.first), action: action)))
-                case .fleet: await store.send(.fleetPath(.element(id: try XCTUnwrap(store.state.fleetPath.ids.first), action: action)))
                 case .newRequest: await store.send(.newRequestPath(.element(id: try XCTUnwrap(store.state.newRequestPath.ids.first), action: action)))
                 }
                 XCTAssertEqual(store.state.notice?.event, .failure("No"), "\(screen) on \(tab)")
@@ -214,10 +207,10 @@ final class AppFeatureTests: XCTestCase {
         await store.send(.tasksPath(.element(id: schedules, action: .schedules(.delegate(.open(key("schedule:new")))))))
         XCTAssertEqual(store.state.tasksPath.map(\.key), [key("schedules"), key("schedule:new")])
 
-        await store.send(.open(.fleet, key("task:t-1")))
-        let task = try XCTUnwrap(store.state.fleetPath.ids.first)
-        await store.send(.fleetPath(.element(id: task, action: .taskDetail(.delegate(.open(key("node:a-1")))))))
-        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("task:t-1"), key("node:a-1")])
+        await store.send(.open(.inbox, key("task:t-1")))
+        let task = try XCTUnwrap(store.state.inboxPath.ids.first)
+        await store.send(.inboxPath(.element(id: task, action: .taskDetail(.delegate(.open(key("card:i-1")))))))
+        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("task:t-1"), key("card:i-1")])
         XCTAssertEqual(store.state.tasksPath.count, 2, "the other tabs are not touched")
     }
 
@@ -313,28 +306,18 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "confirmed late, it leaves")
     }
 
-    // MARK: Close refusal
+    // MARK: No fleet
 
     @MainActor
-    func testARefusedCloseFromTheFleetOpensTheRefusalAlert() async {
+    func testTheTabsAreTheInboxTasksAndANewRequestAndANodeOpensNothing() async {
+        XCTAssertEqual(AppFeature.State.Tab.allCases, [.inbox, .tasks, .newRequest])
         let store = makeStore()
-
-        await store.send(.fleet(.delegate(.closeRefused("It is working"))))
-        XCTAssertEqual(store.state.closeRefusal, "It is working")
-        await store.send(.dismissCloseRefusal)
-        XCTAssertNil(store.state.closeRefusal)
-    }
-
-    @MainActor
-    func testTheFleetOpensANodeAndTheNodeOpensItsTaskInTheFleetStack() async throws {
-        let store = makeStore()
-
-        await store.send(.fleet(.delegate(.screen(.open(key("node:a-1"))))))
-        let id = try XCTUnwrap(store.state.fleetPath.ids.first)
-        await store.send(.fleetPath(.element(id: id, action: .nodeDetail(.delegate(.open(key("task:t-1")))))))
-
-        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("node:a-1"), key("task:t-1")])
+        for tab in AppFeature.State.Tab.allCases {
+            await store.send(.open(tab, key("node:a-1")))
+        }
         XCTAssertTrue(store.state.inboxPath.isEmpty)
+        XCTAssertTrue(store.state.tasksPath.isEmpty)
+        XCTAssertTrue(store.state.newRequestPath.isEmpty)
     }
 
     // MARK: Feed
@@ -345,11 +328,10 @@ final class AppFeatureTests: XCTestCase {
         await store.send(.open(.tasks, key("tasks?section=finished&after=20")))
         await store.send(.open(.inbox, key("tasks?section=archived&after=20")))
         await store.send(.open(.inbox, key("card:i-9")))
-        await store.send(.open(.fleet, key("node:a-1")))
-        await store.send(.open(.fleet, key("pull_request:github.com/o/r#1")))
+        await store.send(.open(.newRequest, key("pull_request:github.com/o/r#1")))
         store.exhaustivity = .on
 
-        await store.send(.viewsFeed(.stale(["node:a-1"])))
+        await store.send(.viewsFeed(.stale(["card:i-9"])))
         await store.receive(\.inboxPath.element)
         await store.receive(\.tasksPath.element)
         XCTAssertEqual(store.state.inboxPath.count, 2, "the review is not sent the change, it observes its own key")

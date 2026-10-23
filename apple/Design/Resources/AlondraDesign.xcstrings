@@ -343,36 +343,6 @@
         }
       }
     },
-    "Close %@?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Cerrar %@?"
-          }
-        }
-      }
-    },
-    "Close Node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerrar nodo"
-          }
-        }
-      }
-    },
-    "Couldn’t close the node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se pudo cerrar el nodo"
-          }
-        }
-      }
-    },
     "Couldn’t save the key to the keychain (%@)": {
       "localizations": {
         "es": {
@@ -649,16 +619,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "En marcha en segundo plano"
-          }
-        }
-      }
-    },
-    "Runs claude rm. It never discards work: if the node has uncommitted or unpushed changes, or its worktree is still there, the server refuses and tells you why.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ejecuta claude rm. Nunca descarta trabajo: si el nodo tiene cambios sin commit o sin push, o su worktree sigue ahí, el servidor se niega y te dice por qué."
           }
         }
       }

@@ -398,7 +398,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.skipReceivedActions()
 
         XCTAssertEqual(store.state.screen.key, .home)
-        XCTAssertNotNil(store.state.screen.document, "the queue is shown, not 'Connecting to the fleet…'")
+        XCTAssertNotNil(store.state.screen.document, "the queue is shown, not 'Connecting to your Mac…'")
         XCTAssertEqual(store.state.orderedIDs, liveQueue)
         XCTAssertEqual(store.state.currentCard?.id, liveQueue[0])
         XCTAssertEqual(store.state.cards[id: liveQueue[1]]?.card?.id, liveQueue[1])

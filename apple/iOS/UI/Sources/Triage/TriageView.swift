@@ -54,7 +54,7 @@ public struct TriageView: View {
             } else if store.screen.document == nil {
                 VStack(spacing: 16) {
                     ProgressView().controlSize(.large).tint(Palette.dawn)
-                    Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Connecting to your Mac…").font(.subheadline).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.orderedIDs.isEmpty {
                 empty
@@ -116,7 +116,7 @@ public struct TriageView: View {
 
     private var summary: Text {
         guard let header = store.header else {
-            return Text(store.status?.summary ?? String(localized: "Connecting to the fleet…"))
+            return Text(store.status?.summary ?? String(localized: "Connecting to your Mac…"))
         }
         var parts: [Text] = []
         if header.questions > 0 { parts.append(Text("\(header.questions) questions")) }
@@ -255,7 +255,7 @@ public struct TriageView: View {
                 .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
             Text(store.screen.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
                 .font(.display(.title, weight: .bold))
-            Text("The fleet carries on by itself. When a node needs you, it will show up here.")
+            Text("Your tasks carry on by themselves. When one needs you, it will show up here.")
                 .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 300)
             HStack(spacing: 10) {
                 emptyStat("working", count: statusCount("working"), tint: Palette.sky)

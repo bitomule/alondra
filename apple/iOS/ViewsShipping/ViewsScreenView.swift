@@ -13,7 +13,6 @@ struct ViewsScreenView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.mcpLinks) private var mcpLinks
     @State private var diffComments: [String: ActionComment] = [:]
-    @State private var nodeMessageDraft = ""
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isInlineForm: Bool { store.key.rawValue.hasPrefix("schedule:") }
@@ -22,10 +21,7 @@ struct ViewsScreenView: View {
             if case let .row(row) = item { row } else { nil }
         } ?? []
     }
-    private var screenGlow: Color {
-        if store.key.rawValue == "fleet" || store.key.rawValue.hasPrefix("node:") { Palette.sky }
-        else { Palette.dawn }
-    }
+    private var screenGlow: Color { Palette.dawn }
 
     var body: some View { alertsContent }
 
@@ -34,10 +30,6 @@ struct ViewsScreenView: View {
         .task { await store.send(.appeared).finish() }
         .task(id: store.document?.version) {
             guard let document = store.document else { return }
-            if store.key.rawValue.hasPrefix("node:"), let message = nodeMessageAction(document),
-               store.action.action?.id != message.id {
-                store.send(.action(.present(message)))
-            }
             if store.key.rawValue.hasPrefix("pull_request:"),
                let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
                     if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
@@ -48,9 +40,6 @@ struct ViewsScreenView: View {
                 }
                 return
             }
-        }
-        .onChange(of: store.action.stamp) { old, new in
-            if old == nil, new != nil { nodeMessageDraft = "" }
         }
         .onDisappear { store.send(.disappeared) }
     }
@@ -64,7 +53,7 @@ struct ViewsScreenView: View {
 
     private var actionSheetContent: some View {
         attachmentContent
-        .sheet(isPresented: Binding(get: { store.actionSheetPresented && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && store.actionSheetPresented && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
+        .sheet(isPresented: Binding(get: { store.actionSheetPresented && !isInlineForm }, set: { if !$0 && store.actionSheetPresented && !isInlineForm { store.send(.action(.dismiss)) } })) {
             let action = store.scope(state: \.action, action: \.action)
             ActionComposerSheet(store: action, title: action.action?.label ?? "", submit: composerSubmit,
                                 tint: screenGlow) {
@@ -147,18 +136,8 @@ struct ViewsScreenView: View {
                                 .padding(.top, 4)
                         }
                         ForEach(document.notices, id: \.text) { notice in NoticeView(notice: notice) }
-                        ForEach(displayedSections(in: document), id: \.id) { section in
+                        ForEach(document.sections, id: \.id) { section in
                             sectionContent(section)
-                        }
-                        if store.key.rawValue == "fleet", !store.searchQuery.isEmpty {
-                            if store.searchLoading { ProgressView().frame(maxWidth: .infinity).padding() }
-                            else if let error = store.searchError {
-                                ContentUnavailableView(error, systemImage: "exclamationmark.triangle")
-                                    .font(.callout)
-                                    .accessibilityIdentifier("fleet.searchFailed")
-                            } else if let empty = store.searchDocument?.empty {
-                                ContentUnavailableView(empty.text, systemImage: "magnifyingglass")
-                            }
                         }
                         if let content = store.content {
                             if store.contentReference?.kind == .diff {
@@ -183,7 +162,7 @@ struct ViewsScreenView: View {
                 .navigationTitle(isTasksScreen ? "" : (document.title ?? document.status.summary))
                 .navigationBarTitleDisplayMode(isTasksScreen ? .inline : .automatic)
                 .refreshable { await store.send(.refresh).finish() }
-                .modifier(BottomBarModifier(enabled: hasBottomBar(document)) { documentBottomBar(document) })
+                .modifier(BottomBarModifier(enabled: hasBottomBar) { documentBottomBar })
                 .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
                 .toolbar {
                     if store.key.rawValue == "schedules" {
@@ -195,49 +174,21 @@ struct ViewsScreenView: View {
                         Button("Refresh", systemImage: "arrow.clockwise") { store.send(.refresh) }
                     }
                 }
-                .modifier(FleetSearchModifier(enabled: store.key.rawValue == "fleet",
-                    text: Binding(get: { store.searchQuery }, set: { store.send(.searchQueryChanged($0)) })))
     }
 
     private var hidesTabBar: Bool {
-        store.key.rawValue.hasPrefix("task:") || store.key.rawValue.hasPrefix("node:")
+        store.key.rawValue.hasPrefix("task:")
     }
 
-    private func hasBottomBar(_ document: ViewDocument) -> Bool {
-        if store.key.rawValue.hasPrefix("node:") { return nodeMessageAction(document) != nil }
-        return isInlineForm && store.form != nil
-    }
+    private var hasBottomBar: Bool { isInlineForm && store.form != nil }
 
-    @ViewBuilder private func documentBottomBar(_ document: ViewDocument) -> some View {
-                    if store.key.rawValue.hasPrefix("node:"), let action = nodeMessageAction(document) {
-                        HStack(alignment: .bottom, spacing: 10) {
-                            HStack(alignment: .bottom, spacing: 4) {
-                                AttachButton(store: store.scope(state: \.action.attachmentPicker,
-                                    action: { .action(.attachmentPicker($0)) }))
-                                    .padding(.leading, 6).padding(.bottom, 4)
-                                TextField(messagePlaceholder(action), text: $nodeMessageDraft, axis: .vertical)
-                                    .lineLimit(1...5)
-                                    .padding(.trailing, 16).padding(.vertical, 12)
-                            }
-                            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-                            Button {
-                                store.send(.action(.textChanged(nodeMessageDraft)))
-                                store.send(.action(.submit))
-                            } label: {
-                                Image(systemName: "arrow.up").font(.body.weight(.bold))
-                                    .frame(width: 26, height: 26)
-                            }
-                            .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(Palette.dawn)
-                            .disabled(nodeMessageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .accessibilityLabel(action.label)
-                        }
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                    } else if isInlineForm, let form = store.form {
-                        Button(form.submit.label) { store.send(.action(.submit)) }
-                            .buttonStyle(.borderedProminent).tint(Palette.dawn)
-                            .disabled(store.action.inFlight || !form.submit.enabled)
-                            .frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 8)
-                    }
+    @ViewBuilder private var documentBottomBar: some View {
+        if isInlineForm, let form = store.form {
+            Button(form.submit.label) { store.send(.action(.submit)) }
+                .buttonStyle(.borderedProminent).tint(Palette.dawn)
+                .disabled(store.action.inFlight || !form.submit.enabled)
+                .frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 8)
+        }
     }
 
     private func follow(_ link: AlondraContract.Link) {
@@ -275,14 +226,6 @@ struct ViewsScreenView: View {
             taskNow(section)
         } else if store.key.rawValue.hasPrefix("task:"), section.id == "waiting" {
             taskWaiting(section)
-        } else if store.key.rawValue.hasPrefix("node:"), section.id == "waiting" {
-            if !section.items.isEmpty { taskWaiting(section) }
-        } else if store.key.rawValue.hasPrefix("node:"), section.id == "since" {
-            EmptyView()
-        } else if store.key.rawValue.hasPrefix("node:"), section.id == "header" {
-            nodeHeader(section)
-        } else if store.key.rawValue.hasPrefix("node:"), section.id == "last_message" {
-            nodeLastMessage(section)
         } else if isTasksScreen, ["active", "finished", "archived"].contains(section.id) {
             if !section.collapsed {
                 VStack(alignment: .leading, spacing: 10) {
@@ -311,17 +254,6 @@ struct ViewsScreenView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 24)
-            }
-        } else if store.key.rawValue == "fleet",
-                  section.id == "nodes" || section.id == "orchestrator" || section.id == "results" || section.id.hasPrefix("project:") {
-            VStack(alignment: .leading, spacing: 8) {
-                if let title = section.title {
-                    Text(title).font(.display(.title3, weight: .bold)).foregroundStyle(Palette.ink)
-                }
-                let rows = section.items.compactMap { item -> AlondraContract.Row? in
-                    if case let .row(row) = item { row } else { nil }
-                }
-                ForEach(rows, id: \.id) { row in FleetWireRow(row: row, onLink: follow) }
             }
         } else if isTasksScreen, section.id == "actions", !hasFinishedRows {
             let actions = section.items.flatMap { item -> [AlondraContract.Action] in
@@ -373,11 +305,7 @@ struct ViewsScreenView: View {
             ForEach(Array(facts.indices.dropFirst()), id: \.self) { index in
                 let fact = facts[index]
                 Button { if let link = fact.link { follow(link) } } label: {
-                    if case let .view(key) = fact.link, key.hasPrefix("node:") {
-                        Text(fact.value).font(.mono(.caption)).foregroundStyle(.secondary)
-                    } else {
-                        Text("from “\(fact.value)”").font(.subheadline).foregroundStyle(.secondary)
-                    }
+                    Text("from “\(fact.value)”").font(.subheadline).foregroundStyle(.secondary)
                 }.buttonStyle(.plain)
             }
         }
@@ -423,53 +351,6 @@ struct ViewsScreenView: View {
         }
     }
 
-    private func nodeHeader(_ section: ViewSection) -> some View {
-        let state = section.items.compactMap { item -> String? in
-            guard case let .facts(facts) = item else { return nil }
-            return facts.items.first?.value
-        }.first ?? ""
-        let since = store.document?.sections.first(where: { $0.id == "since" })?.items.compactMap { item -> String? in
-            guard case let .row(row) = item, let trailing = row.trailing,
-                  case let .time(at, _) = trailing else { return nil }
-            return relativeSince(at)
-        }.first
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Glyph(symbol: "desktopcomputer", tint: Palette.sky, size: .small)
-                Text(state.prefix(1).uppercased() + state.dropFirst())
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Palette.sky)
-                if let since { Text("since \(since)").font(.subheadline).foregroundStyle(.secondary) }
-            }
-            Text(store.document?.title ?? "")
-                .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func nodeLastMessage(_ section: ViewSection) -> some View {
-        let message = section.items.compactMap { item -> Markdown? in
-            if case let .markdown(markdown) = item { markdown } else { nil }
-        }.first
-        let time = section.items.compactMap { item -> String? in
-            guard case let .row(row) = item, let trailing = row.trailing,
-                  case let .time(at, format) = trailing else { return nil }
-            return ViewsDate.display(at, format: format)
-        }.first
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(section.title ?? String(localized: "What it said last"), systemImage: "text.quote")
-                    .font(.footnote.weight(.bold)).textCase(.uppercase).foregroundStyle(.secondary)
-                Spacer()
-                if let time { Text(time).font(.caption).foregroundStyle(.tertiary) }
-            }
-            if let message {
-                MarkdownView(markdown: message)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(16)
-                    .background(Palette.card.opacity(0.9), in: .rect(cornerRadius: 20))
-            }
-        }
-    }
-
     private func presentForm(_ form: WireForm) {
         store.send(.presentForm(form))
     }
@@ -480,98 +361,12 @@ struct ViewsScreenView: View {
         }) == true
     }
 
-    private func nodeMessageAction(_ document: ViewDocument) -> AlondraContract.Action? {
-        document.sections.flatMap(\.items).flatMap { item -> [AlondraContract.Action] in
-            if case let .actions(bar) = item { bar.actions } else { [] }
-        }.first { $0.verb == "msg" }
-    }
-
-    private func displayedSections(in document: ViewDocument) -> [ViewSection] {
-        guard store.key.rawValue == "fleet", !store.searchQuery.isEmpty else { return document.sections }
-        return store.searchDocument?.sections ?? []
-    }
-
-    private var isInlineNodeMessage: Bool {
-        guard store.key.rawValue.hasPrefix("node:"), let action = store.action.action,
-              let document = store.document, let message = nodeMessageAction(document) else { return false }
-        return action.id == message.id
-    }
-
-    private func messagePlaceholder(_ action: AlondraContract.Action) -> String {
-        if case let .text(placeholder, _, _) = action.input, let placeholder { return placeholder }
-        return String(localized: "Write a message")
-    }
-
     private func excludedActionIDs(for section: ViewSection) -> Set<String> {
         guard let document = store.document else { return [] }
-        if store.key.rawValue.hasPrefix("node:"), section.id == "actions",
-           let message = nodeMessageAction(document), let id = message.id { return [id] }
         guard store.key.rawValue.hasPrefix("pull_request:"), section.id != "actions" else { return [] }
         return Set(document.sections.flatMap(\.items).flatMap { item -> [AlondraContract.Action] in
             if case let .actions(bar) = item { bar.actions } else { [] }
         }.compactMap(\.id))
-    }
-}
-
-private struct FleetWireRow: View {
-    let row: AlondraContract.Row
-    let onLink: (AlondraContract.Link) -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Button { if let link = row.link { onLink(link) } } label: {
-                HStack(alignment: .top, spacing: 12) {
-                Glyph(symbol: row.icon == .orchestrator ? "point.3.connected.trianglepath.dotted" : "desktopcomputer",
-                      tint: fleetTint, size: .small)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.title).font(.mono(.subheadline, weight: .semibold)).foregroundStyle(Palette.ink)
-                        .lineLimit(1).truncationMode(.middle)
-                    if let subtitle = row.subtitle {
-                        Text(subtitle).font(.caption.weight(.semibold)).foregroundStyle(fleetTint).lineLimit(2)
-                    }
-                    if !row.badges.isEmpty {
-                        Text(row.badges.map(\.text).joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 0)
-                if case let .count(value) = row.trailing, value > 0 {
-                    Text(value, format: .number).font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(Palette.onAccent).frame(minWidth: 22, minHeight: 22)
-                        .background(Palette.dawn, in: .capsule)
-                }
-                }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            ForEach(row.children, id: \.id) { child in
-                if child.id == "last_message" {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(child.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        Spacer(minLength: 0)
-                        if let trailing = child.trailing, case let .time(at, format) = trailing {
-                            Text(ViewsDate.display(at, format: format))
-                                .font(.caption2).foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(.horizontal, 14).padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    TaskWireRow(row: child, onLink: onLink)
-                }
-            }
-        }
-        .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 16, style: .continuous))
-    }
-
-    private var fleetTint: Color {
-        if row.icon == .orchestrator { return Palette.ember }
-        return switch row.badges.first?.tone {
-        case .success: Palette.sky
-        case .critical: Palette.rose
-        default: Palette.sage
-        }
     }
 }
 
@@ -681,19 +476,6 @@ private extension AlondraContract.Action {
     var verb: String? {
         guard let id, let separator = id.firstIndex(of: ":") else { return nil }
         return String(id[..<separator])
-    }
-}
-
-private struct FleetSearchModifier: ViewModifier {
-    let enabled: Bool
-    @Binding var text: String
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.searchable(text: $text, prompt: Text("Search fleet"))
-        } else {
-            content
-        }
     }
 }
 

@@ -4,8 +4,11 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// One task: its state and what it is doing now, what it waits for from you, its request, pull
-/// requests, dependencies, documents, options and history, with relaunch, cancel, reopen and archive.
+/// One task: its state, folder and what its node reports, what the node is doing right now and
+/// needs, how far its steps, subagents and workflows have got, what runs in the background and what
+/// it said last, what it waits for from you, its request, pull requests, dependencies, documents,
+/// options and history, with interrupt, relaunch, cancel, reopen and archive and a composer to
+/// write to its node.
 public struct TaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
 
@@ -17,7 +20,14 @@ public struct TaskDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         header(detail)
+                        activity(detail)
+                        needs(detail)
                         waiting(detail)
+                        progress(detail.steps, fallback: String(localized: "Steps"), symbol: "checklist")
+                        progress(detail.subagents, fallback: String(localized: "Subagents"), symbol: "person.2")
+                        progress(detail.workflows, fallback: String(localized: "Workflows"), symbol: "flowchart")
+                        background(detail)
+                        lastMessage(detail)
                         request(detail)
                         pullRequests(detail)
                         dependencies(detail)
@@ -30,6 +40,8 @@ public struct TaskDetailView: View {
                     .padding(.top, 4)
                     .padding(.bottom, 32)
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .safeAreaBar(edge: .bottom) { if detail.message != nil { composer(detail) } }
             } else {
                 ScrollView {
                     ScreenPhaseView(phase: store.screen.phase, missing: "This task is gone") { store.send(.task) }
@@ -41,6 +53,7 @@ public struct TaskDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
+        .sensoryFeedback(.success, trigger: store.composer.stamp) { _, new in new != nil }
     }
 
     private func open(_ link: AlondraContract.Link?) {
@@ -76,15 +89,25 @@ public struct TaskDetailView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
             }
-            if let node = detail.node {
-                Button {
-                    open(node.link)
-                } label: {
-                    Text(verbatim: node.text)
-                        .font(.mono(.caption))
-                        .foregroundStyle(.secondary)
+            if let folder = detail.folder {
+                Text(verbatim: folder.replacing(/^\/Users\/[^\/]+\//, with: "~/"))
+                    .font(.mono(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if !detail.readings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(detail.readings.enumerated(), id: \.offset) { _, reading in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(verbatim: reading.label).foregroundStyle(.secondary)
+                            Text(verbatim: reading.value)
+                                .foregroundStyle(reading.tone.map { TaskStyle.tint(tone: $0) } ?? Palette.ink)
+                                .lineLimit(2)
+                        }
+                        .font(.caption)
+                    }
                 }
-                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
             }
             if let now = detail.now {
                 Label {
@@ -97,6 +120,91 @@ public struct TaskDetailView: View {
                 .lineLimit(3)
             }
         }
+    }
+
+    @ViewBuilder private func activity(_ detail: TaskDetail) -> some View {
+        if !detail.activity.elements.isEmpty {
+            DetailSection(title: detail.activity.title ?? String(localized: "Right now"), symbol: "wrench.and.screwdriver") {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(detail.activity.elements) { ActivityLine(activity: $0) }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder private func needs(_ detail: TaskDetail) -> some View {
+        if let needs = detail.needs.elements.first {
+            DetailSection(title: detail.needs.title ?? String(localized: "What it needs"), symbol: "hand.raised") {
+                MarkdownView(markdown: needs).padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder private func progress(_ section: TaskDetail.Section<TaskDetail.Progress>, fallback: String, symbol: String) -> some View {
+        if !section.elements.isEmpty {
+            DetailSection(title: section.title ?? fallback, symbol: symbol) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(section.elements.enumerated(), id: \.offset) { _, item in ProgressLine(item: item) }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder private func background(_ detail: TaskDetail) -> some View {
+        if !detail.background.elements.isEmpty {
+            DetailSection(title: detail.background.title ?? String(localized: "Running in the background"), symbol: "square.stack.3d.up") {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(detail.background.elements) { BackgroundRow(activity: $0) }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder private func lastMessage(_ detail: TaskDetail) -> some View {
+        if let message = detail.lastMessage {
+            DetailSection(title: message.title ?? String(localized: "What it said last"), symbol: "text.bubble") {
+                VStack(alignment: .leading, spacing: 8) {
+                    MarkdownView(markdown: message.markdown)
+                    if let at = message.at {
+                        TimeText(raw: at).font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private func composer(_ detail: TaskDetail) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AttachmentStrip(store: store.scope(state: \.composer.attachmentPicker, action: \.composer.attachmentPicker))
+            HStack(alignment: .bottom, spacing: 10) {
+                HStack(alignment: .bottom, spacing: 4) {
+                    AttachButton(store: store.scope(state: \.composer.attachmentPicker, action: \.composer.attachmentPicker))
+                        .padding(.leading, 6).padding(.bottom, 4)
+                    TextField(composerPlaceholder(detail.message), text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }),
+                              axis: .vertical)
+                        .lineLimit(1...5)
+                        .padding(.trailing, 16).padding(.vertical, 12)
+                }
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+                Button { store.send(.send) } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.body.weight(.bold)).frame(width: 26, height: 26)
+                }
+                .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(Palette.dawn)
+                .disabled(!store.canSend)
+                .accessibilityLabel("Send")
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+    }
+
+    private func composerPlaceholder(_ action: WireAction?) -> String {
+        if case .text(let placeholder, _, _)? = action?.input, let placeholder { return placeholder }
+        return String(localized: "Write a message")
     }
 
     @ViewBuilder private func waiting(_ detail: TaskDetail) -> some View {
@@ -274,7 +382,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
+        let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
@@ -289,6 +397,7 @@ public struct TaskDetailView: View {
     private static func symbol(for action: WireAction) -> String {
         switch action.command {
         case "relaunch": "arrow.triangle.2.circlepath"
+        case "interrupt", "force_stop": "stop.circle"
         case "resume": "play.circle"
         case "pause": "pause.circle"
         case "cancel": "xmark.circle"
@@ -300,6 +409,7 @@ public struct TaskDetailView: View {
     private static func tint(for action: WireAction) -> Color {
         switch action.command {
         case "relaunch": Palette.sage
+        case "interrupt", "force_stop": Palette.ember
         case "resume": Palette.sky
         case "cancel": Palette.rose
         case "reopen": Palette.sky

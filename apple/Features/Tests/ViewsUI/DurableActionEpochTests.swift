@@ -102,11 +102,11 @@ final class DurableActionEpochTests: XCTestCase {
     @MainActor
     func testOldFailuresCannotRestoreTextIntoNewEpochComposers() async {
         let old = request(oldID, epoch: "old-epoch")
-        var node = NodeDetailFeature.State(key: .node("fixture-node"))
-        node.composer.dataEpoch = "new-epoch"
-        let nodeStore = TestStore(initialState: node) { NodeDetailFeature() }
-        await nodeStore.send(.composer(.settled(old, applied: false)))
-        await nodeStore.finish()
+        var task = TaskDetailFeature.State(key: .task("fixture-task"))
+        task.composer.dataEpoch = "new-epoch"
+        let taskStore = TestStore(initialState: task) { TaskDetailFeature() }
+        await taskStore.send(.composer(.settled(old, applied: false)))
+        await taskStore.finish()
     }
 
     func testChangingTheEpochReleasesTheOldDraftsDeliveryState() {

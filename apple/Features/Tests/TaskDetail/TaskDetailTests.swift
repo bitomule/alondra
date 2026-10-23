@@ -12,8 +12,6 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.state, "Needs you")
         XCTAssertEqual(detail.stateTone, .warning)
         XCTAssertEqual(detail.since, Date(timeIntervalSince1970: 1_767_216_600))
-        XCTAssertEqual(detail.node?.text, "Alondra · iOS")
-        XCTAssertEqual(detail.node?.link, .view(key: "node:n-1"))
         XCTAssertEqual(detail.request?.text, "Polish the Alondra beta")
         XCTAssertNil(detail.request?.link)
         XCTAssertEqual(detail.now?.text, "question: Restore the native review experience")
@@ -33,7 +31,6 @@ final class TaskDetailTests: XCTestCase {
         let spanish = TaskDetail(document: try Samples.document("task-detail-es"))
 
         XCTAssertEqual(spanish.state, "Te necesita")
-        XCTAssertEqual(spanish.node?.text, "Alondra · iOS")
         XCTAssertEqual(spanish.request?.text, "Pulir la beta de Alondra")
         XCTAssertEqual(spanish.waiting.title, "Te espera")
     }
@@ -59,15 +56,54 @@ final class TaskDetailTests: XCTestCase {
     func testTheDaemonsOwnFixtureProjectsToo() throws {
         let detail = TaskDetail(document: try Fixtures.document("task-ios"))
 
-        XCTAssertEqual(detail.state, "Needs you")
+        XCTAssertEqual(detail.state, "Needs you · 5 open questions")
         XCTAssertEqual(detail.stateTone, .warning, "the daemon tints the state with the task's tone")
         XCTAssertNotNil(detail.since)
         XCTAssertEqual(detail.waiting.elements.count, 5)
         XCTAssertEqual(detail.pullRequests.elements.count, 1)
         XCTAssertEqual(detail.dependencies.elements.count, 0)
-        XCTAssertNil(detail.node, "this task has no node yet")
+        XCTAssertNil(detail.folder, "this task has no node yet")
+        XCTAssertTrue(detail.readings.isEmpty)
+        XCTAssertNil(detail.interrupt)
         XCTAssertEqual(detail.actions.map(\.command), ["set_priority", "cancel"], "an open task can only change its priority or be cancelled")
         XCTAssertEqual(detail.priority?.options.map(\.id), ["high", "normal", "low"])
+    }
+
+    func testWhatTheNodeReportsLandsInItsPlace() throws {
+        let detail = TaskDetail(document: try Samples.document("task-detail-working"))
+
+        XCTAssertEqual(detail.state, "Working")
+        XCTAssertEqual(detail.request?.text, "Build a feature")
+        XCTAssertEqual(detail.folder, "/work/alondra/.claude/worktrees/t-1")
+        XCTAssertEqual(detail.readings.map(\.label), ["Running", "In the background", "Context", "Cost"])
+        XCTAssertEqual(detail.readings.map(\.value), ["Bash: cargo test", "2 subagents · 1 shell", "84% of 200K tokens", "$1.20"])
+        XCTAssertEqual(detail.activity.title, "Right now")
+        XCTAssertEqual(detail.activity.elements.map(\.title), ["Editing views/tasks.rs"])
+        XCTAssertEqual(detail.needs.elements.map(\.text), ["The staging key"])
+        XCTAssertEqual(detail.steps.elements.count, 6, "the progress line and five steps")
+        guard case .facts(let progress)? = detail.steps.elements.first else { return XCTFail("the steps open with their progress") }
+        XCTAssertEqual(progress.map(\.value), ["2 of 5", "Running the tests"])
+        XCTAssertEqual(detail.subagents.elements.count, 2)
+        XCTAssertEqual(detail.workflows.title, "Workflows")
+        XCTAssertEqual(detail.workflows.elements.count, 5)
+        XCTAssertEqual(detail.background.elements.map(\.title), ["npm run dev"])
+        XCTAssertEqual(detail.background.elements.first?.detail, "Shell")
+        XCTAssertEqual(detail.background.elements.first?.since, "2026-09-30T09:40:00Z")
+        XCTAssertEqual(detail.lastMessage?.markdown.text, "Tests pass; opening the PR")
+        XCTAssertEqual(detail.lastMessage?.at, "2026-09-30T09:58:00Z")
+        XCTAssertEqual(detail.interrupt?.label, "Interrupt")
+        XCTAssertEqual(detail.message?.label, "Message")
+    }
+
+    func testTheDaemonsWorkingTaskOffersInterruptAndAMessage() throws {
+        let detail = TaskDetail(document: try Fixtures.document("task-working-ios"))
+
+        XCTAssertEqual(detail.interrupt?.confirm?.button, "Interrupt")
+        XCTAssertNotNil(detail.message)
+        XCTAssertEqual(detail.folder, "/work/alondra/.claude/worktrees/t-1")
+        XCTAssertFalse(detail.readings.isEmpty)
+        XCTAssertFalse(detail.activity.elements.isEmpty)
+        XCTAssertNotNil(detail.lastMessage)
     }
 
     func testASectionTheScreenDoesNotKnowIsIgnored() throws {
@@ -171,6 +207,56 @@ final class TaskDetailTests: XCTestCase {
     }
 
     @MainActor
+    private func working(sent: SentActions) async throws -> TestStoreOf<TaskDetailFeature> {
+        let document = try Fixtures.document("task-working-ios")
+        let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
+            TaskDetailFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = ViewsClient.showing(document)
+            $0.viewsClient.perform = { request in sent.record(request); return try Responses.applied("Done") }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.finish()
+        await store.skipReceivedActions()
+        return store
+    }
+
+    @MainActor
+    func testInterruptingAsksForConfirmationThenStopsTheNodeAndLeavesTheBar() async throws {
+        let sent = SentActions()
+        let store = try await working(sent: sent)
+        let interrupt = try XCTUnwrap(store.state.detail?.interrupt)
+
+        await store.send(.perform(interrupt))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.actions.confirmation?.button, "Interrupt")
+        XCTAssertTrue(sent.requests.isEmpty)
+
+        await store.send(.actions(.confirm))
+        await store.skipReceivedActions()
+        XCTAssertEqual(sent.requests.map(\.actionId), ["interrupt:a-1@0"])
+    }
+
+    @MainActor
+    func testAMessageIsWrittenToTheTasksNodeAndTheComposerEmpties() async throws {
+        let sent = SentActions()
+        let store = try await working(sent: sent)
+        XCTAssertEqual(store.state.composer.action?.id, "msg:a-1@0~t-1", "the composer is ready as soon as the task loads")
+        XCTAssertFalse(store.state.canSend, "an empty message is not sent")
+
+        await store.send(.messageChanged("Use the staging key"))
+        XCTAssertTrue(store.state.canSend)
+        await store.send(.send)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(sent.requests.map(\.actionId), ["msg:a-1@0~t-1"])
+        XCTAssertEqual(sent.requests.first?.input.text, "Use the staging key")
+        XCTAssertEqual(store.state.message, "")
+    }
+
+    @MainActor
     func testDecliningTheConfirmationSendsNothing() async throws {
         let sent = SentActions()
         let store = try await loaded(sent: sent)
@@ -226,7 +312,7 @@ final class TaskDetailTests: XCTestCase {
         let store = try await loaded()
         let detail = try XCTUnwrap(store.state.detail)
 
-        for link in [detail.node?.link, detail.waiting.elements.first?.link,
+        for link in [detail.waiting.elements.first?.link,
                      detail.pullRequests.elements.first?.link, detail.dependencies.elements.first?.link,
                      detail.documents.elements.first?.link] {
             let link = try XCTUnwrap(link)

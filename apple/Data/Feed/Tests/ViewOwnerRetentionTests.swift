@@ -13,7 +13,7 @@ final class ViewOwnerRetentionTests: XCTestCase {
             var peakGenerations = 0
             for index in 0..<1000 {
                 let owner = "screen-\(index)"
-                await opened.replace(owner: owner, with: [.fleet])
+                await opened.replace(owner: owner, with: [.schedules])
                 let observation = await Self.observe(opened, owner: owner)
                 if observation.hasLease { completed += 1 }
                 peakGenerations = max(peakGenerations, observation.generations)
@@ -58,19 +58,19 @@ final class ViewOwnerRetentionTests: XCTestCase {
     }
 
     func testLateOpeningCannotRejoinAClosedAndReopenedOwnerOrCloseItsPeer() async throws {
-        let peer = OwnerViewPeer(holdFleet: true)
+        let peer = OwnerViewPeer(holdSchedules: true)
         let session = FeedSession(transport: peer, client: .ios, lang: "en")
         let opened = ViewOpenSet(session: session)
         _ = try await session.load("home")
         var starts = await peer.starts().makeAsyncIterator()
-        let old = Task { await opened.replace(owner: "same", with: [.fleet]) }
+        let old = Task { await opened.replace(owner: "same", with: [.schedules]) }
         let entered = await starts.next()
         XCTAssertNotNil(entered)
         await opened.remove(owner: "same")
         await opened.replace(owner: "same", with: [.tasks])
         await opened.replace(owner: "peer", with: [.tasks])
         let pendingKeys = await session.openViewKeys
-        XCTAssertEqual(pendingKeys, ["fleet", "tasks"], "the original opening must remain live until its peer replies")
+        XCTAssertEqual(pendingKeys, ["schedules", "tasks"], "the original opening must remain live until its peer replies")
         await peer.release()
         await old.value
         let owners = await opened.owners
@@ -78,10 +78,10 @@ final class ViewOwnerRetentionTests: XCTestCase {
         let calls = await peer.calls
         XCTAssertEqual(owners["same"]?.keys.map(\.rawValue).sorted(), ["tasks"])
         XCTAssertEqual(owners["peer"]?.keys.map(\.rawValue).sorted(), ["tasks"])
-        XCTAssertEqual(keys, ["tasks"], "the old opening must release its fleet lease after the owner is reopened")
+        XCTAssertEqual(keys, ["tasks"], "the old opening must release its schedules lease after the owner is reopened")
         let requested = await peer.keys
-        XCTAssertEqual(calls, 3, "home seed, held fleet and one tasks load for both owners")
-        XCTAssertEqual(requested, ["home", "fleet", "tasks"], "the old opening must not be replaced by epoch recovery")
+        XCTAssertEqual(calls, 3, "home seed, held schedules and one tasks load for both owners")
+        XCTAssertEqual(requested, ["home", "schedules", "tasks"], "the old opening must not be replaced by epoch recovery")
         await opened.remove(owner: "same")
         let peerKeys = await session.openViewKeys
         XCTAssertEqual(peerKeys, ["tasks"], "closing one consumer must preserve its peer's lease")
@@ -93,7 +93,7 @@ final class ViewOwnerRetentionTests: XCTestCase {
 }
 
 private actor OwnerViewPeer: ViewTransport {
-    private var holdFleet: Bool
+    private var holdSchedules: Bool
     private var pending: (ViewFetch, CheckedContinuation<ViewFetch, any Error>)?
     private let stream: AsyncStream<Void>
     private let entered: AsyncStream<Void>.Continuation
@@ -101,8 +101,8 @@ private actor OwnerViewPeer: ViewTransport {
     private(set) var returnedBytes = 0
     private(set) var keys: [String] = []
 
-    init(holdFleet: Bool = false) {
-        self.holdFleet = holdFleet
+    init(holdSchedules: Bool = false) {
+        self.holdSchedules = holdSchedules
         let pair = AsyncStream<Void>.makeStream()
         stream = pair.stream; entered = pair.continuation
     }
@@ -119,8 +119,8 @@ private actor OwnerViewPeer: ViewTransport {
         let bytes = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         returnedBytes += bytes.count
         let document = try ContractCodec.decode(ViewFetch.self, from: bytes)
-        if key == "fleet", holdFleet {
-            holdFleet = false
+        if key == "schedules", holdSchedules {
+            holdSchedules = false
             return try await withCheckedThrowingContinuation { completion in
                 pending = (document, completion)
                 entered.yield(())

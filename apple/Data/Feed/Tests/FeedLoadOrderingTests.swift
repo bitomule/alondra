@@ -9,10 +9,10 @@ final class FeedLoadOrderingTests: XCTestCase {
             let transport = OrderedViewPeer()
             let session = FeedSession(transport: transport, client: .ios, lang: "en")
             var starts = await transport.starts().makeAsyncIterator()
-            let older = Task { try await session.load("fleet") }
+            let older = Task { try await session.load("schedules") }
             let firstStart = await starts.next()
             let first = try XCTUnwrap(firstStart)
-            let newer = Task { try await session.load("fleet", known: "previous") }
+            let newer = Task { try await session.load("schedules", known: "previous") }
             let secondStart = await starts.next()
             let second = try XCTUnwrap(secondStart)
             await transport.complete(second, with: .success(try Self.document("new", cursor: "new-cursor")))
@@ -21,7 +21,7 @@ final class FeedLoadOrderingTests: XCTestCase {
             let olderResult = try await older.value
             XCTAssertEqual(olderResult, try Self.document("new", cursor: "new-cursor"), "a superseded caller must receive the current document")
             let snapshot = await session.currentSnapshot()
-            XCTAssertEqual(snapshot.documents["fleet"]?.version, "new", "late \(missing ? "missing" : "success") response replaced the newer view")
+            XCTAssertEqual(snapshot.documents["schedules"]?.version, "new", "late \(missing ? "missing" : "success") response replaced the newer view")
             XCTAssertEqual(snapshot.cursor, "new-cursor")
             await session.stop()
         }
@@ -43,7 +43,7 @@ final class FeedLoadOrderingTests: XCTestCase {
         let calls = await transport.callCount
         XCTAssertEqual(calls, 1, "equivalent overlapping requests should share the same transport fetch")
         let snapshot = await session.currentSnapshot()
-        XCTAssertEqual(snapshot.documents["fleet"]?.version, "shared")
+        XCTAssertEqual(snapshot.documents["schedules"]?.version, "shared")
         XCTAssertEqual(snapshot.cursor, "shared-cursor")
         await session.stop()
     }
@@ -83,14 +83,14 @@ final class FeedLoadOrderingTests: XCTestCase {
         XCTAssertNotEqual(firstOpen.lease, secondOpen.lease)
         await session.close(firstOpen.lease)
         let remaining = await session.currentSnapshot()
-        XCTAssertEqual(remaining.documents["fleet"]?.version, "shared")
+        XCTAssertEqual(remaining.documents["schedules"]?.version, "shared")
         await session.close(secondOpen.lease)
         let closed = await session.currentSnapshot()
-        XCTAssertNil(closed.documents["fleet"])
+        XCTAssertNil(closed.documents["schedules"])
         await session.stop()
         var publishedVersions: [String] = []
         for await event in events {
-            if case let .snapshot(snapshot) = event, let document = snapshot.documents["fleet"] {
+            if case let .snapshot(snapshot) = event, let document = snapshot.documents["schedules"] {
                 publishedVersions.append(document.version)
             }
         }
@@ -104,12 +104,12 @@ final class FeedLoadOrderingTests: XCTestCase {
             let transport = OrderedViewPeer()
             let session = FeedSession(transport: transport, client: .ios, lang: "en")
             var starts = await transport.starts().makeAsyncIterator()
-            let opening = Task { try await session.open("fleet") }
+            let opening = Task { try await session.open("schedules") }
             let initialStart = await starts.next()
             let initial = try XCTUnwrap(initialStart)
             await transport.complete(initial, with: .success(try Self.document("seed", cursor: "seed-cursor")))
             let opened = try await opening.value
-            let pending = Task { try await session.load("fleet", known: "seed") }
+            let pending = Task { try await session.load("schedules", known: "seed") }
             let heldStart = await starts.next()
             let held = try XCTUnwrap(heldStart)
             if stopping { await session.stop() } else { await session.close(opened.lease) }
@@ -119,7 +119,7 @@ final class FeedLoadOrderingTests: XCTestCase {
             case .success: XCTFail("a response from the ended lifetime must not be returned")
             }
             let snapshot = await session.currentSnapshot()
-            XCTAssertNil(snapshot.documents["fleet"])
+            XCTAssertNil(snapshot.documents["schedules"])
             let openKeys = await session.openViewKeys
             XCTAssertEqual(openKeys, [])
             await session.stop()
@@ -132,14 +132,14 @@ final class FeedLoadOrderingTests: XCTestCase {
         var events = await session.events().makeAsyncIterator()
         var starts = await transport.starts().makeAsyncIterator()
         var polls = await transport.changeStarts().makeAsyncIterator()
-        let opening = Task { try await session.open("fleet") }
+        let opening = Task { try await session.open("schedules") }
         let initialStart = await starts.next()
         let initial = try XCTUnwrap(initialStart)
         await transport.complete(initial, with: .success(try Self.document("seed", cursor: "seed-cursor")))
         let opened = try await opening.value
         let pollStart = await polls.next()
         let poll = try XCTUnwrap(pollStart)
-        let pending = Task { try await session.load("fleet", known: "seed") }
+        let pending = Task { try await session.load("schedules", known: "seed") }
         let oldStart = await starts.next()
         let old = try XCTUnwrap(oldStart)
         await transport.completeChange(poll, with: try Self.resetReply())
@@ -150,7 +150,7 @@ final class FeedLoadOrderingTests: XCTestCase {
         let resumed = try await pending.value
         XCTAssertEqual(resumed, try Self.document("new", cursor: "view-cursor", epoch: "new-epoch"))
         let snapshot = await session.currentSnapshot()
-        XCTAssertEqual(snapshot.documents["fleet"]?.version, "new")
+        XCTAssertEqual(snapshot.documents["schedules"]?.version, "new")
         XCTAssertEqual(snapshot.cursor, "feed-cursor")
         XCTAssertEqual(snapshot.dataEpoch, "new-epoch")
         let conditions = await transport.conditions
@@ -173,23 +173,23 @@ final class FeedLoadOrderingTests: XCTestCase {
                 await transport.complete(id, with: .success(try Self.document("home-old", cursor: "old-cursor", epoch: "old-epoch", key: "home")))
                 _ = try await seed.value
             }
-            let fleet = Task { try await session.load("fleet") }
-            let fleetStart = await starts.next()
-            let fleetID = try XCTUnwrap(fleetStart)
+            let schedules = Task { try await session.load("schedules") }
+            let schedulesStart = await starts.next()
+            let schedulesID = try XCTUnwrap(schedulesStart)
             let tasks = Task { try await session.load("tasks") }
             let tasksStart = await starts.next()
             let tasksID = try XCTUnwrap(tasksStart)
-            let freshFleet = try Self.document("fleet-new", cursor: "new-cursor", epoch: "new-epoch")
-            await transport.serveImmediately("fleet", response: freshFleet)
+            let freshSchedules = try Self.document("schedules-new", cursor: "new-cursor", epoch: "new-epoch")
+            await transport.serveImmediately("schedules", response: freshSchedules)
             await transport.complete(tasksID, with: .success(try Self.document("tasks-new", cursor: "new-cursor", epoch: "new-epoch", key: "tasks")))
             _ = try await tasks.value
-            await transport.complete(fleetID, with: .success(try Self.document("fleet-old", cursor: "old-cursor", epoch: "old-epoch")))
-            let returnedFleet = try await fleet.value
-            XCTAssertEqual(returnedFleet, freshFleet, "the caller must recover in the accepted session epoch")
+            await transport.complete(schedulesID, with: .success(try Self.document("schedules-old", cursor: "old-cursor", epoch: "old-epoch")))
+            let returnedSchedules = try await schedules.value
+            XCTAssertEqual(returnedSchedules, freshSchedules, "the caller must recover in the accepted session epoch")
             let snapshot = await session.currentSnapshot()
             XCTAssertEqual(snapshot.dataEpoch, "new-epoch")
             XCTAssertFalse(snapshot.documents.values.contains { $0.dataEpoch == "old-epoch" })
-            XCTAssertEqual(snapshot.documents["fleet"]?.version, "fleet-new")
+            XCTAssertEqual(snapshot.documents["schedules"]?.version, "schedules-new")
             XCTAssertEqual(snapshot.documents["tasks"]?.version, "tasks-new")
             await session.stop()
         }
@@ -200,7 +200,7 @@ final class FeedLoadOrderingTests: XCTestCase {
             let transport = OrderedViewPeer()
             let session = FeedSession(transport: transport, client: .ios, lang: "en")
             var starts = await transport.starts().makeAsyncIterator()
-            let seed = Task { try await session.load("fleet") }
+            let seed = Task { try await session.load("schedules") }
             let seedStart = await starts.next()
             let seedID = try XCTUnwrap(seedStart)
             await transport.complete(seedID, with: .success(try Self.document("A", cursor: "A-cursor")))
@@ -208,15 +208,15 @@ final class FeedLoadOrderingTests: XCTestCase {
             var unconditional: Task<ViewFetch, any Error>?
             var unconditionalID: Int?
             if overlapping {
-                unconditional = Task { try await session.load("fleet") }
+                unconditional = Task { try await session.load("schedules") }
                 let start = await starts.next()
                 unconditionalID = try XCTUnwrap(start)
             }
-            let conditional = Task { try await session.load("fleet", known: "B") }
+            let conditional = Task { try await session.load("schedules", known: "B") }
             let conditionalStart = await starts.next()
             let conditionalID = try XCTUnwrap(conditionalStart)
             let fresh = try Self.document("B", cursor: "B-cursor")
-            await transport.serveImmediately("fleet", response: fresh)
+            await transport.serveImmediately("schedules", response: fresh)
             await transport.complete(conditionalID, with: .success(.unchanged(cursor: "B-cursor")))
             if let unconditionalID {
                 await transport.complete(unconditionalID, with: .success(try Self.document("A", cursor: "A-cursor")))
@@ -228,7 +228,7 @@ final class FeedLoadOrderingTests: XCTestCase {
                 XCTAssertEqual(unconditionalResult, fresh, "a conditional mismatch must not cancel the unconditional recovery and return A")
             }
             let snapshot = await session.currentSnapshot()
-            XCTAssertEqual(snapshot.documents["fleet"]?.version, "B")
+            XCTAssertEqual(snapshot.documents["schedules"]?.version, "B")
             await session.stop()
         }
     }
@@ -268,10 +268,10 @@ final class FeedLoadOrderingTests: XCTestCase {
         var starts = await transport.starts().makeAsyncIterator()
         var polls = await transport.changeStarts().makeAsyncIterator()
         var operations = await transport.operations().makeAsyncIterator()
-        let opening = Task { try await session.open("fleet") }
+        let opening = Task { try await session.open("schedules") }
         let seedStart = await starts.next()
         let seed = try XCTUnwrap(seedStart)
-        await transport.complete(seed, with: .success(try Self.document("fleet-old", cursor: "old-cursor", epoch: "old-epoch")))
+        await transport.complete(seed, with: .success(try Self.document("schedules-old", cursor: "old-cursor", epoch: "old-epoch")))
         let opened = try await opening.value
         let firstPollStart = await polls.next()
         let firstPoll = try XCTUnwrap(firstPollStart)
@@ -281,7 +281,7 @@ final class FeedLoadOrderingTests: XCTestCase {
         let tasks = Task { try await session.load("tasks") }
         let tasksStart = await starts.next()
         let tasksID = try XCTUnwrap(tasksStart)
-        await transport.serveImmediately("fleet", response: try Self.document("fleet-new", cursor: "new-cursor", epoch: "new-epoch"))
+        await transport.serveImmediately("schedules", response: try Self.document("schedules-new", cursor: "new-cursor", epoch: "new-epoch"))
         await transport.complete(tasksID, with: .success(try Self.document("tasks-new", cursor: "new-cursor", epoch: "new-epoch", key: "tasks")))
         _ = try await tasks.value
         while let operation = await operations.next() {
@@ -314,34 +314,34 @@ final class FeedLoadOrderingTests: XCTestCase {
             let transport = OrderedViewPeer()
             let session = FeedSession(transport: transport, client: .ios, lang: "en")
             var starts = await transport.starts().makeAsyncIterator()
-            let opening = Task { try await session.open("fleet") }
+            let opening = Task { try await session.open("schedules") }
             let seedStart = await starts.next()
             let seedID = try XCTUnwrap(seedStart)
             await transport.complete(seedID, with: .success(try Self.document("seed", cursor: "old-cursor", epoch: "old-epoch")))
             let opened = try await opening.value
-            let fleet = Task { try await session.load("fleet", known: "seed") }
-            let fleetStart = await starts.next()
-            let fleetID = try XCTUnwrap(fleetStart)
+            let schedules = Task { try await session.load("schedules", known: "seed") }
+            let schedulesStart = await starts.next()
+            let schedulesID = try XCTUnwrap(schedulesStart)
             let tasks = Task { try await session.load("tasks") }
             let tasksStart = await starts.next()
             let tasksID = try XCTUnwrap(tasksStart)
-            await transport.serveImmediately("fleet", response: try Self.document("refetched", cursor: "new-cursor", epoch: "new-epoch"))
+            await transport.serveImmediately("schedules", response: try Self.document("refetched", cursor: "new-cursor", epoch: "new-epoch"))
             let newTasks = try Self.document("tasks-new", cursor: "new-cursor", epoch: "new-epoch", key: "tasks")
-            let oldFleet = try Self.document("before-close", cursor: "old-cursor", epoch: "old-epoch")
+            let oldSchedules = try Self.document("before-close", cursor: "old-cursor", epoch: "old-epoch")
             try await Self.closeBeforeEpochCompletion(in: session, lease: opened.lease,
-                fleetResponse: completed ? oldFleet : nil, response: newTasks)
-            switch await fleet.result {
+                schedulesResponse: completed ? oldSchedules : nil, response: newTasks)
+            switch await schedules.result {
             case let .failure(error): XCTAssertTrue(error is CancellationError)
             case .success: XCTFail("the ended lifetime must remain terminal after the epoch changes, including a queued success")
             }
             let tasksResult = try await tasks.value
             XCTAssertEqual(tasksResult, newTasks)
-            await transport.complete(fleetID, with: .success(oldFleet))
+            await transport.complete(schedulesID, with: .success(oldSchedules))
             await transport.complete(tasksID, with: .success(newTasks))
             let keys = await transport.viewKeys
-            XCTAssertEqual(keys.filter { $0 == "fleet" }.count, 2, "closing a lease must not create a recovery fetch")
+            XCTAssertEqual(keys.filter { $0 == "schedules" }.count, 2, "closing a lease must not create a recovery fetch")
             let snapshot = await session.currentSnapshot()
-            XCTAssertNil(snapshot.documents["fleet"])
+            XCTAssertNil(snapshot.documents["schedules"])
             XCTAssertEqual(snapshot.documents["tasks"]?.version, "tasks-new")
             XCTAssertEqual(snapshot.dataEpoch, "new-epoch")
             let open = await session.openViewKeys
@@ -351,19 +351,19 @@ final class FeedLoadOrderingTests: XCTestCase {
     }
 
     private static func closeBeforeEpochCompletion(in session: isolated FeedSession, lease: ViewLease,
-        fleetResponse: ViewFetch?, response: ViewFetch) throws {
+        schedulesResponse: ViewFetch?, response: ViewFetch) throws {
         let owner = try XCTUnwrap(session.loadOwners["tasks"])
-        if let fleetResponse {
-            let fleetOwner = try XCTUnwrap(session.loadOwners["fleet"])
-            session.completeLoad(FeedSession.LoadKey(key: "fleet", known: "seed"), id: fleetOwner, result: .success(fleetResponse))
+        if let schedulesResponse {
+            let schedulesOwner = try XCTUnwrap(session.loadOwners["schedules"])
+            session.completeLoad(FeedSession.LoadKey(key: "schedules", known: "seed"), id: schedulesOwner, result: .success(schedulesResponse))
         }
         session.close(lease)
         session.completeLoad(FeedSession.LoadKey(key: "tasks", known: nil), id: owner, result: .success(response))
     }
 
     private static func simultaneousOpens(in session: isolated FeedSession) -> (Task<(lease: ViewLease, document: ViewDocument?), any Error>, Task<(lease: ViewLease, document: ViewDocument?), any Error>) {
-        let first = Task.immediate { try await session.open("fleet") }
-        let second = Task.immediate { try await session.open("fleet") }
+        let first = Task.immediate { try await session.open("schedules") }
+        let second = Task.immediate { try await session.open("schedules") }
         return (first, second)
     }
 
@@ -376,12 +376,12 @@ final class FeedLoadOrderingTests: XCTestCase {
     }
 
     private static func simultaneousLoads(in session: isolated FeedSession) -> (Task<ViewFetch, any Error>, Task<ViewFetch, any Error>) {
-        let first = Task.immediate { try await session.load("fleet") }
-        let second = Task.immediate { try await session.load("fleet") }
+        let first = Task.immediate { try await session.load("schedules") }
+        let second = Task.immediate { try await session.load("schedules") }
         return (first, second)
     }
 
-    private static func document(_ version: String, cursor: String, epoch: String = "epoch", key: String = "fleet") throws -> ViewFetch {
+    private static func document(_ version: String, cursor: String, epoch: String = "epoch", key: String = "schedules") throws -> ViewFetch {
         let json = """
         {"protocol":1,"view":"\(key)","key":"\(key)","client":"ios","version":"\(version)",
         "cursor":"\(cursor)","data_epoch":"\(epoch)","status":{"version":"s","summary":"Ready","badge":0,

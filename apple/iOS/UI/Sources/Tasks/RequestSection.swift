@@ -3,7 +3,7 @@ import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
-/// One request: who and when, its title if the orchestrator named it, and its tasks as Fleet-style cards. A request the
+/// One request: who and when, its title if the orchestrator named it, and its tasks as cards. A request the
 /// orchestrator is still splitting says so once, under what was asked.
 struct RequestSection: View {
     let request: TasksBoard.Request
@@ -145,7 +145,7 @@ struct RequestSection: View {
     }
 }
 
-/// One task as Fleet draws a node: its state, its title, and what its node does now or said last.
+/// One task as a card: its state, its title, and what its node does now or said last.
 /// A task that goes after another sits indented under it.
 struct TaskCard: View {
     let line: TasksBoard.Line

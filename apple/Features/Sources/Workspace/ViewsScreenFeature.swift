@@ -24,10 +24,6 @@ public struct ViewsScreenFeature: Sendable {
         public var pickerQuery = ""
         public var pickerLoading = false
         public var pickerError: String?
-        public var searchQuery = ""
-        public var searchDocument: ViewDocument?
-        public var searchLoading = false
-        public var searchError: String?
         public var attachmentPreview: AttachmentPreview?
         public var action: ActionFeature.State
 
@@ -61,13 +57,12 @@ public struct ViewsScreenFeature: Sendable {
         case presentForm(WireForm)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
         case pickerSelected(String), pickerClosed
-        case searchQueryChanged(String), searchLoaded(String, ViewFetch), searchFailed(String, String)
         case action(ActionFeature.Action)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case load, picker, search }
+    private enum CancelID { case load, picker }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.action, action: \.action) { ActionFeature() }
@@ -84,7 +79,7 @@ public struct ViewsScreenFeature: Sendable {
                 return load(state, force: true)
             case .disappeared:
                 state.isPresented = false
-                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.search), .run { [viewsClient, owner = state.owner] _ in
+                return .merge(.cancel(id: CancelID.load), .run { [viewsClient, owner = state.owner] _ in
                     await viewsClient.closeScreen(owner)
                 })
             case .reloadForm(let fieldID, let value):
@@ -150,59 +145,8 @@ public struct ViewsScreenFeature: Sendable {
                 state.pickerFieldID = nil
                 state.pickerDocument = nil
                 return .cancel(id: CancelID.picker)
-            case .searchQueryChanged(let query):
-                guard state.key.rawValue == "fleet" else { return .none }
-                state.searchQuery = query
-                state.searchLoading = !query.isEmpty
-                state.searchError = nil
-                state.searchDocument = nil
-                if query.isEmpty {
-                    state.searchDocument = nil
-                    let owner = state.owner
-                    let key = state.key
-                    return .merge(.cancel(id: CancelID.search), .run { [viewsClient] _ in
-                        await viewsClient.openScreen(owner, [key])
-                    })
-                }
-                let owner = state.owner
-                let baseKey = state.key
-                let searchKey = ViewKey.search(query)
-                return .run { [clock, viewsClient] send in
-                    do {
-                        try await clock.sleep(for: .milliseconds(250))
-                        await viewsClient.openScreen(owner, [baseKey, searchKey])
-                        await send(.searchLoaded(query, try await viewsClient.load(searchKey, nil)))
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        await send(.searchFailed(query, String(localized: "Couldn’t load this from your Mac. Try again.")))
-                    }
-                }.cancellable(id: CancelID.search, cancelInFlight: true)
-            case .searchLoaded(let query, .document(let document)):
-                guard query == state.searchQuery else { return .none }
-                state.searchDocument = document
-                state.searchLoading = false
-                state.searchError = nil
-                return .none
-            case .searchLoaded(let query, .unchanged):
-                guard query == state.searchQuery else { return .none }
-                state.searchLoading = false
-                return .none
-            case .searchFailed(let query, let message):
-                guard query == state.searchQuery else { return .none }
-                state.searchLoading = false
-                state.searchError = message
-                return .none
             case .stale(let keys):
                 guard state.isPresented else { return .none }
-                if let search = state.searchDocument, keys.contains(search.key), !state.searchQuery.isEmpty {
-                    let query = state.searchQuery
-                    let key = ViewKey.search(query)
-                    return .run { [viewsClient] send in
-                        do { await send(.searchLoaded(query, try await viewsClient.load(key, search.version))) }
-                        catch { await send(.searchFailed(query, String(localized: "Couldn’t load this from your Mac. Try again."))) }
-                    }.cancellable(id: CancelID.search, cancelInFlight: true)
-                }
                 guard keys.contains(state.key.rawValue) else { return .none }
                 state.loading = true
                 return load(state)
