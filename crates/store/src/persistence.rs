@@ -9,11 +9,12 @@ pub(super) fn load(
     scope: &AuthorityScope,
     task: &TaskId,
     known: &mut KnownInputs,
-) -> Result<TaskLifecycle> {
+) -> Result<(TaskLifecycle, InputId)> {
     let (initial, revision) = head(connection, scope, task)?;
     crate::measure::aggregate_loaded();
-    let (aggregate, _) = replay(connection, task, InputId::new(initial)?, revision, known, |_, _| Ok::<_, Error>(()))?;
-    Ok(aggregate)
+    let initial = InputId::new(initial)?;
+    let (aggregate, _) = replay(connection, task, initial.clone(), revision, known, |_, _| Ok::<_, Error>(()))?;
+    Ok((aggregate, initial))
 }
 
 /// The aggregate a task's stored events rebuild, checked as `load` checks it, and what `read`
@@ -57,14 +58,18 @@ pub(super) fn replay<T, E: From<Error>>(
     Ok((aggregate, entries))
 }
 
-/// The checks a replay ends with, for an aggregate this transaction already replayed.
+/// The checks a replay ends with, for an aggregate already replayed from `initial`.
 pub(super) fn revalidate(
     connection: &Connection,
     scope: &AuthorityScope,
     aggregate: &TaskLifecycle,
+    initial: &InputId,
     known: &mut KnownInputs,
 ) -> Result<()> {
-    let (_, revision) = head(connection, scope, aggregate.task())?;
+    let (stored, revision) = head(connection, scope, aggregate.task())?;
+    if stored != initial.as_str() {
+        return Err(Error::CorruptJournal);
+    }
     let (events, last): (Revision, Revision) = connection.query_row(
         "SELECT count(*),coalesce(max(revision),0) FROM lifecycle_events WHERE task_id=?1",
         params![aggregate.task().0],

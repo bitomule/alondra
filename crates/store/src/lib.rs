@@ -16,6 +16,7 @@ macro_rules! staging {
 }
 
 mod aggregates;
+pub use aggregates::AggregateCache;
 
 mod failure;
 mod codec;
@@ -428,7 +429,7 @@ pub struct UnresolvedCommand {
 pub struct LifecycleTransaction<'connection> {
     transaction: aggregates::Watched<'connection>,
     failure: failure::Failure,
-    aggregates: aggregates::Aggregates,
+    aggregates: aggregates::Aggregates<'connection>,
     scope: AuthorityScope,
     touched: BTreeSet<TaskId>,
     claimed: Vec<DispatchAttempt>,
@@ -459,13 +460,32 @@ impl<'connection> LifecycleTransaction<'connection> {
         Ok(())
     }
     /// Dropping the journal always rolls back, whatever drop behaviour the caller chose.
-    pub fn attach(mut transaction: Transaction<'connection>, scope: AuthorityScope) -> Result<Self> {
+    pub fn attach(transaction: Transaction<'connection>, scope: AuthorityScope) -> Result<Self> {
+        Self::attach_with(transaction, scope, None)
+    }
+    /// Attaches with the aggregates the last transaction committed on this connection left in
+    /// `cache`, and leaves this one's there if it commits. `cache` serves only this connection.
+    pub fn attach_cached(
+        transaction: Transaction<'connection>,
+        scope: AuthorityScope,
+        cache: &'connection AggregateCache,
+    ) -> Result<Self> {
+        Self::attach_with(transaction, scope, Some(cache))
+    }
+    fn attach_with(
+        mut transaction: Transaction<'connection>,
+        scope: AuthorityScope,
+        cache: Option<&'connection AggregateCache>,
+    ) -> Result<Self> {
         transaction.set_drop_behavior(DropBehavior::Rollback);
         require_foreign_keys(&transaction)?;
         journal_format::verify(&transaction)?;
         check_epoch(&transaction, &scope)?;
         crate::measure::transaction_attached();
-        let aggregates = aggregates::Aggregates::default();
+        let aggregates = match cache {
+            Some(cache) => aggregates::Aggregates::inherit(cache, &transaction)?,
+            None => aggregates::Aggregates::default(),
+        };
         Ok(Self {
             transaction: aggregates.watch(transaction)?,
             failure: Default::default(),
@@ -509,14 +529,22 @@ impl<'connection> LifecycleTransaction<'connection> {
         staging!(self, { self.aggregate(task) })
     }
     fn aggregate(&self, task: &TaskId) -> Result<Arc<TaskLifecycle>> {
-        if let Some(aggregate) = self.aggregates.get(task) {
-            self.aggregates
-                .inputs(task, |known| persistence::revalidate(&self.transaction, &self.scope, &aggregate, known))?;
-            return Ok(aggregate);
+        if let Some(entry) = self.aggregates.get(task) {
+            let checked = self.aggregates.inputs(task, |known| {
+                persistence::revalidate(&self.transaction, &self.scope, &entry.aggregate, &entry.initial, known)
+            });
+            if !self.aggregates.first_read_of_inherited(task) {
+                return checked.map(|()| entry.aggregate);
+            }
+            if checked.is_ok() {
+                return Ok(entry.aggregate);
+            }
+            self.aggregates.take(task);
         }
-        Ok(self.aggregates.keep(self.replay(task)?))
+        let (aggregate, initial) = self.replay(task)?;
+        Ok(self.aggregates.keep(aggregate, initial))
     }
-    fn replay(&self, task: &TaskId) -> Result<TaskLifecycle> {
+    fn replay(&self, task: &TaskId) -> Result<(TaskLifecycle, InputId)> {
         self.aggregates
             .inputs(task, |known| persistence::load(&self.transaction, &self.scope, task, known))
     }
@@ -654,10 +682,10 @@ impl<'connection> LifecycleTransaction<'connection> {
             check_epoch(&self.transaction, &self.scope)?;
             let encoded = codec::encode(&event)?;
             let shared = self.aggregate(task)?;
-            self.aggregates.take(task);
+            let initial = self.aggregates.take(task).ok_or(Error::MissingTask)?.initial;
             let mut aggregate = match Arc::try_unwrap(shared) {
                 Ok(aggregate) => aggregate,
-                Err(_) => self.replay(task)?,
+                Err(_) => self.replay(task)?.0,
             };
             let prior: Option<(Revision, String)> = self
                 .transaction
@@ -671,7 +699,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 if revision.checked_sub(1) != Some(expected_revision) || prior != encoded {
                     return Err(Error::CommandConflict);
                 }
-                self.aggregates.keep(aggregate);
+                self.aggregates.keep(aggregate, initial);
                 self.touched.insert(task.clone());
                 return Ok(Applied {
                     revision,
@@ -737,7 +765,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             }
             self.touched.insert(task.clone());
             let revision = aggregate.revision();
-            self.aggregates.keep(aggregate);
+            self.aggregates.keep(aggregate, initial);
             Ok(Applied {
                 revision,
                 replayed: false,
@@ -1472,7 +1500,9 @@ impl<'connection> LifecycleTransaction<'connection> {
                     });
                 }
             }
+            let version = self.aggregates.version(&self.transaction)?;
             self.transaction.commit()?;
+            self.aggregates.give(version);
             Ok(Committed {
                 permits,
                 attempts: self.claimed,

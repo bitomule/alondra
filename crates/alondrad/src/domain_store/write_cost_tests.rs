@@ -128,6 +128,7 @@ fn a_command_on_a_long_journal_writes_and_replays_only_its_new_records() {
     let (short_applied, short_decoded, short_stored) = delivery_cost(&mut store, 0, 1_000_000);
     let (long_applied, long_decoded, long_stored) = delivery_cost(&mut store, 1, 1_000_000);
     assert_eq!(long_stored, short_stored, "a delivery stores the same events whatever its task's journal holds");
+    assert_eq!(long_decoded, short_decoded, "a delivery decodes the same stored events whatever its task's journal holds");
     assert_eq!(long_applied - long_decoded, short_applied - short_decoded,
         "beyond the store reading the journal from its rows, a delivery to a task with {LONG} more records costs what it costs a short one");
     let state = store.load().unwrap();
@@ -135,4 +136,23 @@ fn a_command_on_a_long_journal_writes_and_replays_only_its_new_records() {
     let reopened = DomainStore::open(&root.join("alondra.db")).unwrap().load().unwrap();
     assert_eq!(reopened.lifecycle_journal, state.lifecycle_journal);
     assert_eq!(reopened.tasks, state.tasks);
+}
+
+#[test]
+fn a_store_reads_what_another_store_of_the_same_database_committed() {
+    let root = crate::test_support::Directory::new();
+    let mut first = seeded(&root, 1, 2, 0);
+    let mut second = DomainStore::open(&root.join("alondra.db")).unwrap();
+    run(&mut second, &node(0), delivery(0, 10));
+    run(&mut first, &node(0), delivery(0, 11));
+    run(&mut second, &node(0), delivery(0, 12));
+    run(&mut first, &node(0), delivery(0, 13));
+    drop(first);
+    run(&mut second, &node(0), delivery(0, 14));
+    let mut reopened = DomainStore::open(&root.join("alondra.db")).unwrap();
+    run(&mut reopened, &node(0), delivery(0, 15));
+    let state = reopened.load().unwrap();
+    drop(reopened);
+    drop(second);
+    assert_eq!(DomainStore::open(&root.join("alondra.db")).unwrap().load().unwrap().lifecycle_journal, state.lifecycle_journal);
 }

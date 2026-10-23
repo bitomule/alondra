@@ -380,6 +380,7 @@ pub(crate) struct DomainStore {
     #[cfg(test)]
     before_live_read: Option<Box<dyn Fn(&str) + Send>>,
     cached: Option<Cached>,
+    aggregates: alondra_store::AggregateCache,
     #[cfg(test)]
     after_commit: Option<Box<dyn FnMut() + Send>>,
 }
@@ -644,6 +645,7 @@ impl DomainStore {
         Self {
             conn,
             cached: None,
+            aggregates: Default::default(),
             #[cfg(test)]
             live_read_trace: None,
             #[cfg(test)]
@@ -792,7 +794,7 @@ impl DomainStore {
     ) -> std::result::Result<Commit, StoreError> {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn)?)?;
-        let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope)?;
+        let mut journal = alondra_store::LifecycleTransaction::attach_cached(tx, scope, &self.aggregates)?;
         let (conn, cached) = (&self.conn, &self.cached);
         let staged = journal.inspect_mut(|journal| {
             command::stage(conn, cached, actor, envelope, transport, fill_revision, attached, journal)

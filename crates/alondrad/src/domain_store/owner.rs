@@ -179,10 +179,11 @@ impl<'connection> OwnerTransaction<'connection> {
     fn begin(
         conn: &'connection Connection,
         cached: &'connection Option<Cached>,
+        aggregates: &'connection alondra_store::AggregateCache,
         scope: AuthorityScope,
     ) -> std::result::Result<Self, StoreError> {
         let transaction = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        let journal = LifecycleTransaction::attach(transaction, scope)?;
+        let journal = LifecycleTransaction::attach_cached(transaction, scope, aggregates)?;
         let (state, version) = journal.inspect(|| {
             check_schema(conn)?;
             let (state, _, version) = state_in(cached, conn)?;
@@ -664,7 +665,7 @@ impl DomainStore {
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> std::result::Result<T, StoreError>,
     ) -> std::result::Result<(T, OwnerCommit), StoreError> {
         let (value, committed) = {
-            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, scope)?;
+            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.aggregates, scope)?;
             let value = stage(&mut owner)?;
             (value, owner.commit()?)
         };

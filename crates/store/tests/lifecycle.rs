@@ -3726,3 +3726,174 @@ fn an_input_lets_go_of_its_text_only_once_its_task_is_done_or_cancelled() {
     let tx = fixture.transaction();
     tx.load(&"task".into()).expect("the journal still reads without the texts");
 }
+
+fn cached<'connection>(connection: &'connection Connection, cache: &'connection AggregateCache) -> LifecycleTransaction<'connection> {
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate).unwrap();
+    LifecycleTransaction::attach_cached(transaction, scope(), cache).unwrap()
+}
+
+fn tell(tx: &mut LifecycleTransaction<'_>, task: &TaskId, input: &str) {
+    tx.put_input(task, payload(input)).unwrap();
+    let revision = tx.load(task).unwrap().revision();
+    tx.apply(task, revision, input, Event::Tell { input: id(input) }).unwrap();
+    tx.stage_input(task, &id(input)).unwrap();
+}
+
+/// A task whose journal holds `told` tells more than its launch.
+fn told(told: usize) -> (Fixture, TaskId) {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    fixture.launch("task");
+    let task: TaskId = "task".into();
+    let mut tx = fixture.transaction();
+    for n in 0..told {
+        tell(&mut tx, &task, &format!("told-{n}"));
+    }
+    tx.commit().unwrap();
+    (fixture, task)
+}
+
+/// What a transaction without the cache replays from the committed rows.
+fn replayed(connection: &Connection, task: &TaskId) -> std::sync::Arc<TaskLifecycle> {
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Deferred).unwrap();
+    LifecycleTransaction::attach(transaction, scope()).unwrap().load(task).unwrap()
+}
+
+#[test]
+fn a_transaction_on_a_cached_connection_replays_none_of_the_events_already_committed() {
+    const TOLD: usize = 300;
+    let (fixture, task) = told(TOLD);
+    let cache = AggregateCache::default();
+    let mut tx = cached(&fixture.connection, &cache);
+    tell(&mut tx, &task, "warm");
+    tx.commit().unwrap();
+
+    let before = measure::counts();
+    let mut tx = cached(&fixture.connection, &cache);
+    tell(&mut tx, &task, "next");
+    tx.commit().unwrap();
+    let next = measure::counts() - before;
+    assert_eq!(
+        (next.aggregate_loads, next.event_decodes),
+        (0, 0),
+        "a tell on a task with {TOLD} committed tells replays none of them"
+    );
+    assert_eq!(*seen(&fixture.connection, &cache, &task), *replayed(&fixture.connection, &task));
+}
+
+/// The aggregate a transaction on the cached connection reads, without committing anything.
+fn seen(connection: &Connection, cache: &AggregateCache, task: &TaskId) -> std::sync::Arc<TaskLifecycle> {
+    let tx = cached(connection, cache);
+    let aggregate = tx.load(task).unwrap();
+    tx.commit().unwrap();
+    aggregate
+}
+
+#[test]
+fn a_commit_on_another_connection_is_read_instead_of_the_cached_aggregate() {
+    let (fixture, task) = told(20);
+    let cache = AggregateCache::default();
+    let before = seen(&fixture.connection, &cache, &task).revision();
+
+    let mut other = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    other.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    let transaction = other.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+    let mut tx = LifecycleTransaction::attach(transaction, scope()).unwrap();
+    tell(&mut tx, &task, "elsewhere");
+    tx.commit().unwrap();
+
+    let after = seen(&fixture.connection, &cache, &task);
+    assert_eq!(after.revision(), before + 1, "the tell another connection committed is read");
+    assert_eq!(*after, *replayed(&fixture.connection, &task));
+
+    let mut tx = LifecycleTransaction::attach(other.transaction().unwrap(), scope()).unwrap();
+    tx.put_input(&task, payload("spare")).unwrap();
+    tx.commit().unwrap();
+    other.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false).unwrap();
+    other
+        .execute("UPDATE lifecycle_events SET event=replace(event,'\"elsewhere\"','\"spare\"') WHERE task_id='task' AND revision=?1", [i64::try_from(after.revision()).unwrap()])
+        .unwrap();
+    let rewritten = seen(&fixture.connection, &cache, &task);
+    assert_eq!(rewritten.revision(), after.revision());
+    assert!(
+        rewritten.is_pending(&id("spare")) && !rewritten.is_pending(&id("elsewhere")),
+        "an event another connection rewrote at the same revision is read, not the cached aggregate"
+    );
+}
+
+#[test]
+fn a_rolled_back_apply_never_reaches_the_cache_and_what_it_did_not_touch_stays() {
+    let (mut fixture, task) = told(20);
+    fixture.create("other");
+    let other: TaskId = "other".into();
+    let mut tx = fixture.transaction();
+    tx.put_input(&task, payload("rolled-back")).unwrap();
+    tx.put_input(&task, payload("committed-instead")).unwrap();
+    tx.commit().unwrap();
+    let cache = AggregateCache::default();
+    let tx = cached(&fixture.connection, &cache);
+    let committed = tx.load(&task).unwrap().revision();
+    tx.load(&other).unwrap();
+    tx.commit().unwrap();
+
+    let mut tx = cached(&fixture.connection, &cache);
+    tell(&mut tx, &task, "rolled-back");
+    drop(tx);
+    let mut tx = fixture.transaction();
+    tell(&mut tx, &task, "committed-instead");
+    tx.commit().unwrap();
+
+    let before = measure::counts();
+    let tx = cached(&fixture.connection, &cache);
+    let after = tx.load(&task).unwrap();
+    tx.load(&other).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        (measure::counts() - before).aggregate_loads,
+        1,
+        "the task the rolled-back transaction applied to is replayed; the one it never touched stays cached"
+    );
+    assert_eq!(after.revision(), committed + 1);
+    assert!(
+        after.is_pending(&id("committed-instead")) && !after.is_pending(&id("rolled-back")),
+        "the tell committed at the revision a rolled-back tell had taken is read, not the rolled-back one"
+    );
+    assert_eq!(*after, *replayed(&fixture.connection, &task));
+}
+
+#[test]
+fn a_journal_write_on_the_same_connection_between_transactions_is_read() {
+    let (mut fixture, task) = told(20);
+    let cache = AggregateCache::default();
+    let before = seen(&fixture.connection, &cache, &task).revision();
+    let mut tx = fixture.transaction();
+    tell(&mut tx, &task, "uncached");
+    tx.commit().unwrap();
+    let after = seen(&fixture.connection, &cache, &task);
+    assert_eq!(after.revision(), before + 1);
+    assert_eq!(*after, *replayed(&fixture.connection, &task));
+}
+
+#[test]
+fn a_schema_change_forgets_the_cache_even_when_the_revision_stays() {
+    let (mut fixture, task) = told(20);
+    let mut tx = fixture.transaction();
+    tx.put_input(&task, payload("spare")).unwrap();
+    tx.commit().unwrap();
+    let cache = AggregateCache::default();
+    let cached_aggregate = seen(&fixture.connection, &cache, &task);
+    assert!(cached_aggregate.is_pending(&id("told-19")));
+    corrupt_while_guard_removed(&fixture.connection, "lifecycle_event_immutable", || {
+        fixture
+            .connection
+            .execute(
+                "UPDATE lifecycle_events SET event=replace(event,'\"told-19\"','\"spare\"') WHERE task_id='task' AND revision=?1",
+                [i64::try_from(cached_aggregate.revision()).unwrap()],
+            )
+            .unwrap();
+    });
+    let after = seen(&fixture.connection, &cache, &task);
+    assert_eq!(after.revision(), cached_aggregate.revision());
+    assert!(after.is_pending(&id("spare")) && !after.is_pending(&id("told-19")), "the rewritten event is read, not the cached one");
+    assert_eq!(*after, *replayed(&fixture.connection, &task));
+}
