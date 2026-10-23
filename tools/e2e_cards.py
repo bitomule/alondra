@@ -14,7 +14,8 @@ kind in front of the user:
   orchestrator a Decide card the orchestrator asks, answered in its reply field: the words answer
              that card and reach the orchestrator with its id, never as a new request
 
-Run it directly to keep a seeded sandbox up for a person or a simulator:
+Run it directly to keep a seeded sandbox up for a person or a simulator (SDK_NODE and SDK_HOST name
+the pinned Node and the host bundle, as `make e2e-direct-cards` passes them):
   tools/e2e_cards.py <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 """
 
@@ -52,6 +53,10 @@ CARDS = {
 }
 
 ORCHESTRATOR_ANSWER = "Do it yourself"
+ORCHESTRATOR_CARD = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
+                     "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
+                     "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created"},
+                                                    {"id": "new_task", "label": "Create a task", "description": "A node fixes it"}]}
 
 
 class Sandbox:
@@ -66,12 +71,8 @@ class Sandbox:
         os.makedirs(fake)
         os.symlink(os.path.join(REPO, orchestrator), os.path.join(fake, "claude"))
         self.orchestrator_log = os.path.join(self.scratch, "orchestrator.jsonl")
-        card = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
-                "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
-                "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created"},
-                                               {"id": "new_task", "label": "Create a task", "description": "A node fixes it"}]}
         env = dict(os.environ, SANDBOX_DIR=self.dir, SANDBOX_PORT=str(port), MACS="1", PATH=f"{fake}:{os.environ['PATH']}", SANDBOX_WAKE="1",
-                   E2E_ORCHESTRATOR_LOG=self.orchestrator_log, E2E_ORCHESTRATOR_CARD=json.dumps(card),
+                   E2E_ORCHESTRATOR_LOG=self.orchestrator_log, E2E_ORCHESTRATOR_CARD=json.dumps(ORCHESTRATOR_CARD),
                    E2E_ALONDRA=os.path.join(self.dir, "bin/alondra"), **(extra_env or {}))
         try:
             subprocess.run([os.path.join(REPO, "tools/e2e-sandbox.sh"), daemon, cli, relay, tool], env=env, check=True,
@@ -233,13 +234,18 @@ def seed(asker, deliverer):
 
 
 def seed_orchestrator(sandbox, node):
-    """A node's question to the orchestrator wakes it, and it asks the user its Decide card."""
+    """A node's question to the orchestrator wakes it, and it asks the user its Decide card: the
+    sandbox's fake orchestrator in the Mac's Agent SDK host (tools/sandbox/src/fake/orchestrator.rs)."""
+    fake = os.path.join(sandbox.dir, "fakes", "orchestrator")
+    os.makedirs(fake, exist_ok=True)
+    with open(os.path.join(fake, "ask.json"), "w") as card:
+        json.dump(ORCHESTRATOR_CARD, card)
     node.call(("ask", {"interaction_id": "to-orchestrator", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
                        "need": "Tell me who fixes the memory pauses", "why": "My build is cut in a loop.", "blocking": False,
                        "options": [{"id": "wait", "label": "Wait", "description": "Keep waiting"},
                                    {"id": "go", "label": "Go on", "description": "Go on without it"}]}))
     deadline = time.time() + TIMEOUT
-    while not os.path.exists(sandbox.orchestrator_log + ".asked"):
+    while not os.path.exists(os.path.join(fake, "asked.json")):
         if time.time() > deadline:
             log = "".join(open(os.path.join(sandbox.home, "alondrad.log")).readlines()[-40:])
             raise AssertionError(f"the orchestrator never asked its card:\n{log}")
@@ -250,7 +256,7 @@ def check_orchestrator_answered(sandbox):
     """The words written under the orchestrator's card reached it as the answer to that card."""
     deadline = time.time() + TIMEOUT
     while True:
-        prompts = [json.loads(line)["prompt"] for line in open(sandbox.orchestrator_log)]
+        prompts = [json.loads(line)["prompt"] for line in open(os.path.join(sandbox.dir, "fakes", "orchestrator", "batches.jsonl"))]
         if any("(card orchestrator-decide" in prompt and ORCHESTRATOR_ANSWER in prompt for prompt in prompts):
             break
         assert time.time() < deadline, f"the orchestrator was never told the answer to its card: {prompts}"
@@ -280,7 +286,7 @@ ANSWERS = {
 
 def kind_of(need):
     """The seeded card with this text, or None for one the sandbox raised by itself (a memory warning)."""
-    return next((card for card, text in CARDS.items() if text[:30] in need), None)
+    return next((card for card, text in CARDS.items() if opening(text) in need), None)
 
 
 class Phone:
@@ -396,9 +402,14 @@ class Terminal:
         subprocess.run(["tmux", "-L", self.socket, "kill-server"], capture_output=True)
 
 
+def opening(need):
+    """The first words of a card's title: the TUI's list wraps a long one after them."""
+    return " ".join(need.split()[:4])
+
+
 def listed(screen, need):
     """Whether the inbox list on the left still shows the card."""
-    return any(need[:30] in line[:56] for line in screen.splitlines())
+    return any(opening(need) in line[:56] for line in screen.splitlines())
 
 
 def check_tui(sandbox, captures):
@@ -473,10 +484,12 @@ def main():
     parser.add_argument("binaries", nargs="+")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    if not (os.environ.get("SDK_NODE") and os.environ.get("SDK_HOST")):
+        parser.error("SDK_NODE and SDK_HOST must name the pinned Node and the host bundle: the orchestrator runs through the Agent SDK host")
     lan = args.client == "ios"
     if lan:
         os.environ["SANDBOX_LAN"] = "1"
-    sandbox = Sandbox(args.binaries, int(os.environ.get("SANDBOX_PORT", "47950")))
+    sandbox = Sandbox(args.binaries, int(os.environ.get("SANDBOX_PORT", "47950")), extra_env={"FAKES": "1"})
     nodes = []
     try:
         nodes = [Node(sandbox), Node(sandbox)]

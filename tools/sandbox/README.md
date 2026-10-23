@@ -61,7 +61,8 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
   --input-format stream-json …`, `src/fake/native.rs`): speaks the host's stream-json protocol as
   `agent-host/persistent-fake-claude.py` does. An orchestrator batch (`--restricted`) creates and
   launches the tasks the run scripted for each request it names, or closes the request with its
-  scripted answer, through the `alondra mcp-orchestrator` its `--mcp-config` names. A task's session
+  scripted answer, through the `alondra mcp-orchestrator` its `--mcp-config` names; a card a run
+  wrote in `fakes/orchestrator/ask.json` it asks the user once, on its next batch. A task's session
   works in the worktree Alondra made and acts through the real `alondra mcp-node` with the
   environment the host gave it: each input opens or joins a turn, which ends once it delivers, asks
   or cleans up; it follows its task's script, cleans up when asked, asks the host for a Bash

@@ -3,7 +3,8 @@
 //! stream-json …` is the same batch for a daemon without the SDK backend. Either creates the
 //! scripted tasks of every request the batch names, or closes the request with its scripted
 //! answer, through the MCP server Alondra configured, and ends with the stream Alondra expects
-//! from a successful run.
+//! from a successful run. A run that wrote `fakes/orchestrator/ask.json` has the next batch ask
+//! the user that card once, then moves it to `asked.json`.
 use std::{
     io::{BufRead, Read, Write},
     path::PathBuf,
@@ -45,6 +46,14 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
     let dir = fakes.dir.join("orchestrator");
     let (program, server_args) = server(args)?;
     let mut made = vec![];
+    let card = dir.join("ask.json");
+    if card.exists() {
+        let call: Value = serde_json::from_slice(&std::fs::read(&card)?)?;
+        let reply = mcp::call(&program, &server_args, &[], &[("ask", call.clone())])?.remove(0);
+        append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": "ask", "arguments": call, "refused": reply.refused, "text": reply.text}))?;
+        std::fs::rename(&card, dir.join("asked.json"))?;
+        made.push(("ask", call, reply));
+    }
     for script in fakes.request_scripts()? {
         let handled = dir.join(format!("{}.handled", script.request_id));
         if !prompt.contains(&script.request_id) || handled.exists() {

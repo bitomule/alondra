@@ -252,8 +252,8 @@ e2e-doc-mermaid:
 # comes back, and each card of a group opens on its own screen (tools/e2e_cards.py, tests/sandbox/README.md).
 # e2e-direct-cards uses the synthetic phone; e2e-cards-tui the real TUI in tmux;
 # e2e-ios-cards the iOS app in a pooled simulator. E2E_CAPTURES=<dir> keeps what each client showed.
-E2E_CARDS = bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox && \
-	python3 tools/e2e_cards.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) --client $(1) \
+E2E_CARDS = bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS) && \
+	$(SDK_HOST_ENV) python3 tools/e2e_cards.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) --client $(1) \
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 e2e-direct-cards:
