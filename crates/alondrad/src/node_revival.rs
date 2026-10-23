@@ -407,7 +407,7 @@ mod tests {
     const FAST: Timing = Timing { grace: Duration::from_millis(30) };
 
     /// The daemon's home and the folder of its SDK hosts.
-    struct Home(crate::test_support::Directory, crate::test_support::Directory);
+    struct Home(crate::test_support::Directory, crate::sdk_owner::tests::HostRoot);
 
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
@@ -425,7 +425,7 @@ mod tests {
     fn world(with_task: bool) -> (Home, Arc<DomainRuntime>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let state = crate::test_support::Directory::for_unix_socket();
+        let state = crate::sdk_owner::tests::HostRoot::new();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         domain.enable_sdk(crate::sdk_owner::tests::fixture_backend(&home, &state).0);
         *domain.handovers.crash_after.lock().unwrap() = Some(crate::domain_store::HandoverStep::Planned);

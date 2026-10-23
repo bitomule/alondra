@@ -844,7 +844,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         pub(crate) held: PathBuf,
         pub(crate) release: PathBuf,
         pub(crate) claude_home: PathBuf,
-        _state: Directory,
+        _state: crate::sdk_owner::tests::HostRoot,
         pub(crate) root: Directory,
     }
 
@@ -876,7 +876,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 native_environment.insert(name.into(), path.to_str().unwrap().into());
             }
             let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
-            let state = Directory::for_unix_socket();
+            let state = crate::sdk_owner::tests::HostRoot::new();
             let backend = crate::sdk_owner::SdkBackend {
                 node_sha256: crate::sdk_owner::backend::digest(&node).unwrap(),
                 host_sha256: crate::sdk_owner::backend::digest(&host).unwrap(),

@@ -85,7 +85,7 @@ struct World {
     worktree: PathBuf,
     database: PathBuf,
     home: Directory,
-    _state: Directory,
+    _state: crate::sdk_owner::tests::HostRoot,
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -137,7 +137,7 @@ impl World {
     fn with(release: impl FnOnce(&Path, &mut crate::sdk_owner::SdkBackend)) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = Directory::for_unix_socket();
+        let state = crate::sdk_owner::tests::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();

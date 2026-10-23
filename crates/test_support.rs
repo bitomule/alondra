@@ -79,6 +79,9 @@ impl Drop for Directory {
             return;
         };
         if let Err(error) = owner.close() {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return;
+            }
             if std::thread::panicking() {
                 eprintln!(
                     "Failed to remove test directory {}: {error}",

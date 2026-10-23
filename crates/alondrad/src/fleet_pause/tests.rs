@@ -607,7 +607,7 @@ struct SdkNode {
     domain: Arc<DomainRuntime>,
     capture: PathBuf,
     home: crate::test_support::Directory,
-    _state: crate::test_support::Directory,
+    _state: crate::sdk_owner::tests::HostRoot,
 }
 
 impl SdkNode {
@@ -615,7 +615,7 @@ impl SdkNode {
     fn working() -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::test_support::Directory::for_unix_socket();
+        let state = crate::sdk_owner::tests::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let (backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);

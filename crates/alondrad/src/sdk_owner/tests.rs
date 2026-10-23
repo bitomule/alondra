@@ -18,9 +18,118 @@ fn runfile(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
+/// Waits for the end of the test process that started it, then kills the process group of every
+/// host still holding a file under the folder and removes the folder. Dropping a `HostRoot` ends
+/// it first, while that process lives: then it does nothing.
+const REAPER: &str = r#"
+import os, shutil, signal, subprocess, sys
+root, owner = sys.argv[1], int(sys.argv[2])
+sys.stdin.buffer.read()
+if os.getppid() == owner:
+    sys.exit(0)
+listed = subprocess.run(['/usr/sbin/lsof', '-t', '+D', root], capture_output=True, text=True).stdout.split()
+for pid in {int(pid) for pid in listed}:
+    try:
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+shutil.rmtree(os.path.dirname(root), ignore_errors=True)
+"#;
+
+/// The folder of a test's SDK hosts: the test owns every host started under it. Dropping it kills
+/// each host left with its whole process group, and fails the test that left one running; if the
+/// test process dies without unwinding (a timeout, a kill), its reaper kills them instead.
+pub(crate) struct HostRoot {
+    reaper: std::process::Child,
+    directory: Directory,
+}
+
+impl HostRoot {
+    pub(crate) fn new() -> Self {
+        Self::owned_by(std::process::id())
+    }
+
+    fn owned_by(owner: u32) -> Self {
+        use std::os::unix::process::CommandExt;
+        let directory = Directory::for_unix_socket();
+        let reaper = std::process::Command::new("/usr/bin/python3")
+            .args(["-I", "-c", REAPER])
+            .arg(&*directory)
+            .arg(owner.to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start the hosts' reaper");
+        Self { reaper, directory }
+    }
+
+    /// Kills the process group of every host still running here and waits for each to end: the
+    /// hosts it killed.
+    fn kill_hosts(&self) -> Vec<String> {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(folders) = std::fs::read_dir(self.directory.join("h")) else {
+            return Vec::new();
+        };
+        let me = std::process::id() as i32;
+        let mut killed = Vec::new();
+        for folder in folders {
+            let folder = folder.unwrap().path();
+            let Ok(lock) = std::fs::metadata(folder.join("host.lock")) else {
+                continue;
+            };
+            for holder in alondra_process_group::holders(lock.dev(), lock.ino()).unwrap() {
+                if holder.pid == me || holder.zombie || alondra_process_group::group(holder.pid).unwrap() != Some(holder.pid) {
+                    continue;
+                }
+                let mut exits = alondra_process_group::Exits::new().unwrap();
+                for member in alondra_process_group::members(holder.pid).unwrap().iter().filter(|member| !member.zombie) {
+                    exits.watch(member).unwrap();
+                }
+                assert_eq!(unsafe { libc::killpg(holder.pid, libc::SIGKILL) }, 0, "kill the group of {holder}");
+                exits.wait().unwrap();
+                killed.push(format!("{} ({holder})", folder.file_name().unwrap().to_string_lossy()));
+            }
+        }
+        killed
+    }
+}
+
+impl std::ops::Deref for HostRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.directory
+    }
+}
+
+impl AsRef<Path> for HostRoot {
+    fn as_ref(&self) -> &Path {
+        &self.directory
+    }
+}
+
+impl HostRoot {
+    fn end_reaper(&mut self) {
+        drop(self.reaper.stdin.take());
+        self.reaper.wait().unwrap();
+    }
+}
+
+impl Drop for HostRoot {
+    fn drop(&mut self) {
+        let left = self.kill_hosts();
+        self.end_reaper();
+        if !left.is_empty() && !std::thread::panicking() {
+            panic!("the test left SDK hosts running: {}", left.join(", "));
+        }
+    }
+}
+
 /// The pinned Node host with the official SDK and a fake native Claude that records what it is
 /// launched with in the returned capture, its hosts' folders under `state`.
-pub(crate) fn fixture_backend(home: &Path, state: &Path) -> (SdkBackend, PathBuf) {
+pub(crate) fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, PathBuf) {
     let native = home.join("native");
     std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -53,12 +162,12 @@ pub(crate) struct SdkLaunches {
     domain: Arc<DomainRuntime>,
     pub(crate) capture: PathBuf,
     state_root: PathBuf,
-    _state: Directory,
+    _state: HostRoot,
 }
 
 impl SdkLaunches {
     pub(crate) fn enable(domain: &Arc<DomainRuntime>, home: &Path) -> Self {
-        let state = Directory::for_unix_socket();
+        let state = HostRoot::new();
         let (backend, capture) = fixture_backend(home, &state);
         let state_root = backend.state_root.clone();
         domain.enable_sdk(backend);
@@ -131,7 +240,7 @@ impl SdkLaunches {
     /// `enable`, with a native Claude that keeps every prompt from the fake one: each node starts
     /// and never begins a turn, so it holds its slot until its task ends.
     pub(crate) fn enable_holding(domain: &Arc<DomainRuntime>, home: &Path) -> Self {
-        let state = Directory::for_unix_socket();
+        let state = HostRoot::new();
         let (mut backend, capture) = fixture_backend(home, &state);
         let fake = home.join("native-fake");
         std::fs::rename(&backend.native, &fake).unwrap();
@@ -163,7 +272,13 @@ struct Slice {
     /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
     kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
     _home: Directory,
-    _state: Directory,
+    _state: HostRoot,
+}
+
+impl Drop for Slice {
+    fn drop(&mut self) {
+        self.domain.stop_sdk_owners();
+    }
 }
 
 /// Adds to `kept` the task's raw host events the domain still holds the bytes of.
@@ -187,9 +302,12 @@ fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope 
 
 impl Slice {
     fn new() -> Self {
+        Self::with_hosts(HostRoot::new())
+    }
+
+    fn with_hosts(state: HostRoot) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = Directory::for_unix_socket();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let plugin = home.join("plugin");
@@ -368,6 +486,41 @@ fn watch_acknowledgements(slice: &Slice) -> Arc<Mutex<Vec<(u64, u64)>>> {
 // A1: a task launched through the SDK backend runs its first turn on the real host; the end of
 // that turn commits one card with the raw observation, and every acknowledgement leaves only
 // once readers see the commit it seals.
+fn host_left_running(slice: &Slice) -> Vec<alondra_process_group::Member> {
+    let driver = slice.launch();
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    drop(driver);
+    assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "a dropped owner leaves its host running");
+    processes
+}
+
+fn survivors(processes: &[alondra_process_group::Member]) -> Vec<String> {
+    processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect()
+}
+
+#[test]
+fn a_test_that_leaves_a_host_running_fails_and_the_host_ends_with_it() {
+    let slice = Slice::new();
+    let processes = host_left_running(&slice);
+    let failure = catch_unwind(AssertUnwindSafe(|| drop(slice))).unwrap_err();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.starts_with("the test left SDK hosts running: sdk-"), "{message}");
+    assert_eq!(survivors(&processes), Vec::<String>::new(), "the host's group ended with the test");
+}
+
+#[test]
+fn the_hosts_of_a_test_process_that_dies_without_unwinding_end_and_their_folder_goes() {
+    let mut owner = std::process::Command::new("/bin/sleep").arg("600").stdin(std::process::Stdio::null()).spawn().unwrap();
+    let mut slice = Slice::with_hosts(HostRoot::owned_by(owner.id()));
+    let processes = host_left_running(&slice);
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let root = slice._state.to_path_buf();
+    slice._state.end_reaper();
+    assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the host's group");
+    assert!(!root.parent().unwrap().exists(), "the reaper removed the hosts' folder");
+}
+
 #[test]
 fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_before_the_host_is_acknowledged() {
     let slice = Slice::new();
@@ -1897,7 +2050,7 @@ fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
     crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
     unrecorded(&mut resumed);
     assert!(resumed.host_to_replace());
-    let again = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    let mut again = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
     let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("one card asks how it goes on");
     let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };
@@ -1906,7 +2059,7 @@ fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
         .filter(|card| card.scope == alondra_core::domain::Scope::Task { task_id: TASK.into() } && !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
         .count();
     assert_eq!(open, 1, "only that card waits on the user");
-    drop(again);
+    again.stop().unwrap();
 }
 
 // A subagent hands its report back after the turn ended: Claude starts a turn by itself while the

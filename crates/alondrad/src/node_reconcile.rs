@@ -299,8 +299,8 @@ mod tests {
 
     /// The daemon gets the Agent SDK, whose moves stop once planned: what bringing a node back
     /// asks for is seen in its plan. The folder of its hosts, kept while the test runs.
-    fn moving_to_the_sdk(domain: &std::sync::Arc<DomainRuntime>, home: &std::path::Path) -> crate::test_support::Directory {
-        let state = crate::test_support::Directory::for_unix_socket();
+    fn moving_to_the_sdk(domain: &std::sync::Arc<DomainRuntime>, home: &std::path::Path) -> crate::sdk_owner::tests::HostRoot {
+        let state = crate::sdk_owner::tests::HostRoot::new();
         domain.enable_sdk(crate::sdk_owner::tests::fixture_backend(home, &state).0);
         *domain.handovers.crash_after.lock().unwrap() = Some(crate::domain_store::HandoverStep::Planned);
         state

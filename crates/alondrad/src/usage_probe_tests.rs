@@ -91,7 +91,7 @@ for raw in sys.stdin:
     sys.stdout.flush()
 "#;
 
-fn probe_backend(home: &Path, state: &Path) -> SdkBackend {
+fn probe_backend(home: &Path, state: &crate::sdk_owner::tests::HostRoot) -> SdkBackend {
     use std::os::unix::fs::PermissionsExt;
     let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(home, state);
     std::fs::write(&backend.native, PROBE_NATIVE).unwrap();
@@ -104,7 +104,7 @@ fn probe_backend(home: &Path, state: &Path) -> SdkBackend {
 fn the_probe_runs_the_released_host_without_a_prompt_and_reads_each_accounts_folder() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let state = Directory::for_unix_socket();
+    let state = crate::sdk_owner::tests::HostRoot::new();
     let backend = probe_backend(&home, &state);
 
     let default = probe(&backend, None).expect("the default profile answers");
@@ -126,7 +126,7 @@ fn a_probe_that_fails_keeps_the_last_good_reading_and_its_age() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
-    let state = Directory::for_unix_socket();
+    let state = crate::sdk_owner::tests::HostRoot::new();
     let backend = probe_backend(&home, &state);
     let reading = probe(&backend, None).unwrap();
     record(&domain, &AccountId::default_account(), reading, NOW);
