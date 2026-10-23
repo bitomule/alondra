@@ -300,7 +300,7 @@ impl OptionsForm {
                 let on = current.as_bool().unwrap_or(false);
                 self.set(field, json!(!on));
             }
-            FieldKind::Attachments => {}
+            FieldKind::Attachments | FieldKind::Unsupported => {}
             FieldKind::Text { .. }
             | FieldKind::Multiline { .. }
             | FieldKind::Date

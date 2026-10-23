@@ -171,7 +171,9 @@ impl App {
             .iter()
             .flat_map(|section| &section.items)
             .find_map(|item| {
-                if let alondra_core::views::Item::Form(form) = item {
+                if let alondra_core::views::Item::Form(form) = item
+                    && form.submit.enabled
+                {
                     Some(form)
                 } else {
                     None
@@ -322,7 +324,12 @@ impl App {
                     }
                 }
                 alondra_core::views::Link::View { key } => self.navigate_view(key),
+                alondra_core::views::Link::Unsupported
+                | alondra_core::views::Link::Local { local: alondra_core::views::LocalLink::Unsupported } => {
+                    self.fail(super::view_render::update_to_use());
+                }
                 alondra_core::views::Link::Local { local } => match local {
+                    alondra_core::views::LocalLink::Unsupported => self.fail(super::view_render::update_to_use()),
                     alondra_core::views::LocalLink::Attach { .. } => {
                         self.fail(tr!(
                             "Alondra no longer opens a node's terminal: its detail has its state and its cards",
@@ -428,6 +435,7 @@ impl App {
                     "",
                 );
             }
+            alondra_core::views::Input::Unsupported => self.fail(super::view_render::update_to_use()),
             alondra_core::views::Input::None => {
                 let request = crate::client::Client::action_body(&epoch, &action.id, option_id.as_deref(), serde_json::json!({}));
                 self.submit_view_request(request, Some(acting));

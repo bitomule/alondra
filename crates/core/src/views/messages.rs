@@ -18,7 +18,9 @@ pub enum OutcomeKind {
     Refused,
     /// Alondra tried and it failed.
     Failed,
-    /// What the user looked at moved; `next` offers to go on anyway.
+    /// What the user looked at moved; `next` offers to go on anyway. A kind from a newer daemon
+    /// reads as this one: the client shows its title and reloads.
+    #[serde(other)]
     Changed,
 }
 

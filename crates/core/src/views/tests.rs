@@ -7452,3 +7452,55 @@ fn no_screen_changes_with_the_clock_alone() {
         }
     }
 }
+
+#[test]
+fn values_from_a_newer_daemon_decode_as_unsupported_or_their_default() {
+    assert_eq!(serde_json::from_value::<Link>(serde_json::json!({"kind": "deep_link", "target": "x"})).unwrap(), Link::Unsupported);
+    assert_eq!(
+        serde_json::from_value::<Link>(serde_json::json!({"kind": "local", "local": {"kind": "passkey_sign_in", "card": "c"}})).unwrap(),
+        Link::Local { local: LocalLink::Unsupported }
+    );
+    assert_eq!(serde_json::from_value::<Trailing>(serde_json::json!({"kind": "meter", "value": 3})).unwrap(), Trailing::Unsupported);
+    assert_eq!(serde_json::from_value::<Input>(serde_json::json!({"kind": "voice"})).unwrap(), Input::Unsupported);
+    assert_eq!(serde_json::from_value::<FieldKind>(serde_json::json!({"kind": "time_range"})).unwrap(), FieldKind::Unsupported);
+    assert_eq!(serde_json::from_value::<Presentation>(serde_json::json!("slider")).unwrap(), Presentation::Unsupported);
+    assert_eq!(serde_json::from_value::<CommentKind>(serde_json::json!("pixels")).unwrap(), CommentKind::Unsupported);
+    assert_eq!(serde_json::from_value::<Tone>(serde_json::json!("aurora")).unwrap(), Tone::Neutral);
+    assert_eq!(serde_json::from_value::<Level>(serde_json::json!("scorching")).unwrap(), Level::Calm);
+    assert_eq!(serde_json::from_value::<Icon>(serde_json::json!("calendar")).unwrap(), Icon::Notice);
+    assert_eq!(serde_json::from_value::<Style>(serde_json::json!("glow")).unwrap(), Style::Secondary);
+    assert_eq!(serde_json::from_value::<Detail>(serde_json::json!("streamed")).unwrap(), Detail::Reference);
+    assert_eq!(serde_json::from_value::<TimeFormat>(serde_json::json!("countdown")).unwrap(), TimeFormat::Relative);
+    assert_eq!(serde_json::from_value::<ContentKind>(serde_json::json!("video")).unwrap(), ContentKind::File);
+    assert_eq!(serde_json::from_value::<AttachmentKind>(serde_json::json!("audio")).unwrap(), AttachmentKind::Binary);
+    assert_eq!(serde_json::from_value::<CheckState>(serde_json::json!("skipped")).unwrap(), CheckState::Pending);
+    assert_eq!(serde_json::from_value::<OutcomeKind>(serde_json::json!("queued")).unwrap(), OutcomeKind::Changed);
+    let section: Section =
+        serde_json::from_value(serde_json::json!({"id": "s", "collapsed": false, "items": [], "style": "grid"})).unwrap();
+    assert_eq!(section.style, None);
+    let row: Row = serde_json::from_value(serde_json::json!({
+        "id": "r", "icon": "task", "title": "T", "depth": 0, "struck": false, "kind": "sign_in"
+    }))
+    .unwrap();
+    assert_eq!(row.kind, None);
+}
+
+#[test]
+fn a_known_kind_with_broken_data_from_the_daemon_still_fails() {
+    assert!(serde_json::from_value::<Link>(serde_json::json!({"kind": "view"})).is_err());
+    assert!(serde_json::from_value::<LocalLink>(serde_json::json!({"kind": "attach"})).is_err());
+    assert!(serde_json::from_value::<FieldKind>(serde_json::json!({"kind": "stepper", "min": "a"})).is_err());
+    assert!(serde_json::from_value::<Trailing>(serde_json::json!({"kind": "count"})).is_err());
+    assert!(serde_json::from_value::<Input>(serde_json::json!({"kind": "text"})).is_err());
+}
+
+#[test]
+fn the_daemon_cannot_send_an_unsupported_value() {
+    assert!(serde_json::to_value(Link::Unsupported).is_err());
+    assert!(serde_json::to_value(Link::Local { local: LocalLink::Unsupported }).is_err());
+    assert!(serde_json::to_value(Trailing::Unsupported).is_err());
+    assert!(serde_json::to_value(Input::Unsupported).is_err());
+    assert!(serde_json::to_value(FieldKind::Unsupported).is_err());
+    assert!(serde_json::to_value(Presentation::Unsupported).is_err());
+    assert!(serde_json::to_value(CommentKind::Unsupported).is_err());
+}

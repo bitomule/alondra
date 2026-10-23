@@ -351,7 +351,7 @@ fn push_supported_option(domain: &DomainState, action: &Action) -> bool {
 
 fn push_text(input: &Input) -> (bool, Option<String>) {
     match input {
-        Input::None => (false, None),
+        Input::None | Input::Unsupported => (false, None),
         Input::Text { placeholder, .. } => (true, Some(placeholder.clone())),
     }
 }

@@ -1,4 +1,10 @@
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// An optional value a newer daemon may send that this client does not know reads as absent.
+fn known<'de, D: Deserializer<'de>, T: DeserializeOwned>(deserializer: D) -> Result<Option<T>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| serde_json::from_value(value).ok()))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -16,20 +22,22 @@ pub enum Transport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
-    Neutral,
     Info,
     Accent,
     Success,
     Warning,
     Critical,
     YourTurn,
+    #[serde(other)]
+    Neutral,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
-    Calm,
     Warm,
     Hot,
+    #[serde(other)]
+    Calm,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +46,6 @@ pub enum Icon {
     Action,
     Document,
     PullRequest,
-    Notice,
     Delivery,
     Task,
     Request,
@@ -54,27 +61,32 @@ pub enum Icon {
     Branch,
     History,
     Machine,
+    #[serde(other)]
+    Notice,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Detail {
     Included,
+    #[serde(other)]
     Reference,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeFormat {
-    Relative,
     Absolute,
     Time,
+    #[serde(other)]
+    Relative,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Style {
     Primary,
-    Secondary,
     Destructive,
     Plain,
+    #[serde(other)]
+    Secondary,
 }
 impl Style {
     /// The colour a button of this style is painted in when nothing else decides it.
@@ -92,12 +104,16 @@ pub enum Presentation {
     Button,
     Options,
     Menu,
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentKind {
     Document,
     Diff,
+    #[serde(other)]
     File,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +121,7 @@ pub enum ContentKind {
 pub enum AttachmentKind {
     Image,
     Text,
+    #[serde(other)]
     Binary,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +129,7 @@ pub enum AttachmentKind {
 pub enum CheckState {
     Pass,
     Fail,
+    #[serde(other)]
     Pending,
 }
 
@@ -229,7 +247,7 @@ pub struct Section {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub more: Option<More>,
     /// How a client lays its rows out; without one, as each screen lays them out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub style: Option<SectionStyle>,
 }
 /// A section of rows a client lays out as a settings list: each row a status symbol in its first
@@ -269,7 +287,7 @@ pub use crate::domain::CardKind;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Card {
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub kind: Option<CardKind>,
     /// What the user must do, in the imperative; the same text as `title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,7 +393,7 @@ pub struct Row {
     pub depth: u8,
     pub struck: bool,
     /// The kind of the card this row stands for, so a list can colour it like the card.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub kind: Option<CardKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Row>,
@@ -391,6 +409,9 @@ pub enum Trailing {
     Count { value: u32 },
     Time { at: String, format: TimeFormat },
     Text { text: String },
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Markdown {
@@ -479,6 +500,11 @@ impl CardAction {
     pub fn usable(action: Action) -> Option<Self> {
         action.enabled.then(|| Self(Action { disabled_reason: None, ..action }))
     }
+    /// The action itself, for a client that keeps on the card, disabled, one from a newer daemon
+    /// it cannot carry out.
+    pub fn on_client(&mut self) -> &mut Action {
+        &mut self.0
+    }
 }
 impl From<Action> for CardAction {
     fn from(action: Action) -> Self {
@@ -502,7 +528,7 @@ pub struct Action {
     pub label: String,
     pub style: Style,
     /// How the button reads: green to advance, red when advancing is risky, grey otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     /// A button that answers with this option of the action: send it as `option_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -560,6 +586,9 @@ pub enum Input {
         required: bool,
         multiline: bool,
     },
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -571,6 +600,9 @@ pub struct CommentSpec {
 pub enum CommentKind {
     Blocks,
     DiffLines,
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Confirm {
@@ -584,6 +616,9 @@ pub enum Link {
     View { key: String },
     Url { url: String },
     Local { local: LocalLink },
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -621,6 +656,9 @@ pub enum LocalLink {
         account: String,
         command: String,
     },
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Form {
@@ -662,6 +700,9 @@ pub enum FieldKind {
     Time,
     Stepper { min: i64, max: i64 },
     Lines { placeholder: Option<String> },
+    /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
+    #[serde(other, skip_serializing)]
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceItem {

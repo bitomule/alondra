@@ -202,6 +202,55 @@ fn an_item_kind_from_a_newer_daemon_shows_as_a_row_asking_to_update() {
     assert_eq!(rows, ["Update the TUI to see this"]);
 }
 
+#[test]
+fn a_card_from_a_newer_daemon_loads_with_what_the_tui_cannot_use_disabled_or_left_out() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    let card: ViewDocument = serde_json::from_str(&super::parity::newer_daemon_fixture("card.json")).unwrap();
+    let key = card.key.clone();
+    app.sel = Some(Key(key.trim_start_matches("card:").to_owned()));
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(card) });
+
+    let view = app.card_view.clone().expect("the card loads");
+    let actions = view_render::actions(&view);
+    let action = |label: &str| actions.iter().find(|action| action.label == label).unwrap_or_else(|| panic!("{label}: {actions:?}"));
+    for label in ["Sign in with a passkey", "Pick a time"] {
+        assert!(!action(label).enabled, "{label}");
+        assert_eq!(action(label).disabled_reason.as_deref(), Some("Update the TUI to use this"));
+        assert_eq!(action(label).link, None);
+    }
+    assert!(action("Go on without the calendar").enabled);
+    let items: Vec<_> = view.sections.iter().flat_map(|section| &section.items).collect();
+    let alondra_core::views::Item::Card(card) = items[0] else { panic!("{items:?}") };
+    assert_eq!(card.kind, None);
+    assert!(card.context.iter().all(|line| line.link.is_none()));
+    let Some(alondra_core::views::Item::Facts(facts)) = items.iter().find(|item| matches!(item, alondra_core::views::Item::Facts(_))) else { panic!() };
+    assert!(facts.items[0].link.is_some());
+    assert_eq!(facts.items[1].link, None);
+    let Some(alondra_core::views::Item::Form(form)) = items.iter().find(|item| matches!(item, alondra_core::views::Item::Form(_))) else { panic!() };
+    assert_eq!(form.fields.iter().map(|field| field.id.as_str()).collect::<Vec<_>>(), ["note"]);
+    assert!(!form.submit.enabled);
+    assert_eq!(form.submit.disabled_reason.as_deref(), Some("Update the TUI to use this"));
+
+    let screen = drawn(&mut app, 160, 60);
+    assert!(screen.contains("Sign in to the calendar: 1 task waits for it"), "{screen}");
+    assert!(screen.contains("Update the TUI to see this"), "{screen}");
+    assert!(screen.contains("Sign in with a passkey — Update the TUI to use this"), "{screen}");
+    assert!(screen.contains("Pick a time — Update the TUI to use this"), "{screen}");
+    assert!(screen.contains(" 2  Go on without the calendar"), "{screen}");
+    assert!(screen.contains("Save — Update the TUI to use this"), "{screen}");
+}
+
+#[test]
+fn an_outcome_kind_from_a_newer_daemon_shows_the_daemons_title_instead_of_a_failure() {
+    let reply = super::view_action_result(json!({"result": {"kind": "queued", "title": "Queued for the Mac"}}));
+    let Ok(super::ViewActionReply::Outcome(outcome)) = reply else { panic!("not an outcome") };
+    assert_eq!(outcome.kind, OutcomeKind::Changed);
+    assert_eq!(outcome.title, "Queued for the Mac");
+}
+
 fn drawn(app: &mut App, width: u16, height: u16) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();

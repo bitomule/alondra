@@ -3,12 +3,23 @@
 use super::*;
 
 fn fixtures_dir() -> std::path::PathBuf {
+    views_fixtures("cards")
+}
+
+fn views_fixtures(folder: &str) -> std::path::PathBuf {
     match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
         Ok(root) => std::path::PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))
-            .join("fixtures/views/cards"),
-        Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/views/cards"),
+            .join("fixtures/views")
+            .join(folder),
+        Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/views").join(folder),
     }
+}
+
+/// A view as a daemon newer than this terminal sends it, from `fixtures/views/newer-daemon`.
+pub(in crate::tui) fn newer_daemon_fixture(name: &str) -> String {
+    let path = views_fixtures("newer-daemon").join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
@@ -38,7 +49,10 @@ fn flash(app: &App) -> &str {
     app.flash.as_ref().map_or("", |flash| flash.text.as_str())
 }
 
+/// The card as a view that is not a card's own shows it: without a kind, so its actions follow the
+/// view's keys instead of 1-3, m and r.
 fn untyped(view: &mut serde_json::Value) {
+    view["view"] = serde_json::json!("task");
     view["sections"][0]["items"][0]
         .as_object_mut()
         .unwrap()

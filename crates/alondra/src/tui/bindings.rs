@@ -192,7 +192,7 @@ fn has_diff(view: &View) -> bool {
 
 fn has_form(view: &View) -> Option<&Action> {
     view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Form(form) => Some(&form.submit),
+        Item::Form(form) if form.submit.enabled => Some(&form.submit),
         _ => None,
     })
 }

@@ -5,7 +5,10 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use alondra_core::domain::CardKind;
-use alondra_core::views::{Action, Card, Icon, Item, Label, Row, Section, View};
+use alondra_core::views::{
+    Action, Card, CommentKind, FieldKind, Form, Icon, Input, Item, Label, Link, LocalLink, Notice, Presentation, Row, Section,
+    Trailing, View,
+};
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
@@ -202,7 +205,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         Some(alondra_core::views::Trailing::Count { value }) if *value > 0 => {
             parts.push((value.to_string(), Style::new().fg(DIM)))
         }
-        Some(alondra_core::views::Trailing::Count { .. }) | None => {}
+        Some(alondra_core::views::Trailing::Count { .. } | alondra_core::views::Trailing::Unsupported) | None => {}
         Some(alondra_core::views::Trailing::Time { at, format }) => {
             parts.push((format_time(at, *format), Style::new().fg(DIM)))
         }
@@ -451,6 +454,10 @@ fn role_color(action: &Action) -> Color {
 }
 
 fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
+    if !action.enabled {
+        let why = action.disabled_reason.as_ref().map(|reason| format!(" — {reason}")).unwrap_or_default();
+        return vec![Line::from(vec![keycap_span(key, DIM), Span::styled(format!(" {}{why}", action.label), Style::new().fg(DIM))])];
+    }
     vec![Line::from(vec![keycap_span(key, role_color(action)), Span::raw(format!(" {}", action.label))])]
 }
 
@@ -632,6 +639,11 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                             lines.push(Line::from(format!("  {help}").fg(DIM)));
                         }
                     }
+                    if !form.submit.enabled {
+                        let why = form.submit.disabled_reason.as_ref().map(|reason| format!(" — {reason}")).unwrap_or_default();
+                        lines.push(Line::from(Span::styled(format!("{}{why}", form.submit.label), Style::new().fg(DIM))));
+                        continue;
+                    }
                     lines.push(Line::from(vec![
                         Span::styled("[e] ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
                         Span::raw({
@@ -654,29 +666,115 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// An item kind this terminal does not know, from a newer daemon, as a row asking to update.
-pub fn placeholders(view: &mut alondra_core::views::View) {
+/// What a newer daemon sent that this terminal does not know: an item kind becomes a row asking
+/// to update, an action it cannot carry out stays disabled saying so, and an unknown link, form
+/// field or trailing value goes.
+pub fn placeholders(view: &mut View) {
     let mut n = 0;
     for item in view.sections.iter_mut().flat_map(|section| section.items.iter_mut()) {
-        if *item == Item::Unknown {
-            n += 1;
-            *item = Item::Row(Row {
-                id: format!("unknown-{n}"),
-                link: None,
-                icon: alondra_core::views::Icon::Notice,
-                title: tr!("Update the TUI to see this", "Actualiza la TUI para ver esto").to_owned(),
-                subtitle: None,
-                badges: vec![],
-                trailing: None,
-                depth: 0,
-                struck: false,
-                kind: None,
-                children: vec![],
-                folded: false,
-                actions: vec![],
-            });
+        match item {
+            Item::Unknown => {
+                n += 1;
+                *item = Item::Row(unknown_row(n));
+            }
+            Item::Card(card) => supported_card(card),
+            Item::Row(row) => supported_row(row),
+            Item::Markdown(markdown) => drop_unsupported(&mut markdown.more),
+            Item::Facts(facts) => facts.items.iter_mut().for_each(|fact| drop_unsupported(&mut fact.link)),
+            Item::Checks(checks) => drop_unsupported(&mut checks.link),
+            Item::Form(form) => supported_form(form),
+            Item::Notice(notice) => supported_notice(notice),
+            Item::Actions(bar) => bar.actions.iter_mut().for_each(supported_action),
+            Item::ContentRef(_) | Item::Timeline(_) => {}
         }
     }
+    view.empty.iter_mut().chain(&mut view.notices).chain(&mut view.status.update).for_each(supported_notice);
+    view.first_cards.iter_mut().for_each(placeholders);
+}
+
+fn unknown_row(n: usize) -> Row {
+    Row {
+        id: format!("unknown-{n}"),
+        link: None,
+        icon: Icon::Notice,
+        title: tr!("Update the TUI to see this", "Actualiza la TUI para ver esto").to_owned(),
+        subtitle: None,
+        badges: vec![],
+        trailing: None,
+        depth: 0,
+        struck: false,
+        kind: None,
+        children: vec![],
+        folded: false,
+        actions: vec![],
+    }
+}
+
+pub(super) fn update_to_use() -> String {
+    tr!("Update the TUI to use this", "Actualiza la TUI para usar esto").to_owned()
+}
+
+fn unsupported_link(link: &Link) -> bool {
+    matches!(link, Link::Unsupported | Link::Local { local: LocalLink::Unsupported })
+}
+
+fn drop_unsupported(link: &mut Option<Link>) {
+    if link.as_ref().is_some_and(unsupported_link) {
+        *link = None;
+    }
+}
+
+fn supported_action(action: &mut Action) {
+    if action.comments.is_some_and(|comments| comments.kind == CommentKind::Unsupported) {
+        action.comments = None;
+    }
+    let unsupported = action.link.as_ref().is_some_and(unsupported_link)
+        || action.presentation == Presentation::Unsupported
+        || std::iter::once(&action.input).chain(action.options.iter().map(|option| &option.input)).any(|input| *input == Input::Unsupported);
+    if unsupported {
+        disable(action);
+        action.link = None;
+        action.presentation = Presentation::Button;
+        action.input = Input::None;
+        action.options.retain(|option| option.input != Input::Unsupported);
+    }
+}
+
+fn disable(action: &mut Action) {
+    action.enabled = false;
+    action.disabled_reason = Some(update_to_use());
+}
+
+fn supported_card(card: &mut Card) {
+    drop_unsupported(&mut card.link);
+    card.blocks.iter_mut().chain(&mut card.blocked_by).for_each(|chip| drop_unsupported(&mut chip.link));
+    card.context.iter_mut().for_each(|line| drop_unsupported(&mut line.link));
+    if let Some(body) = &mut card.body {
+        drop_unsupported(&mut body.more);
+    }
+    card.actions.iter_mut().chain(&mut card.more).chain(&mut card.reply).for_each(|action| supported_action(action.on_client()));
+}
+
+fn supported_row(row: &mut Row) {
+    drop_unsupported(&mut row.link);
+    if row.trailing == Some(Trailing::Unsupported) {
+        row.trailing = None;
+    }
+    row.actions.iter_mut().for_each(supported_action);
+    row.children.iter_mut().for_each(supported_row);
+}
+
+fn supported_form(form: &mut Form) {
+    let lost_required = form.fields.iter().any(|field| field.kind == FieldKind::Unsupported && field.required);
+    form.fields.retain(|field| field.kind != FieldKind::Unsupported);
+    supported_action(&mut form.submit);
+    if lost_required {
+        disable(&mut form.submit);
+    }
+}
+
+fn supported_notice(notice: &mut Notice) {
+    notice.action.iter_mut().for_each(supported_action);
 }
 
 pub(super) fn action_line(action: &Action) -> String {
@@ -886,8 +984,9 @@ pub fn detail_card(view: &View) -> Option<&Card> {
 }
 
 /// The card a detail view is about, when it follows the card contract: its keys are 1-3, m and r.
+/// A card view's card follows it even when its kind, from a newer daemon, is unknown here.
 pub fn typed_card(view: &View) -> Option<&Card> {
-    detail_card(view).filter(|card| card.kind.is_some())
+    detail_card(view).filter(|card| card.kind.is_some() || view.view == "card")
 }
 
 pub fn action_hint(action: &Action) -> &str {
