@@ -175,3 +175,30 @@ fn a_journal_moved_by_hand_is_replayed_rather_than_read_from_what_was_kept() {
     assert_eq!(read.revision(), kept.revision() + 1);
     assert_eq!(*read, replay(&task, &s.lifecycle_journal[&task]).unwrap());
 }
+
+/// A turn that ends unheard leaves its card under the final delivery the node presents next. Once
+/// the user accepted it, the node asks something; the user's feedback takes the acceptance back, so
+/// the question withdraws the delivery and the node is handed it back with the feedback as its next
+/// input, which also tells it how the task goes on.
+#[test]
+fn feedback_hands_back_an_accepted_delivery_a_question_followed_while_its_turn_ended_unheard() {
+    let mut s = three_tasks();
+    for (n, step) in [Step::Ask(2), Step::TurnEnded, Step::Answer(2), Step::Deliver(2), Step::Accept(2), Step::Ask(2)].iter().enumerate() {
+        run(&mut s, step, n).unwrap_or_else(|error| panic!("{step:?} was refused: {error}"));
+    }
+    let unheard: Vec<InteractionId> = s.lifecycle_of(&SDK.into()).unwrap().cards().into_iter().map(|(card, _)| card.clone()).collect();
+    assert!(!unheard.is_empty(), "the delivery stands over the card of the unheard turn");
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "feedback".into(), expected_revision: s.revision,
+        command: Command::SubmitFeedback {
+            attachments: vec![], presentation_id: delivery(SDK, 3), targets: targets(), body: "Change it".into(), instruction: Instruction::Changes,
+        },
+    };
+    assert_eq!(s.guard(&user(), &envelope), Ok(()));
+    s.execute(&user(), &envelope).unwrap();
+    assert!(s.interactions[&delivery(SDK, 3)].withdrawn, "the question withdraws the delivery");
+    assert_eq!(s.lifecycle_of(&SDK.into()).unwrap().phase(), alondra_domain::TaskPhase::InProgress);
+    assert!(unheard.iter().all(|card| !s.open(&s.interactions[card])), "the handed back delivery answers the unheard turn");
+    assert_eq!(s.kept_lifecycles_match_journals(), Ok(()));
+}
+

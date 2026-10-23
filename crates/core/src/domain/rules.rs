@@ -1842,8 +1842,13 @@ impl DomainState {
         let through_sdk = self.lifecycle(lifecycles, task_id)?.execution()
             .is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST);
         let text = through_sdk.then_some(text);
+        let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let record = LifecycleRecord::HandedBack { delivery: delivery.clone(), input: self.next_input(task_id), text };
         self.decide(lifecycles, task_id, record)?;
+        let still = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect::<Vec<_>>();
+        for card in held.iter().filter(|card| !still.contains(card)) {
+            self.retire(card);
+        }
         self.tasks.get_mut(task_id).unwrap().final_presentation = None;
         Ok(through_sdk)
     }

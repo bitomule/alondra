@@ -1351,6 +1351,38 @@ fn callback_id(state: &CallbackState) -> &CallbackId {
     }
 }
 
+/// The task goes on with `input` while `decisions` still wait: the input reaches the session, or
+/// waits in its inbox behind a pause, and the task waits on the cards.
+fn waiting_with_input(
+    mut session: Session,
+    stage: WorkStage,
+    decisions: BTreeMap<InteractionId, Card>,
+    input: InputId,
+) -> Result<State, Refusal> {
+    match &mut session {
+        Session::Absent(pending) => {
+            if pending.contains(&input) {
+                return Err(Refusal::DuplicateObligation);
+            }
+            pending.push_back(input);
+        }
+        Session::Present(execution) => {
+            if execution.resource != ResourceEvidence::Available {
+                return Err(Refusal::InvalidState);
+            }
+            if decisions.values().any(|card| card.reason == WaitReason::Pause) {
+                if execution.inbox.contains(&input) {
+                    return Err(Refusal::DuplicateObligation);
+                }
+                execution.inbox.push_back(input);
+            } else {
+                queue_input(execution, input)?;
+            }
+        }
+    }
+    Ok(State::InProgress(Progress::Waiting { stage, cards: Decisions::new(decisions)?, session }))
+}
+
 fn progress_with_input(
     mut session: Session,
     stage: WorkStage,

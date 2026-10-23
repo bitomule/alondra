@@ -274,14 +274,13 @@ impl TaskLifecycle {
                 if delivered.delivery != delivery || delivered.gate != DeliveryGate::Review {
                     return Err(Refusal::CorrelationMismatch);
                 }
-                if !delivered.decisions.is_empty() {
-                    return Err(Refusal::InvalidState);
-                }
-                self.state = progress_with_input(
-                    delivered.session.clone(),
-                    WorkStage::ChangesRequested,
-                    input,
-                )?;
+                let mut decisions = delivered.decisions.clone();
+                decisions.retain(|_, card| card.reason != WaitReason::Unheard);
+                self.state = if decisions.is_empty() {
+                    progress_with_input(delivered.session.clone(), WorkStage::ChangesRequested, input)?
+                } else {
+                    waiting_with_input(delivered.session.clone(), WorkStage::ChangesRequested, decisions, input)?
+                };
             }
             Event::WaitForDependencies { dependencies } => {
                 if dependencies.contains(&self.task) {
@@ -338,36 +337,7 @@ impl TaskLifecycle {
                 self.state = if decisions.is_empty() {
                     progress_with_input(session.clone(), *stage, input)?
                 } else {
-                    let mut session = session.clone();
-                    match &mut session {
-                        Session::Absent(pending) => {
-                            if pending.contains(&input) {
-                                return Err(Refusal::DuplicateObligation);
-                            }
-                            pending.push_back(input);
-                        }
-                        Session::Present(execution) => {
-                            if execution.resource != ResourceEvidence::Available {
-                                return Err(Refusal::InvalidState);
-                            }
-                            if decisions
-                                .values()
-                                .any(|card| card.reason == WaitReason::Pause)
-                            {
-                                if execution.inbox.contains(&input) {
-                                    return Err(Refusal::DuplicateObligation);
-                                }
-                                execution.inbox.push_back(input);
-                            } else {
-                                queue_input(execution, input)?;
-                            }
-                        }
-                    }
-                    State::InProgress(Progress::Waiting {
-                        stage: *stage,
-                        cards: Decisions::new(decisions.clone())?,
-                        session,
-                    })
+                    waiting_with_input(session.clone(), *stage, decisions.clone(), input)?
                 };
             }
             Event::Finish {

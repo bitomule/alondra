@@ -2749,3 +2749,36 @@ fn a_host_that_ends_on_a_delivery_that_owes_nothing_after_the_merge_asks_nothing
     fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert!(task.cards().is_empty());
 }
+
+fn delivered_over(cards: &[Event]) -> TaskLifecycle {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    for card in cards {
+        apply(&mut task, card.clone());
+    }
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    task
+}
+fn held(task: &TaskLifecycle) -> Vec<InteractionId> {
+    task.cards().into_iter().map(|(card, _)| card.clone()).collect()
+}
+
+#[test]
+fn a_hand_back_tells_the_session_how_it_goes_on_when_its_turn_ended_unheard() {
+    let mut task = delivered_over(&[]);
+    assert_eq!(held(&task), vec![InteractionId::from("unheard")]);
+    apply(&mut task, Event::HandBack { delivery: "result".into(), input: input("changes") });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.stage(), Some(WorkStage::ChangesRequested));
+    assert_eq!(task.pending_inputs(), vec![&input("changes")]);
+}
+
+#[test]
+fn a_hand_back_keeps_the_questions_that_still_wait_and_queues_the_changes() {
+    let mut task = delivered_over(&[Event::Ask { card: "question".into() }]);
+    apply(&mut task, Event::HandBack { delivery: "result".into(), input: input("changes") });
+    assert_eq!(held(&task), vec![InteractionId::from("question")]);
+    assert_eq!(task.phase(), TaskPhase::InProgress);
+    assert_eq!(task.stage(), Some(WorkStage::ChangesRequested));
+    assert_eq!(task.pending_inputs(), vec![&input("changes")]);
+}
