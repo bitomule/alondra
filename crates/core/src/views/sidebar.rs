@@ -134,7 +134,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
             row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
             if let Some(text) = &node.background_badge {
-                row.badges.push(Label { text: text.clone(), tone: if node.background_suspect { Tone::Warning } else { Tone::Neutral } });
+                row.badges.push(Label { text: text.clone(), tone: Tone::Neutral });
             }
         }
         let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());

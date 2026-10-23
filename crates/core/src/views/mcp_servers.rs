@@ -56,7 +56,7 @@ fn status_label(status: McpStatus, signing_in: bool, signs_in: bool, lang: Lang)
         McpStatus::Failed => (t!(lang, "Failed", "Falla"), Tone::Critical),
         McpStatus::Pending => (t!(lang, "Connecting", "Conectando"), Tone::Neutral),
         McpStatus::Disabled => (t!(lang, "Turned off", "Desactivado"), Tone::Neutral),
-        McpStatus::Unknown => (t!(lang, "Unknown state", "Estado desconocido"), Tone::Neutral),
+        McpStatus::Unknown => (t!(lang, "A status Alondra does not know", "Un estado que Alondra no conoce"), Tone::Neutral),
     };
     Label { text: text.into(), tone }
 }

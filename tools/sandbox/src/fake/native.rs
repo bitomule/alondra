@@ -704,6 +704,12 @@ impl Native<'_> {
         Ok(())
     }
 
+    fn emit(&self, mut message: Value) -> Result<()> {
+        message["session_id"] = json!(self.session.session_id);
+        message["uuid"] = json!(uuid()?);
+        self.send(message)
+    }
+
     fn rate_limit(&self, info: Value) -> Result<()> {
         self.send(json!({"type": "rate_limit_event", "rate_limit_info": info, "session_id": self.session.session_id, "uuid": uuid()?}))
     }
@@ -768,6 +774,7 @@ impl Native<'_> {
             Step::LeavePlanMode { points } => (self.leave_plan_mode(*points), Leave::Stay),
             Step::EndOwnTurn => (self.end_own_turn(), Leave::Stay),
             Step::RateLimit { info } => (self.rate_limit(info.clone()).map(|()| work::done("reported")), Leave::Stay),
+            Step::Emit { message } => (self.emit(message.clone()).map(|()| work::done("emitted")), Leave::Stay),
             Step::End => (Ok(work::done("ended")), Leave::Exit),
             Step::Die => (Ok(work::done("killed")), Leave::Die),
             _ => {

@@ -295,7 +295,7 @@ struct MacAnsweringTests {
 
         await clock.advance(by: .milliseconds(1))
         await store.receive(\.answerOverdue, "a")
-        await store.receive(\.answerNotConfirmed, "Your answer to “Card a” didn’t reach your Mac.")
+        await store.receive(\.answerNotConfirmed, "Your Mac hasn’t confirmed your answer to “Card a”.")
         #expect(!store.state.hides("a"), "the unconfirmed card waits again")
 
         await hold.release()
@@ -330,8 +330,8 @@ struct MacAnsweringTests {
         let store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
             $0.continuousClock = TestClock()
         }
-        store.send(.macPresentation(.answerNotConfirmed("Your answer to “Card a” didn’t reach your Mac.")))
-        #expect(store.notice?.event == WorkspaceNotice.Event.failure("Your answer to “Card a” didn’t reach your Mac."))
+        store.send(.macPresentation(.answerNotConfirmed("Your Mac hasn’t confirmed your answer to “Card a”.")))
+        #expect(store.notice?.event == WorkspaceNotice.Event.failure("Your Mac hasn’t confirmed your answer to “Card a”."))
     }
 
     @Test

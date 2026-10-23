@@ -23,6 +23,8 @@ public struct TaskDetail: Equatable, Sendable {
         public let title: String
         public let detail: String?
         public let since: String?
+        /// Whether it runs or how it ended, as the Mac says it: «En marcha», «Terminado», «Falló», «Detenido».
+        public let state: Label?
     }
 
     /// One part of how far the node's work has got: a line of facts or a step, subagent or agent.
@@ -148,7 +150,7 @@ public extension TaskDetail {
 
 private extension TaskDetail.Activity {
     init(row: Row) {
-        self.init(id: row.id, title: row.title, detail: row.subtitle, since: row.time)
+        self.init(id: row.id, title: row.title, detail: row.subtitle, since: row.time, state: row.badges.first)
     }
 }
 

@@ -6,7 +6,7 @@
 //! has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    BackgroundItem, Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
+    Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
     TurnSignal,
 };
 use crate::pr::{PrState, PullRequest};
@@ -42,9 +42,9 @@ pub const DAEMON_FRESH_MS: Millis = 30 * MINUTE;
 /// A background task (a Bash run in the background, a subagent, a monitor) reported by the
 /// Claude daemon counts for this long after it was last observed.
 pub const BACKGROUND_TASK_FRESH_MS: Millis = 120 * MINUTE;
-/// A background task running this long, while the node shows no other work for as long, may be
-/// hung (a wait loop that never ends): it is flagged and no longer counts as work.
-pub const BACKGROUND_SUSPECT_MS: Millis = 30 * MINUTE;
+/// A subagent thread with no tool in flight drops out of the activity ledger after this long
+/// without a hook.
+pub const THREAD_QUIET_MS: Millis = 30 * MINUTE;
 /// A declared wait for the machine lapses when nothing happens for this long and the machine
 /// is fine.
 pub const MACHINE_WAIT_QUIET_MS: Millis = 20 * MINUTE;
@@ -95,7 +95,6 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
-    row("only possibly hung background tasks remain: handed to the sentinel", Signal::BackgroundSuspect, NodeState::Unclear),
     Row {
         name: "working evidence went stale: handed to the sentinel",
         from: WORKING,
@@ -150,23 +149,6 @@ fn daemon_active(node: &Node, now: Millis) -> Option<Millis> {
     fresh(node.daemon_seen_at.filter(|_| active).filter(after_stop(node)), now, DAEMON_FRESH_MS)
 }
 
-/// Work the node shows besides its background tasks: a call in flight, a hook or a typed
-/// message within the suspect window, or the daemon reporting it active.
-fn other_work(node: &Node, now: Millis) -> bool {
-    node.tool.as_ref().is_some_and(|t| now - t.since <= call_limit(&t.name))
-        || fresh(node.last_work_at, now, BACKGROUND_SUSPECT_MS).is_some()
-        || fresh(node.handed_at.filter(after_stop(node)), now, BACKGROUND_SUSPECT_MS).is_some()
-        || daemon_active(node, now).is_some()
-}
-
-/// What the node has running in the background at `now`, each flagged when it may be hung.
-pub fn background(node: &Node, now: Millis) -> Vec<BackgroundItem> {
-    let idle = !other_work(node, now);
-    node.background
-        .iter()
-        .map(|b| BackgroundItem { suspect: idle && now - b.started_at > BACKGROUND_SUSPECT_MS, ..b.clone() })
-        .collect()
-}
 
 pub fn facts(view: &View, node: &Node, now: Millis) -> Facts {
     facts_with(view, node, now, view.machine_strained)
@@ -200,9 +182,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     } else {
         fresh(node.daemon_seen_at.filter(|_| node.alive), now, BACKGROUND_TASK_FRESH_MS)
     };
-    let all_suspect = !node.background.is_empty() && background(node, now).iter().all(|b| b.suspect);
-    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live && !all_suspect));
-    f.add(Signal::BackgroundSuspect, tasks_seen.filter(|_| all_suspect));
+    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live));
 
     f.add(Signal::UsageLimit, fresh(node.usage_limited_at.filter(|_| node.usage_limited), now, USAGE_LIMIT_WAIT_MS));
     let declared = node.signal_at.unwrap_or(node.episode_since);
@@ -503,7 +483,7 @@ pub fn awaits_merge<'a>(view: &'a View, node: &Node, now: Millis) -> Option<(&'a
 mod tests {
     use super::*;
     use crate::event::{DaemonObservation, Event, HookEvent};
-    use crate::model::{BackgroundKind, Message, MessageFrom, Question, QuestionOrigin, Report};
+    use crate::model::{BackgroundItem, BackgroundKind, Message, MessageFrom, Question, QuestionOrigin, Report};
     use crate::pr::CheckState;
 
     const T0: Millis = 1_000_000;
@@ -530,7 +510,7 @@ mod tests {
     }
 
     fn daemon_running(items: &[(BackgroundKind, Millis)]) -> Event {
-        let background = items.iter().map(|&(kind, started_at)| BackgroundItem { kind, label: "wait for the build".into(), started_at, suspect: false }).collect();
+        let background = items.iter().map(|&(kind, started_at)| BackgroundItem { kind, label: "wait for the build".into(), started_at }).collect();
         let Event::DaemonSeen(d) = daemon("working", "idle", items.len() as u32, None) else { unreachable!() };
         Event::DaemonSeen(DaemonObservation { background, ..d })
     }
@@ -655,7 +635,7 @@ mod tests {
             Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
             Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
             Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0 + 80 * min)])], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
-            Case { what: "a wait loop left alone for 40 min", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], sweep: Some((40 * min, false)), state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::BackgroundSuspect) },
+            Case { what: "a wait loop running for 40 min is still work", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], sweep: Some((40 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
@@ -716,18 +696,11 @@ mod tests {
     }
 
     #[test]
-    fn a_background_task_is_suspect_only_when_old_and_nothing_else_moves() {
+    fn a_background_task_counts_as_work_however_long_it_runs() {
         let min = 60_000;
         let started = [hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0), (BackgroundKind::Agent, T0 + 25 * min)])];
-        let suspects = |v: &View, at: Millis| super::background(&v.nodes["s"], at).iter().map(|b| b.suspect).collect::<Vec<_>>();
-        let v = run(&started, None);
-        assert_eq!(suspects(&v, T0 + 40 * min), vec![true, false], "only the one past 30 min");
-        assert_eq!(suspects(&v, T0 + 20 * min), vec![false, false], "nothing is old yet");
-        let mut hooked = v.clone();
-        hooked.apply(9, T0 + 35 * min, &hook("PreToolUse"));
-        assert_eq!(suspects(&hooked, T0 + 40 * min), vec![false, false], "a hook 5 min ago is work");
         let swept = run(&started, Some((40 * min, false)));
-        assert_eq!(swept.nodes["s"].state, NodeState::Working, "a young task still counts as work");
+        assert_eq!(swept.nodes["s"].state, NodeState::Working, "the shell started 40 min ago is still work");
         let v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
         assert!(v.nodes["s"].background.is_empty(), "no task in flight means nothing runs, whatever the list says");
     }

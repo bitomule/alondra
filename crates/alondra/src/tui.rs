@@ -2260,20 +2260,20 @@ impl App {
         let optimistic::Answer { card, label } = overdue.answer;
         self.notice(match (card.is_empty(), label.is_empty()) {
             (false, false) => trf!(
-                "Your answer “{label}” to “{card}” didn't reach your Mac. The card is back; Alondra keeps trying.",
-                "Tu respuesta «{label}» a «{card}» no llegó a tu Mac. La tarjeta ha vuelto; Alondra sigue intentándolo."
+                "Your Mac has not confirmed your answer “{label}” to “{card}”. The card is back; Alondra keeps sending it.",
+                "Tu Mac aún no ha confirmado tu respuesta «{label}» a «{card}». La tarjeta ha vuelto; Alondra sigue enviándola."
             ),
             (false, true) => trf!(
-                "Your answer to “{card}” didn't reach your Mac. The card is back; Alondra keeps trying.",
-                "Tu respuesta a «{card}» no llegó a tu Mac. La tarjeta ha vuelto; Alondra sigue intentándolo."
+                "Your Mac has not confirmed your answer to “{card}”. The card is back; Alondra keeps sending it.",
+                "Tu Mac aún no ha confirmado tu respuesta a «{card}». La tarjeta ha vuelto; Alondra sigue enviándola."
             ),
             (true, false) => trf!(
-                "Your answer “{label}” didn't reach your Mac. Alondra keeps trying.",
-                "Tu respuesta «{label}» no llegó a tu Mac. Alondra sigue intentándolo."
+                "Your Mac has not confirmed your answer “{label}”. Alondra keeps sending it.",
+                "Tu Mac aún no ha confirmado tu respuesta «{label}». Alondra sigue enviándola."
             ),
             (true, true) => tr!(
-                "An answer didn't reach your Mac. Alondra keeps trying.",
-                "Una respuesta no llegó a tu Mac. Alondra sigue intentándolo."
+                "Your Mac has not confirmed an answer. Alondra keeps sending it.",
+                "Tu Mac aún no ha confirmado una respuesta. Alondra sigue enviándola."
             )
             .to_owned(),
         });

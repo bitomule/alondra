@@ -135,22 +135,27 @@ fn ran_for(secs: u64) -> String {
     }
 }
 
+/// The badge and the time of something running in the background: since when it runs, or how
+/// it ended and how long it ran.
+fn with_run_state(row: &mut super::Row, state: super::RunState, since: &str, lang: super::Lang) {
+    use super::{RunOutcome, RunState};
+    let (text, tone) = match state {
+        RunState::Running => (t!(lang, "Running", "En marcha"), Tone::Info),
+        RunState::Ended { outcome: RunOutcome::Finished, .. } => (t!(lang, "Finished", "Terminado"), Tone::Neutral),
+        RunState::Ended { outcome: RunOutcome::Failed, .. } => (t!(lang, "Failed", "Falló"), Tone::Critical),
+        RunState::Ended { outcome: RunOutcome::Stopped, .. } => (t!(lang, "Stopped", "Detenido"), Tone::Neutral),
+    };
+    row.badges.push(super::Label { text: text.into(), tone });
+    row.trailing = Some(match state {
+        RunState::Running => Trailing::Time { at: since.to_owned(), format: super::TimeFormat::Relative },
+        RunState::Ended { ran_secs, .. } => Trailing::Text { text: ran_for(ran_secs) },
+    });
+}
+
 fn run_row(id: &str, run: &super::LiveRun, subtitle: Option<String>, lang: super::Lang) -> super::Row {
     let mut row = common::row(id, "node", Icon::History, run.label.clone(), subtitle);
     row.link = None;
-    match run.ran_secs {
-        Some(secs) => {
-            row.badges.push(super::Label { text: t!(lang, "Finished", "Terminado").into(), tone: Tone::Neutral });
-            row.trailing = Some(Trailing::Text { text: ran_for(secs) });
-        }
-        None => {
-            row.badges.push(super::Label { text: t!(lang, "Running", "En marcha").into(), tone: Tone::Info });
-            row.trailing = Some(Trailing::Time { at: run.since.clone(), format: super::TimeFormat::Relative });
-        }
-    }
-    if run.suspect {
-        row.badges.push(super::Label { text: t!(lang, "Possibly hung", "Quizá colgado").into(), tone: Tone::Warning });
-    }
+    with_run_state(&mut row, run.state, &run.since, lang);
     row
 }
 
@@ -267,7 +272,7 @@ pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>)
     }
     if let Some(text) = &node.background_badge {
         readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
-            tone: node.background_suspect.then_some(Tone::Warning), link: None });
+            tone: None, link: None });
     }
     if node.last_turn_aborted && !common::working(&node.agent_id, context) {
         readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
@@ -309,11 +314,10 @@ pub(super) fn background_section(node: &super::LiveNode, context: &RenderContext
                 _ => t!(context.lang, "Task", "Tarea"),
             }.into()));
         row.link = None;
-        row.trailing = Some(Trailing::Time { at: background.since.clone(), format: super::TimeFormat::Relative });
-        if background.suspect { row.badges.push(super::Label { text: t!(context.lang, "Possibly hung", "Quizá colgado").into(), tone: Tone::Warning }); }
+        with_run_state(&mut row, background.state, &background.since, context.lang);
         Item::Row(row)
     }).collect();
-    Some(common::section("background", Some(t!(context.lang, "Running in the background", "En segundo plano").into()), rows))
+    Some(common::section("background", Some(t!(context.lang, "In the background", "En segundo plano").into()), rows))
 }
 
 pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {

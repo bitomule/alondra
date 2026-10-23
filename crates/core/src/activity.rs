@@ -5,7 +5,7 @@
 //!
 //! Claude Code never sends `SubagentStop` for a subagent's own subagents (a fork, for example):
 //! their hooks reach the parent session, but nothing ever tells it they are gone. `activity`
-//! drops such a thread once it has been silent past `BACKGROUND_SUSPECT_MS` with no tool in
+//! drops such a thread once it has been silent past `THREAD_QUIET_MS` with no tool in
 //! flight within its call limit, the same clock-and-window rule `states` uses everywhere else.
 //! The main thread is never dropped this way; `SubagentStop` still drops a subagent at once.
 //!
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::HookEvent;
 use crate::model::{Ledger, Millis, Node, Thread, ToolInFlight};
-use crate::states::{BACKGROUND_SUSPECT_MS, call_limit};
+use crate::states::{THREAD_QUIET_MS, call_limit};
 use crate::tasks::Task;
 use crate::view::View;
 
@@ -124,7 +124,7 @@ impl Ledger {
     }
 }
 
-/// A subagent thread with no tool in flight is live for `BACKGROUND_SUSPECT_MS` past its last
+/// A subagent thread with no tool in flight is live for `THREAD_QUIET_MS` past its last
 /// hook; one with a tool in flight is live up to that tool's own call limit, whichever is
 /// longer. The main thread is always live.
 fn thread_alive(t: &Thread, now: Millis) -> bool {
@@ -136,7 +136,7 @@ fn thread_alive(t: &Thread, now: Millis) -> bool {
     {
         return true;
     }
-    now - t.since <= BACKGROUND_SUSPECT_MS
+    now - t.since <= THREAD_QUIET_MS
 }
 
 impl View {
@@ -417,7 +417,7 @@ mod tests {
             .hook("PreToolUse", EXPLORE, Some(("Bash", "u1")), None)
             .hook("PostToolUse", EXPLORE, Some(("Bash", "u1")), None);
         let since = run.activity()[1].since;
-        let ids: Vec<String> = run.activity_at(since + BACKGROUND_SUSPECT_MS).into_iter().filter_map(|a| a.agent_id).collect();
+        let ids: Vec<String> = run.activity_at(since + THREAD_QUIET_MS).into_iter().filter_map(|a| a.agent_id).collect();
         assert!(ids.contains(&"a1".to_string()), "a hook this recent keeps the thread alive: {ids:?}");
     }
 

@@ -763,8 +763,8 @@ final class TriageFeatureTests: XCTestCase {
 
     @MainActor
     func testTheToastSaysWhichAnswerDidNotReachTheMac() throws {
-        XCTAssertEqual(Optimistic.notConfirmed("Merge the PR?"), "Your answer to “Merge the PR?” didn’t reach your Mac.")
-        XCTAssertEqual(Optimistic.notConfirmed(nil), "An answer didn’t reach your Mac.")
+        XCTAssertEqual(Optimistic.notConfirmed("Merge the PR?"), "Your Mac hasn’t confirmed your answer to “Merge the PR?”.")
+        XCTAssertEqual(Optimistic.notConfirmed(nil), "Your Mac hasn’t confirmed an answer.")
     }
 
     @MainActor

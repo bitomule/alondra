@@ -2268,7 +2268,7 @@ const HOST_LOST_WHY: &str = "Its session could not be started again; the details
 pub const SESSION_ENDED_AGAIN_WHY: &str = "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.";
 
 fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
-    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” may not have got your message: send it again?"));
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” closed before confirming it read your message: send it again?"));
     let mut options = vec![QuestionOption { id: RESEND.into(), label: RESEND_LABEL.into(), description: Some(RESEND_MEANS.into()) }];
     options.push(if launch {
         QuestionOption { id: CANCEL_TASK.into(), label: CANCEL_TASK_LABEL.into(), description: Some(CANCEL_TASK_MEANS.into()) }

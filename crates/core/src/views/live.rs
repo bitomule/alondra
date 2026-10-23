@@ -230,8 +230,6 @@ pub struct LiveNode {
     pub background: Vec<LiveBackground>,
     #[serde(default)]
     pub background_badge: Option<String>,
-    #[serde(default)]
-    pub background_suspect: bool,
     pub working: bool,
     #[serde(default)]
     pub waiting: bool,
@@ -269,6 +267,28 @@ pub struct LiveNode {
     #[serde(default)]
     pub steps: Vec<LiveStep>,
 }
+/// Whether something a node started in the background runs, or how it ended. Only a fact moves
+/// it: Claude's notice that the work ended (with its status), the work leaving Claude's list, its
+/// shell seen gone, or the session ending.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    #[default]
+    Running,
+    Ended { outcome: RunOutcome, ran_secs: u64 },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// It ended by itself, or left Claude's list of running work.
+    Finished,
+    Failed,
+    /// Claude or the user stopped it, or the session it ran in ended.
+    Stopped,
+}
+impl RunOutcome {
+    pub const ALL: [RunOutcome; 3] = [RunOutcome::Finished, RunOutcome::Failed, RunOutcome::Stopped];
+}
 /// A subagent or a workflow a node started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveRun {
@@ -282,11 +302,8 @@ pub struct LiveRun {
     #[serde(default)]
     pub agents: Option<u32>,
     pub since: String,
-    /// How long it ran, once it finished.
     #[serde(default)]
-    pub ran_secs: Option<u64>,
-    #[serde(default)]
-    pub suspect: bool,
+    pub state: RunState,
     /// What a workflow's own files say about it: its phase and the agents it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<LiveWorkflow>,
@@ -394,7 +411,8 @@ pub struct LiveBackground {
     pub kind: String,
     pub label: String,
     pub since: String,
-    pub suspect: bool,
+    #[serde(default)]
+    pub state: RunState,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxTime {

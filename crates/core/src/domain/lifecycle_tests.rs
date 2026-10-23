@@ -1127,7 +1127,7 @@ fn a_message_the_ended_host_may_not_have_read_is_shown_whole_and_sent_again_only
     let mut s = world();
     let (card, text) = doubtful(&mut s, "Add the tests first");
     let doubt = &s.interactions[&card];
-    assert_eq!(doubt.card.need, "“Task t” may not have got your message: send it again?");
+    assert_eq!(doubt.card.need, "“Task t” closed before confirming it read your message: send it again?");
     assert_eq!(doubt.card.content.as_ref().map(|content| content.body.as_str()), Some(text.as_str()), "the card carries the whole message");
     assert_eq!(options(&s, &card), [RESEND, TAKE_AS_RECEIVED]);
     assert_eq!(exec(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: "other".into(), text: "other".into(), resumes: false })

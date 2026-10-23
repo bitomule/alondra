@@ -98,7 +98,7 @@ public struct Optimistic: Equatable, Sendable {
 public extension Optimistic {
     /// What the app says when an answer has not reached the Mac in time and its card waits again.
     static func notConfirmed(_ card: String?) -> String {
-        guard let card, !card.isEmpty else { return String(localized: "An answer didn’t reach your Mac.") }
-        return String(localized: "Your answer to “\(card)” didn’t reach your Mac.")
+        guard let card, !card.isEmpty else { return String(localized: "Your Mac hasn’t confirmed an answer.") }
+        return String(localized: "Your Mac hasn’t confirmed your answer to “\(card)”.")
     }
 }

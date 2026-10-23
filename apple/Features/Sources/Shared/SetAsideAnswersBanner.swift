@@ -41,7 +41,7 @@ public struct SetAsideAnswersBanner: View {
             Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
                 .foregroundStyle(Palette.rose)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Some answers may not have reached your Mac")
+                Text("Your Mac didn’t confirm some answers")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Palette.ink)
                 Group {
@@ -54,7 +54,7 @@ public struct SetAsideAnswersBanner: View {
                     case .waiting(let count): Text("\(count) of those cards are waiting for you again: answer them once more.")
                     }
                     if othersMayBeMissing {
-                        Text("Anything else you sent from this device just before may not have reached your Mac either; check it there.")
+                        Text("Nor did it confirm what else you sent from this device just before; check it on your Mac.")
                     }
                 }
                 .font(.footnote)

@@ -5,6 +5,8 @@
 //! session replaces the older one, and only the current one closing makes the node unreachable.
 //! A session binds to its launch by the key of the settings file the launch gave it
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
+use crate::node_work::End;
+use alondra_core::views::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;
@@ -230,23 +232,25 @@ impl Reported {
         self.connection.is_some() && job.tasks == 0 && still_for(Some(job.updated_at)) && still_for(self.cpu_busy_at)
     }
 
-    /// What the node has running in the background, each flagged when it may be hung: a command
-    /// whose shell a look taken after it started found gone or, for a node of the Agent SDK, which
-    /// gives no process to look at, work running past the suspect window while the node has shown
-    /// nothing else for as long.
-    pub(crate) fn background_items(&self, now: Millis) -> Vec<BackgroundItem> {
-        let window = alondra_core::states::BACKGROUND_SUSPECT_MS;
-        let quiet = self.sdk.is_some()
-            && !self.tool.as_ref().is_some_and(|tool| now - tool.since <= alondra_core::states::call_limit(&tool.name))
-            && self.last_event_at.is_none_or(|at| now - at > window);
-        self.background.iter().map(|(_, item)| BackgroundItem {
-            suspect: self.shell_gone(item) || (quiet && now - item.started_at > window),
-            ..item.clone()
-        }).collect()
+    /// A background command ended when a look taken after it started found its shell gone.
+    pub(crate) fn shell_end(&self, item: &BackgroundItem) -> Option<End> {
+        let gone = item.kind == BackgroundKind::Shell && self.shell_alive == Some(false);
+        self.shell_looked_at.filter(|at| gone && *at > item.started_at).map(|at| End { at, outcome: RunOutcome::Finished })
     }
 
     fn shell_gone(&self, item: &BackgroundItem) -> bool {
-        item.kind == BackgroundKind::Shell && self.shell_alive == Some(false) && self.shell_looked_at.is_some_and(|at| at > item.started_at)
+        self.shell_end(item).is_some()
+    }
+
+    /// Moves the background tasks `gone` picks out of the running list into the ended ones: a
+    /// shell already seen gone ended then, any other with `outcome` now.
+    pub(crate) fn end_background(&mut self, gone: impl Fn(&str) -> bool, outcome: RunOutcome, now: Millis) {
+        let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.background).into_iter().partition(|(id, _)| gone(id));
+        self.background = kept;
+        for (id, item) in ended {
+            let end = self.shell_end(&item).unwrap_or(End { at: now, outcome });
+            self.work.task_ended(&id, item, end);
+        }
     }
 
     /// Everything the node left running is known to be over: Claude Code's whole list is empty, or
@@ -270,7 +274,7 @@ impl Reported {
                 self.connection = None;
                 self.tool = None;
                 self.working_since = None;
-                self.background.clear();
+                self.end_background(|_| true, RunOutcome::Stopped, now);
                 self.background_known = true;
                 self.work.ended(now);
             }
@@ -296,6 +300,7 @@ impl Reported {
                 }).collect();
                 self.work.listed(&listed, now);
                 self.background_known = true;
+                self.end_background(|id| !tasks.iter().any(|task| task.id == id), RunOutcome::Finished, now);
                 let known = std::mem::take(&mut self.background);
                 self.background = tasks.into_iter().map(|task| {
                     let started_at = known.iter().find(|(id, _)| *id == task.id).map_or(now, |(_, item)| item.started_at);
@@ -305,23 +310,23 @@ impl Reported {
                         "workflow" => (BackgroundKind::Other, task.name.filter(|name| !name.is_empty()).unwrap_or(task.description)),
                         _ => (BackgroundKind::Other, task.description),
                     };
-                    (task.id, BackgroundItem { kind, label: short_label(&label), started_at, suspect: false })
+                    (task.id, BackgroundItem { kind, label: short_label(&label), started_at })
                 }).collect();
             }
             Report::SubagentStart { id, description, kind, model } => {
                 if !self.background.iter().any(|(known, _)| *known == id) {
                     let label = short_label(description.as_deref().unwrap_or("subagent"));
-                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
+                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now }));
                 }
                 self.work.agent_started(id, description, kind, model, now);
             }
             Report::SubagentEnd { id } => {
                 self.background.retain(|(known, _)| *known != id);
-                self.work.agent_finished(&id, now);
+                self.work.agent_finished(&id, RunOutcome::Finished, now);
             }
             Report::WorkflowStart { id, name, transcript_dir } => {
                 if !self.background.iter().any(|(known, _)| *known == id) {
-                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Other, label: short_label(&name), started_at: now, suspect: false }));
+                    self.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Other, label: short_label(&name), started_at: now }));
                 }
                 self.work.workflow_started(id, name, transcript_dir, now);
             }
@@ -330,7 +335,7 @@ impl Reported {
             Report::Steps { steps } => self.work.steps_listed(steps),
             Report::ShellStart { id, command } => {
                 if !self.background.iter().any(|(known, _)| *known == id) {
-                    self.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now, suspect: false }));
+                    self.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now }));
                 }
             }
             Report::ToolEnd { tool_use_id } => {
@@ -635,13 +640,13 @@ mod tests {
         apply(json!({"session_id": "s", "event": "background", "tasks": [
             {"id": "w1", "type": "workflow", "description": "Review", "name": "review-loop"}]}), 11);
         let session = reports.session("s").unwrap();
-        assert_eq!(session.work.agents[0].finished_at, Some(9));
-        assert_eq!(session.work.workflows[0].finished_at, None);
+        assert_eq!(session.work.agents[0].end.map(|end| end.at), Some(9));
+        assert_eq!(session.work.workflows[0].end.map(|end| end.at), None);
         assert_eq!(session.background[0].1.label, "review-loop");
         assert!(session.work.steps.iter().all(|step| step.status == StepStatus::Completed));
 
         apply(json!({"session_id": "s", "event": "background", "tasks": []}), 12);
-        assert_eq!(reports.session("s").unwrap().work.workflows[0].finished_at, Some(12));
+        assert_eq!(reports.session("s").unwrap().work.workflows[0].end.map(|end| end.at), Some(12));
     }
 
     #[test]
@@ -733,13 +738,14 @@ mod tests {
         reports.apply(report(json!({"session_id": "s", "event": "shell.start", "id": "b", "command": "musts run bazel-test-root"})), 1);
         let session = || reports.session("s").unwrap();
         reports.set_shell_alive("s", Some(true), 3);
-        assert_eq!(session().activity(2 * HOUR), Activity::Working, "an hour-long wait on a live shell is not a hung one");
-        assert!(session().background_items(2 * HOUR).iter().all(|item| !item.suspect));
+        assert_eq!(session().activity(2 * HOUR), Activity::Working, "an hour-long wait on a live shell is work");
+        assert!(session().background.iter().all(|(_, item)| session().shell_end(item).is_none()), "a live shell runs");
         assert!(!session().silent(2 * HOUR));
         reports.set_shell_alive("s", Some(false), 3);
         assert_eq!(session().activity(2 * HOUR), Activity::Stalled, "its shell is gone, no turn and nothing reported since");
         assert!(session().silent(2 * HOUR));
-        assert!(session().background_items(2 * HOUR).iter().all(|item| item.suspect), "a look after it started found its shell gone");
+        assert!(session().background.iter().all(|(_, item)| session().shell_end(item) == Some(End { at: 3, outcome: RunOutcome::Finished })),
+            "a look after it started found its shell gone: it ended then");
         assert_eq!(session().activity(alondra_core::states::TURN_QUIET_MS), Activity::Idle, "nothing runs, yet it is not quiet long enough to be stalled");
     }
 
@@ -975,9 +981,10 @@ mod tests {
                 }
                 let said = |reports: &Reports| {
                     let session = reports.session("s").unwrap();
-                    let items: Vec<(String, BackgroundKind, bool)> = session.background.iter().map(|(id, _)| id.clone())
-                        .zip(session.background_items(0)).map(|(id, item)| (id, item.kind, item.suspect)).collect();
-                    (session.work_gone(), items)
+                    let items: Vec<(String, BackgroundKind, Option<RunOutcome>)> = session.background.iter()
+                        .map(|(id, item)| (id.clone(), item.kind, session.shell_end(item).map(|end| end.outcome))).collect();
+                    let ended: Vec<(String, RunOutcome)> = session.work.ended_tasks.iter().map(|task| (task.item.label.clone(), task.end.outcome)).collect();
+                    (session.work_gone(), items, ended)
                 };
                 assert_eq!(said(&fast), said(&slow), "run {run}, after {fact}");
             }

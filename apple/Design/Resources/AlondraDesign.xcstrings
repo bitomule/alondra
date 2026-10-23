@@ -434,16 +434,6 @@
         }
       }
     },
-    "hung?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿colgada?"
-          }
-        }
-      }
-    },
     "I can't / explain": {
       "localizations": {
         "es": {
@@ -1060,16 +1050,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Editar comentario"
-          }
-        }
-      }
-    },
-    "Seems to ask for something": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Parece pedir algo"
           }
         }
       }

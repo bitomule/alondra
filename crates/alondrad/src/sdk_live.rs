@@ -6,6 +6,7 @@
 use crate::node_reports::{Report, Reported, short_label};
 use crate::node_work::StepIn;
 use alondra_core::activity::Activity;
+use alondra_core::views::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde_json::Value;
 
@@ -64,13 +65,14 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
         (Some("system"), Some("task_started")) => started(session, &mut readings, message, now),
         (Some("system"), Some("task_notification")) => {
             if let Some(id) = message["task_id"].as_str() {
-                finished(session, &mut readings, id, now);
+                let outcome = outcome(message["status"].as_str()).unwrap_or(RunOutcome::Finished);
+                finished(session, &mut readings, id, outcome, now);
             }
         }
         (Some("system"), Some("task_updated")) => {
-            let over = matches!(message.pointer("/patch/status").and_then(Value::as_str), Some("completed" | "failed" | "killed"));
-            if let Some(id) = message["task_id"].as_str().filter(|_| over) {
-                finished(session, &mut readings, id, now);
+            let outcome = outcome(message.pointer("/patch/status").and_then(Value::as_str));
+            if let (Some(id), Some(outcome)) = (message["task_id"].as_str(), outcome) {
+                finished(session, &mut readings, id, outcome, now);
             }
         }
         (Some("system"), Some("background_tasks_changed")) => listed(session, &mut readings, message["tasks"].as_array().map_or(&[][..], Vec::as_slice), now),
@@ -97,10 +99,20 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
     session.sdk = Some(readings);
 }
 
+/// How a task ended, by the status the SDK gives it once it is over.
+fn outcome(status: Option<&str>) -> Option<RunOutcome> {
+    match status? {
+        "completed" => Some(RunOutcome::Finished),
+        "failed" => Some(RunOutcome::Failed),
+        "stopped" | "killed" => Some(RunOutcome::Stopped),
+        _ => None,
+    }
+}
+
 /// The host ended, and every call and background task its Claude ran ended with it.
 pub(crate) fn ended(session: &mut Reported, now: Millis) {
     session.tool = None;
-    session.background.clear();
+    session.end_background(|_| true, RunOutcome::Stopped, now);
     session.work.ended(now);
     if let Some(readings) = session.sdk.as_mut() {
         readings.tools.clear();
@@ -123,7 +135,7 @@ pub(crate) fn activity(session: &Reported) -> Option<Vec<Activity>> {
         summary: session.tool.as_ref().and_then(|tool| tool.summary.clone()),
         since: session.tool.as_ref().map(|tool| tool.since).or(readings.since).or(session.last_event_at).unwrap_or_default(),
     });
-    let subagents = session.work.agents.iter().filter(|agent| agent.finished_at.is_none()).map(|agent| {
+    let subagents = session.work.agents.iter().filter(|agent| agent.end.is_none()).map(|agent| {
         let tool = readings.tools.iter().find(|(run, _)| *run == agent.id).map(|(_, tool)| tool);
         Activity {
             agent_id: Some(agent.id.clone()),
@@ -158,10 +170,10 @@ fn started(session: &mut Reported, readings: &mut Readings, message: &Value, now
     }
 }
 
-fn finished(session: &mut Reported, readings: &mut Readings, id: &str, now: Millis) {
-    session.work.agent_finished(id, now);
-    session.work.workflow_finished(id, now);
-    session.background.retain(|(known, _)| known != id);
+fn finished(session: &mut Reported, readings: &mut Readings, id: &str, outcome: RunOutcome, now: Millis) {
+    session.work.agent_finished(id, outcome, now);
+    session.work.workflow_finished(id, outcome, now);
+    session.end_background(|known| known == id, outcome, now);
     readings.tools.retain(|(run, _)| run != id);
     readings.listed.retain(|known| known != id);
 }
@@ -172,12 +184,13 @@ fn listed(session: &mut Reported, readings: &mut Readings, tasks: &[Value], now:
     let tasks: Vec<&Value> = tasks.iter().filter(|task| task["ambient"] != true && task["task_id"].is_string()).collect();
     let ids: Vec<String> = tasks.iter().filter_map(|task| task["task_id"].as_str().map(str::to_owned)).collect();
     for gone in std::mem::take(&mut readings.listed).into_iter().filter(|id| !ids.contains(id)) {
-        finished(session, readings, &gone, now);
+        finished(session, readings, &gone, RunOutcome::Finished, now);
     }
+    let left: Vec<String> = session.background.iter().map(|(id, _)| id).filter(|id| !session.work.runs(id) && !ids.contains(id)).cloned().collect();
+    session.end_background(|id| left.iter().any(|gone| gone == id), RunOutcome::Finished, now);
     let known = std::mem::take(&mut session.background);
     let started_at = |id: &str| known.iter().find(|(known, _)| known == id).map(|(_, item)| item.started_at);
-    let running = |id: &str| session.work.agents.iter().any(|agent| agent.id == id && agent.finished_at.is_none())
-        || session.work.workflows.iter().any(|workflow| workflow.id == id && workflow.finished_at.is_none());
+    let running = |id: &str| session.work.runs(id);
     let mut background: Vec<(String, BackgroundItem)> = known.iter().filter(|(id, _)| running(id) && !ids.contains(id)).cloned().collect();
     for task in &tasks {
         let id = task["task_id"].as_str().unwrap_or_default();
@@ -188,7 +201,7 @@ fn listed(session: &mut Reported, readings: &mut Readings, tasks: &[Value], now:
             _ => BackgroundKind::Other,
         };
         let label = session.work.workflows.iter().find(|workflow| workflow.id == id).map_or(description, |workflow| workflow.name.as_str());
-        background.push((id.to_owned(), BackgroundItem { kind, label: short_label(label), started_at: started_at(id).unwrap_or(now), suspect: false }));
+        background.push((id.to_owned(), BackgroundItem { kind, label: short_label(label), started_at: started_at(id).unwrap_or(now) }));
     }
     session.background = background;
     for task in &tasks {
@@ -394,35 +407,48 @@ mod tests {
     }
 
     #[test]
-    fn the_background_list_becomes_the_nodes_shells_and_subagents_and_quiet_old_work_may_be_hung() {
+    fn the_background_list_becomes_the_nodes_shells_and_subagents_and_each_ends_only_by_a_fact() {
         let listed = |tasks: Value| json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks, "session_id": "native"});
         let reports = reports(&[
             (task_started("a1", "local_agent", "toolu_agent", "Fix the parser"), 1),
             (listed(json!([
                 {"task_id": "b1", "task_type": "local_bash", "description": "sleep 600"},
+                {"task_id": "b2", "task_type": "local_bash", "description": "until pgrep app"},
                 {"task_id": "a1", "task_type": "local_agent", "description": "Fix the parser", "subagent_type": "general-purpose"},
                 {"task_id": "m1", "task_type": "monitor", "description": "watch the build", "ambient": true},
             ])), 2),
         ]);
         let kinds = |reports: &Reports| reports.session("sdk-a").unwrap().background.iter()
             .map(|(id, item)| (id.clone(), item.kind, item.label.clone())).collect::<Vec<_>>();
-        assert_eq!(kinds(&reports), [("b1".into(), BackgroundKind::Shell, "sleep 600".into()), ("a1".into(), BackgroundKind::Agent, "Fix the parser".into())],
-            "what is not activity stays out");
+        assert_eq!(kinds(&reports), [("b1".into(), BackgroundKind::Shell, "sleep 600".into()), ("b2".into(), BackgroundKind::Shell, "until pgrep app".into()),
+            ("a1".into(), BackgroundKind::Agent, "Fix the parser".into())], "what is not activity stays out");
+        let ended = |reports: &Reports| reports.session("sdk-a").unwrap().work.ended_tasks.iter()
+            .map(|task| (task.item.label.clone(), task.end.outcome, task.end.at)).collect::<Vec<_>>();
+        assert_eq!(ended(&reports), [], "nothing has ended: no fact says so");
 
-        let window = alondra_core::states::BACKGROUND_SUSPECT_MS;
-        let session = reports.session("sdk-a").unwrap();
-        assert!(session.background_items(2 + window).iter().all(|item| !item.suspect), "not yet past the window");
-        assert!(session.background_items(3 + window).iter().all(|item| item.suspect), "running past the window while the node showed nothing else");
-        reports.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "task_progress", "task_id": "a1", "description": "Fix the parser",
-            "usage": {"total_tokens": 10, "tool_uses": 1, "duration_ms": 1}, "session_id": "native"}), window);
-        assert!(reports.session("sdk-a").unwrap().background_items(3 + window).iter().all(|item| !item.suspect), "its subagent reported progress");
-
-        reports.apply_sdk("sdk-a", &listed(json!([{"task_id": "a1", "task_type": "local_agent", "description": "Fix the parser"}])), 4 + window);
-        assert_eq!(kinds(&reports).len(), 1, "the shell that left the list ended");
-        reports.apply_sdk("sdk-a", &listed(json!([])), 5 + window);
+        reports.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "task_notification", "task_id": "b2", "status": "failed", "session_id": "native"}), 3);
+        reports.apply_sdk("sdk-a", &listed(json!([{"task_id": "a1", "task_type": "local_agent", "description": "Fix the parser"}])), 4);
+        assert_eq!(kinds(&reports).len(), 1, "the shells that ended or left the list no longer run");
+        assert_eq!(ended(&reports), [("until pgrep app".into(), RunOutcome::Failed, 3), ("sleep 600".into(), RunOutcome::Finished, 4)],
+            "each ended as its fact says");
+        reports.apply_sdk("sdk-a", &listed(json!([])), 5);
         let session = reports.session("sdk-a").unwrap();
         assert!(session.background.is_empty());
-        assert_eq!(session.work.agents[0].finished_at, Some(5 + window), "a subagent the list dropped ended");
+        assert_eq!(session.work.agents[0].end, Some(crate::node_work::End { at: 5, outcome: RunOutcome::Finished }), "a subagent the list dropped ended");
+        assert_eq!(ended(&reports).len(), 2, "a subagent ends in its own run, never as a shell");
+    }
+
+    #[test]
+    fn a_stopped_task_and_one_its_ended_host_left_running_end_stopped() {
+        let reports = reports(&[
+            (task_started("a1", "local_agent", "toolu_agent", "Fix the parser"), 1),
+            (json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "b1", "task_type": "local_bash", "description": "npm run dev"}], "session_id": "native"}), 2),
+            (json!({"type": "system", "subtype": "task_updated", "task_id": "a1", "patch": {"status": "killed"}, "session_id": "native"}), 3),
+        ]);
+        assert_eq!(reports.session("sdk-a").unwrap().work.agents[0].end, Some(crate::node_work::End { at: 3, outcome: RunOutcome::Stopped }));
+        reports.sdk_ended("sdk-a", 4);
+        let session = reports.session("sdk-a").unwrap();
+        assert_eq!(session.work.ended_tasks.iter().map(|task| (task.item.label.as_str(), task.end.outcome)).collect::<Vec<_>>(), [("npm run dev", RunOutcome::Stopped)]);
     }
 
     #[test]
@@ -432,12 +458,12 @@ mod tests {
             (json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [], "session_id": "native"}), 2),
         ]);
         let session = reports.session("sdk-a").unwrap();
-        assert_eq!(session.work.agents[0].finished_at, None);
+        assert_eq!(session.work.agents[0].end.map(|end| end.at), None);
         assert_eq!(session.background.len(), 1);
         reports.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "task_notification", "task_id": "a1", "status": "completed",
             "output_file": "", "summary": "Fixed", "session_id": "native"}), 3);
         let session = reports.session("sdk-a").unwrap();
-        assert_eq!(session.work.agents[0].finished_at, Some(3));
+        assert_eq!(session.work.agents[0].end.map(|end| end.at), Some(3));
         assert!(session.background.is_empty());
         assert_eq!(activity(&session), Some(vec![]), "nothing runs any more");
     }
@@ -470,7 +496,7 @@ mod tests {
         assert_eq!((workflow.name.as_str(), workflow.transcript_dir.as_deref(), workflow.started_at), ("review-loop", Some(std::path::Path::new("/w/flows/w1")), 5), "the call's result names it and says where it writes");
         reports.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "task_notification", "task_id": "w1", "status": "completed",
             "output_file": "", "summary": "Done", "session_id": "native"}), 7);
-        assert_eq!(reports.session("sdk-a").unwrap().work.workflows[0].finished_at, Some(7));
+        assert_eq!(reports.session("sdk-a").unwrap().work.workflows[0].end.map(|end| end.at), Some(7));
 
         reports.apply_sdk("sdk-a", &assistant(Some("toolu_agent"), json!([{"type": "tool_use", "id": "toolu_sub", "name": "TodoWrite", "input": {"todos": []}}])), 8);
         assert_eq!(steps(&reports).len(), 3, "a subagent's own list is not the node's plan");

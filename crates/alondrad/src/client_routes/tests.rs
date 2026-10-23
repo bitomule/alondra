@@ -1270,7 +1270,7 @@ async fn a_task_shows_the_subagents_workflows_and_task_list_its_nodes_mod_report
 }
 
 #[tokio::test]
-async fn a_background_shell_whose_process_is_gone_is_flagged_and_stops_counting_as_work() {
+async fn a_background_shell_whose_process_is_gone_ended_and_stops_counting_as_work() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let mods = &fixture.domain;
@@ -1281,11 +1281,14 @@ async fn a_background_shell_whose_process_is_gone_is_flagged_and_stops_counting_
         now - 3 * 60 * 60 * 1000);
     mods.live.mods.set_shell_alive("agent-a", Some(true), now);
     let shown = task_shown(&fixture, "task-1", "en").await;
-    assert!(shown.iter().all(|(label, _)| !label.contains("hung?")), "three hours on a live shell is work: {shown:?}");
+    assert!(shown.contains(&("1 shell".into(), "neutral".into())), "three hours on a live shell is work: {shown:?}");
     mods.live.mods.set_shell_alive("agent-a", Some(false), now);
     let shown = task_shown(&fixture, "task-1", "en").await;
-    assert!(shown.contains(&("1 shell · hung?".into(), "warning".into())), "{shown:?}");
+    assert!(shown.iter().all(|(label, _)| !label.contains("shell")), "nothing runs once its shell is gone: {shown:?}");
     assert_ne!(shown[0].0, "Working", "a shell whose process is gone is not work");
+    let detail = view_json(&fixture, "task:task-1", "en").await;
+    let background = detail["sections"].as_array().unwrap().iter().find(|section| section["id"] == "background").cloned().unwrap();
+    assert_eq!(background["items"][0]["badges"][0]["text"], "Finished", "it ended when the look found it gone: {background}");
 }
 
 #[tokio::test]

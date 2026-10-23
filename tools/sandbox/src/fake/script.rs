@@ -93,6 +93,9 @@ pub enum Step {
     /// Claude Code reports its account's usage as an answer's headers carry it: a
     /// `rate_limit_event` with this `rate_limit_info`.
     RateLimit { info: serde_json::Value },
+    /// Claude Code says something of its own on the stream as is, with the session's id: a
+    /// `task_started`, `background_tasks_changed` or `task_notification` about background work.
+    Emit { message: serde_json::Value },
     /// The session ends as when the user exits it: `session.end`, then the process goes.
     End,
     /// The process dies without a word, as a crashed session does.

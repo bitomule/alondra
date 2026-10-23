@@ -80,8 +80,8 @@ pub enum Signal {
     Hook,
     MessageHanded,
     DaemonActive,
+    #[serde(alias = "background_suspect")]
     BackgroundTask,
-    BackgroundSuspect,
     UsageLimit,
     DeclaredWait,
     PrAwaitingUser,
@@ -145,9 +145,6 @@ pub struct BackgroundItem {
     pub kind: BackgroundKind,
     pub label: String,
     pub started_at: Millis,
-    /// Running for long while the node shows no other work. Only the server's views set it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub suspect: bool,
 }
 
 /// What the node itself is doing, whatever its tasks wait on: working, stopped for the machine,

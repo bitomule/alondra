@@ -92,6 +92,9 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
 Move a node by hand: `alondra-sandbox fake nodes`, then
 `alondra-sandbox fake node <task> work|ask|deliver|cleanup|end|die` (or `--step '<json>'`, one step
 or a list). `die` kills a native session's Claude, as a crash does; its host goes on.
+`{"do": "emit", "message": {…}}` has a native Claude say one message of its own as is (a
+`task_started`, `background_tasks_changed` or `task_notification`), to put background work in a
+task's detail.
 
 ## Journeys
 

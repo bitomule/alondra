@@ -252,10 +252,6 @@ fn background_count(k: BackgroundKind, n: usize) -> String {
     }
 }
 
-pub fn possibly_hung() -> &'static str {
-    tr!("hung?", "¿colgada?")
-}
-
 /// "2 subagentes · 1 shell": what the node runs in the background, by kind, or nothing.
 pub fn background_badge(items: &[BackgroundItem]) -> Option<String> {
     let parts: Vec<String> = [BackgroundKind::Agent, BackgroundKind::Shell, BackgroundKind::Other]
@@ -274,7 +270,7 @@ mod tests {
 
     #[test]
     fn the_background_badge_counts_each_kind_in_the_user_language() {
-        let item = |kind| BackgroundItem { kind, label: String::new(), started_at: 0, suspect: false };
+        let item = |kind| BackgroundItem { kind, label: String::new(), started_at: 0 };
         let items = [item(BackgroundKind::Agent), item(BackgroundKind::Shell), item(BackgroundKind::Agent), item(BackgroundKind::Other)];
         set_for_this_thread(Lang::Es);
         assert_eq!(background_badge(&items).as_deref(), Some("2 subagentes · 1 shell · 1 tarea"));

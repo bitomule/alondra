@@ -1134,7 +1134,7 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
         return None;
     }
-    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” may not have got your message: send it again?", "«{title}» quizá no recibió tu mensaje: ¿se lo reenvío?"));
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” closed before confirming it read your message: send it again?", "«{title}» se cerró sin confirmar que leyó tu mensaje: ¿se lo reenvío?"));
     let launch = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == crate::domain::CANCEL_TASK));
     let why = if launch {
         t!(lang, "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.",

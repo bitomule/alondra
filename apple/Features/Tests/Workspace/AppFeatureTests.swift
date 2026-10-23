@@ -296,7 +296,7 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.triage.delegate.answerNotConfirmed)
         XCTAssertEqual(store.state.triage.orderedIDs, cards, "it waits again")
         XCTAssertEqual(store.state.triage.currentID, "c-1")
-        XCTAssertEqual(store.state.notice?.event, .failure("An answer didn’t reach your Mac."))
+        XCTAssertEqual(store.state.notice?.event, .failure("Your Mac hasn’t confirmed an answer."))
         XCTAssertEqual(prepared.value, [request], "the screen hands its answer off before it is prepared")
 
         await gate.open()

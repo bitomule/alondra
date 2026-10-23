@@ -2,7 +2,8 @@
 //! it: the subagents it spawned, the workflows it started and its Claude Code task list. Kept per
 //! session and bounded: finished runs drop out after the latest few, the list stops at a cap.
 use crate::node_reports::short_label;
-use alondra_core::Millis;
+use alondra_core::views::RunOutcome;
+use alondra_core::{BackgroundItem, BackgroundKind, Millis};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +42,7 @@ pub(crate) struct AgentRun {
     pub kind: Option<String>,
     pub model: Option<String>,
     pub started_at: Millis,
-    pub finished_at: Option<Millis>,
+    pub end: Option<End>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,7 +52,22 @@ pub(crate) struct WorkflowRun {
     /// Where the workflow writes one transcript per agent it runs.
     pub transcript_dir: Option<PathBuf>,
     pub started_at: Millis,
-    pub finished_at: Option<Millis>,
+    pub end: Option<End>,
+}
+
+/// When something the node ran ended, and how, as the fact that ended it says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct End {
+    pub at: Millis,
+    pub outcome: RunOutcome,
+}
+
+/// A shell or other background task that ended; subagents and workflows keep their end in their
+/// own run.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EndedTask {
+    pub item: BackgroundItem,
+    pub end: End,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +91,7 @@ pub(crate) struct Listed<'a> {
 pub(crate) struct NodeWork {
     pub agents: Vec<AgentRun>,
     pub workflows: Vec<WorkflowRun>,
+    pub ended_tasks: Vec<EndedTask>,
     pub steps: Vec<Step>,
 }
 
@@ -105,7 +122,7 @@ impl NodeWork {
                 kind,
                 model,
                 started_at: now,
-                finished_at: None,
+                end: None,
             }),
         }
         self.trim();
@@ -117,9 +134,9 @@ impl NodeWork {
         }
     }
 
-    pub(crate) fn agent_finished(&mut self, id: &str, now: Millis) {
-        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id && agent.finished_at.is_none()) {
-            agent.finished_at = Some(now);
+    pub(crate) fn agent_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id && agent.end.is_none()) {
+            agent.end = Some(End { at: now, outcome });
         }
         self.trim();
     }
@@ -130,14 +147,14 @@ impl NodeWork {
                 workflow.name = short_label(&name);
                 workflow.transcript_dir = transcript_dir.or(workflow.transcript_dir.take());
             }
-            None => self.workflows.push(WorkflowRun { id, name: short_label(&name), transcript_dir, started_at: now, finished_at: None }),
+            None => self.workflows.push(WorkflowRun { id, name: short_label(&name), transcript_dir, started_at: now, end: None }),
         }
         self.trim();
     }
 
-    pub(crate) fn workflow_finished(&mut self, id: &str, now: Millis) {
-        if let Some(workflow) = self.workflows.iter_mut().find(|workflow| workflow.id == id && workflow.finished_at.is_none()) {
-            workflow.finished_at = Some(now);
+    pub(crate) fn workflow_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
+        if let Some(workflow) = self.workflows.iter_mut().find(|workflow| workflow.id == id && workflow.end.is_none()) {
+            workflow.end = Some(End { at: now, outcome });
         }
         self.trim();
     }
@@ -151,7 +168,7 @@ impl NodeWork {
                     task.agent_type.map(str::to_owned), None, now),
                 "workflow" => {
                     let name = task.name.filter(|name| !name.is_empty()).unwrap_or(task.description);
-                    let adopted = self.workflows.iter_mut().find(|workflow| workflow.finished_at.is_none()
+                    let adopted = self.workflows.iter_mut().find(|workflow| workflow.end.is_none()
                         && workflow.name == short_label(name) && !tasks.iter().any(|other| other.id == workflow.id));
                     match adopted {
                         Some(workflow) => workflow.id = task.id.to_owned(),
@@ -162,23 +179,42 @@ impl NodeWork {
             }
         }
         let listed = |id: &str| tasks.iter().any(|task| task.id == id);
-        for agent in self.agents.iter_mut().filter(|agent| agent.finished_at.is_none() && !listed(&agent.id)) {
-            agent.finished_at = Some(now);
+        for agent in self.agents.iter_mut().filter(|agent| agent.end.is_none() && !listed(&agent.id)) {
+            agent.end = Some(End { at: now, outcome: RunOutcome::Finished });
         }
-        for workflow in self.workflows.iter_mut().filter(|workflow| workflow.finished_at.is_none() && !listed(&workflow.id)) {
-            workflow.finished_at = Some(now);
+        for workflow in self.workflows.iter_mut().filter(|workflow| workflow.end.is_none() && !listed(&workflow.id)) {
+            workflow.end = Some(End { at: now, outcome: RunOutcome::Finished });
         }
         self.trim();
     }
 
+    /// The session ended, and stopped everything it still ran.
     pub(crate) fn ended(&mut self, now: Millis) {
-        for agent in self.agents.iter_mut().filter(|agent| agent.finished_at.is_none()) {
-            agent.finished_at = Some(now);
+        let stopped = Some(End { at: now, outcome: RunOutcome::Stopped });
+        for agent in self.agents.iter_mut().filter(|agent| agent.end.is_none()) {
+            agent.end = stopped;
         }
-        for workflow in self.workflows.iter_mut().filter(|workflow| workflow.finished_at.is_none()) {
-            workflow.finished_at = Some(now);
+        for workflow in self.workflows.iter_mut().filter(|workflow| workflow.end.is_none()) {
+            workflow.end = stopped;
         }
         self.trim();
+    }
+
+    /// A shell or other background task ended; a subagent or workflow ends in its own run.
+    pub(crate) fn task_ended(&mut self, id: &str, item: BackgroundItem, end: End) {
+        if item.kind == BackgroundKind::Agent || self.agents.iter().any(|agent| agent.id == id) || self.workflows.iter().any(|workflow| workflow.id == id) {
+            return;
+        }
+        self.ended_tasks.push(EndedTask { item, end });
+        if self.ended_tasks.len() > FINISHED_LIMIT {
+            self.ended_tasks.remove(0);
+        }
+    }
+
+    /// The subagent or workflow with this id is still running.
+    pub(crate) fn runs(&self, id: &str) -> bool {
+        self.agents.iter().any(|agent| agent.id == id && agent.end.is_none())
+            || self.workflows.iter().any(|workflow| workflow.id == id && workflow.end.is_none())
     }
 
     pub(crate) fn step_created(&mut self, mut step: StepIn) {
@@ -227,8 +263,8 @@ impl NodeWork {
     }
 
     fn trim(&mut self) {
-        keep_recent(&mut self.agents, |agent| agent.started_at, |agent| agent.finished_at);
-        keep_recent(&mut self.workflows, |workflow| workflow.started_at, |workflow| workflow.finished_at);
+        keep_recent(&mut self.agents, |agent| agent.started_at, |agent| agent.end.map(|end| end.at));
+        keep_recent(&mut self.workflows, |workflow| workflow.started_at, |workflow| workflow.end.map(|end| end.at));
     }
 }
 
@@ -308,9 +344,9 @@ mod tests {
         work.agent_model("unknown", "claude-opus-5".into());
         assert_eq!(work.agents.len(), 1);
         assert_eq!((work.agents[0].kind.as_deref(), work.agents[0].model.as_deref()), (Some("general-purpose"), Some("claude-haiku-5")));
-        work.agent_finished("a1", 61_000);
-        work.agent_finished("a1", 99_000);
-        assert_eq!(work.agents[0].finished_at, Some(61_000), "the first end is when it finished");
+        work.agent_finished("a1", RunOutcome::Finished, 61_000);
+        work.agent_finished("a1", RunOutcome::Finished, 99_000);
+        assert_eq!(work.agents[0].end.map(|end| end.at), Some(61_000), "the first end is when it finished");
     }
 
     #[test]
@@ -320,10 +356,10 @@ mod tests {
         for index in 0..8 {
             let id = format!("done-{index}");
             work.agent_started(id.clone(), Some("Done".into()), None, None, index + 1);
-            work.agent_finished(&id, 100 + index);
+            work.agent_finished(&id, RunOutcome::Finished, 100 + index);
         }
         assert_eq!(work.agents.len(), FINISHED_LIMIT + 1);
-        assert!(work.agents.iter().any(|agent| agent.id == "live" && agent.finished_at.is_none()));
+        assert!(work.agents.iter().any(|agent| agent.id == "live" && agent.end.map(|end| end.at).is_none()));
         assert!(work.agents.iter().all(|agent| agent.id != "done-0" && agent.id != "done-2"));
     }
 
@@ -333,12 +369,12 @@ mod tests {
         work.workflow_started("w1".into(), "review-loop".into(), Some("/tmp/w1".into()), 1_000);
         let listed = |id, kind, name| Listed { id, kind, description: "Background work", agent_type: None, name };
         work.listed(&[listed("w1", "workflow", Some("review-loop")), listed("s1", "shell", None)], 2_000);
-        assert_eq!(work.workflows[0].finished_at, None);
+        assert_eq!(work.workflows[0].end.map(|end| end.at), None);
         work.listed(&[listed("t-9", "workflow", Some("review-loop"))], 3_000);
         assert_eq!(work.workflows.len(), 1, "a workflow listed under another id is the one already running by that name");
         assert_eq!((work.workflows[0].id.as_str(), work.workflows[0].transcript_dir.as_deref()), ("t-9", Some(Path::new("/tmp/w1"))));
         work.listed(&[], 4_000);
-        assert_eq!(work.workflows[0].finished_at, Some(4_000));
+        assert_eq!(work.workflows[0].end.map(|end| end.at), Some(4_000));
     }
 
     #[test]
@@ -348,10 +384,10 @@ mod tests {
         work.agent_started("a2".into(), Some("Foreground".into()), None, None, 0);
         work.listed(&[Listed { id: "a1", kind: "subagent", description: "Explore the repo", agent_type: Some("Explore"), name: None }], 5_000);
         let a1 = work.agents.iter().find(|agent| agent.id == "a1").unwrap();
-        assert_eq!((a1.kind.as_deref(), a1.model.as_deref(), a1.finished_at), (Some("Explore"), Some("claude-haiku-5"), None));
-        assert_eq!(work.agents.iter().find(|agent| agent.id == "a2").unwrap().finished_at, Some(5_000));
+        assert_eq!((a1.kind.as_deref(), a1.model.as_deref(), a1.end.map(|end| end.at)), (Some("Explore"), Some("claude-haiku-5"), None));
+        assert_eq!(work.agents.iter().find(|agent| agent.id == "a2").unwrap().end.map(|end| end.at), Some(5_000));
         work.ended(6_000);
-        assert!(work.agents.iter().all(|agent| agent.finished_at.is_some()));
+        assert!(work.agents.iter().all(|agent| agent.end.map(|end| end.at).is_some()));
     }
 
     #[test]

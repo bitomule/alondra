@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "vfeb730645c77b692",
+  "version": "vb7cc1b8d0aadb468",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -78,8 +78,7 @@
             },
             {
               "label": "In the background",
-              "value": "2 subagents · 1 shell",
-              "tone": "warning"
+              "value": "2 subagents · 1 shell"
             },
             {
               "label": "Context",
@@ -196,7 +195,7 @@
     },
     {
       "id": "background",
-      "title": "Running in the background",
+      "title": "In the background",
       "collapsed": false,
       "items": [
         {
@@ -207,14 +206,33 @@
           "subtitle": "Shell",
           "badges": [
             {
-              "text": "Possibly hung",
-              "tone": "warning"
+              "text": "Running",
+              "tone": "info"
             }
           ],
           "trailing": {
             "kind": "time",
             "at": "2026-09-30T09:40:00Z",
             "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "swift build",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Failed",
+              "tone": "critical"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "42s"
           },
           "depth": 0,
           "struck": false

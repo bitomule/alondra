@@ -165,7 +165,7 @@ def frozen_scenario(sandbox, tui, shots):
         time.sleep(20)
         assert not listed(tui.screen(), QUESTION), f"the card came back before 30 s:\n{tui.screen()}"
         shots.take("still-out-at-20s")
-        screen = tui.until(lambda s: listed(s, QUESTION) and "no llegó a tu Mac" in s,
+        screen = tui.until(lambda s: listed(s, QUESTION) and "aún no ha confirmado tu respuesta" in s,
                            "the card never came back with the notice", seconds=20)
         print(f"ok: back with the notice {time.time() - started:.1f}s after the answer", file=sys.stderr, flush=True)
         assert "«Stable»" in screen and QUESTION[:20] in screen, f"the notice does not name the answer:\n{screen}"

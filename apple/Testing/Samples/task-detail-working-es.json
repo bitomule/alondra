@@ -82,8 +82,7 @@
             },
             {
               "label": "En segundo plano",
-              "value": "2 subagents · 1 shell",
-              "tone": "warning"
+              "value": "2 subagents · 1 shell"
             },
             {
               "label": "Contexto",
@@ -351,7 +350,32 @@
             "format": "relative"
           },
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "badges": [
+            {
+              "text": "En marcha",
+              "tone": "info"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "swift build",
+          "subtitle": "Shell",
+          "trailing": {
+            "kind": "text",
+            "text": "42s"
+          },
+          "depth": 0,
+          "struck": false,
+          "badges": [
+            {
+              "text": "Falló",
+              "tone": "critical"
+            }
+          ]
         }
       ]
     },

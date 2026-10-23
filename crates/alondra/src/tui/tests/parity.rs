@@ -1492,7 +1492,7 @@ fn an_answer_unconfirmed_for_thirty_seconds_brings_its_card_back_saying_which_an
     let drawn = screen(&mut app, 120, 30);
     assert!(drawn.contains("Review the beta candidate"), "{drawn}");
     let notice = flash(&app);
-    assert!(notice.starts_with("Tu respuesta «") && notice.contains(&format!("» a «{title}» no llegó a tu Mac")), "{notice}");
+    assert!(notice.starts_with("Tu Mac aún no ha confirmado tu respuesta «") && notice.contains(&format!("» a «{title}». La tarjeta ha vuelto")), "{notice}");
     assert_eq!(app.flash.as_ref().map(|f| (f.kind, f.ttl)), Some((FlashKind::Error, NOTICE_MS)));
 
     served_merge_card(&mut app);

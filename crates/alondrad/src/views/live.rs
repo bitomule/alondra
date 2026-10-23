@@ -345,14 +345,11 @@ async fn gather_inner(
                 .or_else(|| node.daemon_detail.clone())
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
-            let background: Vec<(&str, alondra_core::BackgroundItem)> = reported.background.iter()
-                .map(|(id, _)| id.as_str()).zip(reported.background_items(now)).collect();
-            let suspect = |id: &str| background.iter().any(|(known, item)| *known == id && item.suspect);
-            let shown_as_run = |id: &str| reported.work.agents.iter().any(|agent| agent.id == id && agent.finished_at.is_none())
-                || reported.work.workflows.iter().any(|workflow| workflow.id == id && workflow.finished_at.is_none());
+            let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
+                .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();
             let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
                 alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
-                    let count = background.iter().filter(|(_, item)| item.kind == kind).count();
+                    let count = running.iter().filter(|(_, item)| item.kind == kind).count();
                     (count > 0).then(|| {
                         let noun = match (lang, kind) {
                             (Lang::En, alondra_core::BackgroundKind::Agent) => "subagent",
@@ -365,12 +362,7 @@ async fn gather_inner(
                         format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
                     })
                 }).collect::<Vec<_>>();
-            let background_suspect = background.iter().any(|(_, item)| item.suspect);
-            let background_badge = (!counts.is_empty()).then(|| {
-                let mut text = counts.join(" · ");
-                if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
-                text
-            });
+            let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
             let context = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
                 .find_map(|task| client.domain.contexts.used(&task.id))
                 .map(|used| (used.percent(), used.window));
@@ -390,13 +382,12 @@ async fn gather_inner(
                     model: agent.model.clone(),
                     agents: None,
                     since: timestamp(agent.started_at),
-                    ran_secs: agent.finished_at.map(|end| end.saturating_sub(agent.started_at).max(0) as u64 / 1000),
-                    suspect: agent.finished_at.is_none() && suspect(&agent.id),
+                    state: run_state(agent.started_at, agent.end),
                     workflow: None,
                 }).collect(),
                 workflows: reported.work.workflows.iter().map(|workflow| {
                     let state = workflow.transcript_dir.as_deref()
-                        .and_then(|dir| crate::workflow_state::read(dir, workflow.finished_at.is_some()));
+                        .and_then(|dir| crate::workflow_state::read(dir, workflow.end.is_some()));
                     LiveRun {
                         label: workflow.name.clone(),
                         kind: None,
@@ -404,8 +395,7 @@ async fn gather_inner(
                         agents: state.as_ref().map(|state| state.running + state.done)
                             .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
                         since: timestamp(workflow.started_at),
-                        ran_secs: workflow.finished_at.map(|end| end.saturating_sub(workflow.started_at).max(0) as u64 / 1000),
-                        suspect: workflow.finished_at.is_none() && suspect(&workflow.id),
+                        state: run_state(workflow.started_at, workflow.end),
                         workflow: state,
                     }
                 }).collect(),
@@ -418,14 +408,16 @@ async fn gather_inner(
                     },
                     active_form: step.active_form.clone(),
                 }).collect(),
-                background: background.iter().filter(|(id, _)| !shown_as_run(id)).map(|(_, item)| LiveBackground {
-                    kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
-                    label: item.label.clone(),
-                    since: timestamp(item.started_at),
-                    suspect: item.suspect,
-                }).collect(),
+                background: reported.background.iter().filter(|(id, _)| !reported.work.runs(id))
+                    .map(|(_, item)| (item, reported.shell_end(item)))
+                    .chain(reported.work.ended_tasks.iter().map(|task| (&task.item, Some(task.end))))
+                    .map(|(item, end)| LiveBackground {
+                        kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
+                        label: item.label.clone(),
+                        since: timestamp(item.started_at),
+                        state: run_state(item.started_at, end),
+                    }).collect(),
                 background_badge,
-                background_suspect,
                 working: agent.phase == NodePhase::Working,
                 waiting: matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
                 state_since: state_since.map(timestamp),
@@ -1649,6 +1641,13 @@ fn gauges(
         });
     }
     out
+}
+
+fn run_state(started_at: Millis, end: Option<crate::node_work::End>) -> alondra_core::views::RunState {
+    match end {
+        None => alondra_core::views::RunState::Running,
+        Some(end) => alondra_core::views::RunState::Ended { outcome: end.outcome, ran_secs: end.at.saturating_sub(started_at).max(0) as u64 / 1000 },
+    }
 }
 
 fn timestamp(millis: i64) -> String {

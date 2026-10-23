@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v86da1c79beb9cb2a",
+  "version": "v2384fedeec9b7d1f",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -82,8 +82,7 @@
             },
             {
               "label": "En segundo plano",
-              "value": "2 subagents · 1 shell",
-              "tone": "warning"
+              "value": "2 subagents · 1 shell"
             },
             {
               "label": "Contexto",
@@ -211,14 +210,33 @@
           "subtitle": "Shell",
           "badges": [
             {
-              "text": "Quizá colgado",
-              "tone": "warning"
+              "text": "En marcha",
+              "tone": "info"
             }
           ],
           "trailing": {
             "kind": "time",
             "at": "2026-09-30T09:40:00Z",
             "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "swift build",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Falló",
+              "tone": "critical"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "42s"
           },
           "depth": 0,
           "struck": false

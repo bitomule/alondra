@@ -951,7 +951,6 @@ fn golden_live() -> LiveSnapshot {
         needs: Some("A decision on the welcome copy".into()),
         background: vec![],
         background_badge: None,
-        background_suspect: false,
         working: false,
         waiting: true,
         last_message: Some("The simulator pass completed successfully.".into()),
@@ -1174,7 +1173,6 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
     let agent = "d887a34b-249e-4487-a89b-57de38c26372";
     let node = live.nodes.iter_mut().find(|node| node.agent_id == agent).unwrap();
     node.background_badge = Some("2 subagents".into());
-    node.background_suspect = true;
     let project = node.project.clone().unwrap();
     let view = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
     let section = view.sections.iter().find(|section| section.id == format!("project:{project}")).expect("the project's section");
@@ -1182,7 +1180,7 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
     assert_eq!(row.link, Some(Link::View { key: "task:t-651c38484cd2f34e74d5107ba05f7f15".into() }));
     assert_eq!(row.title, "Restore the native review experience");
     assert_eq!(row.badges[0], Label { text: "Needs you".into(), tone: Tone::Warning }, "its task's state");
-    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Warning }, "and what runs in its background");
+    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Neutral }, "and what runs in its background");
     assert!(row.children.is_empty());
     assert!(view.status.summary.ends_with(" · 1 in progress"), "{}", view.status.summary);
 }
@@ -2203,7 +2201,7 @@ fn task_message_keeps_task_context_and_offers_no_terminal() {
         name: "Node One".into(), project: None,
         state_key: None,
         state_label: None, summary: None, needs: None, background: vec![],
-        background_badge: None, background_suspect: false, working: true,
+        background_badge: None, working: true,
         waiting: false, state_since: None, last_message: None, last_message_at: None, ..Default::default()
     });
     let attaches = |view: &View| view.sections.iter().flat_map(|section| &section.items).any(|item| match item {
@@ -3142,7 +3140,7 @@ fn a_tasks_last_message_keeps_its_time_next_to_the_message() {
     live.nodes.push(LiveNode {
         agent_id: "a-1".into(), short_id: None, cwd: None, name: "Node One".into(),
         project: None, state_key: None, state_label: None, summary: None, needs: None,
-        background: vec![], background_badge: None, background_suspect: false,
+        background: vec![], background_badge: None,
         working: false, waiting: false,
         last_message: Some("Ready for review".into()),
         state_since: None,
@@ -3182,9 +3180,13 @@ fn working_node() -> LiveNode {
             LiveRun { label: "Explore the parser".into(), kind: Some("Explore".into()), model: Some("claude-haiku-4-5".into()),
                 since: "2026-09-30T09:58:00Z".into(), ..Default::default() },
             LiveRun { label: "Review the diff".into(), kind: Some("general-purpose".into()), since: "2026-09-30T09:40:00Z".into(),
-                ran_secs: Some(125), ..Default::default() },
+                state: RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 125 }, ..Default::default() },
         ],
-        workflows: vec![LiveRun { label: "review-loop".into(), agents: Some(4), since: "2026-09-30T09:50:00Z".into(), suspect: true, ..Default::default() }],
+        workflows: vec![LiveRun { label: "review-loop".into(), agents: Some(4), since: "2026-09-30T09:50:00Z".into(), ..Default::default() },
+            LiveRun { label: "release".into(), since: "2026-09-30T09:20:00Z".into(),
+                state: RunState::Ended { outcome: RunOutcome::Failed, ran_secs: 3_700 }, ..Default::default() },
+            LiveRun { label: "migrate".into(), since: "2026-09-30T09:10:00Z".into(),
+                state: RunState::Ended { outcome: RunOutcome::Stopped, ran_secs: 30 }, ..Default::default() }],
         ..Default::default()
     }
 }
@@ -3229,7 +3231,8 @@ fn a_task_detail_shows_its_nodes_steps_subagents_and_workflows() {
 
     let workflows = node_work_rows(&view, "workflows");
     assert_eq!((workflows[0].title.as_str(), workflows[0].subtitle.as_deref()), ("review-loop", Some("4 agents")));
-    assert_eq!(badges(workflows[0]), ["Running", "Possibly hung"]);
+    assert_eq!(workflows.iter().map(|row| badges(row)).collect::<Vec<_>>(), [["Running"], ["Failed"], ["Stopped"]]);
+    assert!(matches!(&workflows[1].trailing, Some(Trailing::Text { text }) if text == "1h 01m"));
 
     let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert_eq!(section_facts(&spanish, "steps"), [("Progreso".into(), "2 de 5".into()), ("Ahora".into(), "Running the tests".into())]);
@@ -3237,6 +3240,7 @@ fn a_task_detail_shows_its_nodes_steps_subagents_and_workflows() {
         .filter(|title| ["Pasos", "Subagentes", "Flujos de trabajo"].contains(title)).count(), 3);
     assert_eq!(badges(node_work_rows(&spanish, "steps")[2]), ["En curso"]);
     assert_eq!(badges(node_work_rows(&spanish, "subagents")[1]), ["Terminado"]);
+    assert_eq!(node_work_rows(&spanish, "workflows").iter().map(|row| badges(row)).collect::<Vec<_>>(), [["En marcha"], ["Falló"], ["Detenido"]]);
     assert_eq!(node_work_rows(&spanish, "workflows")[0].subtitle.as_deref(), Some("4 agentes"));
 
     let quiet = render(&state, &LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), ..Default::default() }], ..Default::default() },
@@ -3254,7 +3258,7 @@ fn the_task_a_node_works_shows_the_nodes_progress_and_a_finished_task_does_not()
     let view = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert_eq!(section_facts(&view, "steps")[0], ("Progreso".into(), "2 de 5".into()));
     assert_eq!(node_work_rows(&view, "subagents").len(), 2);
-    assert_eq!(node_work_rows(&view, "workflows").len(), 1);
+    assert_eq!(node_work_rows(&view, "workflows").len(), 3);
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let done = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert!(done.sections.iter().all(|section| section.id != "steps"));
@@ -3264,10 +3268,14 @@ fn node_on_its_task() -> LiveNode {
     LiveNode {
         agent_id: "a-1".into(), name: "Build a feature".into(), working: true,
         cwd: Some("/work/alondra/.claude/worktrees/t-1".into()),
-        tool: Some("Bash: cargo test".into()), background_badge: Some("2 subagents · 1 shell".into()), background_suspect: true,
+        tool: Some("Bash: cargo test".into()), background_badge: Some("2 subagents · 1 shell".into()),
         context_percent: Some(84), context_window: Some(200_000), cost_cents: Some(120),
         needs: Some("The staging key".into()),
-        background: vec![LiveBackground { kind: "shell".into(), label: "npm run dev".into(), since: "2026-09-30T09:40:00Z".into(), suspect: true }],
+        background: vec![
+            LiveBackground { kind: "shell".into(), label: "npm run dev".into(), since: "2026-09-30T09:40:00Z".into(), state: RunState::Running },
+            LiveBackground { kind: "shell".into(), label: "swift build".into(), since: "2026-09-30T09:30:00Z".into(),
+                state: RunState::Ended { outcome: RunOutcome::Failed, ran_secs: 42 } },
+        ],
         last_message: Some("Tests pass; opening the PR".into()), last_message_at: Some("2026-09-30T09:58:00Z".into()),
         ..Default::default()
     }
@@ -3325,7 +3333,7 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
             assert!(ids.contains(&id), "{client:?} shows {id}: {ids:?}");
         }
         assert_eq!(node_work_rows(&view, "activity")[0].title, "Editing views/tasks.rs");
-        assert_eq!(badges(node_work_rows(&view, "background")[0]), ["Possibly hung"]);
+        assert_eq!(node_work_rows(&view, "background").iter().map(|row| badges(row)).collect::<Vec<_>>(), [["Running"], ["Failed"]]);
         assert!(action_ids(&view).iter().any(|id| id == "interrupt:a-1"), "{client:?}: {:?}", action_ids(&view));
     }
     let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
@@ -3384,6 +3392,7 @@ fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let mut node = working_node();
+    node.workflows.truncate(1);
     let mut agents = vec![workflow_agent("review-auth", "Review", Some("haiku"), true),
         workflow_agent("review-db", "Review", Some("claude-sonnet-5-5"), false)];
     agents.extend((0..6).map(|index| workflow_agent(&format!("scan-{index}"), "Scan", None, false)));
@@ -7094,4 +7103,120 @@ fn the_merge_method_is_picked_in_this_macs_settings_above_the_node_limit() {
     assert_eq!(rows, [("merge_method", Some("Rebase and merge · if the repository allows it")), ("node_limit", Some("Limit: automatic (6)"))]);
     let pick = find_action(&machine, "set_merge_method:").unwrap();
     assert_eq!(pick.options[2].label, "Rebase and merge · now");
+}
+
+/// Every state something a node runs in the background can be in: running, or ended with one of
+/// the outcomes Claude reports. There is no other.
+fn run_states() -> Vec<RunState> {
+    std::iter::once(RunState::Running).chain(RunOutcome::ALL.map(|outcome| RunState::Ended { outcome, ran_secs: 90 })).collect()
+}
+
+/// Every phase of the node machine, each once; the match fails to compile when a phase is added.
+fn node_phases() -> Vec<NodePhase> {
+    let work = Background { work: crate::model::BackgroundKind::Shell, label: "npm run dev".into(), since: 0, others: 0, gone: None };
+    let pause = Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    let phases = vec![
+        NodePhase::Starting { reviving: false, idle_since: None }, NodePhase::Lost, NodePhase::Working, NodePhase::WaitingBackground(work),
+        NodePhase::WaitingUser { in_turn: false }, NodePhase::Paused(pause), NodePhase::Delivered { in_turn: false },
+        NodePhase::Resuming { idle_since: None, after_wait: false }, NodePhase::WaitingDependency, NodePhase::NoTask, NodePhase::Closing, NodePhase::Closed,
+    ];
+    for phase in &phases {
+        match phase {
+            NodePhase::Starting { .. } | NodePhase::Lost | NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::WaitingUser { .. }
+            | NodePhase::Paused(_) | NodePhase::Delivered { .. } | NodePhase::Resuming { .. } | NodePhase::WaitingDependency | NodePhase::NoTask
+            | NodePhase::Closing | NodePhase::Closed => {}
+        }
+    }
+    phases
+}
+
+/// Every task state, each once; the match fails to compile when one is added.
+fn task_states() -> Vec<TaskState> {
+    let states = vec![TaskState::NotStarted, TaskState::Running, TaskState::NeedsYou, TaskState::AwaitingBlocker, TaskState::ForYourReview,
+        TaskState::WaitingDependency, TaskState::Closing, TaskState::Done, TaskState::Cancelled];
+    for state in &states {
+        match state {
+            TaskState::NotStarted | TaskState::Running | TaskState::NeedsYou | TaskState::AwaitingBlocker | TaskState::ForYourReview
+            | TaskState::WaitingDependency | TaskState::Closing | TaskState::Done | TaskState::Cancelled => {}
+        }
+    }
+    states
+}
+
+fn node_running_in(state: RunState) -> LiveNode {
+    let mut node = node_on_its_task();
+    node.steps = working_node().steps;
+    node.subagents = working_node().subagents.into_iter().map(|run| LiveRun { state, ..run }).collect();
+    node.workflows = working_node().workflows.into_iter().map(|run| LiveRun { state, ..run }).collect();
+    node.background = node.background.into_iter().map(|item| LiveBackground { state, ..item }).collect();
+    node
+}
+
+/// #1166 marked work running for 30 min with nothing else shown «¿colgado?». What a node runs in
+/// the background now shows only its state, on every screen and client, in both languages:
+/// running, or how it ended. A state has one badge, and no state has a warning.
+#[test]
+fn background_work_shows_only_that_it_runs_or_how_it_ended() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    let mut shown: Vec<(RunState, Lang, String)> = vec![];
+    for run in run_states() {
+        let live = LiveSnapshot { nodes: vec![node_running_in(run)], ..Default::default() };
+        for lang in [Lang::En, Lang::Es] {
+            let mut texts = vec![];
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                for key in ["task:t-1"] {
+                    let view = render(&state, &live, client, lang, key, "");
+                    let rows: Vec<&Row> = ["subagents", "workflows", "background"].iter().flat_map(|id| node_work_rows(&view, id)).collect();
+                    assert!(!rows.is_empty(), "{client:?} {key} shows the background work");
+                    for row in rows {
+                        let [badge] = row.badges.as_slice() else { panic!("{client:?} {key} {run:?}: one state, one badge: {:?}", row.badges) };
+                        assert_ne!(badge.tone, Tone::Warning, "{client:?} {key} {run:?}: no state of background work is a warning");
+                        texts.push(badge.text.clone());
+                    }
+                }
+            }
+            texts.dedup();
+            let [text] = texts.as_slice() else { panic!("{run:?} {lang:?}: every row and screen in the same state reads the same: {texts:?}") };
+            shown.push((run, lang, text.clone()));
+        }
+    }
+    let read = |lang| shown.iter().filter(|(_, at, _)| *at == lang).map(|(run, _, text)| (*run, text.as_str())).collect::<Vec<_>>();
+    let [running, finished, failed, stopped]: [RunState; 4] = run_states().try_into().unwrap();
+    assert_eq!(read(Lang::En), [(running, "Running"), (finished, "Finished"), (failed, "Failed"), (stopped, "Stopped")]);
+    assert_eq!(read(Lang::Es), [(running, "En marcha"), (finished, "Terminado"), (failed, "Falló"), (stopped, "Detenido")]);
+}
+
+/// A screen changes only when a fact does: the same domain and the same live readings render the
+/// same on every screen two days later, for every phase of the node, every task state and every
+/// state of its background work.
+#[test]
+fn no_screen_changes_with_the_clock_alone() {
+    let screens = |state: &DomainState, live: &LiveSnapshot, at: &str| -> Vec<serde_json::Value> {
+        let mut out = vec![];
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                for key in ["home", "tasks", "sidebar", "task:t-1", "request:r-1"] {
+                    if (key == "sidebar" && client != Client::Mac) || (key == "home" && client == Client::Mac) {
+                        continue;
+                    }
+                    let mut view = serde_json::to_value(render(state, live, client, lang, key, at)).unwrap();
+                    view.as_object_mut().unwrap().remove("rendered_at");
+                    out.push(view);
+                }
+            }
+        }
+        out
+    };
+    for (index, phase) in node_phases().into_iter().enumerate() {
+        for task in task_states() {
+            let mut state = fixture();
+            node_in(&mut state, phase.clone());
+            state.tasks.get_mut(&"t-1".into()).unwrap().state = task;
+            let runs = run_states();
+            let live = LiveSnapshot { nodes: vec![node_running_in(runs[index % runs.len()])], ..Default::default() };
+            assert_eq!(screens(&state, &live, "2026-09-30T10:00:00Z"), screens(&state, &live, "2026-10-02T10:00:00Z"),
+                "{phase:?} with its task {task:?} reads the same two days later");
+        }
+    }
 }
