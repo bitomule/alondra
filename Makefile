@@ -15,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -214,6 +214,13 @@ e2e-doc-review:
 e2e-doc-links:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
 	$(SDK_HOST_ENV) tools/e2e-doc-links.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
+
+# A document with Mermaid diagrams in the real TUI (tmux) at 80 and 120 columns: the four kinds draw,
+# the rest show their code with a notice (tools/e2e-doc-mermaid.py). E2E_CAPTURES=<dir> keeps the screens.
+e2e-doc-mermaid:
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
+	$(SDK_HOST_ENV) tools/e2e-doc-mermaid.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # Every kind of card answered from one client against its own sandbox: each leaves at once and never

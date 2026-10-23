@@ -1,0 +1,4 @@
+heading:1 0 | How a card is handled
+para 0 | Every card goes through this flow:
+code:mermaid 0 | flowchart TD\n  A[Card arrives] --> B{Needs user?}\n  B -->|yes| C[Ask David]\n  B -->|no| D[Run node]\n  C --> E[Deliver result]\n  D --> E
+para 0 | The node reports back when it is done.

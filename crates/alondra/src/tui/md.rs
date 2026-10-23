@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 mod html;
+mod mermaid;
 
 pub const QUOTE_MAX: usize = 200;
 const CODE: Color = Color::Indexed(180);
@@ -1198,6 +1199,25 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             } else {
                 b.lines.iter().map(|l| plain(l)).collect()
             };
+            if lang.as_deref().is_some_and(|l| l.eq_ignore_ascii_case("mermaid")) {
+                match mermaid::draw(&lines.join("\n"), width.saturating_sub(2)) {
+                    Ok(diagram) => {
+                        out.extend(diagram.into_iter().map(|l| {
+                            Line::from(vec![prefix.clone(), Span::styled(l, Style::new().fg(CODE))])
+                        }));
+                        return out;
+                    }
+                    Err(refusal) => out.extend(wrap(
+                        vec![Span::styled(
+                            refusal.notice(),
+                            Style::new().fg(DIM).add_modifier(Modifier::ITALIC),
+                        )],
+                        width,
+                        vec![],
+                        vec![],
+                    )),
+                }
+            }
             out.extend(
                 lines
                     .iter()
@@ -1650,6 +1670,244 @@ mod tests {
             vec!["• one", "  two", "  three"]
         );
         assert_eq!(parse("one  \ntwo")[0].quote(), "one two");
+    }
+
+    const FLOW: &str = "flowchart TD\n  A[Card arrives] --> B{Needs user?}\n  B -->|yes| C[Ask David]\n  B -->|no| D[Run node]\n  C --> E[Deliver result]\n  D --> E";
+
+    const FLOW_DRAWN: &[&str] = &[
+        "         ┌──────────────┐",
+        "         │ Card arrives │",
+        "         └──────────────┘",
+        "                 │",
+        "                 │",
+        "                 │",
+        "                 │",
+        "                 ▼",
+        "          ┌─────────────┐",
+        "          < Needs user? >",
+        "          └─────────────┘",
+        "      ┌────┘           └───┐",
+        "      │                    │",
+        "     yes                  no",
+        "      │                    │",
+        "      │                    │",
+        "      │                    │",
+        "      │                    │",
+        "      │                    │",
+        "      ▼                    ▼",
+        "┌───────────┐        ┌──────────┐",
+        "│ Ask David │        │ Run node │",
+        "└───────────┘        └──────────┘",
+        "        │                │",
+        "        └┐              ┌┘",
+        "         │              │",
+        "         │              │",
+        "         ▼              ▼",
+        "        ┌────────────────┐",
+        "        │ Deliver result │",
+        "        └────────────────┘",
+    ];
+
+    const TOO_WIDE: &str = "flowchart LR\n  P[Prepare the release notes] --> R[Release] --> A[Build the archive] & B[Sign the binaries] & C[Run the smoke tests] & D[Rehearse the upgrade] & E[Publish the formula]";
+
+    fn fenced(source: &str) -> String {
+        format!("```mermaid\n{source}\n```")
+    }
+
+    fn framed(diagram: &[&str]) -> Vec<String> {
+        std::iter::once("mermaid".to_string())
+            .chain(diagram.iter().map(|l| format!("│ {l}").trim_end().to_string()))
+            .collect()
+    }
+
+    fn shown_as_code(source: &str, notice: &str, width: usize) -> Vec<String> {
+        let mut out = vec!["mermaid".to_string(), notice.to_string()];
+        out.extend(rendered(&format!("```\n{source}\n```"), width));
+        out
+    }
+
+    #[test]
+    fn a_flowchart_draws_as_a_diagram_at_80_columns() {
+        assert_eq!(rendered(&fenced(FLOW), 80), framed(FLOW_DRAWN));
+    }
+
+    #[test]
+    fn a_sequence_diagram_draws_at_80_columns() {
+        let source = "sequenceDiagram\n  participant TUI\n  participant Daemon\n  participant Node\n  TUI->>Daemon: open task\n  Daemon->>Node: start session\n  Node-->>Daemon: result ready\n  Daemon-->>TUI: show card";
+        assert_eq!(
+            rendered(&fenced(source), 80),
+            framed(&[
+                "┌─────┐           ┌────────┐           ┌──────┐",
+                "│ TUI │           │ Daemon │           │ Node │",
+                "└──┬──┘           └────┬───┘           └───┬──┘",
+                "   │                   │                   │",
+                "   │─open task────────>│                   │",
+                "   │                   │                   │",
+                "   │                   │─start session────>│",
+                "   │                   │                   │",
+                "   │                   │<┄result ready┄┄┄┄┄│",
+                "   │                   │                   │",
+                "   │<┄show card┄┄┄┄┄┄┄┄│                   │",
+                "   │                   │                   │",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_state_diagram_draws_at_80_columns() {
+        let source = "stateDiagram-v2\n  [*] --> Queued\n  Queued --> Working: capacity\n  Working --> Waiting: asks\n  Waiting --> Working: answered\n  Working --> [*]";
+        assert_eq!(
+            rendered(&fenced(source), 80),
+            framed(&[
+                "     ●",
+                "",
+                "     │",
+                "     │",
+                "     ▼",
+                "╭────────╮",
+                "│ Queued │",
+                "╰────────╯",
+                "     │",
+                "     │",
+                "     │",
+                " capacity",
+                "     │",
+                "     ▼",
+                "╭─────────╮",
+                "│ Working │◄─────┐",
+                "╰─────────╯      │",
+                " │   └───┐       │",
+                " │       │       │",
+                " ▼       │   answered",
+                "         │       │",
+                "◉      asks      │",
+                "     ┌───┘       │",
+                "     │           │",
+                "     │           │",
+                "     ▼           │",
+                "    ╭─────────╮──┘",
+                "    │ Waiting │",
+                "    ╰─────────╯",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_class_diagram_draws_at_80_columns() {
+        let source = "classDiagram\n  class Task {\n    +String id\n    +close()\n  }\n  class Plan {\n    +Vec~Step~ steps\n  }\n  Task \"1\" --> \"1\" Plan";
+        assert_eq!(
+            rendered(&fenced(source), 80),
+            framed(&[
+                "   ┌────────────┐",
+                "   │    Task    │",
+                "   ├────────────┤",
+                "   │ +String id │",
+                "   ├────────────┤",
+                "   │ +close()   │",
+                "   └────────────┘",
+                "        1 │",
+                "          │",
+                "        1 ▼",
+                "┌──────────────────┐",
+                "│       Plan       │",
+                "├──────────────────┤",
+                "│ +Vec~Step~ steps │",
+                "├──────────────────┤",
+                "└──────────────────┘",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_left_to_right_flowchart_that_does_not_fit_is_redrawn_top_down() {
+        let source = FLOW.replacen("flowchart TD", "flowchart LR", 1);
+        let narrow = rendered(&fenced(&source), 60);
+        assert_eq!(narrow, framed(FLOW_DRAWN));
+        assert!(narrow.iter().all(|l| str_width(l) <= 60));
+        let wide = rendered(&fenced(&source), 120);
+        assert_ne!(wide, narrow);
+        assert!(wide.iter().any(|l| str_width(l) > 60));
+        assert!(wide.iter().all(|l| str_width(l) <= 120));
+    }
+
+    #[test]
+    fn a_diagram_that_does_not_fit_even_top_down_shows_its_code_with_a_notice() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(
+            rendered(&fenced(TOO_WIDE), 80),
+            shown_as_code(TOO_WIDE, "The diagram doesn't fit this width; widen the window", 80)
+        );
+    }
+
+    #[test]
+    fn invalid_syntax_shows_its_code_with_the_line_of_the_error() {
+        let source = "flowchart TD\n  A -->\n  B[[[ -->";
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(
+            rendered(&fenced(source), 80),
+            shown_as_code(source, "This diagram has an error on line 2; showing its code", 80)
+        );
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        assert_eq!(
+            rendered(&fenced(source), 80),
+            shown_as_code(source, "El diagrama tiene un error en la línea 2; se muestra su código", 80)
+        );
+    }
+
+    #[test]
+    fn pie_and_gantt_show_their_code_with_a_notice() {
+        for source in ["pie\n  \"Done\" : 3\n  \"Left\" : 1", "gantt\n  title Release\n  section Build\n  Archive :a1, 2026-10-01, 2d"] {
+            crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+            assert_eq!(
+                rendered(&fenced(source), 80),
+                shown_as_code(source, "This kind of diagram isn't drawn here yet", 80)
+            );
+            crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+            assert_eq!(
+                rendered(&fenced(source), 80),
+                shown_as_code(source, "Este tipo de diagrama aún no se dibuja aquí", 80)
+            );
+        }
+    }
+
+    #[test]
+    fn more_than_a_hundred_nodes_show_their_code_with_a_notice() {
+        let source = std::iter::once("flowchart TD".to_string())
+            .chain((0..=100).map(|i| format!("  N{i}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(
+            rendered(&fenced(&source), 80),
+            shown_as_code(&source, "Diagram too large to draw here", 80)
+        );
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        assert_eq!(rendered(&fenced(&source), 80)[1], "Diagrama demasiado grande para dibujarlo aquí");
+        assert_eq!(rendered(&fenced(TOO_WIDE), 80)[1], "El diagrama no cabe en este ancho; amplía la ventana");
+    }
+
+    #[test]
+    fn quoting_a_drawn_diagram_quotes_its_code() {
+        let block = &parse(&fenced(FLOW))[0];
+        assert!(block.commentable());
+        assert_eq!(
+            block.quote(),
+            "flowchart TD A[Card arrives] --> B{Needs user?} B -->|yes| C[Ask David] B -->|no| D[Run node] C --> E[Deliver result] D --> E"
+        );
+    }
+
+    #[test]
+    fn the_mermaid_fixtures_draw_or_show_their_code() {
+        let fixture = |name: &str| {
+            let path = corpus::fixtures_dir().join(format!("{name}.md"));
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        };
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let flow = rendered(&fixture("mermaid_flowchart"), 80);
+        assert!(flow.iter().any(|l| l == "│          │ Card arrives │"), "{flow:#?}");
+        let other = rendered(&fixture("mermaid_unsupported"), 80);
+        assert!(other.iter().any(|l| l == "This kind of diagram isn't drawn here yet"), "{other:#?}");
+        assert!(other.iter().any(|l| l == "│ pie title Where the time goes"), "{other:#?}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 /// Fixtures `parse` still gets wrong. Remove a name when its fixture starts passing.
 const KNOWN_BROKEN_TUI: &[&str] = &[];
 
-fn fixtures_dir() -> PathBuf {
+pub(super) fn fixtures_dir() -> PathBuf {
     match std::env::var("TEST_SRCDIR") {
         Ok(root) => PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))

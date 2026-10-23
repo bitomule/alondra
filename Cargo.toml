@@ -29,6 +29,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 ratatui = "0.30.2"
 rpds = "1.2.1"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
+mmdflux = { version = "2.6.1", default-features = false }
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
