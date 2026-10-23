@@ -342,10 +342,6 @@ fn keys() -> Vec<(String, Client)> {
         (format!("task:{}", one("t", Shape::Review)), Client::Tui),
         (format!("task:{}", one("t", Shape::Done)), Client::Mac),
         (format!("request:{}", one("r", Shape::Asking)), Client::Ios),
-        ("fleet".to_owned(), Client::Ios),
-        ("fleet".to_owned(), Client::Tui),
-        (format!("node:{}", one("a", Shape::Running)), Client::Ios),
-        (format!("node:{}", one("a", Shape::Done)), Client::Tui),
         ("orchestrator".to_owned(), Client::Tui),
         ("schedules".to_owned(), Client::Ios),
         ("schedule:schedule-1".to_owned(), Client::Ios),
@@ -492,11 +488,9 @@ fn reading_every_view_replays_no_journal() {
     let state = Arc::new(state);
     let live = live(&state);
     let mut keys = keys();
-    let long_node = id("a", Shape::WaitingMcp).replace(TOKEN, &format!("u{LONG:03}"));
     keys.extend([
         (format!("task:{long_task}"), Client::Ios),
         (format!("task:{long_task}"), Client::Tui),
-        (format!("node:{long_node}"), Client::Ios),
     ]);
     let read = || {
         let committed = ReadSnapshot::build(Arc::clone(&state));

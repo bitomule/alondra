@@ -40,9 +40,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         let card = user.view(&format!("card:{first}"))?;
         report.snapshot("card-turn-ended", &card)?;
-        report.snapshot("fleet-before-restart", &user.view("fleet")?)?;
+        report.snapshot("tasks-before-restart", &user.view("tasks")?)?;
         report.step("the Mac's daemon restarts and adopts the running host", || super::session::restart(sandbox, 1))?;
-        report.snapshot("fleet-after-restart", &user.view("fleet")?)?;
+        report.snapshot("tasks-after-restart", &user.view("tasks")?)?;
         let carry_on = user.action_labeled(&card, "Carry on").context("the card offers no «Carry on»")?;
         report.step("the user presses «Carry on» with a note after the restart", || {
             user.press(carry_on["id"].as_str().unwrap_or_default(), carry_on["option_id"].as_str(), Some(NOTE))
@@ -63,14 +63,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let second = wait(report, "its next turn ends with a card of its own", || turn_card(&user, Some(&first)))?;
         let card = user.view(&format!("card:{second}"))?;
         report.snapshot("card-turn-ended-again", &card)?;
-        report.snapshot("fleet-before-power-cycle", &user.view("fleet")?)?;
+        report.snapshot("tasks-before-power-cycle", &user.view("tasks")?)?;
         report.step("the Mac shuts down: the SDK host, its native Claude and the daemon all end", || super::session::power_cycle(sandbox, 1))?;
         report.step("no native Claude runs until the user answers", || {
             let running = super::session::native_claudes(sandbox)?;
             anyhow::ensure!(running.is_empty(), "{running:?}");
             Ok(())
         })?;
-        report.snapshot("fleet-after-power-cycle", &user.view("fleet")?)?;
+        report.snapshot("tasks-after-power-cycle", &user.view("tasks")?)?;
         let card = user.view(&format!("card:{second}"))?;
         let reply = user.action(&card, "reply:").context("the card offers no «Reply» after the Mac came back")?;
         report.step("the user writes on the card what to do", || {
@@ -94,7 +94,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             anyhow::ensure!(after > before, "after the power cycle the request carried {after} messages, before it {before}: the context was lost");
             Ok(())
         })?;
-        report.snapshot("fleet", &user.view("fleet")?)
+        report.snapshot("tasks", &user.view("tasks")?)
     });
     report.case("S2", "Claude's sign-in is refused: the task waits on the sign-in card, and «I signed in» lets it go on", |report| {
         refuse(sandbox, Some(401))?;
@@ -240,7 +240,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
                 Ok(())
             })?;
         }
-        report.snapshot("fleet", &user.view("fleet")?)
+        report.snapshot("tasks", &user.view("tasks")?)
     });
     report.case("S12", "Five messages, five batches: each is a new conversation of the orchestrator's native Claude, and what it sends the model does not grow", |report| {
         let mut batches = vec![];

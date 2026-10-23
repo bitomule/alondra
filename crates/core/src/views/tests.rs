@@ -2,7 +2,7 @@ use super::*;
 use crate::domain::{
     Background, NodePhase, Pause, PauseCleanup, PauseReason,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
-    InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
+    InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState, ModelChooser, TaskModel, inbox_items,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1062,20 +1062,6 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     assert!(result.is_ok());
 }
 
-#[test]
-fn agent_uuid_keeps_its_message_action_and_offers_no_close() {
-    let mut state = fixture();
-    let id = "a98d034b-249e-4487-a89b-57de38c26372";
-    let mut agent = state.agents.remove(&"a-1".into()).unwrap();
-    agent.id = id.into();
-    state.agents.insert(id.into(), agent);
-    let live = LiveSnapshot::default();
-    let detail = render(&state, &live, Client::Tui, Lang::En, &format!("node:{id}"), "");
-    let actions = detail.sections.iter().flat_map(|section| &section.items).find_map(|item|
-        if let Item::Actions(bar) = item { Some(&bar.actions) } else { None }).unwrap();
-    assert!(actions.iter().any(|action| action.id.starts_with(&format!("msg:{id}@"))));
-    assert!(!actions.iter().any(|action| action.id.starts_with("close:")), "a node ends with its task, never by hand");
-}
 /// `ALONDRA_GOLDEN_OUT=<dir>` writes what the views render now there, to review and copy over the goldens.
 fn assert_golden(filename: &str, view: &View, expected: &str) {
     if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
@@ -1096,8 +1082,6 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
         ("tasks", Client::Ios),
         ("task:t-1", Client::Ios),
         ("request:r-1", Client::Mac),
-        ("fleet", Client::Tui),
-        ("node:a-1", Client::Ios),
         ("schedules", Client::Mac),
         ("schedule:new", Client::Ios),
         ("new_request", Client::Ios),
@@ -1149,7 +1133,7 @@ fn search_finds_tasks_by_title_and_by_what_their_node_said() {
 }
 
 #[test]
-fn no_view_but_the_fleet_and_the_node_links_to_a_node() {
+fn no_view_links_to_a_node() {
     let state = golden_in_progress();
     let live = golden_live();
     for (key, client) in [
@@ -1204,7 +1188,7 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
 }
 
 #[test]
-fn the_status_counts_the_tasks_in_progress_not_a_fleet() {
+fn the_status_counts_the_tasks_in_progress() {
     let state = golden_in_progress();
     let live = golden_live();
     for (lang, label) in [(Lang::En, "In progress"), (Lang::Es, "En marcha")] {
@@ -1229,9 +1213,13 @@ fn the_orchestrator_key_holds_only_the_message_to_alondra() {
     let actions: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item|
         if let Item::Actions(bar) = item { Some(bar.actions.iter().map(|action| action.id.clone())) } else { None }).flatten().collect();
     assert_eq!(actions, [format!("msg:view@{}", state.revision)]);
-    let node = render(&state, &live, Client::Tui, Lang::En, "node:orchestrator", "");
-    assert_eq!(node.key, "node:orchestrator", "the node key still answers until the clients leave it");
-    assert_eq!(node.sections, view.sections);
+}
+
+#[test]
+fn no_view_answers_the_fleet_or_a_node() {
+    for key in ["fleet", "node:a-1", "node:orchestrator"] {
+        assert_eq!(Family::of(key), None, "{key}");
+    }
 }
 
 #[test]
@@ -1574,28 +1562,6 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
     assert!(facts.iter().any(|fact| fact.label == "Effort" && fact.value == "High"));
 }
 
-#[test]
-fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state() {
-    let mut state = fixture();
-    state.interactions.clear();
-    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode {
-        agent_id: "a-1".into(), name: "Node One".into(), working: true, project: Some("App".into()),
-        tool: Some("cargo test".into()), state_since: Some("2026-09-30T09:58:00Z".into()),
-        ..LiveNode::default()
-    });
-    let view = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
-    let node = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-        if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
-    }).unwrap();
-    assert_eq!(node.title, "Build a feature");
-    assert!(node.children.is_empty(), "one task per node: no task row repeats the node");
-    assert_eq!(node.badges.first().map(|badge| badge.text.as_str()), Some("Working"));
-    assert!(node.subtitle.is_none() && node.trailing.is_none(), "{node:?}");
-    assert!(view.sections.iter().any(|section| section.title.as_deref() == Some("App")));
-}
-
 fn task_state_text(state: &DomainState, live: &LiveSnapshot, lang: Lang) -> String {
     let row = active_row(state, live, Client::Mac, lang, "t-1").1;
     row.badges.first().map(|badge| badge.text.clone()).unwrap()
@@ -1689,9 +1655,6 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     let mut reviving = state.clone();
     reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true, idle_since: None }, since: 0 });
     assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
-    live.nodes[0].disconnected = true;
-    let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
-    assert!(!fleet.contains("Node One"), "a node whose session is gone for good leaves Fleet: {fleet}");
 }
 
 /// 13 October: quill's session ended and its restart waited at the fleet gate for memory while
@@ -1710,17 +1673,15 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     assert_eq!(row.badges[0].text, "En cola · 1.º de 1");
     assert_eq!(row.subtitle.as_deref(), Some("El Mac va justo de memoria (12 % libre)"));
     assert_eq!(block, "block:waiting");
-    let node = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
-    assert!(node.contains("Esperando máquina") && !node.contains("Reconectando"), "{node}");
-    let fleet = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "fleet", "")).unwrap();
-    assert!(!fleet.contains("Node One"), "a lost node has no session to show in Fleet: {fleet}");
+    let detail = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(detail.contains("En cola") && !detail.contains("Reconectando"), "{detail}");
     assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "Esperando máquina", "before it reaches the gate");
 
     state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true, idle_since: None };
     let admitted = pacing_live(vec![], vec![], None);
     assert_eq!(task_state_text(&state, &admitted, Lang::Es), "Reconectando");
-    let node = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
-    assert!(node.contains("Reconectando") && !node.contains("Esperando máquina"), "{node}");
+    let detail = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Reconectando") && !detail.contains("Esperando máquina"), "{detail}");
 }
 
 /// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
@@ -1757,7 +1718,7 @@ fn node_in(state: &mut DomainState, phase: NodePhase) {
 fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String)> {
     let mut out = vec![];
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        for key in ["tasks", "fleet", "sidebar", "task:t-1", "node:a-1"] {
+        for key in ["tasks", "sidebar", "task:t-1"] {
             if key == "sidebar" && client != Client::Mac {
                 continue;
             }
@@ -1768,8 +1729,8 @@ fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String
 }
 
 /// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
-/// its turn to wait for it. A node that waits for its own command is working: its task and Fleet
-/// say «Trabajando» on every screen, and no screen shows the command.
+/// its turn to wait for it. A node that waits for its own command is working: its task says
+/// «Trabajando» on every screen, and no screen shows the command.
 #[test]
 fn a_task_whose_node_waits_for_its_own_command_says_working_without_the_command_on_every_screen() {
     let mut state = fixture();
@@ -1814,16 +1775,16 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
     }
 }
 
-/// A node whose turn stopped processing shows «Parado» in Fleet; its task says the same.
+/// A node whose turn stopped processing: its task says «Parado».
 #[test]
-fn a_task_whose_node_stalled_says_so_like_fleet() {
+fn a_task_whose_node_stalled_says_so() {
     let mut state = fixture();
     node_in(&mut state, NodePhase::Working);
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), state_key: Some("stalled".into()), ..LiveNode::default() });
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Parado");
-    let fleet = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "fleet", "")).unwrap();
-    assert!(fleet.contains("Parado") && !fleet.contains("Trabajando"), "{fleet}");
+    let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Parado") && !detail.contains("Trabajando"), "{detail}");
 }
 
 #[test]
@@ -1952,33 +1913,6 @@ fn task_detail_offers_only_the_actions_its_state_allows() {
 }
 
 #[test]
-fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
-    let mut state = fixture();
-    let mut earlier = state.tasks[&"t-1".into()].clone();
-    earlier.id = "t-0".into();
-    earlier.title = "Earlier work".into();
-    earlier.state = TaskState::Done;
-    state.tasks.insert(earlier.id.clone(), earlier);
-    for task in state.tasks.values_mut() {
-        task.agent_id = Some("a-1".into());
-    }
-    let node_row = |state: &DomainState| {
-        let view = render(state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == "a-1" { Some(row.title.clone()) } else { None }
-        }).unwrap()
-    };
-    assert_eq!(node_row(&state), "Build a feature");
-    let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
-    assert!(header_facts(&detail).iter().any(|fact| fact.label == "Task" && fact.value == "Build a feature"));
-    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
-    let idle = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
-    assert!(header_facts(&idle).iter().all(|fact| fact.label != "Task"), "a node between tasks is on none");
-    let fleet = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
-    assert!(fleet.sections.is_empty(), "a node with no open task is not in Fleet");
-}
-
-#[test]
 fn rows_count_cards_from_the_render_index_without_reading_the_inbox_again() {
     let mut state = with_cards(&fixture());
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
@@ -1998,59 +1932,6 @@ fn rows_count_cards_from_the_render_index_without_reading_the_inbox_again() {
     assert!(counted(&crate::domain::ReadIndex::build(&state), "tasks") > 0, "the fixture has a card waiting on its task");
     let nothing_waiting = crate::domain::ReadIndex::build(&DomainState::new("test-epoch"));
     assert_eq!(counted(&nothing_waiting, "tasks"), 0);
-    assert_eq!(counted(&nothing_waiting, "fleet"), 0);
-}
-
-#[test]
-fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
-    let mut state = fixture();
-    state.interactions.clear();
-    let template = state.tasks.remove(&"t-1".into()).unwrap();
-    for (agent, phase, task, task_state) in [
-        ("one-task", NodePhase::Working, "t-one-task-per-node", TaskState::ForYourReview),
-        ("recent-queue", NodePhase::Closed, "t-recent-requests-queue", TaskState::Done),
-        ("home-zero", NodePhase::Working, "t-home-counters-zero", TaskState::Done),
-        ("claude-mods", NodePhase::Working, "t-claude-mods-analysis", TaskState::Done),
-        ("busy", NodePhase::Working, "t-busy", TaskState::Running),
-        ("idle", NodePhase::Resuming { idle_since: None, after_wait: false }, "t-idle", TaskState::Running),
-    ] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
-        let mut row = template.clone();
-        row.id = task.into();
-        row.agent_id = Some(agent.into());
-        row.state = task_state;
-        state.tasks.insert(task.into(), row);
-    }
-    let mut live = LiveSnapshot::default();
-    for (agent, key, working) in [
-        ("one-task", "free", false), ("recent-queue", "free", false), ("home-zero", "free", false),
-        ("busy", "busy", true), ("idle", "free", false),
-    ] {
-        live.nodes.push(LiveNode {
-            agent_id: agent.into(), name: agent.into(), state_key: Some(key.into()),
-            state_label: Some("inactivo".into()), working, ..LiveNode::default()
-        });
-    }
-    let view = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    let found = |id: &str| view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-        if let Item::Row(row) = item && row.id == id { Some(row.clone()) } else { None }
-    });
-    assert!(found("recent-queue").is_none(), "a node whose session closed is not in Fleet");
-    assert!(found("home-zero").is_none() && found("claude-mods").is_none(), "a node whose task ended is not in Fleet");
-    for (agent, text, tone) in [
-        ("one-task", "Entrega resultado", Tone::Success),
-        ("busy", "Trabajando", Tone::Info),
-        ("idle", "Trabajando", Tone::Info),
-    ] {
-        let row = found(agent).unwrap();
-        assert_eq!(row.title, "Build a feature", "{agent}");
-        assert_eq!(row.badges, vec![Label { text: text.into(), tone }], "{agent}");
-    }
-    let detail = render(&state, &live, Client::Ios, Lang::Es, "node:recent-queue", "");
-    let Item::Facts(facts) = &detail.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
-        panic!("header facts")
-    };
-    assert_eq!(facts.items[0].value, "Terminado");
 }
 
 #[test]
@@ -2305,7 +2186,7 @@ fn schedule_editor_resets_old_options_when_project_changes() {
 }
 
 #[test]
-fn task_message_keeps_task_context_and_no_node_view_offers_its_terminal() {
+fn task_message_keeps_task_context_and_offers_no_terminal() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En,
@@ -2325,15 +2206,12 @@ fn task_message_keeps_task_context_and_no_node_view_offers_its_terminal() {
         background_badge: None, background_suspect: false, working: true,
         waiting: false, state_since: None, last_message: None, last_message_at: None, ..Default::default()
     });
-    let node = render(&state, &live, Client::Tui, Lang::En,
-        "node:a-1", "2026-09-30T10:00:00Z");
     let attaches = |view: &View| view.sections.iter().flat_map(|section| &section.items).any(|item| match item {
         Item::Row(row) => matches!(&row.link, Some(Link::Local { local: LocalLink::Attach { .. } })),
         Item::Card(card) => card.more.iter().chain(&card.actions).any(|action| matches!(&action.link, Some(Link::Local { local: LocalLink::Attach { .. } }))),
         Item::Actions(bar) => bar.actions.iter().any(|action| matches!(&action.link, Some(Link::Local { local: LocalLink::Attach { .. } }))),
         _ => false,
     });
-    assert!(!attaches(&node), "a node's view never opens its terminal");
     let task = render(&state, &live, Client::Tui, Lang::En,
         "task:t-1", "2026-09-30T10:00:00Z");
     assert!(!attaches(&task), "a task's view never opens its node's terminal");
@@ -2651,7 +2529,6 @@ fn mac_views_match_goldens() {
         ("card-pr-mac.json", "card:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/card-pr-mac.json")),
         ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-information-mac.json")),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/pull-request-mac.json")),
-        ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/node-mac.json")),
     ] {
         let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
@@ -2760,7 +2637,6 @@ fn generate_goldens() {
         ("new-request-mac.json", "new_request", Client::Mac, Lang::En),
         ("new-request-ios-es.json", "new_request", Client::Ios, Lang::Es),
         ("new-request-mac-es.json", "new_request", Client::Mac, Lang::Es),
-        ("node-ios.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
         ("task-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),
         ("request-ios.json", "request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Ios, Lang::En),
         ("pull-request-ios.json", "pull_request:github.com/example/repo#12", Client::Ios, Lang::En),
@@ -2772,7 +2648,6 @@ fn generate_goldens() {
         ("card-pr-mac.json", "card:github.com/example/repo#12", Client::Mac, Lang::En),
         ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", Client::Mac, Lang::En),
-        ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
     ];
     let mut with_pending = state.clone();
     let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());
@@ -2802,15 +2677,6 @@ fn generate_goldens() {
     for (filename, client, lang) in TASK_WORKING_GOLDENS {
         let view = render(&working_state, &working_live, client, lang, "task:t-1", "2026-09-30T10:00:00Z");
         std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
-    }
-    let (fleet_state, fleet_live) = fleet_fixture();
-    for (filename, client, lang) in FLEET_GOLDENS {
-        let view = render(&fleet_state, &fleet_live, client, lang, "fleet", "2026-09-30T10:00:00Z");
-        std::fs::write(
-            format!("{dir}/{filename}"),
-            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
-        )
-        .unwrap();
     }
     for (filename, key, client, lang) in cases {
         let state = match (key, lang) {
@@ -3269,8 +3135,9 @@ fn built_in_request_options_keep_ids_and_translate_spanish_labels() {
 }
 
 #[test]
-fn node_last_message_keeps_its_time_next_to_the_message() {
-    let state = fixture();
+fn a_tasks_last_message_keeps_its_time_next_to_the_message() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode {
         agent_id: "a-1".into(), short_id: None, cwd: None, name: "Node One".into(),
@@ -3281,7 +3148,7 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
         state_since: None,
         last_message_at: Some("2026-09-30T09:58:00Z".into()), ..Default::default()
     });
-    let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
+    let view = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
     let section = view.sections.iter().find(|section| section.id == "last_message").unwrap();
     assert!(section.items.iter().any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == "Ready for review")));
     assert!(section.items.iter().any(|item| matches!(item,
@@ -3289,17 +3156,13 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
 }
 
 #[test]
-fn a_node_shows_the_model_it_runs_on_in_its_detail_not_its_fleet_row() {
+fn a_task_shows_the_model_its_node_runs_on() {
     let mut state = fixture();
     state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Build a feature".into(), model: Some("claude-opus-5-5[1m]".into()), ..Default::default() });
-    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let row = fleet.sections.iter().flat_map(|section| &section.items)
-        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
-    assert!(row.badges.iter().all(|badge| badge.text != "Opus 5.5"));
-    let detail = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
         .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
     assert!(facts.iter().any(|fact| fact.label == "Modelo" && fact.value == "Opus 5.5"));
@@ -3342,12 +3205,13 @@ fn badges(row: &Row) -> Vec<&str> {
 }
 
 #[test]
-fn a_node_detail_shows_its_task_list_its_subagents_and_its_workflows() {
+fn a_task_detail_shows_its_nodes_steps_subagents_and_workflows() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let mut live = LiveSnapshot::default();
     live.nodes.push(working_node());
-    let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
+    let view = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
     assert_eq!(section_facts(&view, "steps"), [("Progress".into(), "2 of 5".into()), ("Now".into(), "Running the tests".into())]);
     let steps = node_work_rows(&view, "steps");
     assert_eq!(steps.iter().map(|row| (row.title.as_str(), row.struck)).collect::<Vec<_>>(),
@@ -3367,7 +3231,7 @@ fn a_node_detail_shows_its_task_list_its_subagents_and_its_workflows() {
     assert_eq!((workflows[0].title.as_str(), workflows[0].subtitle.as_deref()), ("review-loop", Some("4 agents")));
     assert_eq!(badges(workflows[0]), ["Running", "Possibly hung"]);
 
-    let spanish = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert_eq!(section_facts(&spanish, "steps"), [("Progreso".into(), "2 de 5".into()), ("Ahora".into(), "Running the tests".into())]);
     assert_eq!(spanish.sections.iter().filter_map(|section| section.title.as_deref())
         .filter(|title| ["Pasos", "Subagentes", "Flujos de trabajo"].contains(title)).count(), 3);
@@ -3376,7 +3240,7 @@ fn a_node_detail_shows_its_task_list_its_subagents_and_its_workflows() {
     assert_eq!(node_work_rows(&spanish, "workflows")[0].subtitle.as_deref(), Some("4 agentes"));
 
     let quiet = render(&state, &LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), ..Default::default() }], ..Default::default() },
-        Client::Ios, Lang::En, "node:a-1", "");
+        Client::Ios, Lang::En, "task:t-1", "");
     assert!(quiet.sections.iter().all(|section| !["steps", "subagents", "workflows"].contains(&section.id.as_str())));
 }
 
@@ -3528,11 +3392,11 @@ fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
         phase: Some("Review".into()), phase_index: Some(2), phase_count: Some(4), running: 1, done: 9, agents, ..Default::default()
     });
     let live = LiveSnapshot { nodes: vec![node], ..Default::default() };
-    for view in ["node:a-1", "task:t-1"] {
-        let english = render(&state, &live, Client::Ios, Lang::En, view, "");
+    {
+        let english = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
         assert_eq!(section_facts(&english, "workflows"), [("Phase".into(), "Review (2 of 4)".into()), ("Agents".into(), "1 running · 9 done".into())]);
         let rows = node_work_rows(&english, "workflows");
-        assert_eq!(rows.len(), 1 + 8 + 1, "{view}");
+        assert_eq!(rows.len(), 1 + 8 + 1);
         assert_eq!((rows[1].title.as_str(), rows[1].subtitle.as_deref(), badges(rows[1])), ("review-auth", Some("Review · Haiku"), vec!["Running"]));
         assert_eq!((rows[2].subtitle.as_deref(), badges(rows[2])), (Some("Review · Sonnet 5.5"), vec!["Done"]));
         assert_eq!(rows[3].subtitle.as_deref(), Some("Scan"));
@@ -3540,7 +3404,7 @@ fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
         assert!(rows.iter().all(|row| row.link.is_none()));
     }
 
-    let spanish = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert_eq!(section_facts(&spanish, "workflows"), [("Fase".into(), "Review (2 de 4)".into()), ("Agentes".into(), "1 en marcha · 9 terminados".into())]);
     let rows = node_work_rows(&spanish, "workflows");
     assert_eq!((badges(rows[1]), badges(rows[2]), rows[9].title.as_str()), (vec!["En marcha"], vec!["Hecho"], "+2 más"));
@@ -3549,7 +3413,7 @@ fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
     let workflow = finished.nodes[0].workflows[0].workflow.as_mut().unwrap();
     *workflow = LiveWorkflow { phase: Some("Second".into()), running: 0, done: 3, total_tokens: Some(88_896),
         agents: vec![workflow_agent("count-c", "Second", Some("claude-haiku-4-5-20251001"), false)], ..Default::default() };
-    let view = render(&state, &finished, Client::Ios, Lang::En, "node:a-1", "");
+    let view = render(&state, &finished, Client::Ios, Lang::En, "task:t-1", "");
     assert_eq!(section_facts(&view, "workflows"), [("Phase".into(), "Second".into()), ("Agents".into(), "0 running · 3 done".into()), ("Tokens".into(), "88K".into())]);
     assert_eq!(node_work_rows(&view, "workflows").last().unwrap().title, "+2 more");
 }
@@ -3574,53 +3438,6 @@ fn a_task_detail_says_the_model_it_was_launched_with_and_who_chose_it() {
     }
     state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "claude-opus-5-5".into(), chosen_by: ModelChooser::User });
     assert_eq!(model(&state, Lang::En).unwrap().1, "Opus 5.5 · from your Effort choice");
-}
-
-#[test]
-fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
-    let mut state = fixture();
-    state.interactions.clear();
-    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
-    state.agents.get_mut(&"a-1".into()).unwrap().name = "Build a feature".into();
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode {
-        agent_id: "a-1".into(), name: "Build a feature".into(), working: true,
-        tool: Some("Bash: cargo test".into()), state_since: Some("2026-09-30T09:55:00Z".into()),
-        last_message: Some("Earlier note".into()), last_message_at: Some("2026-09-30T09:50:00Z".into()),
-        context_percent: Some(6), context_window: Some(1_000_000), cost_cents: Some(27), last_turn_aborted: true,
-        background_badge: Some("2 subagents".into()),
-        ..Default::default()
-    });
-    let item = |state: &DomainState, live: &LiveSnapshot| {
-        render(state, live, Client::Ios, Lang::Es, "fleet", "").sections.iter().flat_map(|section| &section.items)
-            .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap()
-    };
-    let working = item(&state, &live);
-    assert_eq!(working.title, "Build a feature");
-    assert_eq!(working.subtitle, None, "a node named after its task does not repeat the title");
-    assert_eq!(working.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Trabajando"],
-        "context, cost, subagents and interruptions stay on the node's screen");
-    assert!(working.children.is_empty(), "the task is the item, and nothing is inferred from the command it runs");
-    let verbs = |row: &Row| row.actions.iter().map(|action| action.id.split(':').next().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(verbs(&working), ["interrupt", "pause"], "a working node can be interrupted or paused from its card, and ends with its task");
-    let interrupt = &working.actions[0];
-    assert_eq!((interrupt.label.as_str(), interrupt.style), ("Interrumpir", Style::Secondary));
-    assert!(interrupt.confirm.is_some());
-
-    live.nodes[0].working = false;
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
-    state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
-    let resting = item(&state, &live);
-    assert!(resting.subtitle.is_none() && resting.children.is_empty(), "what it said last is on the node's screen");
-    assert!(verbs(&resting).is_empty(), "nothing to interrupt once its turn ended: {:?}", verbs(&resting));
-    let detail = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
-    let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0] else { panic!("actions") };
-    assert!(bar.actions.iter().all(|action| !action.id.starts_with("interrupt:")));
-
-    let tui = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
-    let tui_row = tui.sections.iter().flat_map(|section| &section.items)
-        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }).unwrap();
-    assert!(tui_row.badges.iter().all(|badge| !badge.text.contains("Context") && !badge.text.contains('$')));
 }
 
 #[test]
@@ -3706,51 +3523,6 @@ fn task_detail_has_no_now_line_while_the_node_just_works() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
     assert!(view.sections.iter().all(|section| section.id != "now"));
-}
-
-#[test]
-fn node_detail_names_its_state_and_since_when() {
-    let state = fixture();
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(live::LiveNode {
-        project: None,
-        state_label: Some("working".into()),
-        summary: None,
-        needs: None,
-        background: vec![],
-        background_badge: None,
-        background_suspect: false,
-        agent_id: "a-1".into(),
-        short_id: Some("a-1".into()),
-        cwd: None,
-        name: "Node One".into(),
-        state_key: Some("free".into()),
-        working: false,
-        waiting: false,
-        state_since: Some("2026-09-30T09:55:00Z".into()),
-        last_message: None,
-        last_message_at: None, ..Default::default()
-    });
-    let view = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "2026-09-30T10:00:00Z");
-    let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
-        panic!("header facts")
-    };
-    assert_eq!(facts.items[0].value, "Esperando respuesta");
-    let since = view.sections.iter().find(|section| section.id == "since").expect("since section");
-    let Item::Row(row) = &since.items[0] else { panic!("since row") };
-    assert!(matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
-}
-
-#[test]
-fn node_detail_without_live_data_names_its_state_not_its_connection() {
-    let mut state = fixture();
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
-    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "2026-09-30T10:00:00Z");
-    let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
-        panic!("header facts")
-    };
-    assert_eq!(facts.items[0].value, "Waiting for an answer");
-    assert!(view.sections.iter().all(|section| section.id != "since"));
 }
 
 #[test]
@@ -4031,8 +3803,7 @@ fn every_builder_string_has_spanish() {
         ("card:f12d034b-249e-4487-a89b-57de38c26372", Client::Ios),
         ("card:github.com/example/repo#12", Client::Ios),
         ("card:hf-weekly-2026-09-30", Client::Ios),
-        ("tasks", Client::Ios), ("fleet", Client::Ios), ("new_request", Client::Ios),
-        ("node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("tasks", Client::Ios), ("new_request", Client::Ios),
         ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios),
         ("request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Ios),
         ("pull_request:github.com/example/repo#12", Client::Ios),
@@ -4074,7 +3845,7 @@ fn spanish_says_merge_for_a_pull_request() {
         ("accounts.rs", include_str!("accounts.rs")), ("action_id.rs", include_str!("action_id.rs")),
         ("allow_always.rs", include_str!("allow_always.rs")), ("card.rs", include_str!("card.rs")),
         ("common.rs", include_str!("common.rs")), ("components.rs", include_str!("components.rs")),
-        ("details.rs", include_str!("details.rs")), ("fleet.rs", include_str!("fleet.rs")),
+        ("details.rs", include_str!("details.rs")), ("task_node.rs", include_str!("task_node.rs")),
         ("home.rs", include_str!("home.rs")), ("live.rs", include_str!("live.rs")),
         ("mcp_servers.rs", include_str!("mcp_servers.rs")), ("messages.rs", include_str!("messages.rs")),
         ("misc.rs", include_str!("misc.rs")), ("mod.rs", include_str!("mod.rs")), ("pacing.rs", include_str!("pacing.rs")),
@@ -4091,7 +3862,7 @@ fn spanish_says_merge_for_a_pull_request() {
         for (key, client) in [
             ("home", Client::Ios), ("home", Client::Tui), ("card:github.com/example/repo#12", Client::Ios),
             ("card:github.com/example/repo#12", Client::Mac), ("card:hf-weekly-2026-09-30", Client::Ios),
-            ("tasks", Client::Ios), ("fleet", Client::Ios), ("new_request", Client::Ios),
+            ("tasks", Client::Ios), ("new_request", Client::Ios),
             ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios), ("pull_request:github.com/example/repo#12", Client::Ios),
             ("machine", Client::Ios), ("schedule:new", Client::Ios), ("sidebar", Client::Mac),
         ] {
@@ -4538,44 +4309,46 @@ fn a_command_is_a_code_block_in_the_detail_that_survives_backticks() {
 }
 
 #[test]
-fn node_detail_names_its_folder_and_what_it_is_doing_right_now() {
-    let mut in_turn = golden_fixture();
-    in_turn.agents.get_mut(&"d887a34b-249e-4487-a89b-57de38c26372".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
-    let stopped = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "node:d887a34b-249e-4487-a89b-57de38c26372", "");
-    assert!(stopped.sections.iter().all(|section| section.id != "now"), "a node out of its turn does nothing right now");
-    let view = render(&in_turn, &golden_live(), Client::Ios, Lang::En,
-        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
+fn task_detail_names_its_nodes_folder_and_what_it_is_doing_right_now() {
+    let agent = "d887a34b-249e-4487-a89b-57de38c26372";
+    let key = "task:t-651c38484cd2f34e74d5107ba05f7f15";
+    let mut in_turn = golden_in_progress();
+    in_turn.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
+    let mut stopped = golden_in_progress();
+    stopped.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    let stopped = render(&stopped, &golden_live(), Client::Ios, Lang::En, key, "");
+    assert!(stopped.sections.iter().all(|section| section.id != "activity"), "a node out of its turn does nothing right now");
+    let view = render(&in_turn, &golden_live(), Client::Ios, Lang::En, key, "");
     assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"));
-    let now = view.sections.iter().find(|section| section.id == "now").expect("right now section");
+    let now = view.sections.iter().find(|section| section.id == "activity").expect("right now section");
     assert_eq!(now.title.as_deref(), Some("Right now"));
     let Item::Row(row) = &now.items[0] else { panic!("thread row") };
     assert_eq!(row.title, "Reading the localization catalog");
-    assert_eq!(row.subtitle.as_deref(), Some("Subagent · general-purpose · Task Check the Spanish strings"));
-    let idle = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
-        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
-    assert!(idle.sections.iter().all(|section| section.id != "now"));
+    let idle = render(&in_turn, &LiveSnapshot::default(), Client::Ios, Lang::En, key, "");
+    assert!(idle.sections.iter().all(|section| section.id != "activity"));
     assert!(header_facts(&idle).iter().all(|fact| fact.label != "Folder"));
 }
 
 #[test]
-fn right_now_names_the_task_by_its_title_and_not_at_all_in_that_tasks_own_detail() {
+fn right_now_names_another_task_by_its_title_and_not_at_all_the_tasks_own() {
     let agent = "d887a34b-249e-4487-a89b-57de38c26372";
-    let mut state = golden_fixture();
+    let mut state = golden_in_progress();
     state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
     let task = "t-651c38484cd2f34e74d5107ba05f7f15".to_owned();
-    let current = state.tasks.get_mut(&task.as_str().into()).unwrap();
-    current.agent_id = Some(agent.into());
-    current.state = TaskState::Running;
-    let title = current.title.clone();
+    let mut other = state.tasks[&task.as_str().into()].clone();
+    (other.id, other.title, other.agent_id) = ("t-other".into(), "Check the Spanish strings".into(), None);
+    state.tasks.insert(other.id.clone(), other);
     let mut live = golden_live();
+    let row = |live: &LiveSnapshot| {
+        let detail = render(&state, live, Client::Ios, Lang::En, &format!("task:{task}"), "");
+        detail.sections.iter().find(|found| found.id == "activity")
+            .and_then(|found| match &found.items[0] { Item::Row(row) => Some(row.clone()), _ => None })
+            .unwrap_or_else(|| panic!("no «Right now» row"))
+    };
+    live.activity.get_mut(agent).unwrap()[0].task = Some("t-other".into());
+    assert_eq!(row(&live).subtitle.as_deref(), Some("Subagent · general-purpose · Task Check the Spanish strings"), "never the task's id");
     live.activity.get_mut(agent).unwrap()[0].task = Some(task.clone());
-    let row = |view: &View, section: &str| view.sections.iter().find(|found| found.id == section)
-        .and_then(|found| match &found.items[0] { Item::Row(row) => Some(row.clone()), _ => None })
-        .unwrap_or_else(|| panic!("no «Right now» row in {section}"));
-    let node = render(&state, &live, Client::Ios, Lang::En, &format!("node:{agent}"), "");
-    assert_eq!(row(&node, "now").subtitle, Some(format!("Subagent · general-purpose · Task {title}")), "never the task's id");
-    let detail = render(&state, &live, Client::Ios, Lang::En, &format!("task:{task}"), "");
-    let own = row(&detail, "activity");
+    let own = row(&live);
     assert_eq!(own.title, "Reading the localization catalog");
     assert_eq!(own.subtitle.as_deref(), Some("Subagent · general-purpose"), "the detail is that task's already");
 }
@@ -5035,67 +4808,21 @@ fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() 
 }
 
 #[test]
-fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merge_is_observed() {
-    let mut state = fixture();
-    state.interactions.clear();
-    let task = state.tasks.keys().next().unwrap().clone();
-    state.tasks.get_mut(&task).unwrap().agent_id = Some("a-1".into());
-    state.pull_requests.insert("pr-1".into(), PullRequest {
-        id: "pr-1".into(), task_id: task.clone(), host: "github.com".into(), repository: "me/app".into(), number: 7,
-        head: "abc".into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![], review: None,
-    });
-    let authorization = |attempt| MergeAuthorization {
-        id: "auth-1".into(), task_id: task.clone(), pr_id: "pr-1".into(), presentation_id: "presentation".into(), head: "abc".into(),
-        method: MergeMethod::Merge, user_id: "u".into(), valid: true, attempt, claimed_by: Some("a-1".into()), at_revision: 1,
-    };
-    let state_of = |state: &DomainState, lang| {
-        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "fleet", "");
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
-        }).unwrap()
-    };
-    state.merge_authorizations.insert("auth-1".into(), authorization(MergeAttemptState::Unclaimed));
-    assert_ne!(state_of(&state, Lang::En), "Merging", "an authorization nobody claimed yet is not a merge");
-    state.merge_authorizations.insert("auth-1".into(), authorization(MergeAttemptState::Claimed));
-    assert_eq!(state_of(&state, Lang::En), "Merging");
-    assert_eq!(state_of(&state, Lang::Es), "Haciendo merge");
-    state.pull_requests.get_mut(&"pr-1".into()).unwrap().state = PrState::Merged;
-    assert_ne!(state_of(&state, Lang::En), "Merging", "the merge was observed");
-}
-
-#[test]
-fn a_node_working_after_the_merge_says_what_it_does_in_fleet() {
+fn a_task_whose_node_works_after_the_merge_says_what_it_does() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.keys().next().unwrap().clone();
     let held = state.tasks.get_mut(&task).unwrap();
     held.agent_id = Some("a-1".into());
     held.state = TaskState::Closing;
-    let state_of = |state: &DomainState, lang| {
-        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "fleet", "");
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
-        }).unwrap()
-    };
-    assert_eq!(state_of(&state, Lang::En), "Done");
-    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
-    assert_eq!(state_of(&state, Lang::En), "Finishing after the merge: release.sh publishes 0.2.54");
-    assert_eq!(state_of(&state, Lang::Es), "Terminando tras el merge: release.sh publishes 0.2.54");
-
-    let mut fix = state.tasks[&task].clone();
-    fix.id = "t-fix".into();
-    fix.title = "Fix the Mac package".into();
-    fix.agent_id = None;
-    fix.state = TaskState::Running;
-    fix.wrap_up = Default::default();
-    state.tasks.insert(fix.id.clone(), fix);
-    let waiting = state.tasks.get_mut(&task).unwrap();
-    waiting.state = TaskState::WaitingDependency;
-    waiting.dependencies = BTreeSet::from(["t-fix".into()]);
-    waiting.wrap_up.asked_at = Some(1);
     state.agents.get_mut(&"a-1".into()).unwrap().phase = crate::domain::NodePhase::Closing;
-    assert_eq!(state_of(&state, Lang::En), "Waiting for Fix the Mac package", "a wait after the merge names what it waits for");
-    assert_eq!(state_of(&state, Lang::Es), "Esperando a Fix the Mac package");
+    let detail = |state: &DomainState, lang| serde_json::to_string(&render(state, &LiveSnapshot::default(), Client::Ios, lang, &format!("task:{task}"), "")).unwrap();
+    assert!(!detail(&state, Lang::En).contains("finishing after the merge"));
+    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
+    let english = detail(&state, Lang::En);
+    assert!(english.contains("finishing after the merge: release.sh publishes 0.2.54"), "{english}");
+    let spanish = detail(&state, Lang::Es);
+    assert!(spanish.contains("terminando tras el merge: release.sh publishes 0.2.54"), "{spanish}");
 }
 
 #[test]
@@ -5172,7 +4899,6 @@ fn every_tui_action_a_screen_offers_has_its_own_key() {
         "card:github.com/example/repo#12",
         "card:hf-weekly-2026-09-30",
         "tasks",
-        "node:d887a34b-249e-4487-a89b-57de38c26372",
         "task:t-651c38484cd2f34e74d5107ba05f7f15",
         "request:r-9f2156b5a8894e53901f0af576dff6a2",
         "pull_request:github.com/example/repo#12",
@@ -5484,16 +5210,9 @@ fn generate_group_goldens() {
     }
 }
 
-const FLEET_GOLDENS: [(&str, Client, Lang); 4] = [
-    ("fleet-ios.json", Client::Ios, Lang::En),
-    ("fleet-ios-es.json", Client::Ios, Lang::Es),
-    ("fleet-mac.json", Client::Mac, Lang::En),
-    ("fleet-tui.json", Client::Tui, Lang::En),
-];
-
-/// A fleet where a node needing the user, one stopped behind a dependency with no live entry, a
+/// Nodes where one needing the user, one stopped behind a dependency with no live entry, a
 /// working one and a starting one belong to projects, and two nodes whose sessions closed are gone.
-fn fleet_fixture() -> (DomainState, LiveSnapshot) {
+fn nodes_fixture() -> (DomainState, LiveSnapshot) {
     let mut state = golden_fixture();
     let mut live = golden_live();
     let golden_task = state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap();
@@ -5539,9 +5258,9 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     (state, live)
 }
 
-/// The Fleet fixture with one node waiting for its own command and one the machine paused.
+/// The nodes fixture with one node waiting for its own command and one the machine paused.
 fn node_states_fixture() -> (DomainState, LiveSnapshot) {
-    let (mut state, mut live) = fleet_fixture();
+    let (mut state, mut live) = nodes_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     let declared = Pause { reason: PauseReason::Declared { reason: "The build queue is full".into() }, since: 0, cut: None,
         turn_since: None, cleanup: PauseCleanup::Done, released: false };
@@ -5562,18 +5281,14 @@ fn node_states_fixture() -> (DomainState, LiveSnapshot) {
     (state, live)
 }
 
-const NODE_STATE_GOLDENS: [(&str, &str, Client, Lang); 8] = [
-    ("node-states-fleet-ios.json", "fleet", Client::Ios, Lang::En),
-    ("node-states-fleet-ios-es.json", "fleet", Client::Ios, Lang::Es),
-    ("node-states-fleet-mac.json", "fleet", Client::Mac, Lang::En),
-    ("node-states-fleet-tui.json", "fleet", Client::Tui, Lang::Es),
+const NODE_STATE_GOLDENS: [(&str, &str, Client, Lang); 4] = [
     ("node-states-tasks-ios.json", "tasks", Client::Ios, Lang::En),
     ("node-states-tasks-ios-es.json", "tasks", Client::Ios, Lang::Es),
     ("node-states-tasks-mac.json", "tasks", Client::Mac, Lang::En),
     ("node-states-tasks-tui.json", "tasks", Client::Tui, Lang::Es),
 ];
 
-/// Fleet and Tasks in every client for a node waiting for its own command and one the machine
+/// Tasks in every client for a node waiting for its own command and one the machine
 /// paused: the files the TUI and the apps' tests draw.
 #[test]
 fn node_state_views_match_goldens() {
@@ -5581,10 +5296,6 @@ fn node_state_views_match_goldens() {
     for (filename, key, client, lang) in NODE_STATE_GOLDENS {
         let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
         let expected = match filename {
-            "node-states-fleet-ios.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-ios.json"),
-            "node-states-fleet-ios-es.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-ios-es.json"),
-            "node-states-fleet-mac.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-mac.json"),
-            "node-states-fleet-tui.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-tui.json"),
             "node-states-tasks-ios.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-ios.json"),
             "node-states-tasks-ios-es.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-ios-es.json"),
             "node-states-tasks-mac.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-mac.json"),
@@ -5594,73 +5305,12 @@ fn node_state_views_match_goldens() {
     }
 }
 
-fn section_ids(view: &View) -> Vec<&str> {
-    view.sections.iter().map(|section| section.id.as_str()).collect()
-}
-
-fn section_rows<'a>(view: &'a View, id: &str) -> Vec<&'a str> {
-    view.sections.iter().find(|section| section.id == id).unwrap().items.iter()
-        .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect()
-}
-
+/// 9 October: what is in progress is the tasks Alondra's real nodes work on. The task of a node
+/// whose task ended, of one whose session is lost and waits for the gate, of the orchestrator and
+/// of the queue stay out of it; that of one the gate let back and Alondra is restarting is in it.
 #[test]
-fn a_node_without_a_live_entry_takes_the_project_of_its_tasks_request() {
-    let (state, live) = fleet_fixture();
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    assert!(section_rows(&view, "project:Demo Garden").contains(&"queued"));
-    assert!(!section_ids(&view).contains(&"project:Other"), "{:?}", section_ids(&view));
-}
-
-#[test]
-fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
-    let (mut state, live) = fleet_fixture();
-    let mut task = state.tasks[&"t-queued".into()].clone();
-    state.requests.insert("r-orphan".into(), Request::new("r-orphan".into(), "Orphan".into()));
-    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), phase: NodePhase::WaitingUser { in_turn: false }, since: 0 });
-    task.id = "t-orphan".into();
-    task.request_id = "r-orphan".into();
-    task.agent_id = Some("orphan".into());
-    task.state = TaskState::NeedsYou;
-    state.tasks.insert(task.id.clone(), task);
-    let mut question = state.interactions.values().find(|i| matches!(i.payload, InteractionPayload::Question { answer: None, .. })
-        && i.recipient == Recipient::User && !i.withdrawn).expect("the fixture asks the user something").clone();
-    (question.id, question.scope, question.author) = ("orphan-asks".into(), Scope::Task { task_id: "t-orphan".into() },
-        Author::Agent { agent_id: "orphan".into() });
-    question.card.group = None;
-    state.interactions.insert(question.id.clone(), question);
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let ids = section_ids(&view);
-    assert_eq!(&ids[0..3], ["project:Demo Garden", "project:Other", "project:Zeta"],
-        "Other ties with a named project on urgency and comes after it");
-    let es = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    assert!(section_ids(&es).contains(&"project:Otros"));
-}
-
-#[test]
-fn fleet_projects_come_by_their_most_urgent_node_and_nodes_by_urgency() {
-    let (state, live) = fleet_fixture();
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    assert_eq!(section_ids(&view), ["project:Demo Garden", "project:Zeta", "project:Alpha"]);
-    assert_eq!(section_rows(&view, "project:Demo Garden"), ["d887a34b-249e-4487-a89b-57de38c26372", "queued"],
-        "a node that needs the user comes before one that waits");
-}
-
-#[test]
-fn nodes_whose_sessions_closed_leave_fleet() {
-    let (state, live) = fleet_fixture();
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    assert!(!section_ids(&view).contains(&"idle"), "{:?}", section_ids(&view));
-    let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
-        .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
-    assert!(!rows.contains(&"finished-today") && !rows.contains(&"finished-yesterday"), "{rows:?}");
-}
-
-/// 9 October: Fleet is what is in progress, Alondra's real nodes, their task and their state. A node
-/// whose task ended, one whose session is lost and waits for the gate, the orchestrator and the
-/// queue stay out of it; one the gate let back and Alondra is restarting is in it.
-#[test]
-fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
-    let (mut state, mut live) = fleet_fixture();
+fn the_sidebar_lists_only_tasks_whose_node_has_a_session() {
+    let (mut state, mut live) = nodes_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     for (agent, task_state, phase) in [
         ("reviving", TaskState::Running, NodePhase::Starting { reviving: true, idle_since: None }),
@@ -5681,71 +5331,12 @@ fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
         queued: vec![LiveQueued { pausable: true, task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
         paused: vec![],
     });
-    for (client, lang) in [(Client::Ios, Lang::En), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
-        let view = render(&state, &live, client, lang, "fleet", "");
-        assert!(section_ids(&view).iter().all(|id| id.starts_with("project:")), "{:?}", section_ids(&view));
-        let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
+    for lang in [Lang::En, Lang::Es] {
+        let view = render(&state, &live, Client::Mac, lang, "sidebar", "");
+        let rows: Vec<&str> = view.sections.iter().filter(|section| section.id.starts_with("project:")).flat_map(|section| &section.items)
             .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
         assert_eq!(rows.iter().copied().collect::<BTreeSet<_>>(),
-            ["d887a34b-249e-4487-a89b-57de38c26372", "queued", "zeta-worker", "alpha-waiting", "reviving"].into_iter().collect::<BTreeSet<_>>());
-    }
-}
-
-/// A Fleet row is the node's task and its state, nothing else.
-#[test]
-fn a_fleet_row_is_its_tasks_title_and_its_state() {
-    let (state, mut live) = fleet_fixture();
-    live.nodes.iter_mut().filter(|node| node.agent_id == "zeta-worker").for_each(|node| {
-        node.model = Some("claude-opus-5-5".into());
-        node.background_badge = Some("2 in the background".into());
-    });
-    for client in [Client::Ios, Client::Mac, Client::Tui] {
-        let view = render(&state, &live, client, Lang::En, "fleet", "");
-        let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-            Item::Row(row) if row.id == "zeta-worker" => Some(row),
-            _ => None,
-        }).unwrap();
-        assert_eq!(row.title, "Build the importer");
-        assert_eq!(row.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Working"]);
-        assert!(row.subtitle.is_none() && row.children.is_empty() && row.trailing.is_none(), "{row:?}");
-    }
-}
-
-#[test]
-fn fleet_views_match_goldens() {
-    let (state, live) = fleet_fixture();
-    for (filename, client, lang) in FLEET_GOLDENS {
-        let expected = match filename {
-            "fleet-ios.json" => include_str!("../../../../fixtures/views/cards/fleet-ios.json"),
-            "fleet-ios-es.json" => include_str!("../../../../fixtures/views/cards/fleet-ios-es.json"),
-            "fleet-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-mac.json"),
-            _ => include_str!("../../../../fixtures/views/cards/fleet-tui.json"),
-        };
-        let actual = render(&state, &live, client, lang, "fleet", "2026-09-30T10:00:00Z");
-        assert_golden(filename, &actual, expected);
-    }
-}
-
-#[test]
-fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_section() {
-    let (state, live) = fleet_fixture();
-    let label = |lang, id: &str| {
-        let view = render(&state, &live, Client::Ios, lang, "fleet", "");
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == id { Some(row.badges[0].text.clone()) } else { None }
-        }).unwrap()
-    };
-    assert_eq!(label(Lang::En, "queued"), "Waiting for Restore the native review experience");
-    assert_eq!(label(Lang::Es, "queued"), "Esperando a Restore the native review experience");
-    assert_eq!(label(Lang::En, "alpha-waiting"), "Starting");
-    assert_eq!(label(Lang::Es, "alpha-waiting"), "Arrancando");
-    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    for section in view.sections.iter().filter(|section| section.id.starts_with("project:")) {
-        for item in &section.items {
-            if let Item::Row(row) = item {
-                assert_ne!(row.badges[0].text, "Idle", "{}", row.id);
-            }
-        }
+            ["t-651c38484cd2f34e74d5107ba05f7f15", "t-queued", "t-zeta-worker", "t-alpha-waiting", "t-reviving"].into_iter().collect::<BTreeSet<_>>());
     }
 }
 
@@ -6113,7 +5704,7 @@ fn generate_know_command_goldens() {
 }
 
 #[test]
-fn a_queued_task_says_its_place_and_why_in_its_task_and_fleet_never_lists_the_queue() {
+fn a_queued_task_says_its_place_and_why_in_its_task() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
@@ -6125,8 +5716,6 @@ fn a_queued_task_says_its_place_and_why_in_its_task_and_fleet_never_lists_the_qu
         }),
         ..LiveSnapshot::default()
     };
-    let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
-    assert!(!fleet.contains("Trabajando 6/6") && !fleet.contains("En cola") && !fleet.contains("memoria"), "{fleet}");
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("Queued · 2nd of 3 · 6 of 6 working"), "{task}");
     let memory = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
@@ -6173,8 +5762,6 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
         pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
         ..LiveSnapshot::default()
     };
-    let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
-    assert!(!fleet.contains("Trabajando 5/6") && !fleet.contains("Pausado desde"), "a paused task shows in Tasks, not in Fleet: {fleet}");
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("Paused · For memory since 14:05 · resumes by itself"), "{task}");
     let user = LivePaused { reason: LivePauseReason::User, at: "11:20".into(), ..memory.clone() };
@@ -6244,14 +5831,14 @@ fn pacing_live(queued: Vec<LiveQueued>, paused: Vec<LivePaused>, fixed: Option<u
 }
 
 #[test]
-fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_fleet() {
+fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_tasks() {
     let state = fixture();
     let live = pacing_live(vec![], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        let fleet = render(&state, &live, client, Lang::Es, "fleet", "");
-        let text = serde_json::to_string(&fleet).unwrap();
+        let tasks = render(&state, &live, client, Lang::Es, "tasks", "");
+        let text = serde_json::to_string(&tasks).unwrap();
         assert!(!text.contains("Límite"), "{client:?}: {text}");
-        assert!(find_action(&fleet, "set_limit:").is_none(), "{client:?}");
+        assert!(find_action(&tasks, "set_limit:").is_none(), "{client:?}");
     }
 
     let machine = render(&state, &live, Client::Ios, Lang::Es, "machine", "");
@@ -6276,15 +5863,13 @@ fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_fleet() {
 }
 
 #[test]
-fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task_never_in_the_fleet() {
+fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let queued = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        let fleet = render(&state, &live, client, Lang::En, "fleet", "");
-        assert!(find_action(&fleet, "pause:t-1").is_none(), "{client:?}: {:?}", action_ids(&fleet));
         let detail = render(&state, &live, client, Lang::En, "task:t-1", "");
         assert!(action_ids(&detail).contains(&"pause:t-1".to_owned()), "{client:?}: {:?}", action_ids(&detail));
         assert!(!action_ids(&detail).iter().any(|id| id.starts_with("resume:")));
@@ -6292,7 +5877,6 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task_never_i
 
     let paused = LivePaused { task_id: "t-1".into(), session: None, at: "11:20".into(), reason: LivePauseReason::User, fine_minutes: None, next: false, waits_for: None, retry: None };
     let live = pacing_live(vec![], vec![paused], None);
-    assert!(find_action(&render(&state, &live, Client::Ios, Lang::Es, "fleet", ""), "resume:t-1").is_none());
     let task = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     let resume = find_action(&task, "resume:t-1").expect("a task taken out of the queue resumes by its id");
     assert_eq!((resume.label.as_str(), resume.description.as_deref()), ("Reanudar", Some("Ahora, aunque se pase del límite")));
@@ -6322,18 +5906,16 @@ fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
-    let node = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
-    let pause = find_action(&node, "pause:a-1").expect("a working node can be paused from its detail");
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    let pause = find_action(&detail, "pause:a-1").expect("a working node can be paused from its task");
     assert_eq!(pause.confirm.as_ref().unwrap().title, "¿Pausar este nodo?");
-    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    assert!(find_action(&fleet, "pause:a-1").is_some(), "{:?}", action_ids(&fleet));
 
     live.nodes[0].working = false;
     let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
     live.pacing.as_mut().unwrap().paused.push(paused);
-    let node = render(&state, &live, Client::Tui, Lang::En, "node:a-1", "");
-    assert!(action_ids(&node).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&node));
-    assert!(!action_ids(&node).iter().any(|id| id.starts_with("pause:")));
+    let detail = render(&state, &live, Client::Tui, Lang::En, "task:t-1", "");
+    assert!(action_ids(&detail).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&detail));
+    assert!(!action_ids(&detail).iter().any(|id| id.starts_with("pause:")));
     let task = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
     assert!(action_ids(&task).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&task));
 }
@@ -6366,7 +5948,7 @@ const PACING_GOLDENS: [(&str, &str, Client, Lang); 5] = [
 /// The fleet at its limit: 6 of 6 working with the Mac short of memory, two tasks queued, a node
 /// paused for memory and a queued task the user paused.
 fn pacing_fixture() -> (DomainState, LiveSnapshot) {
-    let (mut state, mut live) = fleet_fixture();
+    let (mut state, mut live) = nodes_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     for (id, title, priority) in [
         ("t-queued-next", "Fix the crash when the schedule list is empty", crate::domain::TaskPriority::High),
@@ -6560,15 +6142,15 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
         agent_id: "a-1".into(), name: "n".into(), working: false, last_message: Some(message.into()),
         last_message_at: Some("2026-10-09T06:40:00+02:00".into()), ..LiveNode::default()
     };
-    let doing = |node: &LiveNode, lang| fleet::doing(node, false, lang).map(|(text, _)| text);
+    let doing = |node: &LiveNode, lang| task_node::doing(node, false, lang).map(|(text, _)| text);
     assert_eq!(doing(&node("Done with the parser. Now the tests."), Lang::Es).as_deref(), Some("Dijo: «Done with the parser.»"));
-    assert_eq!(fleet::doing(&node("Waiting for Bazel."), false, Lang::En).and_then(|(_, at)| at).as_deref(), Some("2026-10-09T06:40:00+02:00"));
+    assert_eq!(task_node::doing(&node("Waiting for Bazel."), false, Lang::En).and_then(|(_, at)| at).as_deref(), Some("2026-10-09T06:40:00+02:00"));
     assert_eq!(doing(&node("`cargo test` passed"), Lang::En), None, "only prose is quoted");
     assert_eq!(doing(&node("Edit: src/main.rs"), Lang::En), None);
     let long = "word ".repeat(40);
     assert!(doing(&node(&long), Lang::En).unwrap().chars().count() <= 80 + "Said: “”".chars().count());
     let working = LiveNode { tool: Some("Bash: cargo test".into()), ..node("Earlier") };
-    assert_eq!(fleet::doing(&working, true, Lang::En), None, "at work, nothing inferred from its tool");
+    assert_eq!(task_node::doing(&working, true, Lang::En), None, "at work, nothing inferred from its tool");
 }
 #[test]
 fn a_task_that_needs_you_says_its_question_never_its_own_title() {
@@ -6773,20 +6355,11 @@ fn no_screen_shows_the_orchestrator() {
     state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
     let live = golden_live();
     for (client, lang) in [(Client::Ios, Lang::En), (Client::Ios, Lang::Es), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
-        let screens: &[&str] = if client == Client::Mac { &["fleet", "sidebar", "tasks"] } else { &["fleet", "tasks", "home"] };
+        let screens: &[&str] = if client == Client::Mac { &["sidebar", "tasks"] } else { &["tasks", "home"] };
         for key in screens.iter().copied() {
             let view = render(&state, &live, client, lang, key, "");
             let text = serde_json::to_string(&(&view.title, &view.sections)).unwrap().to_lowercase();
             assert!(!text.contains("orchestrator") && !text.contains("orquestador"), "{client:?} {key}: {text}");
-        }
-        for key in ["node:orchestrator", "node:6f1c2b9e-1111-4a2b-9c3d-0123456789ab"] {
-            let view = render(&state, &live, client, lang, key, "");
-            let text = serde_json::to_string(&(&view.title, &view.sections)).unwrap().to_lowercase();
-            assert!(!text.contains("orquestador") && !text.contains("orchestrator"), "{client:?} {key}: {text}");
-            let verbs: Vec<_> = view.sections.iter().flat_map(|section| &section.items)
-                .flat_map(|item| match item { Item::Actions(bar) => bar.actions.clone(), _ => vec![] })
-                .map(|action| action.id.split(':').next().unwrap().to_owned()).collect();
-            assert_eq!(verbs, ["msg"], "{client:?} {key}: only where maintenance is posted");
         }
     }
 }
@@ -6820,14 +6393,13 @@ fn release_delivered_twice(published: Option<crate::domain::Acceptance>) -> Doma
     with_cards(&state)
 }
 
-/// Everything a client says about the release task and its node, and the counts beside it.
+/// Everything a client says about the release task, and the counts beside it.
 struct Said {
     inbox: u32,
     for_you: Vec<String>,
     for_you_count: Option<String>,
     row_state: String,
     detail_cards: usize,
-    node: Option<String>,
     waiting_nodes: u32,
 }
 
@@ -6843,13 +6415,8 @@ fn said(state: &DomainState, client: Client, lang: Lang) -> Said {
     let row_state = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();
     let detail = render(state, &live, client, lang, "task:t-1", "");
     let detail_cards = detail.sections.iter().filter(|section| section.id == "waiting").map(|section| section.items.len()).sum();
-    let fleet = render(state, &live, client, lang, "fleet", "");
-    let node = fleet.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Row(row) if row.id == "a-1" => row.badges.first().map(|badge| badge.text.clone()),
-        _ => None,
-    });
-    let waiting_nodes = fleet.status.counts.iter().find(|count| count.id == "waiting").map_or(0, |count| count.value);
-    Said { inbox: inbox_badge(state), for_you, for_you_count, row_state, detail_cards, node, waiting_nodes }
+    let waiting_nodes = detail.status.counts.iter().find(|count| count.id == "waiting").map_or(0, |count| count.value);
+    Said { inbox: inbox_badge(state), for_you, for_you_count, row_state, detail_cards, waiting_nodes }
 }
 
 const CLAIMS: [&str; 6] = ["Ready for review", "Para revisar", "Needs you", "Te necesita", "Waiting for your review", "Espera tu revisión"];
@@ -6861,7 +6428,6 @@ fn says_nothing_waits(state: &DomainState) {
             assert_eq!((said.inbox, said.detail_cards), (0, 0), "{client:?}: no card waits");
             assert!(said.for_you.is_empty() && said.for_you_count.is_none(), "{client:?}: nothing is «For you»: {:?}", said.for_you);
             assert!(!CLAIMS.contains(&said.row_state.as_str()), "{client:?}: the task says {}", said.row_state);
-            assert!(!said.node.as_deref().is_some_and(|node| CLAIMS.contains(&node)), "{client:?}: the node says {:?}", said.node);
             assert_eq!(said.waiting_nodes, 0, "{client:?}: no node counted as waiting");
         }
     }
@@ -6902,7 +6468,6 @@ fn a_release_whose_published_delivery_is_open_shows_its_card_wherever_it_says_it
         assert_eq!((said.inbox, said.detail_cards), (1, 1), "{client:?}: the inbox and the task show its one card");
         assert_eq!((said.for_you, said.for_you_count.as_deref()), (vec!["t-1".to_owned()], Some("1")), "{client:?}");
         assert_eq!(said.row_state, "Para revisar", "{client:?}");
-        assert_eq!(said.node.as_deref(), Some("Espera tu revisión"), "{client:?}");
         assert_eq!(said.waiting_nodes, 1, "{client:?}");
     }
 }
@@ -7112,8 +6677,8 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
     assert_eq!(crate::views::inbox_badge(&crate::domain::ReadIndex::build(&state)), 0);
     let live = LiveSnapshot::default();
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
-    let fleet_node = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
-    assert!(fleet_node.contains("Esperando al orquestador"), "{fleet_node}");
+    let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Esperando al orquestador"), "{detail}");
 
     execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::AnswerQuestion {
         attachments: vec![], interaction_id: "q".into(), option_id: "done".into(), inputs: BTreeMap::new() });
@@ -7165,7 +6730,7 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
-    assert!(find_action(&render(&state, &live, Client::Tui, Lang::En, "node:a-1", ""), "pause:a-1").is_some(), "the same node through claude --bg offers pause");
+    assert!(find_action(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", ""), "pause:a-1").is_some(), "the same node through claude --bg offers pause");
     state.lifecycle_journal.insert("t-1".into(), vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
         LifecycleRecord::Admitted {
@@ -7174,17 +6739,15 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
         },
     ]);
     for client in [Client::Tui, Client::Ios, Client::Mac] {
-        for key in ["node:a-1", "fleet"] {
-            let view = render(&state, &live, client, Lang::En, key, "");
-            assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} {key} offers pause to an SDK node that runs nothing: {:?}", action_ids(&view));
-        }
+        let view = render(&state, &live, client, Lang::En, "task:t-1", "");
+        assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} offers pause to an SDK node that runs nothing: {:?}", action_ids(&view));
     }
     state.lifecycle_journal.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().extend([
         LifecycleRecord::ResourceAvailable,
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
     ]);
     for client in [Client::Tui, Client::Ios, Client::Mac] {
-        let view = render(&state, &live, client, Lang::En, "node:a-1", "");
+        let view = render(&state, &live, client, Lang::En, "task:t-1", "");
         assert!(find_action(&view, "pause:a-1").is_some(), "{client:?}: a working SDK node offers pause: {:?}", action_ids(&view));
     }
 }
@@ -7234,7 +6797,7 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
 }
 
 #[test]
-fn a_node_that_runs_through_the_sdk_offers_interrupt_and_pause_but_no_close_or_message() {
+fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     state.interactions.clear();
@@ -7242,7 +6805,7 @@ fn a_node_that_runs_through_the_sdk_offers_interrupt_and_pause_but_no_close_or_m
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let live = pacing_live(vec![], vec![], None);
     for client in [Client::Tui, Client::Ios] {
-        assert!(!action_ids(&render(&state, &live, client, Lang::En, "fleet", "")).iter().any(|id| id.starts_with("close:")),
+        assert!(!action_ids(&render(&state, &live, client, Lang::En, "task:t-1", "")).iter().any(|id| id.starts_with("close:")),
             "{client:?}: no node is closed by hand");
     }
     state.lifecycle_journal.insert("t-1".into(), vec![
@@ -7255,50 +6818,14 @@ fn a_node_that_runs_through_the_sdk_offers_interrupt_and_pause_but_no_close_or_m
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
     ]);
     for client in [Client::Tui, Client::Ios, Client::Mac] {
-        for key in ["node:a-1", "fleet"] {
-            let ids = action_ids(&render(&state, &live, client, Lang::En, key, ""));
-            assert!(!ids.iter().any(|id| id.starts_with("close:") || id.starts_with("msg:")),
-                "{client:?} {key} offers close or a message to an SDK node: {ids:?}");
-        }
-    }
-    for client in [Client::Tui, Client::Ios] {
-        let ids = action_ids(&render(&state, &live, client, Lang::En, "fleet", ""));
+        let ids = action_ids(&render(&state, &live, client, Lang::En, "task:t-1", ""));
+        assert!(!ids.iter().any(|id| id.starts_with("close:")), "{client:?} offers to close an SDK node: {ids:?}");
         assert!(ids.iter().any(|id| id.starts_with("interrupt:a-1")), "{client:?}: a working SDK node offers Interrupt: {ids:?}");
     }
 }
 
 // The phase `claude --bg` reports never moves for a node that runs through the SDK: Fleet reads its
 // state from its task and execution, never «Starting» while its turn runs.
-#[test]
-fn an_sdk_nodes_state_in_fleet_reads_its_execution() {
-    use crate::domain::{ExecutionIdentity, LifecycleRecord};
-    let mut state = fixture();
-    state.interactions.clear();
-    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
-    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
-    state.agents.get_mut(&crate::domain::AgentId::from("a-1")).unwrap().phase = crate::domain::NodePhase::Starting { reviving: false, idle_since: None };
-    state.lifecycle_journal.insert("t-1".into(), vec![
-        LifecycleRecord::Planned { input: "input:t-1:1".into() },
-        LifecycleRecord::Admitted {
-            node: "a-1".into(),
-            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
-        },
-        LifecycleRecord::ResourceAvailable,
-        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
-    ]);
-    let live = pacing_live(vec![], vec![], None);
-    let label = |state: &DomainState, lang| {
-        let view = render(state, &live, Client::Ios, lang, "fleet", "");
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
-        }).unwrap()
-    };
-    assert_eq!(label(&state, Lang::En), "Working", "its turn runs");
-    assert_eq!(label(&state, Lang::Es), "Trabajando");
-    state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().state = TaskState::NeedsYou;
-    assert_eq!(label(&state, Lang::En), "Waiting for an answer", "a card of its task waits on the user");
-}
-
 fn mcp_card(client: Client, lang: Lang) -> (DomainState, Card) {
     let state = crate::domain::mcp_wait_tests::waiting_for_linear();
     let card = state.mcp_waiting()[0].card.clone();
@@ -7360,7 +6887,7 @@ const MCP_SERVERS_GOLDENS: [(&str, Client, Lang); 3] = [
 /// checked without a node and Blurcamera never was.
 fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
     use crate::domain::{McpServerState, McpStatus, NodeMcp, OpenSignIn};
-    let (mut state, mut live) = fleet_fixture();
+    let (mut state, mut live) = nodes_fixture();
     use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
     let server = |name: &str, status: McpStatus, transport: &str, source: &str, url: Option<&str>, error: Option<&str>| {
         let (scope, origin, connect) = match source {

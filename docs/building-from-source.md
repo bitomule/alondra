@@ -258,7 +258,7 @@ makes the question appear on the iPhone with a notification.
   alondra config set public_url https://<mac>.<tailnet>.ts.net
   ```
 
-  **Check:** from the iPhone with Wi-Fi off, the app loads the fleet;
+  **Check:** from the iPhone with Wi-Fi off, the app loads its tasks;
   `curl -s https://<mac>.<tailnet>.ts.net/v1/health | jq .ok` from any tailnet device.
 
 ## 7. Troubleshooting: `alondra doctor`

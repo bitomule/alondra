@@ -92,7 +92,7 @@ remains enabled. The executor runs when `wake` is on.
 
 Existing background orchestrators migrate after becoming idle and releasing their tasks,
 permissions and pending deliveries. Alondra stops the old background process, retains its
-conversation, and adopts its inbox. A blocked migration is shown in the fleet. See
+conversation, and adopts its inbox. See
 [the transition plan](docs/orchestrator-on-demand-plan.md) and
 [operational details](docs/orchestrator-on-demand.md).
 
@@ -117,10 +117,9 @@ not support that cadence. The hook does not affect Claude sessions outside Alond
   with all their context, `1`–`4` picks an option and `r` answers with text.
 - **Tasks**: each request with its tasks, what depends on what, each task's state (waiting for
   another, running, needs you, in review, closing, done, cancelled) and what its node is doing.
-  `x` cancels a task and `Shift+R` reopens it (`docs/tasks-plan.md`).
-- **Fleet**: everything `claude agents` lists, free, busy or waiting for the machine, with its
-  tasks.
-- `Tab` moves between the three, `r` messages the selected node and `Shift+M` the orchestrator.
+  `x` cancels a task and `Shift+R` reopens it (`docs/tasks-plan.md`). A task's screen shows
+  what its node runs now, its steps, subagents and background work, and offers `i` to interrupt it.
+- `Tab` moves between the two, `r` messages the selected task's node and `Shift+M` the orchestrator.
 
 ## Development
 

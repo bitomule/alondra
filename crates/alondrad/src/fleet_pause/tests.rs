@@ -740,9 +740,9 @@ fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resu
 }
 
 /// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
-/// how it goes on, Fleet says it is paused, and resuming it is the user's one step.
+/// how it goes on, its task says it is paused, and resuming it is the user's one step.
 #[test]
-fn pausing_an_sdk_node_raises_no_card_and_fleet_shows_it_paused() {
+fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     let mut node = SdkNode::working();
     node.pause();
     node.step();
@@ -751,12 +751,12 @@ fn pausing_an_sdk_node_raises_no_card_and_fleet_shows_it_paused() {
     assert!(cards.is_empty(), "a pause asks nothing: {cards:?}");
     let read = node.domain.read();
     let live = alondra_core::views::live::LiveSnapshot::default();
-    let fleet = alondra_core::views::build("fleet", alondra_core::views::RenderContext {
+    let tasks = alondra_core::views::build("tasks", alondra_core::views::RenderContext {
         domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
         lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap();
-    let fleet = serde_json::to_string(&fleet).unwrap();
-    assert!(fleet.contains("\"Paused\""), "{fleet}");
+    let tasks = serde_json::to_string(&tasks).unwrap();
+    assert!(tasks.contains("\"Paused\""), "{tasks}");
     drop(read);
 
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));

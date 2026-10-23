@@ -96,9 +96,8 @@ async fn measure_real_domain_views() {
     }));
 
     let mut keys: Vec<(String, &str)> = vec![("home".into(), "ios"), ("home".into(), "tui"), ("sidebar".into(), "mac"),
-        ("tasks".into(), "ios"), ("fleet".into(), "ios")];
+        ("tasks".into(), "ios")];
     keys.extend(state.tasks.values().find(|task| !task.state.terminal()).map(|task| (format!("task:{}", task.id.0), "ios")));
-    keys.extend(state.agents.keys().next().map(|agent| (format!("node:{}", agent.0), "ios")));
     for (key, client_kind) in &keys {
         for round in ["cold", "warm"] {
             let cpu = cpu_ms();

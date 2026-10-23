@@ -34,16 +34,14 @@ fn render(s: &DomainState, screen: &str, client: Client) -> String {
         transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
     serde_json::to_string(&view).unwrap()
 }
-/// On the phone, the Mac and the terminal the task and its node say `waits`, nothing is for the
-/// user, and no card says it stopped.
+/// On the phone, the Mac and the terminal the task says `waits`, nothing is for the user, and no
+/// card says it stopped.
 fn shows_waiting(s: &DomainState, waits: &str) {
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert_ne!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "its history never says it needed the user");
         let detail = render(s, "task:t", client);
-        let fleet = render(s, "fleet", client);
         assert!(detail.contains(waits), "{client:?}: the task says {waits}: {detail}");
-        assert!(fleet.contains(waits), "{client:?}: its node says {waits}: {fleet}");
-        for said in [&detail, &render(s, "tasks", client), &fleet] {
+        for said in [&detail, &render(s, "tasks", client)] {
             assert!(!said.contains("Te necesita") && !said.contains("sin entregar ni preguntar"), "{client:?}: {said}");
         }
     }
@@ -321,7 +319,7 @@ fn the_22_october_turn_that_ended_on_a_question_to_the_user_waits_for_the_answer
     assert!(!notified(&ended, &card), "David hears of no stop");
     assert_eq!(pending(&s), ["t-simpool-slot-keyboard-state-ask-1"], "only his question waits for him");
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        for said in [render(&s, "task:t", client), render(&s, "tasks", client), render(&s, "fleet", client)] {
+        for said in [render(&s, "task:t", client), render(&s, "tasks", client)] {
             assert!(!said.contains("sin entregar ni preguntar"), "{client:?}: {said}");
         }
     }

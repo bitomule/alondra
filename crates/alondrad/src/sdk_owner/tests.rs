@@ -540,18 +540,18 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
     let raw: i64 = slice.observer().query_row("SELECT count(*) FROM provider_observations WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap();
     assert!(raw >= 2, "the raw observations are kept: {raw}");
     let offered = node_offers(&slice.domain, driver.agent());
-    for claude_bg in ["attach", "msg:", "interrupt:", "close:"] {
+    for claude_bg in ["attach", "interrupt:", "close:"] {
         assert!(!offered.iter().any(|offer| offer.starts_with(claude_bg)), "an SDK node offers no {claude_bg}: {offered:?}");
     }
     driver.stop().unwrap();
 }
 
-/// What the TUI's Fleet detail of `agent` offers, given the live node the daemon gathers for it.
+/// What the TUI's detail of the task `agent` works on offers, given the live node the daemon gathers for it.
 fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
     use alondra_core::views::{Client, Item, RenderContext, Transport, build, live::{LiveNode, LiveSnapshot}};
     let read = domain.read();
     let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: agent.0.clone(), short_id: Some(agent.0.chars().take(8).collect()), ..Default::default() }], ..Default::default() };
-    let view = build(&format!("node:{agent}"), RenderContext {
+    let view = build(&format!("task:{TASK}"), RenderContext {
         domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang: alondra_core::views::text::Lang::En,
         transport: Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap();
@@ -2344,12 +2344,12 @@ fn subtypes(controls: &[serde_json::Value]) -> Vec<&str> {
     controls.iter().map(|control| control["subtype"].as_str().unwrap()).collect()
 }
 
-/// The user presses «Interrupt» on `agent` in Fleet, through the action path the clients use.
+/// The user presses «Interrupt» on the task of `agent`, through the action path the clients use.
 fn press_interrupt(slice: &Slice, agent: &AgentId) -> serde_json::Value {
     press(slice, alondra_core::views::action_id::Verb::Interrupt, agent)
 }
 
-/// The user presses the node's `verb` button on `agent` in Fleet, through the action path the
+/// The user presses the node's `verb` button on the task of `agent`, through the action path the
 /// clients use.
 fn press(slice: &Slice, verb: alondra_core::views::action_id::Verb, agent: &AgentId) -> serde_json::Value {
     let state = slice.domain.state().unwrap();
@@ -2370,16 +2370,16 @@ fn press(slice: &Slice, verb: alondra_core::views::action_id::Verb, agent: &Agen
     })
 }
 
-// C1: the user presses Interrupt on a working SDK node in Fleet. The control commits with the
+// C1: the user presses Interrupt on the task of a working SDK node. The control commits with the
 // domain's decision, the owner sends it, the host hands it to Claude, and the interrupted turn
 // ends with one card.
 #[test]
-fn interrupting_a_working_sdk_node_from_fleet_reaches_claude_and_its_turn_ends_with_one_card() {
+fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_its_turn_ends_with_one_card() {
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let offered = node_offers(&slice.domain, driver.agent());
     assert!(offered.iter().any(|offer| offer.starts_with("interrupt:")), "a working SDK node offers Interrupt: {offered:?}");
-    for claude_bg in ["attach", "msg:", "close:"] {
+    for claude_bg in ["attach", "close:"] {
         assert!(!offered.iter().any(|offer| offer.starts_with(claude_bg)), "an SDK node offers no {claude_bg}: {offered:?}");
     }
     let reply = press_interrupt(&slice, driver.agent());
@@ -2404,7 +2404,7 @@ fn interrupting_a_working_sdk_node_from_fleet_reaches_claude_and_its_turn_ends_w
 }
 
 // Claude accepts the interrupt but its turn goes on, and it ignores SIGTERM. Once the interrupt is
-// accepted, Fleet offers «Force stop» instead of «Interrupt»; pressing it ends Claude's process,
+// accepted, its task offers «Force stop» instead of «Interrupt»; pressing it ends Claude's process,
 // which ends the turn as the user's interrupt, and «Carry on» reaches the same session in a new
 // host. Before, the node stayed «working» with nothing that could stop it.
 #[test]
@@ -2467,7 +2467,7 @@ fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_w
     driver.stop().unwrap();
 }
 
-// The user interrupts from Fleet while such a command runs: Claude Code stops it, and the turn
+// The user interrupts from the task while such a command runs: Claude Code stops it, and the turn
 // that waited for it ends with one card.
 #[test]
 fn interrupting_a_command_claude_code_tracks_as_work_ends_its_turn_with_one_card() {

@@ -37,12 +37,12 @@ final class ScreenFeatureTests: XCTestCase {
 
     @MainActor
     func testIgnoresADocumentThatBelongsToAnotherKey() async throws {
-        let fleet = try Fixtures.document("fleet-ios")
+        let home = try Fixtures.document("home-ios")
         let (stream, input) = AsyncThrowingStream<ViewFetch, any Error>.makeStream()
         let store = store(observing: stream)
 
         await store.send(.task)
-        input.yield(.document(fleet))
+        input.yield(.document(home))
         await store.receive(\.loaded)
         input.finish()
         await store.receive(\.ended) { $0.phase = .failed("Couldn’t load this from your Mac. Try again.") }

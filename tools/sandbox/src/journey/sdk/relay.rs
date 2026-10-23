@@ -120,11 +120,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let card = wait(report, "the permission card waits in Inbox", || hold_card(&user, "decision-t-r5-"))?;
         let view = user.view(&format!("card:{card}"))?;
         let allow = option_action(&view, "allow").with_context(|| format!("no «Allow»: {view}"))?;
-        let interrupt = wait(report, "Fleet offers «Interrupt» for the working node", || {
-            let fleet = user.view("fleet")?;
-            Ok((interrupt_of(&fleet, CANCELLED), format!("{fleet}")))
+        let interrupt = wait(report, "the task offers «Interrupt» for its working node", || {
+            Ok((interrupt_of(&user, "t-r5")?, "no «Interrupt»".into()))
         })?;
-        report.step("the user interrupts the node from Fleet", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None).map(drop))?;
+        report.step("the user interrupts the node from its task", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None).map(drop))?;
         wait(report, "the permission card leaves Inbox with the request", || {
             let inbox = user.inbox()?;
             Ok(((!inbox.contains(&card)).then_some(()), format!("{inbox:?}")))

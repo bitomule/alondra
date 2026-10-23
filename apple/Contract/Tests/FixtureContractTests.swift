@@ -67,7 +67,7 @@ final class FixtureContractTests: XCTestCase {
     func testEveryLinkedViewKeyIsOneTheAppKnowsHowToOpen() throws {
         let known = [
             "card:", "task:", "request:", "node:", "pull_request:", "document:", "schedule:",
-            "home", "tasks", "fleet", "machine", "schedules", "new_request", "sidebar", "issue_picker",
+            "home", "tasks", "machine", "schedules", "new_request", "sidebar", "issue_picker",
         ]
         var seen = Set<String>()
         for url in try fixtureURLs() {
@@ -86,7 +86,7 @@ final class FixtureContractTests: XCTestCase {
     }
 
     func testMacFixturesAreRenderedForTheMac() throws {
-        let names = ["sidebar-mac", "card-question-mac", "card-pr-mac", "pull-request-mac", "node-mac", "tasks-mac", "fleet-mac"]
+        let names = ["sidebar-mac", "card-question-mac", "card-pr-mac", "pull-request-mac", "tasks-mac"]
         for name in names {
             XCTAssertEqual(try macDocument(name).client, .mac, name)
         }

@@ -369,18 +369,6 @@ fn task_actions_have_unique_keys_and_hide_what_does_not_apply() {
 }
 
 #[test]
-fn every_node_action_has_its_own_key() {
-    let (domain, live) = busy();
-    for key in ["node:a-3", "node:a-0"] {
-        let actions = view_render::actions(&build(&domain, &live, key));
-        assert!(!actions.is_empty(), "{key}");
-        let keys: Vec<&str> = actions.iter().map(view_render::action_hint).collect();
-        assert!(keys.iter().all(|hint| !hint.is_empty()), "{key}: {keys:?}");
-        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len(), "{key}: {keys:?}");
-    }
-}
-
-#[test]
 fn task_keys_message_the_node_and_capitals_work_with_shift() {
     let (domain, live) = busy();
     let mut app = task_screen(&domain, &live, "r-3", "t-3");

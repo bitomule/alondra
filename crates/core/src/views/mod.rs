@@ -5,7 +5,7 @@ mod card;
 mod common;
 pub mod components;
 mod details;
-mod fleet;
+mod task_node;
 mod home;
 pub mod mcp_servers;
 pub mod id;
@@ -142,7 +142,7 @@ macro_rules! families {
         }
     };
 }
-families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Orchestrator, Schedules, Schedule, NewRequest,
+families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules, Schedule, NewRequest,
     IssuePicker, Search, Machine, McpServers, Accounts);
 
 impl Family {
@@ -165,10 +165,6 @@ impl Family {
             Family::Task
         } else if key.starts_with("request:") {
             Family::Request
-        } else if key == "fleet" {
-            Family::Fleet
-        } else if key.starts_with("node:") {
-            Family::Node
         } else if key == "orchestrator" {
             Family::Orchestrator
         } else if key == "schedules" {
@@ -204,8 +200,6 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::Tasks => tasks::list(key, &context)?,
         Family::Task => tasks::detail(tail(), &context)?,
         Family::Request => tasks::request(tail(), &context)?,
-        Family::Fleet => fleet::list(&context),
-        Family::Node => fleet::detail(tail(), &context)?,
         Family::Orchestrator => misc::orchestrator(key, &context),
         Family::Schedules => schedules::list(&context),
         Family::Schedule => schedules::editor(key, &context)?,

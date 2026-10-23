@@ -1,5 +1,5 @@
 //! What a task's native Claude asks the user through the SDK host: a command's permission, a
-//! question and a plan; the user interrupting a turn from Fleet; a command that runs for seconds and ends its
+//! question and a plan; the user interrupting a turn from its task; a command that runs for seconds and ends its
 //! turn; and a node's command that Alondra's node guard refuses without asking anyone. The model
 //! double asks for each tool call when a task's prompt names it (`sdk/model-tools`), and logs the
 //! result Claude sent back. A plan goes through plan mode as the native Claude runs it: the model
@@ -97,7 +97,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         })?;
         turn_ended(report, user, "t-s7", &card)
     });
-    report.case("S8", "The user interrupts a node from Fleet while its command runs; the turn ends with one card", |report| {
+    report.case("S8", "The user interrupts a node from its task while its command runs; the turn ends with one card", |report| {
         let proof = tmp.join("slow-proof");
         script_tool(sandbox, INTERRUPT, "toolu_s8_bash", "Bash", json!({"command": format!("{SLOW} && echo finished > {}", proof.display()), "description": "Wait for the slow check"}))?;
         request(report, fakes, user, &task_script("req-s8", "t-s8", INTERRUPT), INTERRUPT)?;
@@ -106,10 +106,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         choose(report, user, &view, "allow", "the user allows the slow command")?;
         wait(report, "the slow command runs", || Ok((running(SLOW)?.then_some(()), "not running".into())))?;
         wait(report, "Claude Code tracks the running command as its work", || Ok((tracked(sandbox, "t-s8", "toolu_s8_bash")?.then_some(()), "not tracked yet".into())))?;
-        let fleet = user.view("fleet")?;
-        report.snapshot("fleet-working", &fleet)?;
-        let interrupt = interrupt_of(&fleet, INTERRUPT).context("Fleet offers no «Interrupt» on the working node")?;
-        report.step("the user presses «Interrupt» on the node in Fleet", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
+        report.snapshot("task-working", &user.view("task:t-s8")?)?;
+        let interrupt = interrupt_of(user, "t-s8")?.context("the task offers no «Interrupt» on its working node")?;
+        report.step("the user presses «Interrupt» on the task", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
         let ended = wait(report, "the turn ends with a card that asks how to go on", || {
             let inbox = user.inbox()?;
             Ok((inbox.iter().find(|id| id.starts_with("turn-ended-t-s8-")).cloned(), format!("{inbox:?}")))
@@ -119,8 +118,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             let inbox = user.inbox()?;
             let cards: Vec<&String> = inbox.iter().filter(|id| id.contains("t-s8-")).collect();
             ensure!(cards.len() == 1, "{cards:?}");
-            let fleet = user.view("fleet")?;
-            ensure!(interrupt_of(&fleet, INTERRUPT).is_none(), "the node still offers «Interrupt»: {fleet}");
+            ensure!(interrupt_of(user, "t-s8")?.is_none(), "the task still offers «Interrupt»");
             Ok(())
         })?;
         report.step("the slow command was stopped before it finished", || {
@@ -128,7 +126,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             ensure!(!proof.exists(), "{} exists: the command finished", proof.display());
             Ok(())
         })?;
-        report.snapshot("fleet-interrupted", &user.view("fleet")?)
+        report.snapshot("task-interrupted", &user.view("task:t-s8")?)
     });
     report.case("S9", "A node's command that acts as the user is refused by the node guard, with no card", |report| {
         script_tool(sandbox, GUARD, "toolu_s9_bash", "Bash", json!({"command": guarded_command(), "description": "List the paired devices"}))?;
@@ -168,8 +166,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         })?;
         turn_ended(report, user, "t-s10", &card)?;
         report.step("the node is no longer working", || {
-            let fleet = user.view("fleet")?;
-            ensure!(interrupt_of(&fleet, SECONDS).is_none(), "the node still offers «Interrupt»: {fleet}");
+            ensure!(interrupt_of(user, "t-s10")?.is_none(), "the task still offers «Interrupt»");
             Ok(())
         })
     });

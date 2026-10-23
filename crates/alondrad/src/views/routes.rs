@@ -420,7 +420,6 @@ fn normalize_key(raw: &str) -> Option<String> {
         "home"
             | "sidebar"
             | "tasks"
-            | "fleet"
             | "orchestrator"
             | "schedules"
             | "new_request"
@@ -437,7 +436,6 @@ fn normalize_key(raw: &str) -> Option<String> {
         "pull_request",
         "task",
         "request",
-        "node",
         "schedule",
     ] {
         let id = raw
@@ -500,8 +498,8 @@ mod tests {
 
     #[test]
     fn every_family_of_views_is_reached_by_a_device() {
-        let keys = ["home", "sidebar", "tasks", "fleet", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers",
-            "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "node:a-1", "schedule:s-1"];
+        let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers",
+            "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1"];
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
         }
@@ -565,7 +563,13 @@ mod tests {
             "/views/pull_request%3Agithub.com%2Fbitomule%2Falondra%23154?protocol=1&client=mac&lang=en"
         ));
         assert!(approved_read_path(
+            "/views/task%3At-42?protocol=1&client=tui&lang=en"
+        ));
+        assert!(!approved_read_path(
             "/views/node%3Aa98d034b-249e-4487-a89b-57de38c26372?protocol=1&client=tui&lang=en"
+        ));
+        assert!(!approved_read_path(
+            "/views/fleet?protocol=1&client=tui&lang=en"
         ));
         assert!(approved_read_path(
             "/views/tasks?protocol=1&client=tui&lang=en&section=active&after=20"

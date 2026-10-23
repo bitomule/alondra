@@ -151,7 +151,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let read = context.reading(&task.id);
     let activity = read.and_then(|read| read.activity.clone()).unwrap_or(TaskActivity::NodeClosed);
     let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
-    let doing = node.and_then(|node| super::fleet::doing(node, matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_)), lang));
+    let doing = node.and_then(|node| super::task_node::doing(node, matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_)), lang));
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
     let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
@@ -211,7 +211,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
             ..Presentation::new(common::node_closed_label(lang), Tone::Warning, Block::ForYou,
                 Some(t!(lang, "Its session closed before it delivered", "Su sesión se cerró sin que entregara").into())) },
     };
-    let step = node.and_then(|node| super::fleet::step(node, lang));
+    let step = node.and_then(|node| super::task_node::step(node, lang));
     Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
 }
 

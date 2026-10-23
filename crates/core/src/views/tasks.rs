@@ -33,10 +33,10 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
 /// The open tasks a live node is working on now, each with that node.
 pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<Item = (&'a Task, &'a crate::domain::Agent)> {
     context.domain.agents.values()
-        .filter(|agent| super::fleet::in_fleet(agent, context))
+        .filter(|agent| super::task_node::on_open_task(agent, context))
         .filter_map(|agent| common::current_task(context, &agent.id)
             .filter(|task| !task.archived && !task.state.terminal())
-            .or_else(|| super::fleet::node_tasks(&agent.id, context).find(|task| !task.state.terminal()))
+            .or_else(|| super::task_node::node_tasks(&agent.id, context).find(|task| !task.state.terminal()))
             .map(|task| (task, agent)))
 }
 
@@ -1005,13 +1005,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
         .and_then(|agent| context.domain.agents.get(agent));
     let live = agent.and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.id.0));
-    facts.extend(live.and_then(|node| super::fleet::folder(node, context)));
+    facts.extend(live.and_then(|node| super::task_node::folder(node, context)));
     view.sections.push(common::section(
         "header",
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
-    let readings = live.map(|node| super::fleet::node_readings(node, context)).unwrap_or_default();
+    let readings = live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default();
     if !readings.is_empty() {
         view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
     }
@@ -1024,13 +1024,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(now) = now_line(task, context) {
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }
-    view.sections.extend(agent.and_then(|agent| super::fleet::activity_rows(agent, context, Some(&task.id)))
+    view.sections.extend(agent.and_then(|agent| super::task_node::activity_rows(agent, context, Some(&task.id)))
         .map(|rows| common::section("activity", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
     if let Some(node) = live {
-        view.sections.extend(super::fleet::needs_section(node, context));
-        view.sections.extend(super::fleet::work_sections(node, context.lang));
-        view.sections.extend(super::fleet::background_section(node, context));
-        view.sections.extend(super::fleet::last_message_section(node, context));
+        view.sections.extend(super::task_node::needs_section(node, context));
+        view.sections.extend(super::task_node::work_sections(node, context.lang));
+        view.sections.extend(super::task_node::background_section(node, context));
+        view.sections.extend(super::task_node::last_message_section(node, context));
     }
     if let Some(history) = context
         .live
@@ -1233,7 +1233,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             }
         }
     }
-    actions.extend(agent.and_then(|agent| super::fleet::interrupt_action(&agent.id.0, context)));
+    actions.extend(agent.and_then(|agent| super::task_node::interrupt_action(&agent.id.0, context)));
     actions.extend(relaunch_action(task, context));
     actions.extend(super::pacing::task_actions(task, context));
     actions.extend(super::pacing::priority_action(task, context));

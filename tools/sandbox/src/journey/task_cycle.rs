@@ -81,7 +81,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         merged(report, fakes, 3, &head)?;
         closed(report, fakes, &user, &node, "t-t3", &card)
     });
-    report.case("TC4", "The user cancels a working task; its node ends and leaves Fleet", |report| {
+    report.case("TC4", "The user cancels a working task; its node ends and the task is no longer in progress", |report| {
         request(report, fakes, &user, &task_script("req-t4", "t-t4", "Add a draft note"), "Add a draft note")?;
         let node = launched(report, fakes, "t-t4")?;
         state(report, &user, "t-t4", WORKING)?;

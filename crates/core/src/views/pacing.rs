@@ -111,14 +111,6 @@ pub(super) fn task_actions(task: &Task, context: &RenderContext<'_>) -> Vec<supe
     task.agent_id.as_ref().and_then(|agent| pause_node_action(agent, context)).into_iter().collect()
 }
 
-/// Pause or Resume for a node, from its row or its detail.
-pub(super) fn node_actions(agent: &AgentId, context: &RenderContext<'_>) -> Vec<super::Action> {
-    match paused_node(&agent.0, context) {
-        Some(paused) => resume_action(paused, context).into_iter().collect(),
-        None => pause_node_action(agent, context).into_iter().collect(),
-    }
-}
-
 pub(super) fn priority_text(priority: TaskPriority, lang: super::Lang) -> &'static str {
     match priority {
         TaskPriority::High => t!(lang, "High", "Alta"),

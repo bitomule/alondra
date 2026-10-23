@@ -26,7 +26,7 @@ final class AllowedRulesFeatureTests: XCTestCase {
                        "`make build` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia")
         XCTAssertEqual(rules.first?.detail, "alondra · añadido 29 sept · tarea «Build the importer»")
         XCTAssertEqual(rules.first?.remove.label, "Quitar")
-        XCTAssertTrue(AllowedRule.all(in: try Fixtures.document("fleet-ios-es")).isEmpty)
+        XCTAssertTrue(AllowedRule.all(in: try Fixtures.document("tasks-ios-es")).isEmpty)
     }
 
     func testRemovingARuleHidesItAtOnceAndSendsTheDaemonItsAction() async throws {

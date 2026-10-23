@@ -1,22 +1,8 @@
 use super::{
-    BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone,
-    Trailing, View, action_id::Verb, common, text::{t, tf},
+    Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone, Trailing,
+    action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, NodePhase, Pause, PauseReason, RecordedWait, TaskId, TaskState};
-use std::collections::BTreeMap;
-
-fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
-    let mut action = common::action(Verb::Msg, id, context.domain.revision,
-        t!(context.lang, "Message", "Mensaje"), Style::Primary)?;
-    action.key = (context.client == super::Client::Tui).then(|| "r".into());
-    action.input = super::Input::Text {
-        placeholder: format!("{} {}…", t!(context.lang, "Write to", "Escribe a"), common::agent_label(&AgentId(id.into()), context)),
-        required: true,
-        multiline: true,
-    };
-    action.attachments = true;
-    Some(action)
-}
+use crate::domain::{AgentId, NodePhase, TaskId};
 
 /// Stopping a node's current turn, offered only while it works: for a node that runs through the
 /// SDK, while its execution runs a turn or work of its own. Once Claude accepted the interrupt and
@@ -60,12 +46,10 @@ fn force_stop_action(id: &str, context: &RenderContext<'_>) -> Option<super::Act
     Some(action)
 }
 
-/// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
-/// then what waits for the user on it, then where its tasks stand.
-/// A node is in Fleet while Alondra runs it on an open task in a session that exists or that it is
+/// A node works on its task while Alondra runs it on an open task in a session that exists or that it is
 /// restarting: never the orchestrator, a node whose task ended, nor one whose session is lost and
 /// waits for the gate to be restarted.
-pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
+pub(super) fn on_open_task(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && agent.phase.live()
@@ -77,94 +61,6 @@ pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>
 pub(super) fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a crate::domain::Task> {
     let domain = context.domain;
     context.index.node(agent).into_iter().flat_map(|node| &node.tasks).filter_map(move |id| domain.tasks.get(id))
-}
-
-/// The cards a node wrote that wait for the user, in the queue's order.
-fn node_waiting<'a>(agent: &AgentId, context: &'a RenderContext<'_>) -> impl Iterator<Item = &'a crate::domain::InboxItem> {
-    context.index.node(agent).into_iter().flat_map(|node| &node.waiting).filter_map(|id| context.index.waiting_card(id))
-}
-
-/// The phase of a node that runs through the Agent SDK, read from its task and its execution: the
-/// session phase `claude --bg` reports never moves for it. `None` while it starts.
-fn sdk_phase(agent: &AgentId, context: &RenderContext<'_>) -> Option<NodePhase> {
-    let node = context.index.node(agent).filter(|node| node.through_sdk)?;
-    let task = context.node_task(agent)?;
-    Some(match task.state {
-        TaskState::ForYourReview => NodePhase::Delivered { in_turn: node.sdk_running },
-        TaskState::Closing => NodePhase::Closing,
-        TaskState::NeedsYou => NodePhase::WaitingUser { in_turn: node.sdk_running },
-        _ if node.sdk_running => NodePhase::Working,
-        _ => return None,
-    })
-}
-
-pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
-    let lang = context.lang;
-    let waiting = |kinds: &[&str]| node_waiting(agent, context).any(|item| kinds.contains(&item.kind.as_str()));
-    let tasks: Vec<TaskState> = node_tasks(agent, context).map(|task| task.state).collect();
-    let merging = context.index.node(agent).is_some_and(|node| node.merging);
-    let phase = sdk_phase(agent, context).unwrap_or_else(|| context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed));
-    if !merging && let Some(halted) = common::halted(agent, context) {
-        return halted;
-    }
-    let (text, tone) = match phase {
-        NodePhase::Starting { reviving: true, .. } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
-        NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
-        NodePhase::Starting { reviving: false, .. } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
-        NodePhase::Working if merging => (t!(lang, "Merging", "Haciendo merge"), Tone::Info),
-        NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. } => (t!(lang, "Working", "Trabajando"), Tone::Info),
-        NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
-        NodePhase::WaitingUser { .. } if node_waiting(agent, context).next().is_none()
-            && context.node_task(agent).is_some_and(|task| context.domain.waiting_on(&task.id) == Some(RecordedWait::Orchestrator)) =>
-            (t!(lang, "Waiting for the orchestrator", "Esperando al orquestador"), Tone::Neutral),
-        NodePhase::WaitingUser { .. } if node_waiting(agent, context).next().is_none()
-            && context.node_task(agent).is_some_and(|task| context.domain.waiting_on(&task.id) == Some(RecordedWait::Tasks))
-            && let Some(title) = awaited_title(agent, context) =>
-            return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
-        NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
-        NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
-        NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
-        NodePhase::Delivered { .. } if waiting(&["delivery"]) =>
-            (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent),
-        NodePhase::Delivered { .. } => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
-        NodePhase::WaitingDependency => match awaited_title(agent, context) {
-            Some(title) => return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
-            None => (t!(lang, "Waiting for another task", "Esperando otra tarea"), Tone::Neutral),
-        },
-        NodePhase::NoTask => (t!(lang, "No task", "Sin tarea"), Tone::Neutral),
-        NodePhase::Closing => match post_merge_work(agent, context) {
-            Some(_) if let Some(title) = awaited_title(agent, context) =>
-                return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
-            Some(reason) => return super::Label {
-                text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras el merge: {reason}", reason = reason),
-                tone: Tone::Info,
-            },
-            None if merging => (t!(lang, "Merging", "Haciendo merge"), Tone::Info),
-            None => (t!(lang, "Done", "Terminado"), Tone::Success),
-        },
-        NodePhase::Closed if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) =>
-            (t!(lang, "Done", "Terminado"), Tone::Success),
-        NodePhase::Closed => (t!(lang, "Closed", "Cerrado"), Tone::Neutral),
-    };
-    super::Label { text: text.into(), tone }
-}
-
-/// What the node says it still does after its task's PR merged.
-fn post_merge_work<'a>(agent: &AgentId, context: &'a RenderContext<'_>) -> Option<&'a str> {
-    context.index.node(agent)?.post_merge_work.as_deref()
-}
-
-/// The title, clipped, of the task a node's waiting task is held behind.
-fn awaited_title(agent: &AgentId, context: &RenderContext<'_>) -> Option<String> {
-    let task = common::current_task(context, agent).filter(|task| task.state == TaskState::WaitingDependency)?;
-    let upstream = task.dependencies.iter().chain(task.stack.iter().map(|stack| &stack.upstream_task))
-        .filter_map(|id| context.domain.tasks.get(id))
-        .find(|dependency| !dependency.state.terminal() && !context.domain.landed(dependency))?;
-    let mut title: String = upstream.title.chars().take(40).collect();
-    if upstream.title.chars().count() > 40 {
-        title.push('…');
-    }
-    Some(title)
 }
 
 fn tokens(count: u64) -> String {
@@ -361,84 +257,6 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
     sections
 }
 
-/// A node as one Fleet item: the title of its task and its state, nothing else.
-pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> super::Row {
-    let title = common::current_task(context, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
-    let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, title, None);
-    row.badges.push(node_state(&agent.id, context));
-    if context.client == super::Client::Ios {
-        row.actions.extend(interrupt_action(&agent.id.0, context));
-        row.actions.extend(super::pacing::node_actions(&agent.id, context));
-    } else if context.client == super::Client::Tui {
-        row.actions.extend(interrupt_action(&agent.id.0, context));
-    }
-    row
-}
-
-pub(super) fn list(context: &RenderContext<'_>) -> View {
-    let mut view = common::view(
-        "fleet",
-        "fleet",
-        Some(t!(context.lang, "Fleet", "Flota").into()),
-        context,
-        vec![],
-    );
-    let mut projects: BTreeMap<String, Vec<(u8, Item)>> = BTreeMap::new();
-    for agent in context.domain.agents.values().filter(|agent| in_fleet(agent, context)) {
-        let row = Item::Row(node_row(agent, context));
-        projects.entry(project_of(&agent.id, context)).or_default().push((urgency(&agent.id, context), row));
-    }
-    let other = t!(context.lang, "Other", "Otros");
-    let mut ordered: Vec<_> = projects.into_iter().map(|(project, mut rows)| {
-        rows.sort_by_key(|(urgency, _)| *urgency);
-        (project, rows)
-    }).collect();
-    ordered.sort_by_key(|(project, rows)| (rows.first().map(|(urgency, _)| *urgency), project.as_str() == other));
-    for (project, rows) in ordered {
-        let items = rows.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
-        let mut section = common::section(&format!("project:{project}"), Some(project), items);
-        section.count = Some(section.items.len() as u32);
-        view.sections.push(section);
-    }
-    view
-}
-
-/// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits.
-fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> u8 {
-    let owes_user = context.index.node(agent).is_some_and(|node| !node.waiting.is_empty());
-    match node_state(agent, context).tone {
-        Tone::Warning | Tone::Critical | Tone::YourTurn | Tone::Accent => 0,
-        Tone::Info => 1,
-        _ if owes_user => 0,
-        _ => 2,
-    }
-}
-
-/// The live node's project; failing that, the project its task's Request is known by through
-/// another node on it, or the project its pull request's repository is named after.
-fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
-    let named = |id: &AgentId| context.live.nodes.iter().find(|node| node.agent_id == id.0)
-        .and_then(|node| node.project.as_deref()).filter(|project| *project != "others");
-    let from_request = |task: &crate::domain::Task| {
-        context.index.tasks_of_request(&task.request_id).iter().filter_map(|sibling| context.domain.tasks.get(sibling))
-            .filter_map(|sibling| sibling.agent_id.as_ref()).find_map(named)
-    };
-    let from_repository = |task: &crate::domain::Task| {
-        let pr = context.domain.pull_requests.get(task.pr_id.as_ref()?)?;
-        let name = pr.repository.rsplit('/').next()?;
-        context.live.projects.iter().map(|entry| entry.name.as_str())
-            .find(|project| project.eq_ignore_ascii_case(name))
-    };
-    let current = common::current_task(context, agent);
-    let latest = node_tasks(agent, context).max_by_key(|task| task.revision);
-    named(agent)
-        .or_else(|| current.and_then(from_request))
-        .or_else(|| latest.and_then(from_request))
-        .or_else(|| current.and_then(from_repository))
-        .unwrap_or(t!(context.lang, "Other", "Otros"))
-        .into()
-}
-
 /// What a live node reads now: the tool it runs, its background work, a last turn that was
 /// interrupted, its context and its cost.
 pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>) -> Vec<Fact> {
@@ -537,124 +355,3 @@ pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContex
         Item::Row(row)
     }).collect())
 }
-
-pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
-    common::id(id)?;
-    if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
-        return Ok(super::misc::orchestrator(&format!("node:{id}"), context));
-    }
-    let agent = context
-        .domain
-        .agents
-        .get(&AgentId(id.into()))
-        .ok_or(BuildError::NotFound)?;
-    let live = context.live.nodes.iter().find(|node| node.agent_id == id);
-    let mut view = common::view(
-        "node",
-        &format!("node:{id}"),
-        Some(common::agent_label(&agent.id, context)),
-        context,
-        vec![],
-    );
-    let state = node_state(&agent.id, context);
-    let mut facts = vec![Fact {
-        label: t!(context.lang, "State", "Estado").into(),
-        value: state.text,
-        tone: Some(state.tone),
-        link: None,
-    }];
-    let mut readings = vec![];
-    if let Some(node) = live {
-        let lang = context.lang;
-        if matches!(context.domain.node_phase(&AgentId(node.agent_id.clone())), Some(NodePhase::Starting { reviving: true, .. })) {
-            readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: t!(lang, "Reconnecting", "Reconectando").into(),
-                tone: Some(Tone::Info), link: None });
-        }
-        readings.extend(node_readings(node, context));
-        if let Some(model) = &node.model {
-            readings.push(Fact { label: t!(lang, "Model", "Modelo").into(), value: crate::model_label::model_label(model), tone: None, link: None });
-        }
-    }
-    facts.extend(live.and_then(|node| folder(node, context)));
-    let tasks: Vec<_> = context.index.node(&agent.id).into_iter().flat_map(|node| &node.all_tasks)
-        .filter_map(|id| context.domain.tasks.get(id))
-        .collect();
-    if let Some(task) = common::current_task(context, &agent.id)
-        .filter(|task| !task.state.terminal() && context.client != super::Client::Tui) {
-        facts.push(Fact {
-            label: t!(context.lang, "Task", "Tarea").into(),
-            value: task.title.clone(),
-            tone: None,
-            link: None,
-        });
-    }
-    view.sections.push(common::section(
-        "header",
-        None,
-        vec![Item::Facts(Facts { items: facts })],
-    ));
-    if !readings.is_empty() {
-        view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
-    }
-    if let Some(since) = live.and_then(|node| node.state_since.as_ref()) {
-        let mut row = common::row("since", "node", Icon::History, t!(context.lang, "Since", "Desde").into(), None);
-        row.link = None;
-        row.trailing = Some(Trailing::Time { at: since.clone(), format: super::TimeFormat::Relative });
-        view.sections.push(common::section("since", None, vec![Item::Row(row)]));
-    }
-    let waiting = node_waiting(&agent.id, context)
-        .map(|item| super::card::from_item(item, context, false).map(Item::Card))
-        .collect::<Result<Vec<_>, BuildError>>()?;
-    view.sections.push(common::section(
-        "waiting",
-        Some(t!(context.lang, "Waiting for You", "Te espera").into()),
-        waiting,
-    ));
-    let rows = tasks
-        .into_iter()
-        .filter(|task| task.state != TaskState::Cancelled)
-        .map(|task| {
-            Item::Row(if context.client == super::Client::Tui {
-                super::tasks::task_row(task, context)
-            } else {
-                common::row(
-                    &task.id.0,
-                    &format!("task:{}", task.id),
-                    Icon::Task,
-                    task.title.clone(),
-                    None,
-                )
-            })
-        })
-        .collect();
-    view.sections.push(common::section(
-        "tasks",
-        Some(t!(context.lang, "Tasks", "Tareas").into()),
-        rows,
-    ));
-    view.sections.extend(live.and_then(|node| needs_section(node, context)));
-    if let Some(node) = live {
-        view.sections.extend(work_sections(node, context.lang));
-    }
-    view.sections.extend(live.and_then(|node| background_section(node, context)));
-    view.sections.extend(live.and_then(|node| last_message_section(node, context)));
-    view.sections.extend(activity_rows(agent, context, None)
-        .map(|rows| common::section("now", Some(t!(context.lang, "Right now", "Ahora mismo").into()), rows)));
-    let mut actions = vec![];
-    // A node still on `claude --bg` takes a message through its mod's connection, and moves to the
-    // Agent SDK with it when it rests.
-    if !context.index.node(&agent.id).is_some_and(|node| node.through_sdk) {
-        actions.extend(message_action(id, context));
-    }
-    actions.extend(interrupt_action(id, context));
-    actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
-    if !actions.is_empty() {
-        view.sections.push(common::section(
-            "actions",
-            None,
-            vec![Item::Actions(super::ActionBar { actions })],
-        ));
-    }
-    Ok(view)
-}
-

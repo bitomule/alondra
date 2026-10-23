@@ -91,8 +91,8 @@ merge, cancel, reopen and archive a task. Any other command is judged only when 
 ## Views, feed and notifications
 
 - `views::build(key, RenderContext)` (`crates/core/src/views/mod.rs`) dispatches by `Family`:
-  Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Schedules,
-  Schedule, NewRequest, IssuePicker, Search, Machine. `RenderContext` carries `domain`, `index` and
+  Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules,
+  Schedule, NewRequest, IssuePicker, Search, Machine, McpServers, Accounts. `RenderContext` carries `domain`, `index` and
   `live`.
 - The daemon's view cache (`crates/alondrad/src/views/cache.rs`) keeps rendered bodies (256) and
   versions per input — view, client, language, transport, revision and live data (4096). A client
@@ -165,7 +165,7 @@ Copy of the real domain (351 tasks, 304 nodes, 326 requests, 1817 cards, 257 PRs
 | `GET /views/home` iOS, cold / warm | 6.8 / 0.5 |
 | `GET /views/home` TUI, cold / warm | 0.6 / 0.4 |
 | `GET /views/sidebar` Mac, cold / warm | 2.1 / 0.6 |
-| `GET /views/tasks`, `fleet`, `task:…`, `node:…`, cold | 0.6–1.2 |
+| `GET /views/tasks`, `task:…`, cold | 0.6–1.2 |
 | six card views, total | 3.6 |
 
 Real-size fixture (`views_budget_test`: 286 tasks, 287 nodes, 1858 cards, 270 PRs, 12 waiting):

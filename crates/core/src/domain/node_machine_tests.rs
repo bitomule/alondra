@@ -1066,8 +1066,8 @@ impl World {
         }
     }
 
-    /// After every step: one valid state per node, and the gate, Fleet, the Tasks list and the
-    /// header count the same nodes at work.
+    /// After every step: one valid state per node, and the gate, the sidebar, the Tasks list and
+    /// the header count the same nodes at work.
     fn check(&self) {
         self.s.validate_nodes().unwrap();
         self.no_node_rests_unheard();
@@ -1077,18 +1077,16 @@ impl World {
         let slots: BTreeSet<String> = self.s.slots().iter().map(|a| a.id.0.clone()).collect();
         assert!(self.s.paused_nodes().keys().all(|id| !slots.contains(&id.0)), "a paused node holds a slot");
 
-        let fleet = self.render("fleet");
-        let at_work = ["Working", "Starting", "Reconnecting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results"];
-        let delivered: BTreeSet<String> = self.s.agents.values().filter(|a| a.phase == NodePhase::Delivered { in_turn: false })
-            .map(|a| a.id.0.clone()).collect();
-        let in_fleet: BTreeSet<String> = badged(&fleet, &at_work).difference(&delivered).cloned().collect();
-        assert_eq!(in_fleet, slots, "Fleet shows at work exactly the nodes that hold a slot");
+        let sidebar = self.render("sidebar");
         let open_task = |agent: &AgentId| self.s.tasks.values().any(|t| t.agent_id.as_ref() == Some(agent) && !t.archived && !t.state.terminal());
         let live: BTreeSet<String> = self.s.agents.values()
             .filter(|a| a.phase.live() && a.phase != NodePhase::Lost && open_task(&a.id))
             .map(|a| a.id.0.clone()).collect();
-        assert_eq!(rows(&fleet).into_iter().filter(|id| self.s.agents.contains_key(&AgentId(id.clone()))).collect::<BTreeSet<_>>(), live,
-            "Fleet lists every node with a session on an open task, and no other");
+        let in_progress: BTreeSet<String> = sidebar.sections.iter().filter(|section| section.id.starts_with("project:"))
+            .flat_map(|section| &section.items)
+            .filter_map(|item| if let Item::Row(row) = item { self.s.tasks.get(&TaskId(row.id.clone())) } else { None })
+            .filter_map(|task| task.agent_id.as_ref().map(|agent| agent.0.clone())).collect();
+        assert_eq!(in_progress, live, "the sidebar lists the task of every node with a session on an open task, and no other");
 
         let tasks = self.render("tasks");
         let task_slots: BTreeSet<String> = self.s.slots().iter()
@@ -1099,12 +1097,12 @@ impl World {
         assert_eq!(listed, task_slots, "the Tasks list says at work of the tasks whose node holds a slot");
         let paused: BTreeSet<String> = self.s.paused_nodes().keys()
             .filter_map(|agent| self.s.node_task(agent).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        for view in [&tasks, &self.render("sidebar"), &fleet] {
+        for view in [&tasks, &sidebar] {
             let working = badged(view, &at_work);
             assert!(working.is_disjoint(&paused), "{} says a task whose node is paused is at work: {:?}", view.view, working.intersection(&paused));
         }
 
-        let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
+        let header = tasks.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
         assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
 
         let index = ReadIndex::build(&self.s);
@@ -1117,9 +1115,7 @@ impl World {
         let asking: BTreeSet<String> = index.waiting().iter().filter(|item| item.kind != "information")
             .filter_map(|item| item.agent_id.as_ref()).filter(|agent| self.s.agents.contains_key(*agent))
             .map(|agent| agent.0.clone()).collect();
-        let claims = badged(&fleet, &["Waiting for your review", "Waiting for an answer", "Your turn"]);
-        assert!(claims.is_subset(&asking), "Fleet says {claims:?} wait for the user, only {asking:?} have a card");
-        let waiting = fleet.status.counts.iter().find(|count| count.id == "waiting").map(|count| count.value as usize);
+        let waiting = tasks.status.counts.iter().find(|count| count.id == "waiting").map(|count| count.value as usize);
         assert_eq!(waiting, Some(asking.len()), "the header counts the nodes whose card waits");
     }
 }
@@ -1142,28 +1138,6 @@ fn facts_node_by_node(s: &DomainState, agent: &AgentId) -> TaskFacts {
         || matches!(t.state, TaskState::ForYourReview | TaskState::AwaitingBlocker);
     TaskFacts { open: !t.state.terminal() && !t.archived, closing, held, card: asked || s.open_user_card(&t.id).is_some(), delivered,
         awaits: t.state == TaskState::WaitingDependency }
-}
-
-fn rows(view: &View) -> Vec<String> {
-    fn walk(items: &[Item], out: &mut Vec<(String, Option<String>)>) {
-        for item in items {
-            if let Item::Row(row) = item {
-                out.push((row.id.clone(), row.badges.first().map(|badge| badge.text.clone())));
-                children(&row.children, out);
-            }
-        }
-    }
-    fn children(rows: &[crate::views::Row], out: &mut Vec<(String, Option<String>)>) {
-        for row in rows {
-            out.push((row.id.clone(), row.badges.first().map(|badge| badge.text.clone())));
-            children(&row.children, out);
-        }
-    }
-    let mut out = vec![];
-    for section in &view.sections {
-        walk(&section.items, &mut out);
-    }
-    out.into_iter().map(|(id, _)| id).collect()
 }
 
 /// The tasks the Tasks list puts under «For you».
@@ -1244,7 +1218,7 @@ fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
     for wanted in ["«Task 1» se ha parado y te escribe", "Repeat the one on mobile data", "Que siga"] {
         assert!(shown.contains(wanted), "{wanted}: {shown}");
     }
-    for key in ["tasks", "fleet", "task:t-1", "node:node-1"] {
+    for key in ["tasks", "task:t-1"] {
         let text = render(key);
         assert!(!text.contains("Sin actividad") && !text.contains("Detenido"), "{key}: {text}");
         assert!(!text.contains("stopped and wrote to you"), "{key} says the card in English: {text}");

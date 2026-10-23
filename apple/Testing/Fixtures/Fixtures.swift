@@ -33,9 +33,6 @@ enum Fixtures {
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// The fleet and node views the daemon still renders but the iPhone no longer opens.
-    private static let unopenedViews: Set<String> = ["fleet", "node"]
-
     /// Every key a view in the iPhone fixtures links to, including the "show more" pages.
     static func linkedKeys() throws -> Set<String> {
         var keys = Set<String>()
@@ -50,7 +47,6 @@ enum Fixtures {
         }
         for url in try urls() where !url.lastPathComponent.hasSuffix("-tui.json") && !url.lastPathComponent.hasSuffix("-mac.json") {
             let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-            if let view = (fixture as? [String: Any])?["view"] as? String, Self.unopenedViews.contains(view) { continue }
             walk(fixture)
         }
         return keys

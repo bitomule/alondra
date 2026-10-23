@@ -837,13 +837,13 @@ fn search_source_revision(client: &crate::client_routes::Client, state: &DomainS
     digest_hex(&bytes)
 }
 
-/// The nodes whose activity an open screen shows: a node's own, and the node of an open task.
+/// The nodes whose activity an open screen shows: the node of an open task.
 fn activity_agents(state: &DomainState, keys: &[String]) -> BTreeSet<String> {
     keys.iter()
-        .filter_map(|key| key.strip_prefix("node:").map(str::to_owned).or_else(|| {
+        .filter_map(|key| {
             let task = state.tasks.get(&TaskId(key.strip_prefix("task:")?.to_owned()))?;
             task.agent_id.as_ref().filter(|_| !task.state.terminal()).map(|agent| agent.0.clone())
-        }))
+        })
         .filter(|id| !matches!(state.resolve_target(id), alondra_core::domain::Target::Orchestrator(_)))
         .collect()
 }
@@ -1141,8 +1141,8 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let first = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
         let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + 30 * 60_000).await;
-        let first_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let first_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(client.views.build_count(), 1, "reading an unobserved node again must reuse the view");
         assert_eq!(first.nodes.iter().map(|node| node.agent_id.as_str()).collect::<Vec<_>>(), ["assigned", "connected", "reported"]);
         for node in &first.nodes {
@@ -1168,8 +1168,8 @@ mod cache_tests {
         let later = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(before.nodes[0].state_since, Some(timestamp(since)));
         assert_eq!(later.nodes[0].state_since, before.nodes[0].state_since);
-        let before_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let before_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(later_view, before_view, "time alone changes nothing a node shows");
         report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
         let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
@@ -1193,8 +1193,8 @@ mod cache_tests {
         let stalled = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
         assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"));
         assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"));
-        let working_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let stalled_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let working_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let stalled_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(stalled_view.cursor, working_view.cursor);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
@@ -1203,7 +1203,7 @@ mod cache_tests {
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);
         assert_eq!(answer.nodes[0].state_since, None);
-        let answer_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let answer_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, stalled_view.cursor);
         assert_eq!(client.views.build_count(), 3);
     }
@@ -1398,7 +1398,7 @@ mod cache_tests {
         let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
         let mut state = (*domain.state().unwrap()).clone();
         assert_eq!(activity_agents(&state, &keys(&["task:t-b", "home"])), BTreeSet::from(["a".to_owned()]));
-        assert_eq!(activity_agents(&state, &keys(&["node:a", "task:t-b"])), BTreeSet::from(["a".to_owned()]));
+        assert!(activity_agents(&state, &keys(&["node:a"])).is_empty(), "no screen reads a node by its own key");
         state.tasks.get_mut(&TaskId("t-b".into())).unwrap().state = TaskState::Done;
         assert!(activity_agents(&state, &keys(&["task:t-b", "task:missing"])).is_empty());
     }

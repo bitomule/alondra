@@ -53,7 +53,12 @@ impl<'a> User<'a> {
     }
 
     pub fn view(&self, key: &str) -> Result<Value> {
-        self.ok("GET", &format!("/views/{key}?protocol=1&client=ios&lang=en"), None)
+        self.view_on(key, "ios")
+    }
+
+    /// The view `key` as the app on `client` reads it.
+    pub fn view_on(&self, key: &str, client: &str) -> Result<Value> {
+        self.ok("GET", &format!("/views/{key}?protocol=1&client={client}&lang=en"), None)
     }
 
     /// Presses an action of a view, as the app does: with the data epoch the view carried.

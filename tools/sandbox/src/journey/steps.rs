@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::{PATIENCE, Report, User, user::{collect, mentions}};
+use super::{PATIENCE, Report, User, user::collect};
 use crate::fake::{
     Fakes,
     native::{self, Order, Session},
@@ -139,19 +139,25 @@ pub fn merged(report: &mut Report, fakes: &Fakes, number: u64, head: &str) -> Re
     })
 }
 
-/// Whether Fleet lists the session.
-pub fn in_fleet(user: &User, session: &Session) -> Result<bool> {
-    let fleet = user.view("fleet")?;
-    Ok(mentions(&fleet, &session.short) || mentions(&fleet, &session.session_id))
+/// Whether the Mac's sidebar lists the task among those whose node works on them.
+pub fn in_progress(user: &User, task: &str) -> Result<bool> {
+    let sidebar = user.view_on("sidebar", "mac")?;
+    Ok(sidebar["sections"].as_array().into_iter().flatten()
+        .filter(|section| section["id"].as_str().is_some_and(|id| id.starts_with("project:")))
+        .flat_map(|section| section["items"].as_array().into_iter().flatten())
+        .any(|item| item["id"] == task))
 }
 
-/// Waits until Alondra ended the session's native Claude, through its host, and Fleet no longer
-/// lists it.
+/// Waits until Alondra ended the session's native Claude, through its host, and its task is no
+/// longer in progress.
 pub fn ended(report: &mut Report, fakes: &Fakes, user: &User, session: &Session) -> Result<()> {
-    wait(report, &format!("Alondra ends node {}'s native Claude and it leaves Fleet", session.short), || {
+    wait(report, &format!("Alondra ends node {}'s native Claude and its task leaves those in progress", session.short), || {
         let now = fakes.session(&session.short)?;
-        let listed = in_fleet(user, &now)?;
-        Ok(((!now.running() && !listed).then_some(()), format!("session {:?}, alive {}, in Fleet {listed}", now.state, now.alive())))
+        let listed = match now.task_id.as_deref() {
+            Some(task) => in_progress(user, task)?,
+            None => false,
+        };
+        Ok(((!now.running() && !listed).then_some(()), format!("session {:?}, alive {}, in progress {listed}", now.state, now.alive())))
     })
 }
 
@@ -200,13 +206,24 @@ pub fn card_in_inbox(user: &User, prefix: &str) -> Result<(Option<String>, Strin
     Ok((inbox.iter().find(|id| id.starts_with(prefix)).cloned(), format!("{inbox:?}")))
 }
 
-/// The enabled «Interrupt» Fleet offers on the node of the task titled `title`.
-pub fn interrupt_of(fleet: &Value, title: &str) -> Option<Value> {
+/// The enabled action of the screen of the task `task` whose id starts with `prefix`.
+pub fn task_action(user: &User, task: &str, prefix: &str) -> Result<Option<Value>> {
+    Ok(user.action(&user.view(&format!("task:{task}"))?, prefix))
+}
+
+/// The enabled «Interrupt» the screen of the task `task` offers.
+pub fn interrupt_of(user: &User, task: &str) -> Result<Option<Value>> {
+    task_action(user, task, "interrupt:")
+}
+
+/// The node that works on the task titled `title`: the one its screen's «Message» writes to.
+pub fn node_of(user: &User, title: &str) -> Result<Option<String>> {
     let mut rows = vec![];
-    collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
-    rows.into_iter().rev().find_map(|row| {
-        let mut found = vec![];
-        collect(&row, &mut |item| item.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with("interrupt:")) && item.get("enabled") != Some(&Value::Bool(false)), &mut found);
-        found.into_iter().next()
-    })
+    collect(&user.view("tasks")?, &mut |item| item.pointer("/link/key").and_then(Value::as_str).is_some_and(|key| key.starts_with("task:"))
+        && item["title"] == title, &mut rows);
+    let Some(task) = rows.first().and_then(|row| row["id"].as_str()) else { return Ok(None) };
+    Ok(task_action(user, task, "msg:")?.and_then(|message| {
+        let id = message["id"].as_str()?.strip_prefix("msg:")?;
+        id.split_once('@').map(|(node, _)| node.to_owned())
+    }))
 }

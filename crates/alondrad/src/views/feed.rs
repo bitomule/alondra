@@ -529,6 +529,35 @@ mod tests {
             ).unwrap();
         }
 
+        /// A node with an open task: the node's id and the key of its task's view.
+        fn node_on_task(&self, name: &str) -> (String, String) {
+            self.register_agent(name);
+            self.create_request(name, "Work");
+            let state = self.client.domain.state().unwrap();
+            self.client.domain.execute(
+                &Actor::Orchestrator { generation: 0 },
+                &CommandEnvelope {
+                    protocol_version: 2,
+                    data_epoch: state.data_epoch.clone(),
+                    command_id: format!("task-{name}").into(),
+                    expected_revision: state.revision,
+                    command: Command::CreateTask { plan_items: None,
+                        task_id: format!("task-{name}").into(),
+                        request_id: format!("request-{name}").into(),
+                        title: "Work".into(),
+                        agent_id: Some(format!("agent-{name}").into()),
+                        review_prs: false,
+                        dependencies: Default::default(),
+                        stack: None,
+                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                    },
+                },
+                None,
+                || Ok(()),
+            ).unwrap();
+            (format!("agent-{name}"), format!("task:task-{name}"))
+        }
+
         fn create_visible_question(&self, suffix: &str) {
             self.register_agent(&format!("agent-{suffix}"));
             self.create_request(&format!("request-{suffix}"), "Visible request");
@@ -736,9 +765,8 @@ mod tests {
     fn node_reports_publish_without_domain_or_periodic_clock_and_coalesce_bursts() {
         // Open outside the runtime so this test owns the single sampler's progression.
         let fixture = FeedFixture::new();
-        fixture.register_agent("event-driven");
-        let agent = "agent-event-driven";
-        let key = format!("node:{agent}");
+        let (agent, key) = fixture.node_on_task("event-driven");
+        let agent = agent.as_str();
         let report = |command: &str| crate::node_reports::Envelope {
             session_id: agent.into(),
             report: crate::node_reports::Report::ToolStart {
@@ -852,16 +880,16 @@ mod tests {
         let fixture = FeedFixture::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            fixture.register_agent("node-wake");
-            let agent = "agent-node-wake";
+            let (agent, key) = fixture.node_on_task("node-wake");
+            let agent = agent.as_str();
             fixture.client.domain.live.observe(&serde_json::json!({
                 "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
             }));
-            let current = fixture.initial(&[(format!("node:{agent}"), "v0000000000000000".into())]).await;
-            let open = vec![(format!("node:{agent}"), "v0000000000000000".into())];
+            let current = fixture.initial(&[(key.clone(), "v0000000000000000".into())]).await;
+            let open = vec![(key.clone(), "v0000000000000000".into())];
             let _ = response_json(handle(&fixture.client, "device-node", &query(&current.cursor, 0, &open), Transport::Loopback).await).await;
-            assert!(!current.live_keys.is_empty(), "the open node view is registered for live sampling");
+            assert!(!current.live_keys.is_empty(), "the open task view is registered for live sampling");
             let mut last = None;
             assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
             let first_wake = *fixture.client.feeds.clock.borrow();
@@ -880,9 +908,8 @@ mod tests {
     #[tokio::test]
     async fn the_activity_updates_through_the_feed() {
         let fixture = FeedFixture::new();
-        fixture.register_agent("activity");
-        let agent = "agent-activity";
-        let key = format!("node:{agent}");
+        let (agent, key) = fixture.node_on_task("activity");
+        let agent = agent.as_str();
         let tool = |command: &str| serde_json::json!({
             "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
             "tool_input": {"command": command}, "cwd": "/tmp/feed-project"
@@ -916,10 +943,10 @@ mod tests {
     #[tokio::test]
     async fn sampler_discards_views_after_device_switch_or_lease_expiry() {
         let fixture = FeedFixture::new();
-        let open = vec![("node:missing".to_owned(), "v0000000000000000".to_owned())];
+        let open = vec![("task:missing".to_owned(), "v0000000000000000".to_owned())];
         let first = fixture.initial(&open).await;
         let _ = response_json(handle(&fixture.client, "device-a", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
-        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "node:missing"]);
+        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "task:missing"]);
 
         let empty = fixture.initial(&[]).await;
         let _ = response_json(handle(&fixture.client, "device-a", &query(&empty.cursor, 0, &[]), Transport::Loopback).await).await;
@@ -927,7 +954,7 @@ mod tests {
         assert!(!fixture.client.feeds.cache.lock().unwrap().contains_key(&feed_key(Client::Ios, Lang::En, Transport::Loopback, &open)));
 
         let _ = response_json(handle(&fixture.client, "device-a", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
-        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "node:missing"]);
+        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "task:missing"]);
         assert!(fixture.client.feeds.live_keys_at(Instant::now() + Duration::from_secs(61)).is_empty());
         assert!(fixture.client.feeds.cache.lock().unwrap().is_empty());
     }

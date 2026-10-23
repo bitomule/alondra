@@ -136,14 +136,9 @@ def main():
         screen = tui.screen()
         assert not any(claim in screen for claim in CLAIMS), f"the tasks screen says the user is needed:\n{screen}"
         tui.capture("tasks")
-        tui.keys(":")
-        tui.type("fleet")
-        tui.keys("Enter")
-        tui.until(lambda s: WAITING in s, f"the node in Fleet never read «{WAITING}»")
-        tui.capture("fleet")
         queue, _ = phone.queue()
         assert all(card == FAKE_ORCHESTRATOR_CARD or card.startswith(UNANSWERED) for card in queue), f"a card of the task waits for the user: {queue}"
-        print(f"ok (tui): the task and its node read «{WAITING}», nothing for the user", file=sys.stderr, flush=True)
+        print(f"ok (tui): the task reads «{WAITING}», nothing for the user", file=sys.stderr, flush=True)
         print("e2e turn end wait: a turn that ended on a message to the orchestrator waits for it, with no card for the user.")
     except BaseException:
         if tui:

@@ -33,27 +33,25 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let node = launched(report, fakes, "t-s1")?;
         state(report, &user, "t-s1", WORKING)?;
         let revived = crash_and_carry_on(report, fakes, &user, &node, "t-s1")?;
-        report.step("Fleet still lists the node, by its task's name", || {
-            let fleet = user.view("fleet")?;
-            if !mentions(&fleet, "Survive a crash") {
-                bail!("Fleet does not list the revived node");
+        report.step("its task is still in progress", || {
+            if !in_progress(&user, "t-s1")? {
+                bail!("the revived node's task is not in progress");
             }
             Ok(())
         })?;
         deliver_merge_close(report, fakes, &user, &revived, "t-s1", 21)
     });
-    report.case("S2", "The user interrupts a node from Fleet: its turn ends with one card and its Claude is not restarted", |report| {
+    report.case("S2", "The user interrupts a node from its task: its turn ends with one card and its Claude is not restarted", |report| {
         request(report, fakes, &user, &task_script("req-s2", "t-s2", "Stop on purpose"), "Stop on purpose")?;
         let node = launched(report, fakes, "t-s2")?;
         state(report, &user, "t-s2", WORKING)?;
-        let fleet = user.view("fleet")?;
-        report.snapshot("fleet-working", &fleet)?;
-        let interrupt = interrupt_of(&fleet, "Stop on purpose").context("Fleet offers no «Interrupt» on the working node")?;
-        report.step("the user presses «Interrupt» on the node in Fleet", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
+        report.snapshot("task-working", &user.view("task:t-s2")?)?;
+        let interrupt = interrupt_of(&user, "t-s2")?.context("the task offers no «Interrupt» on its working node")?;
+        report.step("the user presses «Interrupt» on the task", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
         let card = wait(report, "the turn ends with a card that asks how to go on", || card_in_inbox(&user, "turn-ended-t-s2-"))?;
         report.snapshot("card-interrupted", &user.view(&format!("card:{card}"))?)?;
         report.step("the node no longer offers «Interrupt» and its Claude was not restarted", || {
-            if interrupt_of(&user.view("fleet")?, "Stop on purpose").is_some() {
+            if interrupt_of(&user, "t-s2")?.is_some() {
                 bail!("the node still offers «Interrupt»");
             }
             let starts = fakes.starts(&node.short)?;
@@ -128,7 +126,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(((!inbox.contains(&ended)).then_some(()), format!("{inbox:?}")))
         })?;
         state(report, &user, "t-s5", WORKING)?;
-        let agent = wait(report, "Fleet lists the working node", || Ok((node_of(&user, "Plan the onboarding")?, "no node yet".into())))?;
+        let agent = wait(report, "the task names its working node", || Ok((node_of(&user, "Plan the onboarding")?, "no node yet".into())))?;
         report.step("the user writes to the node while its turn runs", || {
             let (status, body) = user.send("POST", &format!("/agents/{agent}/messages"), Some(json!({"text": "Submit your plan"})))?;
             anyhow::ensure!((200..300).contains(&status), "{status} {body}");
@@ -162,7 +160,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             let cards = inbox.iter().filter(|id| id.starts_with("turn-ended-t-s5-")).count();
             Ok(((cards == 1 && !inbox.iter().any(|id| id.starts_with("host-lost-t-s5-"))).then_some(()), format!("{inbox:?}")))
         })?;
-        report.snapshot("fleet-after-plan", &user.view("fleet")?)
+        report.snapshot("task-after-plan", &user.view("task:t-s5")?)
     });
     report.case("S6", "The user force-stops a node while it runs its work after the merge: a card says so, and «Close the task» finishes it", |report| {
         let mut script = task_script("req-s6", "t-s6", S6_TITLE);
@@ -178,10 +176,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         merged(report, fakes, 26, &head)?;
         let hold = fakes.dir.join(native::HOLD_INTERRUPT);
         report.step("Claude will accept an interrupt and keep going", || Ok(fs::write(&hold, b"")?))?;
-        let interrupt = wait(report, "Fleet offers «Interrupt» on the node", || Ok((interrupt_of(&user.view("fleet")?, S6_TITLE), "no «Interrupt»".into())))?;
-        report.step("the user presses «Interrupt» on the node in Fleet", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
-        let force = wait(report, "Fleet offers «Force stop» once Claude accepted the interrupt", || {
-            Ok((fleet_action(&user.view("fleet")?, S6_TITLE, "force_stop:"), "no «Force stop»".into()))
+        let interrupt = wait(report, "the task offers «Interrupt» on its node", || Ok((interrupt_of(&user, "t-s6")?, "no «Interrupt»".into())))?;
+        report.step("the user presses «Interrupt» on the task", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
+        let force = wait(report, "the task offers «Force stop» once Claude accepted the interrupt", || {
+            Ok((task_action(&user, "t-s6", "force_stop:")?, "no «Force stop»".into()))
         })?;
         report.step("the user presses «Force stop»", || user.press(force["id"].as_str().unwrap_or_default(), None, None))?;
         let card = wait(report, "a card in Inbox says the work after the merge stopped", || card_in_inbox(&user, "session-ended-t-s6-"))?;
@@ -201,25 +199,6 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     });
 }
 
-/// The enabled action of Fleet's row for `title` whose id starts with `prefix`.
-fn fleet_action(fleet: &serde_json::Value, title: &str, prefix: &str) -> Option<serde_json::Value> {
-    let mut rows = vec![];
-    super::user::collect(fleet, &mut |item| item.get("actions").is_some() && mentions(item, title), &mut rows);
-    rows.into_iter().rev().find_map(|row| {
-        let mut found = vec![];
-        super::user::collect(&row, &mut |item| item.get("id").and_then(serde_json::Value::as_str).is_some_and(|id| id.starts_with(prefix)) && item.get("enabled") != Some(&serde_json::Value::Bool(false)), &mut found);
-        found.into_iter().next()
-    })
-}
-
-/// The node Fleet lists for the task titled `title`.
-fn node_of(user: &User, title: &str) -> Result<Option<String>> {
-    let fleet = user.view("fleet")?;
-    let mut rows = vec![];
-    super::user::collect(&fleet, &mut |item| item.pointer("/link/key").and_then(serde_json::Value::as_str).is_some_and(|key| key.starts_with("node:")) && mentions(item, title), &mut rows);
-    Ok(rows.first().and_then(|row| row["id"].as_str()).map(str::to_owned))
-}
-
 /// The node's native Claude dies without a word. A host's end is not the user's decision: no card
 /// asks how to go on, and a native Claude that resumes the same session, with its transcript, is
 /// told to go on by itself.
@@ -233,7 +212,7 @@ fn crash_and_carry_on(report: &mut Report, fakes: &Fakes, user: &User, node: &Se
         let told = fakes.received(&node.short)?.iter().any(|input| input.at >= since);
         Ok(((now.running() && resumed && told).then_some(now.clone()), format!("{:?}, started {} times, last {last:?}", now.state, now.starts)))
     })?;
-    report.snapshot("fleet-after-crash", &user.view("fleet")?)?;
+    report.snapshot("task-after-crash", &user.view(&format!("task:{task}"))?)?;
     report.step("no card asked the user how it goes on", || {
         anyhow::ensure!(card_in_inbox(user, &format!("session-ended-{task}-"))?.0.is_none(), "a card asks how {task} goes on");
         Ok(())

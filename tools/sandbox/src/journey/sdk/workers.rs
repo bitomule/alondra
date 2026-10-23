@@ -73,7 +73,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         let card = wait(report, "the node's command waits on its permission card", || hold_card(user, "decision-t-w2-"))?;
         let view = user.view(&format!("card:{card}"))?;
         choose(report, user, &view, "allow", "the user allows the command, which runs for seconds")?;
-        let node = wait(report, "Fleet lists the working node", || Ok((node_of(user, MID_TURN)?, "no node yet".into())))?;
+        let node = wait(report, "the task names its working node", || Ok((node_of(user, MID_TURN)?, "no node yet".into())))?;
         report.step("the user tells the node something while its command runs", || {
             let (status, body) = user.send("POST", &format!("/agents/{node}/messages"), Some(json!({"text": TOLD})))?;
             ensure!((200..300).contains(&status), "{status} {body}");
@@ -128,10 +128,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         // cleanup_done closes the session, which may end before Claude sends its result to the model:
         // the task finishing is what shows the node cleaned up.
         state(report, user, "t-w3", FINISHED)?;
-        report.step("the task's worktree is gone and its node left Fleet", || {
+        report.step("the task's worktree is gone and it is no longer in progress", || {
             let worktree = sandbox.dir.join("repo/.claude/worktrees/t-w3");
             ensure!(!worktree.exists(), "{} is still there", worktree.display());
-            ensure!(node_of(user, DELIVER)?.is_none(), "Fleet still lists the node");
+            ensure!(!in_progress(user, "t-w3")?, "the task is still in progress");
             Ok(())
         })
     });
@@ -180,7 +180,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             let inbox = user.inbox()?;
             Ok((inbox.iter().any(|id| id.starts_with("turn-ended-t-w4-")).then_some(()), format!("allowed: {allowed:?}; observations: {}", observations(sandbox, "t-w4")?)))
         })?;
-        let node = node_of(user, SPLIT)?.context("Fleet lists no node for the task")?;
+        let node = node_of(user, SPLIT)?.context("the task names no node")?;
         report.step("the user tells the node to deliver", || {
             let (status, body) = user.send("POST", &format!("/agents/{node}/messages"), Some(json!({"text": DELIVER_SPLIT})))?;
             ensure!((200..300).contains(&status), "{status} {body}");
@@ -267,14 +267,6 @@ fn session_transcript(sandbox: &Sandbox, task: &str) -> Result<Vec<Value>> {
         }
     }
     Ok(lines)
-}
-
-/// The node Fleet lists for the task titled `title`.
-fn node_of(user: &User, title: &str) -> Result<Option<String>> {
-    let fleet = user.view("fleet")?;
-    let mut rows = vec![];
-    collect(&fleet, &mut |item| item.pointer("/link/key").and_then(Value::as_str).is_some_and(|key| key.starts_with("node:")) && mentions(item, title), &mut rows);
-    Ok(rows.first().and_then(|row| row["id"].as_str()).map(str::to_owned))
 }
 
 /// The worktrees Claude Code made for subagents in the sandbox's repository.
