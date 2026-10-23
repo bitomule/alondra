@@ -248,9 +248,9 @@ impl MachineWatch {
         self.record.lock().expect("machine watch poisoned").mac.clone()
     }
 
-    /// Takes a new sample; returns whether there is room for one more node when that changed. A
-    /// sample already taken changes nothing.
-    fn sample(&self, machine: &Machine, now: Millis) -> Option<Result<(), NoRoom>> {
+    /// Takes a new sample; returns whether there is room for one more node when that changed, and
+    /// `None` for a sample already taken, which changes nothing.
+    fn sample(&self, machine: &Machine, now: Millis) -> Option<Option<Result<(), NoRoom>>> {
         let mut record = self.record.lock().expect("machine watch poisoned");
         if machine.at != 0 && machine.at == record.sampled_at {
             return None;
@@ -259,7 +259,7 @@ impl MachineWatch {
         let before = record.mac.room(0, now);
         record.mac.step(machine, now);
         let after = record.mac.room(0, now);
-        (before.is_ok() != after.is_ok()).then_some(after)
+        Some((before.is_ok() != after.is_ok()).then_some(after))
     }
 
     fn nodes_due(&self, now: Millis) -> bool {
@@ -437,7 +437,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
         let footprints = domain.node_groups().into_iter().map(|group| alondra_process_group::footprint(group).unwrap_or(0)).collect();
         watch.measure_nodes(now, footprints);
     }
-    let change = watch.sample(machine, now);
+    let Some(change) = watch.sample(machine, now) else { return };
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::fleet_gate::working_tasks(&state).len()).unwrap_or(0);
     if let Some(home) = watch.home() {
@@ -954,5 +954,18 @@ mod tests {
         watcher.abort();
         assert!(open_machine_cards(&domain).is_empty(), "no new card in its place");
         assert!(told.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sample_already_taken_writes_no_second_row() {
+        let (home, domain) = world();
+        let sample = Machine { at: 1_792_662_011_421, ..machine(400 * GB, 50) };
+        pace(&domain, &sample);
+        pace(&domain, &sample);
+        let day = crate::node_reports::local_day(sample.at);
+        let csv = std::fs::read_to_string(home.0.join(crate::machine_state::SAMPLES_DIR).join(format!("{day}.csv"))).unwrap();
+        let rows: Vec<_> = csv.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1, "{csv}");
+        assert!(rows[0].starts_with("1792662011421,"), "{csv}");
     }
 }
