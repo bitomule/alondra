@@ -1128,6 +1128,12 @@ pub struct DomainState {
     /// How much of its session window an account may use before it has no margin.
     #[serde(default = "crate::usage::default_reserve", skip_serializing_if = "crate::usage::is_default_reserve")]
     pub account_reserve: crate::usage::Share,
+    /// How new work is spread over the accounts.
+    #[serde(default, skip_serializing_if = "crate::accounts::is_default_policy")]
+    pub account_policy: crate::accounts::Policy,
+    /// A node whose account reaches its limit goes on with another account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account_moves: bool,
     /// What each account last said of its usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_usage: Vec<crate::usage::AccountUsage>,
@@ -1165,6 +1171,8 @@ impl DomainState {
             mcp: BTreeMap::new(),
             accounts: Vec::new(),
             account_reserve: crate::usage::default_reserve(),
+            account_policy: crate::accounts::Policy::Margin,
+            account_moves: false,
             account_usage: Vec::new(),
             merge_method: MergeMethod::default(),
         }

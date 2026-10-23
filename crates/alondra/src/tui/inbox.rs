@@ -331,6 +331,10 @@ impl App {
                     }
                     alondra_core::views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
                     alondra_core::views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
+                    alondra_core::views::LocalLink::AccountAdd { .. } => self.compose(super::Target::AccountName, ""),
+                    alondra_core::views::LocalLink::AccountSignIn { account, .. } => {
+                        return self.account_sign_in(vec!["accounts".into(), "login".into(), account.clone()]);
+                    }
                     alondra_core::views::LocalLink::OpenPath { path } => {
                         self.flash(trf!(
                             "Local file reference: {path}",

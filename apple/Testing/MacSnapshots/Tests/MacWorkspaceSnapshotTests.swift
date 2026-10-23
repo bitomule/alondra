@@ -123,6 +123,23 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 640, height: 1200)) { Form { ServerSettingsSection(store: store) }.formStyle(.grouped) }
     }
 
+    func test_settings_claudeAccounts() throws {
+        for spanish in [false, true] {
+            var state = ServerSettingsFeature.State(key: .accounts, client: .mac)
+            state.document = try document(spanish ? "accounts-mac-es" : "accounts-mac")
+            let store = Store(initialState: state) { ServerSettingsFeature() }
+            assertWindow(size: CGSize(width: 640, height: 760), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                Form { ServerSettingsSection(store: store) }.formStyle(.grouped)
+            }
+        }
+    }
+
+    func test_settings_claudeSignInInTerminal() {
+        assertWindow(size: CGSize(width: 460, height: 240)) {
+            ClaudeSignInSheet(signIn: .init(command: "alondra accounts login 'Personal'", terminalOpen: true)) {}
+        }
+    }
+
     func test_card_questionWithItsAnswers() throws {
         let store = try presentation(detail: "card-question-mac")
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }

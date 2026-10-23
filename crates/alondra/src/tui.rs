@@ -501,6 +501,8 @@ pub enum Target {
         server: String,
         url: String,
     },
+    /// The name of a new account; Claude's sign-in for it runs once it is sent.
+    AccountName,
 }
 
 pub struct Composer {
@@ -618,6 +620,8 @@ pub enum Flow {
     Go,
     Quit,
     NextMac,
+    /// Claude's sign-in for an account, run on the screen by `alondra accounts`.
+    AccountSignIn(mcp_servers::SignIn),
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
     Review {
         key: Key,
@@ -643,6 +647,8 @@ pub struct App {
     pub rules: Option<rules::Rules>,
     /// The MCP servers of the nodes and projects, open over the list screens.
     pub mcp_servers: Option<mcp_servers::McpServers>,
+    /// What a key's work leaves the screen to do once it returns, such as an account's sign-in.
+    pub pending_flow: Option<Flow>,
     pub sel: Option<Key>,
     sel_idx: usize,
     pub list_scroll: usize,
@@ -880,6 +886,21 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             repaint(terminal, app)?;
                             break;
                         }
+                        Flow::AccountSignIn(sign_in) => {
+                            draw(terminal, app)?;
+                            let _ = execute!(stdout(), DisableBracketedPaste, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::MoveTo(0, 0));
+                            println!("{}\r", tr!("Signing in to Claude: follow the steps below; the browser may open.",
+                                "Iniciando sesión en Claude: sigue los pasos de abajo; puede abrirse el navegador."));
+                            let args: Vec<&str> = sign_in.args.iter().map(String::as_str).collect();
+                            let home = alondra_core::config::home_dir(&|key| std::env::var(key).ok());
+                            let res = std::env::current_exe().map_err(anyhow::Error::from)
+                                .and_then(|alondra| crate::pty::run_in_terminal(&alondra, &args, &home));
+                            crossterm::terminal::enable_raw_mode()?;
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            app.account_signed_in(res);
+                            repaint(terminal, app)?;
+                            break;
+                        }
                         Flow::Go => {}
                     },
                     Event::Paste(s) => app.on_paste(&s),
@@ -1108,6 +1129,7 @@ impl App {
             schedules_open: false,
             rules: None,
             mcp_servers: None,
+            pending_flow: None,
             sel: None,
             sel_idx: 0,
             list_scroll: 0,
@@ -1397,7 +1419,7 @@ impl App {
         if let Some(view) = self.rules.as_ref().and_then(|rules| rules.view.as_ref()) {
             open.insert(view.key.clone(), view.version.clone());
         }
-        for view in self.mcp_servers.iter().flat_map(|screen| [&screen.view, &screen.general]).flatten() {
+        for view in self.mcp_servers.iter().flat_map(|screen| [&screen.view, &screen.general, &screen.accounts]).flatten() {
             open.insert(view.key.clone(), view.version.clone());
         }
     }
@@ -1932,6 +1954,9 @@ impl App {
                 if key == mcp_servers::GENERAL {
                     self.general_loaded(&view);
                 }
+                if key == mcp_servers::ACCOUNTS {
+                    self.accounts_loaded(&view);
+                }
                 if view.view == alondra_core::views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {
                         self.close_settled_card(&key, view);
@@ -2409,6 +2434,10 @@ impl App {
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
         let flow = self.on_key_pressed(k);
+        let flow = match self.pending_flow.take() {
+            Some(pending) if matches!(flow, Flow::Go) => pending,
+            _ => flow,
+        };
         if self.modal.is_none() && !self.typing() {
             self.modal = self.deferred_modal.take();
         }
@@ -2698,7 +2727,7 @@ impl App {
             Target::Message { .. } => c.chips.is_empty(),
             Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
-            Target::McpReturn { .. } => true,
+            Target::McpReturn { .. } | Target::AccountName => true,
         };
         if needs_text && text.is_empty() {
             self.composer = Some(c);
@@ -2769,6 +2798,10 @@ impl App {
             }
             Target::Form { .. } => {}
             Target::McpReturn { card, server, .. } => self.mcp_give_back(&card, &server, text),
+            Target::AccountName => {
+                let flow = self.account_sign_in(vec!["accounts".into(), "add".into(), text]);
+                self.pending_flow = Some(flow).filter(|flow| !matches!(flow, Flow::Go));
+            }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
                     return;

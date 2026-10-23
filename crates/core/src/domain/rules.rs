@@ -11,6 +11,8 @@ pub use compaction::{body_title, result_excerpt, RESULT_LIMIT};
 mod decisions;
 #[path = "mcp.rs"]
 mod mcp;
+#[path = "account_settings.rs"]
+mod account_settings;
 #[path = "mcp_wait.rs"]
 mod mcp_wait;
 pub use mcp::{MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
@@ -2575,6 +2577,15 @@ impl DomainState {
                 self.record_accounts(accounts);
                 self.account_reserve = *reserve;
                 self.account_usage.retain(|usage| seen.contains(&(usage.provider, usage.account.clone())));
+            }
+            Command::RecordDistribution { policy, move_when_exhausted } => {
+                system(actor)?;
+                self.account_policy = *policy;
+                self.account_moves = *move_when_exhausted;
+            }
+            Command::ChangeAccounts { provider, change } => {
+                self.accounts_guard(actor, *provider, change)?;
+                self.change_accounts(*provider, change);
             }
             Command::RecordAccountUsage { provider, account, reading, at, day } => {
                 system(actor)?;

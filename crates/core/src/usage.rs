@@ -209,7 +209,7 @@ impl AccountUsage {
     }
 
     /// The window as it stands at `now`: none once its reset has passed.
-    fn current(&self, kind: &WindowKind, now: Millis) -> Option<&WindowReading> {
+    pub fn current(&self, kind: &WindowKind, now: Millis) -> Option<&WindowReading> {
         self.window(kind).map(|window| &window.reading).filter(|reading| reading.resets_at.is_none_or(|reset| reset > now))
     }
 

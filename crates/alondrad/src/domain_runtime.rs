@@ -870,6 +870,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ProbeClaudeAccess { .. }
         | Command::RecordAccounts { .. }
         | Command::RecordAccountUsage { .. }
+        | Command::RecordDistribution { .. }
+        | Command::ChangeAccounts { .. }
         | Command::InterruptTurn { .. }
         | Command::ForceStopTurn { .. }
         | Command::CompactEndedTasks { .. }

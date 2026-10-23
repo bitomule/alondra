@@ -86,8 +86,11 @@ pub struct ReadIndex {
     mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
     account_reserve: crate::usage::Share,
+    account_policy: crate::accounts::Policy,
+    account_moves: bool,
     merge_method: super::MergeMethod,
     account_usage: Vec<crate::usage::AccountUsage>,
+    account_nodes: Vec<(crate::accounts::AccountId, usize)>,
 }
 
 impl ReadIndex {
@@ -235,6 +238,18 @@ impl ReadIndex {
     pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
         &self.accounts
     }
+    /// How new work is spread over the accounts.
+    pub fn account_policy(&self) -> crate::accounts::Policy {
+        self.account_policy
+    }
+    /// Whether a node whose account reaches its limit goes on with another account.
+    pub fn account_moves(&self) -> bool {
+        self.account_moves
+    }
+    /// How many open tasks' nodes run on each account that has some.
+    pub fn nodes_on_account(&self, account: &crate::accounts::AccountId) -> usize {
+        self.account_nodes.iter().find(|(on, _)| on == account).map_or(0, |(_, count)| *count)
+    }
     /// What each account last said of its usage.
     pub fn account_usage(&self) -> &[crate::usage::AccountUsage] {
         &self.account_usage
@@ -356,8 +371,12 @@ impl<'a> Builder<'a> {
         index.mcp_nodes = state.mcp_nodes();
         index.accounts = state.accounts.clone();
         index.account_reserve = state.account_reserve;
+        index.account_policy = state.account_policy;
+        index.account_moves = state.account_moves;
         index.merge_method = state.merge_method;
         index.account_usage = state.account_usage.clone();
+        index.account_nodes = state.accounts.iter().map(|account| (account.id.clone(), state.tasks_on_account(&account.id)))
+            .filter(|(_, count)| *count > 0).collect();
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -715,6 +734,11 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
     assert_eq!(index.account_usage(), state.account_usage.as_slice(), "the accounts' usage");
     assert_eq!(index.account_reserve, state.account_reserve, "the accounts' reserve");
+    assert_eq!(index.account_policy(), state.account_policy, "how work is spread over the accounts");
+    assert_eq!(index.account_moves(), state.account_moves, "whether nodes move between accounts");
+    for account in &state.accounts {
+        assert_eq!(index.nodes_on_account(&account.id), state.tasks_on_account(&account.id), "the nodes on account {}", account.id);
+    }
     assert_eq!(index.merge_method, state.merge_method, "the merge method");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");

@@ -166,6 +166,10 @@ pub enum Policy {
     Chain,
 }
 
+pub fn is_default_policy(policy: &Policy) -> bool {
+    *policy == Policy::default()
+}
+
 pub const RESERVE: f64 = 0.90;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -255,8 +259,8 @@ impl AccountsConfig {
                     if plan.as_deref().is_some_and(|p| p.trim().is_empty()) {
                         return Err(format!("accounts {}: account {} has an empty plan", provider.as_str(), account.id));
                     }
-                    if *weight == Some(0) {
-                        return Err(format!("accounts {}: account {} needs a weight above 0", provider.as_str(), account.id));
+                    if weight.is_some_and(|weight| weight == 0 || weight > WEIGHT_LIMIT) {
+                        return Err(format!("accounts {}: account {} needs a weight from 1 to {WEIGHT_LIMIT}", provider.as_str(), account.id));
                     }
                 }
             }
@@ -274,6 +278,89 @@ impl AccountsConfig {
             accounts: &'a AccountsConfig,
         }
         toml::to_string(&Wrapper { accounts: self }).expect("accounts serialize")
+    }
+}
+
+/// The most an account's weight may be: twice the largest plan's.
+pub const WEIGHT_LIMIT: u32 = 20;
+
+/// One change the user makes to the accounts from Settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AccountChange {
+    Enable { account: AccountId },
+    Disable { account: AccountId },
+    Remove { account: AccountId },
+    MoveUp { account: AccountId },
+    MoveDown { account: AccountId },
+    /// The account's weight, or its plan's usual one with none.
+    SetWeight {
+        account: AccountId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u32>,
+    },
+    SetPolicy { policy: Policy },
+    /// Whether a node whose account reaches its limit goes on with another one.
+    SetMoveWhenExhausted { on: bool },
+}
+
+impl AccountChange {
+    pub fn account(&self) -> Option<&AccountId> {
+        match self {
+            AccountChange::Enable { account }
+            | AccountChange::Disable { account }
+            | AccountChange::Remove { account }
+            | AccountChange::MoveUp { account }
+            | AccountChange::MoveDown { account }
+            | AccountChange::SetWeight { account, .. } => Some(account),
+            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } => None,
+        }
+    }
+}
+
+impl AccountsConfig {
+    /// The section with `change` made. The default account is written into the list when the
+    /// change places it or sets something of its own.
+    pub fn changed(&self, provider: Provider, change: &AccountChange) -> Result<AccountsConfig, String> {
+        let mut next = self.clone();
+        match change {
+            AccountChange::SetPolicy { policy } => {
+                next.distribution.policy = *policy;
+                return Ok(next);
+            }
+            AccountChange::SetMoveWhenExhausted { on } => {
+                next.distribution.move_when_exhausted = *on;
+                return Ok(next);
+            }
+            _ => {}
+        }
+        let account = change.account().expect("every other change names an account");
+        let mut listed = self.accounts(provider);
+        let at = listed.iter().position(|a| a.id == *account).ok_or_else(|| format!("account {account} is not listed"))?;
+        match change {
+            AccountChange::Enable { .. } => listed[at].enabled = true,
+            AccountChange::Disable { .. } => listed[at].enabled = false,
+            AccountChange::Remove { .. } => {
+                listed.remove(at);
+            }
+            AccountChange::MoveUp { .. } if at > 0 => listed.swap(at, at - 1),
+            AccountChange::MoveDown { .. } if at + 1 < listed.len() => listed.swap(at, at + 1),
+            AccountChange::MoveUp { .. } | AccountChange::MoveDown { .. } => return Err(format!("account {account} can't move further")),
+            AccountChange::SetWeight { weight, .. } => match &mut listed[at].billing {
+                AccountBilling::Subscription { weight: set, .. } => *set = *weight,
+                AccountBilling::PayPerUse => return Err(format!("account {account} is paid per use and has no weight")),
+            },
+            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } => unreachable!("handled above"),
+        }
+        let implicit = ProviderAccount::implicit_default();
+        let untouched_default = !self.listed(provider).iter().any(|a| a.id.is_default())
+            && listed.first().is_some_and(|first| *first == implicit);
+        if untouched_default {
+            listed.remove(0);
+        }
+        *next.listed_mut(provider) = listed;
+        next.check()?;
+        Ok(next)
     }
 }
 

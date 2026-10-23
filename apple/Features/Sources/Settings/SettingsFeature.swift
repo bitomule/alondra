@@ -129,6 +129,7 @@ public extension DependencyValues {
         public var confirmLogout = false
         public var nodeLimit = NodeLimitFeature.State()
         public var allowedRules = AllowedRulesFeature.State()
+        public var accounts = ServerSettingsFeature.State(key: .accounts)
         public var mcpServers = ServerSettingsFeature.State(key: .mcpServers)
         public var measurements = ConnectionMeasurementsFeature.State()
         public var generation: UInt64 = 0
@@ -159,6 +160,7 @@ public extension DependencyValues {
         case logoutTapped, cancelLogout, confirmLogout
         case nodeLimit(NodeLimitFeature.Action)
         case allowedRules(AllowedRulesFeature.Action)
+        case accounts(ServerSettingsFeature.Action)
         case mcpServers(ServerSettingsFeature.Action)
         case measurements(ConnectionMeasurementsFeature.Action)
     }
@@ -175,11 +177,12 @@ public extension DependencyValues {
     public var body: some ReducerOf<Self> {
         Scope(state: \.nodeLimit, action: \.nodeLimit) { NodeLimitFeature() }
         Scope(state: \.allowedRules, action: \.allowedRules) { AllowedRulesFeature() }
+        Scope(state: \.accounts, action: \.accounts) { ServerSettingsFeature() }
         Scope(state: \.mcpServers, action: \.mcpServers) { ServerSettingsFeature() }
         Scope(state: \.measurements, action: \.measurements) { ConnectionMeasurementsFeature() }
         Reduce { state, action in
             switch action {
-            case .nodeLimit, .allowedRules, .mcpServers, .measurements: return .none
+            case .nodeLimit, .allowedRules, .accounts, .mcpServers, .measurements: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
                 return .run { send in

@@ -56,6 +56,10 @@ final class McpSignInRouteTests: XCTestCase {
         XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["mcp-sign-ins", "mcp-server-0123456789abcdef", "without"]))
         XCTAssertTrue(APIRequest.validClientContractRoute(method: .get, path: ["views", "mcp_servers"]))
     }
+
+    func testTheClaudeAccountsScreenIsAViewTheAppMayRead() {
+        XCTAssertTrue(APIRequest.validClientContractRoute(method: .get, path: ["views", "accounts"]))
+    }
 }
 
 final class OperationErrorTests: XCTestCase {

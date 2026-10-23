@@ -104,6 +104,12 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "Este nodo no está haciendo nada que interrumpir.").into(),
         Refusal::InterruptNotAccepted => t!(lang, "Interrupt it first: you can force it to stop only if it keeps going after Claude accepts the interrupt.",
             "Interrúmpelo primero: solo puedes forzar la parada si sigue después de que Claude acepte la interrupción.").into(),
+        Refusal::DefaultAccountStays { name } => tf!(lang, "{name} is Claude's own sign-in on this Mac: it can't be removed.",
+            "{name} es la sesión propia de Claude en este Mac: no se puede quitar.", name = name),
+        Refusal::LastAccountOn { name } => tf!(lang, "{name} is the only account on: turn on another one first.",
+            "{name} es la única cuenta activada: activa otra antes.", name = name),
+        Refusal::AccountInUse { name } => tf!(lang, "Open tasks still run on {name}: remove it once they are done.",
+            "Aún hay tareas abiertas que trabajan con {name}: quítala cuando terminen.", name = name),
         Refusal::AlreadyStopping => t!(lang, "Alondra is already stopping this node.", "Alondra ya está parando este nodo.").into(),
         Refusal::DeviceNotApproved => t!(lang, "This device is no longer approved. Approve it again from the Mac.",
             "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac.").into(),
@@ -177,7 +183,8 @@ mod tests {
             Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
             Refusal::NodeUnreachable { node: "n".into() }, Refusal::NothingToInterrupt, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,
-            Refusal::GithubUnreachable, Refusal::NoLongerAvailable,
+            Refusal::GithubUnreachable, Refusal::NoLongerAvailable, Refusal::DefaultAccountStays { name: "n".into() },
+            Refusal::LastAccountOn { name: "n".into() }, Refusal::AccountInUse { name: "n".into() },
         ];
         for refusal in all {
             let (en, es) = (refusal_text(&refusal, Lang::En), refusal_text(&refusal, Lang::Es));

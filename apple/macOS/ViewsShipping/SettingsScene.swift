@@ -81,6 +81,7 @@ struct MacServiceSettingsScene: View {
         state.showsSignOutWithMacs = owner == nil && account.macs.contains { !$0.local }
         state.nodeLimit = NodeLimitFeature.State(client: .mac)
         state.allowedRules = AllowedRulesFeature.State(client: .mac)
+        state.accounts = ServerSettingsFeature.State(key: .accounts, client: .mac)
         state.mcpServers = ServerSettingsFeature.State(key: .mcpServers, client: .mac)
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
@@ -88,6 +89,10 @@ struct MacServiceSettingsScene: View {
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
                 $0.connectionMeasurements = .live(account.measurements)
+                $0.claudeTerminal.open = { command in
+                    guard await MainActor.run(body: { workspace.thisMac === services }) else { return false }
+                    return await ClaudeTerminal.open(command)
+                }
             }
         if let unopened = pairingRequested {
             pairingRequested = nil

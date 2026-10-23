@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, AccountsConfig, Provider};
+use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, AccountsConfig, Policy, Provider};
 use alondra_core::claude_account;
 use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
 use alondra_core::usage::Share;
@@ -219,12 +219,84 @@ fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>, reserve: Share) 
     }
 }
 
+/// Records how new work is spread, and whether nodes move between accounts, when the domain
+/// holds another way.
+fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
+    for _ in 0..5 {
+        let state = domain.read();
+        if state.state().account_policy == policy && state.state().account_moves == move_when_exhausted {
+            return;
+        }
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.state().data_epoch.clone(),
+            command_id: format!("account-policy-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: state.state().revision,
+            command: Command::RecordDistribution { policy, move_when_exhausted },
+        };
+        drop(state);
+        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
+            Ok(_) => return,
+            Err(error) => log!("could not record how work is spread over the accounts: {error}"),
+        }
+    }
+}
+
 /// Checks every account's sign-in and records what it saw.
 pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
     match config(home) {
-        Ok(config) => record(domain, observe(home, Claude::of(domain).as_ref(), &config), Share::of(config.distribution.reserve)),
+        Ok(config) => {
+            record_distribution(domain, config.distribution.policy, config.distribution.move_when_exhausted);
+            record(domain, observe(home, Claude::of(domain).as_ref(), &config), Share::of(config.distribution.reserve));
+        }
         Err(why) => log!("accounts not checked: {why}"),
     }
+}
+
+/// Why a change from Settings was not made.
+#[derive(Debug)]
+pub(crate) enum ChangeRefused {
+    /// The change's own rules refuse it.
+    Domain(alondra_core::domain::DomainError),
+    Store(Refused),
+}
+
+/// Makes a change the user asked for from Settings: judged by the guard of its command, written
+/// to `options.toml`, recorded in the domain, and the accounts checked again.
+pub(crate) fn change(domain: &DomainRuntime, home: &Path, actor: &Actor, change: &AccountChange) -> Result<(), ChangeRefused> {
+    let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let envelope = |state: &alondra_core::domain::DomainState| CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("accounts-change-{}", crate::auth::random_hex(16)).into(),
+        expected_revision: state.revision,
+        command: Command::ChangeAccounts { provider: Provider::Claude, change: change.clone() },
+    };
+    let working = {
+        let read = domain.read();
+        read.state().guard(actor, &envelope(read.state())).map_err(ChangeRefused::Domain)?;
+        working(read.state())
+    };
+    let current = config(home).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    let next = current.changed(Provider::Claude, change).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    let claude = Claude::of(domain);
+    let user_home = claude.as_ref().map_or_else(crate::options::user_home, |claude| claude.user_home.clone());
+    store(home, &user_home, claude.as_ref(), &version(&current), &next, &working).map_err(ChangeRefused::Store)?;
+    for _ in 0..5 {
+        let read = domain.read();
+        let envelope = envelope(read.state());
+        drop(read);
+        match domain.execute(actor, &envelope, None, || Ok(())) {
+            Ok(_) => break,
+            Err(crate::domain_store::StoreError::Domain(error)) if error.code == "stale_revision" => continue,
+            Err(error) => {
+                log!("the accounts changed in options.toml, but the domain did not record it: {error}");
+                break;
+            }
+        }
+    }
+    check(domain, home);
+    Ok(())
 }
 
 /// Checks the accounts when the daemon starts, then every ten minutes.
@@ -315,6 +387,10 @@ pub(crate) enum Refused {
 }
 
 impl Refused {
+    pub(crate) fn message(self, lang: Lang) -> String {
+        self.reply(lang).body["message"].as_str().unwrap_or_default().to_owned()
+    }
+
     fn reply(self, lang: Lang) -> Reply {
         let es = lang == Lang::Es;
         let (status, code, message) = match self {

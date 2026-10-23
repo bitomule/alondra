@@ -30,6 +30,7 @@ public struct ViewKey: RawRepresentable, Hashable, Codable, Sendable {
     public static func search(_ query: String = "") -> ViewKey { ViewKey(rawValue: "search?q=\(formEncode(query))") }
     public static let machine = ViewKey(rawValue: "machine")
     public static let mcpServers = ViewKey(rawValue: "mcp_servers")
+    public static let accounts = ViewKey(rawValue: "accounts")
 
     private static func formEncode(_ value: String) -> String {
         var result = ""

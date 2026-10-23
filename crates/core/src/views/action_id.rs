@@ -50,11 +50,24 @@ pub enum Verb {
     McpSignOut,
     /// Check the MCP servers of a project no node runs in, named by its target.
     McpCheck,
+    /// Turn an account on or off, take it away, or move it in the order, named by its id.
+    AccountEnable,
+    AccountDisable,
+    AccountRemove,
+    AccountUp,
+    AccountDown,
+    /// Set an account's weight: a number, or `auto` for its plan's, as `option_id`.
+    AccountWeight,
+    /// Set how new work is spread over the accounts: `margin` or `chain`, as `option_id`.
+    AccountPolicy,
     /// Set how this Mac merges PRs: `squash`, `merge` or `rebase`, as `option_id`.
     SetMergeMethod,
+    /// Whether a node whose account reaches its limit goes on with another: `on` or `off`, as
+    /// `option_id`.
+    AccountMoves,
 }
 impl Verb {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 47] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -94,6 +107,14 @@ impl Verb {
         Self::McpSignOut,
         Self::McpCheck,
         Self::SetMergeMethod,
+        Self::AccountEnable,
+        Self::AccountDisable,
+        Self::AccountRemove,
+        Self::AccountUp,
+        Self::AccountDown,
+        Self::AccountWeight,
+        Self::AccountPolicy,
+        Self::AccountMoves,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -136,6 +157,14 @@ impl Verb {
             Self::McpSignOut => "mcp_sign_out",
             Self::McpCheck => "mcp_check",
             Self::SetMergeMethod => "set_merge_method",
+            Self::AccountEnable => "account_enable",
+            Self::AccountDisable => "account_disable",
+            Self::AccountRemove => "account_remove",
+            Self::AccountUp => "account_up",
+            Self::AccountDown => "account_down",
+            Self::AccountWeight => "account_weight",
+            Self::AccountPolicy => "account_policy",
+            Self::AccountMoves => "account_moves",
         }
     }
     fn parse(value: &str) -> Option<Self> {

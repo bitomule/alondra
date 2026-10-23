@@ -1,8 +1,10 @@
 //! Settings, the terminal's settings screen (`,` or `:settings` from any screen). General first:
 //! this Mac's settings, the `settings` section of the machine view (how PRs merge, nodes at once),
-//! each picked from its menu. Then MCP servers: per project, each server its nodes use with how it
-//! is, and the projects no node runs in, each checked on demand. Its buttons are the view's:
-//! Connect opens the sign-in as a card's does, Reconnect, Sign out and Check go to the daemon.
+//! each picked from its menu. Then Claude accounts: each account with how it is and what it takes,
+//! how new work is spread, and adding one, whose sign-in runs on this screen. Then MCP servers: per
+//! project, each server its nodes use with how it is, and the projects no node runs in, each checked
+//! on demand. Its buttons are the view's: Connect opens the sign-in as a card's does, Reconnect,
+//! Sign out and Check go to the daemon.
 
 use std::time::Duration;
 
@@ -11,10 +13,11 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
 use super::keys::Motion;
-use super::{App, Client, Key, Msg};
+use super::{App, Client, Flow, Key, Msg};
 
 pub const VIEW: &str = alondra_core::views::mcp_servers::KEY;
 pub const GENERAL: &str = "machine";
+pub const ACCOUNTS: &str = alondra_core::views::accounts::KEY;
 const GENERAL_SECTION: &str = "settings";
 const ACCENT: Color = Color::LightCyan;
 
@@ -29,6 +32,7 @@ pub enum Entry<'a> {
 #[derive(Default)]
 pub struct McpServers {
     pub general: Option<View>,
+    pub accounts: Option<View>,
     pub view: Option<View>,
     pub failed: Option<String>,
     pub sel: usize,
@@ -53,20 +57,15 @@ impl McpServers {
         if !general.is_empty() {
             entries.push(Entry::Group(tr!("General", "General")));
             entries.extend(general.into_iter().map(Entry::Row));
-            if self.view.as_ref().is_some_and(|view| !view.sections.is_empty()) {
-                entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
-            }
         }
-        for section in self.view.iter().flat_map(|view| &view.sections) {
-            if let Some(title) = &section.title {
-                entries.push(Entry::Heading(title));
-            }
-            entries.extend(section.items.iter().filter_map(|item| match item {
-                Item::Row(row) => Some(Entry::Row(row)),
-                Item::Notice(notice) => Some(Entry::Note(&notice.text)),
-                _ => None,
-            }));
+        if self.accounts.as_ref().is_some_and(|view| !view.sections.is_empty()) {
+            entries.push(Entry::Group(tr!("Claude accounts", "Cuentas de Claude")));
+            entries.extend(sections(self.accounts.as_ref()));
         }
+        if !entries.is_empty() && self.view.as_ref().is_some_and(|view| !view.sections.is_empty()) {
+            entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
+        }
+        entries.extend(sections(self.view.as_ref()));
         entries
     }
 
@@ -95,12 +94,34 @@ impl McpServers {
 
     /// The data epoch the screen's buttons act on.
     pub fn epoch(&self) -> Option<String> {
-        self.view.as_ref().or(self.general.as_ref()).map(|view| view.data_epoch.clone())
+        self.view.as_ref().or(self.accounts.as_ref()).or(self.general.as_ref()).map(|view| view.data_epoch.clone())
     }
 
     fn clamp(&mut self) {
         self.sel = self.sel.min(self.rows().len().saturating_sub(1));
     }
+}
+
+/// What `view` shows, section by section: its heading, its rows and what it says of itself.
+fn sections(view: Option<&View>) -> Vec<Entry<'_>> {
+    let mut entries = vec![];
+    for section in view.iter().flat_map(|view| &view.sections) {
+        if let Some(title) = &section.title {
+            entries.push(Entry::Heading(title));
+        }
+        entries.extend(section.items.iter().filter_map(|item| match item {
+            Item::Row(row) => Some(Entry::Row(row)),
+            Item::Notice(notice) => Some(Entry::Note(&notice.text)),
+            _ => None,
+        }));
+    }
+    entries
+}
+
+/// Claude's sign-in for an account, run on this screen by `alondra accounts`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignIn {
+    pub args: Vec<String>,
 }
 
 /// The buttons of a row, numbered from 1 in the order the view gives them.
@@ -163,6 +184,50 @@ impl App {
         self.mcp_servers = Some(McpServers::default());
         self.load_mcp_servers();
         self.load_general();
+        self.load_accounts();
+    }
+
+    fn load_accounts(&mut self) {
+        self.spawn(|tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
+                .views(ACCOUNTS, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ViewCard { key: ACCOUNTS.into(), result });
+        });
+    }
+
+    pub(super) fn accounts_loaded(&mut self, view: &View) {
+        let Some(screen) = self.mcp_servers.as_mut() else { return };
+        screen.accounts = Some(view.clone());
+        screen.clamp();
+        self.sync_open_views();
+    }
+
+    /// Claude's sign-in for an account runs on this Mac's screen, never on another Mac's.
+    pub(super) fn account_sign_in(&mut self, args: Vec<String>) -> Flow {
+        if self.remote_mac().is_some() {
+            let command = std::iter::once("alondra".to_owned()).chain(args.iter().map(|arg| match arg.contains(' ') {
+                true => alondra_core::views::accounts::shell_word(arg),
+                false => arg.clone(),
+            })).collect::<Vec<_>>().join(" ");
+            self.fail(trf!(
+                "Claude's sign-in opens on the Mac it is for: run {command} there",
+                "El inicio de sesión de Claude se abre en el Mac de la cuenta: ejecuta {command} allí"
+            ));
+            return Flow::Go;
+        }
+        Flow::AccountSignIn(SignIn { args })
+    }
+
+    pub(super) fn account_signed_in(&mut self, result: anyhow::Result<String>) {
+        match result {
+            Ok(words) if !words.is_empty() => self.flash(words),
+            Ok(_) => self.flash(tr!("Done", "Hecho")),
+            Err(error) => self.fail(format!("{error:#}")),
+        }
+        if self.mcp_servers.is_some() {
+            self.load_accounts();
+        }
     }
 
     fn load_general(&mut self) {
@@ -211,12 +276,12 @@ impl App {
 
     /// The selected row's button `index`, from 0: its menu of options first when it has one, and
     /// through the view's confirmation when it asks for one.
-    pub(super) fn mcp_server_action(&mut self, index: usize) {
-        let Some(screen) = self.mcp_servers.as_ref() else { return };
-        let Some(epoch) = screen.epoch() else { return };
+    pub(super) fn mcp_server_action(&mut self, index: usize) -> Flow {
+        let Some(screen) = self.mcp_servers.as_ref() else { return Flow::Go };
+        let Some(epoch) = screen.epoch() else { return Flow::Go };
         let Some((row, action)) = screen.selected().and_then(|row| Some((row.id.clone(), (*actions(row).get(index)?).clone()))) else {
-            return;
+            return Flow::Go;
         };
-        self.press_card_action(action, None, &Key(row), epoch);
+        self.press_card_action(action, None, &Key(row), epoch)
     }
 }

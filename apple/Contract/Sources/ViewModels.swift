@@ -517,7 +517,12 @@ public enum LocalLink: Codable, Equatable, Sendable {
     case mcpSignIn(card: String, server: String)
     /// Has the nodes that wait for the card's MCP server read their sign-in again.
     case mcpReconnect(card: String)
-    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server }
+    /// Asks for the new Claude account's name, then signs it in by running `command` with the
+    /// shell-quoted name appended in Terminal on the daemon's Mac.
+    case accountAdd(command: String)
+    /// Signs `account` in to Claude by running `command`, as is, in Terminal on the daemon's Mac.
+    case accountSignIn(account: String, command: String)
+    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server, command, account }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -526,6 +531,8 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case "open_path": self = .openPath(path: try c.decode(String.self, forKey: .path))
         case "mcp_sign_in": self = .mcpSignIn(card: try c.decode(String.self, forKey: .card), server: try c.decode(String.self, forKey: .server))
         case "mcp_reconnect": self = .mcpReconnect(card: try c.decode(String.self, forKey: .card))
+        case "account_add": self = .accountAdd(command: try c.decode(String.self, forKey: .command))
+        case "account_sign_in": self = .accountSignIn(account: try c.decode(String.self, forKey: .account), command: try c.decode(String.self, forKey: .command))
         case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
@@ -537,6 +544,8 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case let .openPath(v): try c.encode("open_path", forKey: .kind); try c.encode(v, forKey: .path)
         case let .mcpSignIn(card, server): try c.encode("mcp_sign_in", forKey: .kind); try c.encode(card, forKey: .card); try c.encode(server, forKey: .server)
         case let .mcpReconnect(card): try c.encode("mcp_reconnect", forKey: .kind); try c.encode(card, forKey: .card)
+        case let .accountAdd(command): try c.encode("account_add", forKey: .kind); try c.encode(command, forKey: .command)
+        case let .accountSignIn(account, command): try c.encode("account_sign_in", forKey: .kind); try c.encode(account, forKey: .account); try c.encode(command, forKey: .command)
         }
     }
 }

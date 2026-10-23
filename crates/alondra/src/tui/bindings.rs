@@ -578,7 +578,7 @@ impl App {
             Act::RemoveRule => self.remove_rule(),
             Act::McpServers => self.open_mcp_servers(),
             Act::CloseMcpServers => self.close_mcp_servers(),
-            Act::McpAction(index) => self.mcp_server_action(index),
+            Act::McpAction(index) => return self.mcp_server_action(index),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

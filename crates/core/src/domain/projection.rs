@@ -58,6 +58,11 @@ pub(super) struct InboxOrderFacts<'a> {
 }
 
 impl DomainState {
+    /// Whether the user may make `change` to the accounts from Settings, by the guard of its
+    /// command.
+    pub fn account_action(&self, provider: crate::accounts::Provider, change: crate::accounts::AccountChange) -> AvailableAction {
+        self.action("change_accounts", Command::ChangeAccounts { provider, change }, None, None, self)
+    }
     /// User task controls are computed by the same guards as command execution.
     pub fn task_actions(&self, task_id: &TaskId) -> Option<Vec<AvailableAction>> {
         self.task_actions_given(task_id, self)

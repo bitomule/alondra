@@ -794,7 +794,7 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.mcp_servers.as_mut() else { return };
-    let title = match screen.general.is_some() {
+    let title = match screen.general.is_some() || screen.accounts.is_some() {
         true => tr!("Settings", "Ajustes").to_owned(),
         false => format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP"))),
     };
@@ -1446,6 +1446,11 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             "Sign in to {server} in the browser, then paste the address of the page that did not load",
             "Inicia sesión en {server} en el navegador y pega la dirección de la página que no carga"
         ),
+        Target::AccountName => tr!(
+            "Name of the new Claude account, such as Work; then you sign in to it",
+            "Nombre de la cuenta de Claude nueva, como Trabajo; luego inicias sesión en ella"
+        )
+        .into(),
     };
     let action = composer_action(&c.target);
     let title = truncate(&title, (area.width as usize).saturating_sub(6));
@@ -1512,6 +1517,7 @@ fn composer_action(t: &Target) -> &'static str {
             tr!("sends it back", "la devuelve")
         }
         Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
+        Target::AccountName => tr!("adds it", "la añade"),
         _ => tr!("sends", "envía"),
     }
 }

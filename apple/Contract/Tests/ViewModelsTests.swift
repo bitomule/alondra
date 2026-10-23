@@ -113,6 +113,16 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ActionRequest.self, from: JSONEncoder().encode(request)), request)
     }
 
+    func testClaudeAccountLinksCarryTheCommandTheMacRuns() throws {
+        let add = try JSONDecoder().decode(Link.self, from: Data(#"{"kind":"local","local":{"kind":"account_add","command":"alondra accounts add"}}"#.utf8))
+        XCTAssertEqual(add, .local(local: .accountAdd(command: "alondra accounts add")))
+        let signIn = try JSONDecoder().decode(Link.self, from: Data(#"{"kind":"local","local":{"kind":"account_sign_in","account":"Personal","command":"alondra accounts login 'Personal'"}}"#.utf8))
+        XCTAssertEqual(signIn, .local(local: .accountSignIn(account: "Personal", command: "alondra accounts login 'Personal'")))
+        for link in [add, signIn] {
+            XCTAssertEqual(try JSONDecoder().decode(Link.self, from: JSONEncoder().encode(link)), link)
+        }
+    }
+
     func testChangeFeedAndResponseEnumsMatchWireNames() throws {
         let feedJSON = #"{"protocol":1,"cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"stale":["task:t-12"],"reset":false,"superseded":true}"#.data(using: .utf8)!
         let feed = try JSONDecoder().decode(ViewFeed.self, from: feedJSON)

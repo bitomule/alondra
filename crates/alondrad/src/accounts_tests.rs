@@ -196,6 +196,42 @@ fn an_account_open_tasks_run_on_is_not_removed() {
     assert!(!f.user_home.join("logouts").exists(), "never signed out");
 }
 
+/// A Settings button writes `options.toml`, then the domain records the change, and it survives a
+/// restart; one its rules refuse leaves the file as it was.
+#[test]
+fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
+    let f = fixture();
+    f.store(&with(vec![work()])).unwrap();
+    let user = Actor::User { user_id: "device:test".into() };
+    let order = |domain: &DomainRuntime| domain.read().state().accounts.iter().map(|a| a.id.to_string()).collect::<Vec<_>>();
+    {
+        let domain = DomainRuntime::open(&f.home).unwrap();
+        check(&domain, &f.home);
+        assert_eq!(order(&domain), ["default", "work"]);
+
+        change(&domain, &f.home, &user, &AccountChange::MoveUp { account: AccountId::parse("work").unwrap() }).unwrap();
+        let file = config(&f.home).unwrap();
+        assert_eq!(file.accounts(Provider::Claude).iter().map(|a| a.id.to_string()).collect::<Vec<_>>(), ["work", "default"]);
+        assert_eq!(order(&domain), ["work", "default"]);
+
+        change(&domain, &f.home, &user, &AccountChange::SetPolicy { policy: Policy::Chain }).unwrap();
+        assert_eq!(config(&f.home).unwrap().distribution.policy, Policy::Chain);
+        change(&domain, &f.home, &user, &AccountChange::SetMoveWhenExhausted { on: true }).unwrap();
+        assert!(config(&f.home).unwrap().distribution.move_when_exhausted, "the file the move reads says so");
+
+        let before = std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap();
+        let refused = change(&domain, &f.home, &user, &AccountChange::Remove { account: AccountId::default_account() });
+        assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.why() == alondra_core::domain::Refusal::DefaultAccountStays { name: "Default".into() }), "{refused:?}");
+        assert_eq!(std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap(), before, "a refused change writes nothing");
+        let refused = change(&domain, &f.home, &Actor::System, &AccountChange::SetPolicy { policy: Policy::Margin });
+        assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.code == "forbidden"), "only the user changes the accounts: {refused:?}");
+    }
+    let restarted = DomainRuntime::open(&f.home).unwrap();
+    assert_eq!(restarted.read().state().account_policy, Policy::Chain, "the policy survives a restart");
+    assert!(restarted.read().state().account_moves, "so does moving nodes");
+    assert_eq!(order(&restarted), ["work", "default"]);
+}
+
 #[test]
 fn the_default_account_can_be_disabled_while_another_stays_on_but_never_the_last_one() {
     let f = fixture();

@@ -61,7 +61,7 @@ fn a_broken_section_is_refused_with_the_reason() {
         ("[[accounts.claude]]\nid = \"a\"\nname = \"Work\"\n[[accounts.claude]]\nid = \"b\"\nname = \"work\"\n", "two accounts are called"),
         ("[accounts.distribution]\nreserve = 1.5\n", "reserve"),
         ("[accounts.distribution]\npolicy = \"round_robin\"\n", "unknown variant"),
-        ("[[accounts.claude]]\nid = \"a\"\nname = \"A\"\nbilling = { kind = \"subscription\", weight = 0 }\n", "weight above 0"),
+        ("[[accounts.claude]]\nid = \"a\"\nname = \"A\"\nbilling = { kind = \"subscription\", weight = 0 }\n", "weight from 1 to 20"),
         ("[[accounts.claude]]\nid = \"a\"\nname = \"A\"\nfolder = \"~/.claude-work\"\n", "unknown field"),
     ] {
         let error = OptionsFile::parse(text).unwrap_err();
@@ -98,4 +98,33 @@ fn only_accounts_other_than_the_default_have_a_folder_inside_alondras_home() {
     let home = Path::new("/h/.alondra");
     assert_eq!(folder(home, &AccountId::parse("work").unwrap()).unwrap(), Path::new("/h/.alondra/accounts/work"));
     assert_eq!(folder(home, &AccountId::default_account()), None);
+}
+
+#[test]
+fn a_settings_change_moves_disables_weighs_and_removes_accounts_in_the_users_order() {
+    let config = AccountsConfig { claude: vec![work()], ..AccountsConfig::default() };
+    let id = |text: &str| AccountId::parse(text).unwrap();
+    let ids = |config: &AccountsConfig| config.accounts(Provider::Claude).into_iter().map(|a| a.id.to_string()).collect::<Vec<_>>();
+
+    let moved = config.changed(Provider::Claude, &AccountChange::MoveUp { account: id("work") }).unwrap();
+    assert_eq!(ids(&moved), ["work", "default"]);
+    assert_eq!(moved.claude.len(), 2, "placing the default account writes it into the list");
+    assert!(moved.changed(Provider::Claude, &AccountChange::MoveUp { account: id("work") }).is_err(), "the first can't move up");
+
+    let disabled = config.changed(Provider::Claude, &AccountChange::Disable { account: id("work") }).unwrap();
+    assert!(!disabled.claude[0].enabled);
+    assert_eq!(disabled.claude.len(), 1, "the default account the change leaves alone stays implicit");
+    assert!(disabled.changed(Provider::Claude, &AccountChange::Enable { account: id("work") }).unwrap().claude[0].enabled);
+
+    let weighed = config.changed(Provider::Claude, &AccountChange::SetWeight { account: AccountId::default_account(), weight: Some(3) }).unwrap();
+    assert_eq!(weighed.claude[0].billing, AccountBilling::Subscription { plan: None, weight: Some(3) });
+    assert!(config.changed(Provider::Claude, &AccountChange::SetWeight { account: id("work"), weight: Some(WEIGHT_LIMIT + 1) }).is_err());
+    let automatic = config.changed(Provider::Claude, &AccountChange::SetWeight { account: id("work"), weight: None }).unwrap();
+    assert_eq!(automatic.claude[0].billing, AccountBilling::Subscription { plan: Some("max_20x".into()), weight: None });
+
+    let removed = config.changed(Provider::Claude, &AccountChange::Remove { account: id("work") }).unwrap();
+    assert_eq!(removed, AccountsConfig::default());
+    let chain = config.changed(Provider::Claude, &AccountChange::SetPolicy { policy: Policy::Chain }).unwrap();
+    assert_eq!(chain.distribution.policy, Policy::Chain);
+    assert!(config.changed(Provider::Claude, &AccountChange::Remove { account: id("nobody") }).is_err());
 }

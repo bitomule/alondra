@@ -1,6 +1,14 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
+    "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},
+    "Add": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir"}}}},
+    "Then you sign it in to Claude in Terminal on the Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Después inicias sesión en Claude con ella en Terminal en el Mac."}}}},
+    "Terminal is open and the command is copied. Paste it with ⌘V and press Return to sign in to Claude:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Terminal está abierto y el comando, copiado. Pégalo con ⌘V y pulsa Retorno para iniciar sesión en Claude:"}}}},
+    "Run this in Terminal on the Mac to sign in to Claude:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta esto en Terminal en el Mac para iniciar sesión en Claude:"}}}},
+    "Finish in Terminal": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en Terminal"}}}},
+    "Finish on the Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en el Mac"}}}},
     "Update Alondra to use this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esto"}}}},
     "Update Alondra to see this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para ver esto"}}}},
     "Your Mac could not do it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. Vuelve a intentarlo."}}}},

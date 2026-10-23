@@ -597,6 +597,17 @@ pub enum LocalLink {
     McpReconnect {
         card: String,
     },
+    /// The client asks for the new account's name, then signs it in on the Mac: the terminal
+    /// runs `command` followed by the name, the Mac app opens Terminal with it, and the iPhone
+    /// shows it to finish on the Mac.
+    AccountAdd {
+        command: String,
+    },
+    /// The client signs the account in on the Mac, as for `AccountAdd`, with `command` whole.
+    AccountSignIn {
+        account: String,
+        command: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Form {

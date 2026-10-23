@@ -124,7 +124,7 @@ public struct APIRequest: Sendable, Equatable {
 
     private static func validViewKey(_ key: String) -> Bool {
         guard key.utf8.count <= 261 else { return false }
-        if ["home", "sidebar", "tasks", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers"].contains(key) {
+        if ["home", "sidebar", "tasks", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts"].contains(key) {
             return true
         }
         guard let colon = key.firstIndex(of: ":"),

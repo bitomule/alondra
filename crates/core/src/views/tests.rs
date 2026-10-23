@@ -7033,6 +7033,115 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
     assert_eq!(empty.empty.map(|notice| notice.text), Some("No task uses an MCP server now".into()));
 }
 
+const ACCOUNTS_GOLDENS: [(&str, Client, Lang); 4] = [
+    ("accounts-ios.json", Client::Ios, Lang::En),
+    ("accounts-ios-es.json", Client::Ios, Lang::Es),
+    ("accounts-mac.json", Client::Mac, Lang::En),
+    ("accounts-mac-es.json", Client::Mac, Lang::Es),
+];
+
+/// Four Claude accounts: the default one, signed in on Max and measured; Work, signed in on Max
+/// 20x with a weight the user set, measured and running a node; Personal, signed out; and Old,
+/// turned off. New work goes to the one with the most room.
+fn accounts_fixture() -> (DomainState, LiveSnapshot) {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    use crate::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
+    let (mut state, live) = (golden_fixture(), golden_live());
+    let account = |id: &str, name: &str, state, email: Option<&str>, plan: Option<&str>, weight| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(), state, email: email.map(Into::into),
+        plan: plan.map(Into::into), billing: AccountBilling::Subscription { plan: None, weight }, sign_ins: 0,
+    };
+    state.accounts = vec![
+        account("default", "Default", AccountState::SignedIn, Some("someone@example.org"), Some("max"), None),
+        account("work", "Work", AccountState::SignedIn, Some("someone@work.example"), Some("max_20x"), Some(8)),
+        account("personal", "Personal", AccountState::SignedOut, None, None, None),
+        account("old", "Old", AccountState::Disabled, None, None, None),
+    ];
+    let window = |kind, used: f64| UsageWindow {
+        reading: WindowReading { kind, used: Share::of(used), resets_at: None, exhausted: false }, measured_at: 1_759_225_000_000,
+    };
+    let usage = |id: &str, session: f64, week: f64, plan: &str| AccountUsage {
+        provider: Provider::Claude, account: AccountId::parse(id).unwrap(),
+        windows: vec![window(WindowKind::Session, session), window(WindowKind::Weekly, week)], plan: Some(plan.into()), day_start: None,
+    };
+    state.account_usage = vec![usage("default", 0.12, 0.34, "max"), usage("work", 0.61, 0.48, "max_20x")];
+    let running = state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap();
+    running.agent_id = Some("d887a34b-249e-4487-a89b-57de38c26372".into());
+    running.account = Some(AccountId::parse("work").unwrap());
+    (state, live)
+}
+
+#[test]
+fn accounts_views_match_goldens() {
+    let (state, live) = accounts_fixture();
+    if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+        for (filename, client, lang) in ACCOUNTS_GOLDENS {
+            let view = render(&state, &live, client, lang, "accounts", "2026-09-30T10:00:00Z");
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+        }
+    }
+    for (filename, client, lang) in ACCOUNTS_GOLDENS {
+        let expected = match filename {
+            "accounts-ios.json" => include_str!("../../../../fixtures/views/cards/accounts-ios.json"),
+            "accounts-ios-es.json" => include_str!("../../../../fixtures/views/cards/accounts-ios-es.json"),
+            "accounts-mac.json" => include_str!("../../../../fixtures/views/cards/accounts-mac.json"),
+            _ => include_str!("../../../../fixtures/views/cards/accounts-mac-es.json"),
+        };
+        let actual = render(&state, &live, client, lang, "accounts", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow() {
+    let (state, live) = accounts_fixture();
+    let view = render(&state, &live, Client::Tui, Lang::En, "accounts", "");
+    assert_eq!(view.title.as_deref(), Some("Claude accounts"));
+    assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a screen never shows a folder");
+    let rows: Vec<Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Row(row) => Some(row.clone()),
+        _ => None,
+    }).collect();
+    let row = |title: &str| rows.iter().find(|row| row.title == title).unwrap_or_else(|| panic!("{title}")).clone();
+    let labels = |row: &Row| row.actions.iter().map(|action| action.label.clone()).collect::<Vec<_>>();
+
+    let default = row("Default");
+    assert_eq!(default.subtitle.as_deref(), Some("someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %"));
+    assert_eq!(default.badges[0].text, "Signed in");
+    assert_eq!(labels(&default), ["Weight", "Move down", "Turn off"], "the Mac's own sign-in is never removed, and it is first");
+
+    let work = row("Work");
+    assert_eq!(work.subtitle.as_deref(), Some("someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node"));
+    assert_eq!(labels(&work), ["Weight", "Move up", "Move down", "Turn off", "Remove"]);
+    let remove = work.actions.iter().find(|action| action.label == "Remove").unwrap();
+    assert!(!remove.enabled, "a node runs on it");
+    assert_eq!(remove.disabled_reason.as_deref(), Some("Open tasks still run on Work: remove it once they are done."));
+    let weights: Vec<&str> = work.actions[0].options.iter().map(|option| option.id.as_str()).collect();
+    assert_eq!(weights, ["auto", "1", "2", "3", "5", "10", "15", "20"], "its own weight is not offered again");
+
+    let personal = row("Personal");
+    assert_eq!(personal.badges[0].text, "Signed out");
+    assert_eq!(labels(&personal)[0], "Sign in");
+    assert!(matches!(&personal.actions[0].link, Some(Link::Local { local: LocalLink::AccountSignIn { account, command } })
+        if account == "Personal" && command == "alondra accounts login 'Personal'"));
+    assert!(labels(&personal).contains(&"Remove".to_owned()));
+
+    let old = row("Old");
+    assert_eq!(old.badges[0].text, "Off");
+    assert_eq!(labels(&old), ["Weight", "Move up", "Turn on", "Remove"], "the last can't move down");
+
+    let add = row("Add an account");
+    assert!(matches!(&add.actions[0].link, Some(Link::Local { local: LocalLink::AccountAdd { command } }) if command == "alondra accounts add"));
+    let policy = row("Most room first");
+    assert_eq!(labels(&policy), ["Change"]);
+    assert_eq!(policy.actions[0].options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["chain"], "only the other way is offered");
+    let moves = row("Move a node when its account runs out");
+    assert_eq!(moves.badges[0].text, "Off", "off unless the user turns it on");
+    assert_eq!(moves.subtitle.as_deref(), Some("Anthropic doesn't say whether switching accounts when one reaches its limit is allowed."));
+    assert_eq!((labels(&moves), moves.actions[0].option_id.as_deref()), (vec!["Turn on".to_owned()], Some("on")));
+    assert_eq!(crate::views::accounts::shell_word("Bob's"), r"'Bob'\''s'");
+}
+
 #[test]
 fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() {
     use crate::domain::{Actor, Command, MergeMethod};

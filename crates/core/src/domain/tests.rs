@@ -3039,9 +3039,11 @@ fn variant_index(c: &Command) -> usize {
         Command::CompactEndedTasks { .. } => 97,
         Command::ClearCompleted { .. } => 98,
         Command::SetMergeMethod { .. } => 99,
+        Command::RecordDistribution { .. } => 100,
+        Command::ChangeAccounts { .. } => 101,
     }
 }
-const COMMAND_KINDS: usize = 100;
+const COMMAND_KINDS: usize = 102;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3202,6 +3204,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),
         (Command::ReleaseTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), end: WorktreeEnd::Removed }, false),
         (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into() }, false),
+        (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
+        (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
+            change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -4476,8 +4481,49 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::WaitForMcp { task_id: "sdk".into(), server: "missing".into() },
         Command::WaitForMcp { task_id: "t".into(), server: "linear".into() },
     ]).collect();
+    use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
+    let account = |id: &str, state| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: None, plan: Some("max".into()),
+        billing: if id == "api" { AccountBilling::PayPerUse } else { AccountBilling::default() }, sign_ins: 0,
+    };
+    let mut accounts = sdk.clone();
+    exec(&mut accounts, Actor::System, Command::RecordAccounts { accounts: vec![
+        account("default", AccountState::SignedIn), account("work", AccountState::SignedIn), account("api", AccountState::SignedIn),
+        account("old", AccountState::Disabled),
+    ], reserve: crate::usage::default_reserve() }).unwrap();
+    let mut work_busy = accounts.clone();
+    work_busy.tasks.get_mut(&TaskId::from("sdk")).unwrap().account = Some(AccountId::parse("work").unwrap());
+    let mut alone = sdk.clone();
+    exec(&mut alone, Actor::System, Command::RecordAccounts { accounts: vec![
+        account("default", AccountState::Disabled), account("work", AccountState::SignedIn),
+    ], reserve: crate::usage::default_reserve() }).unwrap();
+    let id = |text: &str| AccountId::parse(text).unwrap();
+    let change = |change| Command::ChangeAccounts { provider: Provider::Claude, change };
+    let commands: Vec<Command> = commands.into_iter().chain([
+        change(AccountChange::Disable { account: id("default") }),
+        change(AccountChange::Disable { account: id("work") }),
+        change(AccountChange::Disable { account: id("old") }),
+        change(AccountChange::Enable { account: id("old") }),
+        change(AccountChange::Enable { account: id("work") }),
+        change(AccountChange::Remove { account: id("work") }),
+        change(AccountChange::Remove { account: id("default") }),
+        change(AccountChange::Remove { account: id("missing") }),
+        change(AccountChange::MoveUp { account: id("default") }),
+        change(AccountChange::MoveUp { account: id("work") }),
+        change(AccountChange::MoveDown { account: id("old") }),
+        change(AccountChange::MoveDown { account: id("work") }),
+        change(AccountChange::SetWeight { account: id("work"), weight: Some(3) }),
+        change(AccountChange::SetWeight { account: id("work"), weight: Some(0) }),
+        change(AccountChange::SetWeight { account: id("work"), weight: None }),
+        change(AccountChange::SetWeight { account: id("api"), weight: Some(3) }),
+        change(AccountChange::SetPolicy { policy: Policy::Chain }),
+        change(AccountChange::SetPolicy { policy: Policy::Margin }),
+        change(AccountChange::SetMoveWhenExhausted { on: true }),
+        change(AccountChange::SetMoveWhenExhausted { on: false }),
+    ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &mcp, &waiting_mcp] {
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &mcp, &waiting_mcp,
+        &accounts, &work_busy, &alone] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
                 for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
@@ -4579,8 +4625,12 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
         _ => None,
     }).collect();
     assert_eq!(rows, [
-        ("DEFAULT".to_owned(), Some("default@example.org · max · con sesión".to_owned())),
-        ("WORK".to_owned(), Some("work@example.org · max · sin sesión".to_owned())),
+        ("DEFAULT".to_owned(), Some("default@example.org · max · peso 5, por plan".to_owned())),
+        ("WORK".to_owned(), Some("work@example.org · max · peso 5, por plan".to_owned())),
+        ("Añadir una cuenta".to_owned(), Some("Solo pide un nombre; luego inicias sesión en Claude en el Mac".to_owned())),
+        ("Primero la de más margen".to_owned(), Some("Cada tarea nueva empieza en la cuenta con más margen, según su plan".to_owned())),
+        ("Mover un nodo cuando su cuenta se agota".to_owned(),
+            Some("Anthropic no dice si cambiar de cuenta al llegar al límite está permitido.".to_owned())),
     ]);
     assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a view never shows a folder");
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }).unwrap();
@@ -4619,6 +4669,50 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![account("default")], reserve: Share::of(0.8) }).unwrap();
     assert_eq!(s.account_usage.iter().map(|u| u.account.as_str()).collect::<Vec<_>>(), ["default"], "a removed account's usage goes with it");
 }
+
+/// What the user changes of the accounts from Settings reaches the recorded accounts at once, in
+/// the order and state the next check of `options.toml` will see.
+#[test]
+fn a_settings_change_to_the_accounts_is_recorded_as_the_file_will_hold_it() {
+    use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
+    let account = |id: &str, state| AccountStatus {
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: Some(format!("{id}@example.org")),
+        plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+    };
+    let mut s = DomainState::new("epoch");
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account("default", AccountState::SignedIn), account("work", AccountState::SignedIn),
+    ], reserve: crate::usage::default_reserve() }).unwrap();
+    let id = |text: &str| AccountId::parse(text).unwrap();
+    let change = |s: &mut DomainState, change| exec(s, user(), Command::ChangeAccounts { provider: Provider::Claude, change });
+    let order = |s: &DomainState| s.accounts.iter().map(|a| (a.id.to_string(), a.state)).collect::<Vec<_>>();
+
+    assert_eq!(exec(&mut s, agent(), Command::ChangeAccounts { provider: Provider::Claude, change: AccountChange::SetPolicy { policy: Policy::Chain } })
+        .unwrap_err().code, "forbidden", "only the user changes the accounts");
+    change(&mut s, AccountChange::MoveUp { account: id("work") }).unwrap();
+    assert_eq!(order(&s), [("work".into(), AccountState::SignedIn), ("default".into(), AccountState::SignedIn)]);
+    change(&mut s, AccountChange::Disable { account: id("work") }).unwrap();
+    assert_eq!(s.accounts[0].state, AccountState::Disabled);
+    assert_eq!(s.accounts[0].email, None, "a disabled account is not checked, so its email is not known");
+    assert_eq!(change(&mut s, AccountChange::Disable { account: id("work") }).unwrap_err().code, "unchanged");
+    change(&mut s, AccountChange::Enable { account: id("work") }).unwrap();
+    assert_eq!(s.accounts[0].state, AccountState::Unchecked, "turned on, it waits for its next check");
+    change(&mut s, AccountChange::SetWeight { account: id("work"), weight: Some(3) }).unwrap();
+    assert_eq!(s.accounts[0].billing, AccountBilling::Subscription { plan: None, weight: Some(3) });
+    change(&mut s, AccountChange::SetPolicy { policy: Policy::Chain }).unwrap();
+    assert_eq!(ReadIndex::build(&s).account_policy(), Policy::Chain);
+    assert_eq!(change(&mut s, AccountChange::SetMoveWhenExhausted { on: false }).unwrap_err().code, "unchanged", "moving is off by default");
+    change(&mut s, AccountChange::SetMoveWhenExhausted { on: true }).unwrap();
+    assert!(ReadIndex::build(&s).account_moves());
+    let refused = change(&mut s, AccountChange::Remove { account: AccountId::default_account() }).unwrap_err();
+    assert_eq!(refused.why(), crate::domain::Refusal::DefaultAccountStays { name: "default".into() });
+    change(&mut s, AccountChange::Remove { account: id("work") }).unwrap();
+    assert_eq!(order(&s), [("default".into(), AccountState::SignedIn)]);
+    let restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(restored.account_policy, Policy::Chain, "the policy survives a restart");
+    assert!(restored.account_moves, "so does moving nodes");
+}
+
 #[test]
 fn a_pr_merges_by_the_preferred_method_or_the_first_its_repository_allows() {
     use MergeMethod::{Merge, Rebase, Squash};

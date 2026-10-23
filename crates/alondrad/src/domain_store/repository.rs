@@ -888,6 +888,10 @@ pub(super) fn save_changes(
         exec(c, "INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts,reserve=excluded.reserve",
             params![serde_json::to_string(&after.accounts)?, after.account_reserve.parts()])?;
     }
+    if before.account_policy != after.account_policy || before.account_moves != after.account_moves {
+        exec(c, "INSERT INTO account_distribution(singleton,policy,move_when_exhausted) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET policy=excluded.policy,move_when_exhausted=excluded.move_when_exhausted",
+            params![policy_name(after.account_policy), after.account_moves])?;
+    }
     if before.merge_method != after.merge_method {
         exec(c, "INSERT INTO merge_method(singleton,method) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET method=excluded.method",
             params![after.merge_method.id()])?;
@@ -1367,6 +1371,10 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.accounts = serde_json::from_str(&accounts)?;
         state.account_reserve = alondra_core::usage::Share::from_parts(reserve).context("an account reserve above 10000")?;
     }
+    if let Some((policy, moves)) = c.query_row("SELECT policy,move_when_exhausted FROM account_distribution WHERE singleton=1", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))).optional()? {
+        state.account_policy = serde_json::from_value(serde_json::Value::String(policy))?;
+        state.account_moves = moves;
+    }
     let stored: bool = c.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='merge_method'", [], |r| r.get::<_, i64>(0))? == 1;
     if stored && let Some(method) = c.query_row("SELECT method FROM merge_method WHERE singleton=1", [], |r| r.get::<_, String>(0)).optional()? {
         state.merge_method = MergeMethod::parse(&method).with_context(|| format!("an unknown merge method {method:?}"))?;
@@ -1378,4 +1386,11 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     drop(usage);
     state.schedule = load_schedule_state(c)?;
     Ok(state)
+}
+
+fn policy_name(policy: alondra_core::accounts::Policy) -> &'static str {
+    match policy {
+        alondra_core::accounts::Policy::Margin => "margin",
+        alondra_core::accounts::Policy::Chain => "chain",
+    }
 }

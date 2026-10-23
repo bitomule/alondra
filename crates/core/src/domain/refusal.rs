@@ -59,6 +59,12 @@ pub enum Refusal {
     NoLongerAvailable,
     /// It was already as the user asked, so nothing changed.
     Unchanged,
+    /// The provider's own sign-in on this Mac is never removed.
+    DefaultAccountStays { name: String },
+    /// Every other account is off: this one stays on.
+    LastAccountOn { name: String },
+    /// Open tasks still run on the account.
+    AccountInUse { name: String },
 }
 
 /// Every code the domain gives a refusal with no context of its own. The test of this module

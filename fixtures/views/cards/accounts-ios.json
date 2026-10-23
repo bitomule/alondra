@@ -1,0 +1,748 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "accounts",
+  "key": "accounts",
+  "client": "ios",
+  "version": "vd00e0869a53cc1f6",
+  "cursor": "cursor-1",
+  "title": "Claude accounts",
+  "status": {
+    "version": "ve626d8542726ea98",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "claude",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-default",
+          "icon": "machine",
+          "title": "Default",
+          "subtitle": "someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %",
+          "badges": [
+            {
+              "text": "Signed in",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_weight:default@6",
+              "label": "Weight",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "How much room it counts for when work is spread, as plans do: Pro 1, Max 5x 5, Max 20x 10",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "1",
+                  "label": "1",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "2",
+                  "label": "2",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "3",
+                  "label": "3",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "5",
+                  "label": "5",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "10",
+                  "label": "10",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "15",
+                  "label": "15",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "20",
+                  "label": "20",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_down:default@6",
+              "label": "Move down",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:default@6",
+              "label": "Turn off",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No new work starts on it; what runs on it goes on",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-work",
+          "icon": "machine",
+          "title": "Work",
+          "subtitle": "someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node",
+          "badges": [
+            {
+              "text": "Signed in",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_weight:work@6",
+              "label": "Weight",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "How much room it counts for when work is spread, as plans do: Pro 1, Max 5x 5, Max 20x 10",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "By plan (10)",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "1",
+                  "label": "1",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "2",
+                  "label": "2",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "3",
+                  "label": "3",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "5",
+                  "label": "5",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "10",
+                  "label": "10",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "15",
+                  "label": "15",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "20",
+                  "label": "20",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_up:work@6",
+              "label": "Move up",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_down:work@6",
+              "label": "Move down",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:work@6",
+              "label": "Turn off",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No new work starts on it; what runs on it goes on",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:work@6",
+              "label": "Remove",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Open tasks still run on Work: remove it once they are done.",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-personal",
+          "icon": "machine",
+          "title": "Personal",
+          "subtitle": "weight 5, by plan",
+          "badges": [
+            {
+              "text": "Signed out",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Sign in",
+              "style": "primary",
+              "role": "advance",
+              "description": "Opens Claude's sign-in on the Mac",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_sign_in",
+                  "account": "Personal",
+                  "command": "alondra accounts login 'Personal'"
+                }
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "account_weight:personal@6",
+              "label": "Weight",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "How much room it counts for when work is spread, as plans do: Pro 1, Max 5x 5, Max 20x 10",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "1",
+                  "label": "1",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "2",
+                  "label": "2",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "3",
+                  "label": "3",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "5",
+                  "label": "5",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "10",
+                  "label": "10",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "15",
+                  "label": "15",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "20",
+                  "label": "20",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_up:personal@6",
+              "label": "Move up",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_down:personal@6",
+              "label": "Move down",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:personal@6",
+              "label": "Turn off",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No new work starts on it; what runs on it goes on",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:personal@6",
+              "label": "Remove",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Remove Personal?",
+                "message": "Alondra signs Personal out of Claude on this Mac and forgets it. Your Claude account itself stays as it is.",
+                "button": "Remove"
+              },
+              "enabled": true,
+              "stamp": "Removed",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-old",
+          "icon": "machine",
+          "title": "Old",
+          "subtitle": "weight 5, by plan",
+          "badges": [
+            {
+              "text": "Off",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_weight:old@6",
+              "label": "Weight",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "How much room it counts for when work is spread, as plans do: Pro 1, Max 5x 5, Max 20x 10",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "1",
+                  "label": "1",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "2",
+                  "label": "2",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "3",
+                  "label": "3",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "5",
+                  "label": "5",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "10",
+                  "label": "10",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "15",
+                  "label": "15",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "20",
+                  "label": "20",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_up:old@6",
+              "label": "Move up",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_enable:old@6",
+              "label": "Turn on",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:old@6",
+              "label": "Remove",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Remove Old?",
+                "message": "Alondra signs Old out of Claude on this Mac and forgets it. Your Claude account itself stays as it is.",
+                "button": "Remove"
+              },
+              "enabled": true,
+              "stamp": "Removed",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-add",
+          "icon": "action",
+          "title": "Add an account",
+          "subtitle": "It asks only for a name; then you sign in to Claude on the Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Add",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_add",
+                  "command": "alondra accounts add"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "policy",
+      "title": "New work",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-policy",
+          "icon": "node",
+          "title": "Most room first",
+          "subtitle": "Each new task starts on the account with the most room left, weighed by its plan",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_policy:policy@6",
+              "label": "Change",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "chain",
+                  "label": "In list order",
+                  "description": "Each new task starts on the first account in the list that has room left",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-moves",
+          "icon": "node",
+          "title": "Move a node when its account runs out",
+          "subtitle": "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+          "badges": [
+            {
+              "text": "Off",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_moves:moves@6",
+              "label": "Turn on",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "on",
+              "description": "The node goes on with another account, in the same conversation",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    }
+  ]
+}

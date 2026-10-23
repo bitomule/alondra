@@ -568,6 +568,18 @@ pub enum Command {
         #[serde(default = "crate::usage::default_reserve")]
         reserve: crate::usage::Share,
     },
+    /// How new work is spread over the accounts, and whether a node moves to another account
+    /// when its own reaches its limit, as `options.toml` says it now.
+    RecordDistribution {
+        policy: crate::accounts::Policy,
+        move_when_exhausted: bool,
+    },
+    /// The user changes the accounts from Settings: the daemon writes it to `options.toml`, then
+    /// records it here.
+    ChangeAccounts {
+        provider: crate::accounts::Provider,
+        change: crate::accounts::AccountChange,
+    },
     /// What `account` said of its usage at `at`, on the Mac's local `day`, from a provider event
     /// or a probe.
     RecordAccountUsage {

@@ -438,3 +438,82 @@ fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one
     press(&mut app, KeyCode::Esc);
     assert!(app.mcp_servers.is_none());
 }
+
+fn accounts_open(fixture: &str) -> App {
+    let mut app = app();
+    app.screen = Screen::Inbox;
+    press(&mut app, KeyCode::Char(','));
+    let view: ViewDocument = serde_json::from_value(super::parity::view_fixture(fixture)).unwrap();
+    app.on_msg(Msg::ViewCard { key: "accounts".into(), result: Ok(view) });
+    app
+}
+
+fn select(app: &mut App, title: &str) {
+    let screen = app.mcp_servers.as_mut().unwrap();
+    screen.sel = screen.rows().iter().position(|row| row.title == title).unwrap_or_else(|| panic!("{title}"));
+}
+
+#[test]
+fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_their_buttons() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = accounts_open("accounts-ios.json");
+    let servers: ViewDocument = serde_json::from_value(super::parity::view_fixture("mcp-servers-ios.json")).unwrap();
+    app.on_msg(Msg::ViewCard { key: "mcp_servers".into(), result: Ok(servers) });
+    assert!(app.open_views.lock().unwrap().contains_key("accounts"), "a change to the accounts reaches the open screen");
+    select(&mut app, "Work");
+    let screen = drawn(&mut app, 140, 80);
+    for shown in ["Settings", "CLAUDE ACCOUNTS", "Default  Signed in", "someone@work.example · max_20x · weight 8, set by you",
+        "5 h 61 % · week 48 % · 1 node", "Personal  Signed out", "Old  Off", "Add an account", "New work", "Most room first",
+        "Move a node when its account runs out  Off", "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+        "1 Weight   2 Move up   3 Move down   4 Turn off", "MCP SERVERS"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    assert!(screen.find("Add an account") < screen.find("linear"), "the accounts come before the MCP servers: {screen}");
+    assert!(!screen.contains("Remove"), "a node runs on Work, so it can't be removed: {screen}");
+
+    press(&mut app, KeyCode::Char('1'));
+    let menu = drawn(&mut app, 140, 80);
+    assert!(menu.contains(" 1  By plan (10)") && menu.contains(" 4  3"), "the weight's options: {menu}");
+    press(&mut app, KeyCode::Char('4'));
+    let (path, body) = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(path, "/actions");
+    assert!(body["action_id"].as_str().unwrap().starts_with("account_weight:work@"), "{body}");
+    assert_eq!(body["option_id"], "3");
+
+    select(&mut app, "Most room first");
+    press(&mut app, KeyCode::Char('1'));
+    let (_, body) = app.posted.borrow().last().cloned().unwrap();
+    assert!(body["action_id"].as_str().unwrap().starts_with("account_policy:policy@"), "the one other way runs at once: {body}");
+    assert_eq!(body["option_id"], "chain");
+
+    select(&mut app, "Move a node when its account runs out");
+    press(&mut app, KeyCode::Char('1'));
+    let (_, body) = app.posted.borrow().last().cloned().unwrap();
+    assert!(body["action_id"].as_str().unwrap().starts_with("account_moves:moves@"), "{body}");
+    assert_eq!(body["option_id"], "on");
+
+    select(&mut app, "Old");
+    let remove = super::mcp_servers::actions(app.mcp_servers.as_ref().unwrap().selected().unwrap()).iter().position(|action| action.label == "Remove").unwrap();
+    press(&mut app, KeyCode::Char(char::from_digit(remove as u32 + 1, 10).unwrap()));
+    assert_eq!(app.modal.as_ref().map(|modal| modal.title.as_str()), Some("Remove Old?"), "removing asks first");
+    press(&mut app, KeyCode::Esc);
+}
+
+#[test]
+fn adding_an_account_asks_its_name_then_signs_it_in_on_this_screen() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = accounts_open("accounts-ios.json");
+    select(&mut app, "Add an account");
+    press(&mut app, KeyCode::Char('1'));
+    assert!(matches!(&app.composer, Some(c) if matches!(c.target, Target::AccountName)), "it asks only for a name");
+    app.on_paste("Side project");
+    let flow = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(&flow, Flow::AccountSignIn(sign_in) if sign_in.args == ["accounts", "add", "Side project"]),
+        "the sign-in runs on the screen: {:?}", matches!(flow, Flow::Go));
+
+    select(&mut app, "Personal");
+    let flow = app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+    assert!(matches!(&flow, Flow::AccountSignIn(sign_in) if sign_in.args == ["accounts", "login", "Personal"]));
+    app.account_signed_in(Err(anyhow::anyhow!("That Claude account is already in Alondra as Default")));
+    assert!(drawn(&mut app, 140, 50).contains("That Claude account is already in Alondra as Default"));
+}

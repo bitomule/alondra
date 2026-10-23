@@ -66,7 +66,8 @@ const ALLOWED_RULES: &str = "CREATE TABLE IF NOT EXISTS allowed_rules(id INTEGER
 /// The provider accounts as the daemon last saw them with their session reserve, and what each
 /// account last said of its usage, which anchors the day's pace across restarts.
 const ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS accounts(singleton INTEGER PRIMARY KEY CHECK(singleton=1), accounts TEXT NOT NULL CHECK(json_valid(accounts)), reserve INTEGER NOT NULL CHECK(reserve BETWEEN 1 AND 10000));\
-CREATE TABLE IF NOT EXISTS account_usage(provider TEXT NOT NULL, account TEXT NOT NULL, usage TEXT NOT NULL CHECK(json_valid(usage)), PRIMARY KEY(provider, account));";
+CREATE TABLE IF NOT EXISTS account_usage(provider TEXT NOT NULL, account TEXT NOT NULL, usage TEXT NOT NULL CHECK(json_valid(usage)), PRIMARY KEY(provider, account));\
+CREATE TABLE IF NOT EXISTS account_distribution(singleton INTEGER PRIMARY KEY CHECK(singleton=1), policy TEXT NOT NULL CHECK(policy IN('margin','chain')), move_when_exhausted INTEGER NOT NULL CHECK(move_when_exhausted IN(0,1)));";
 /// How this Mac merges PRs, as the user set it in Settings; no row is the default, squash.
 const MERGE_METHOD: &str = "CREATE TABLE IF NOT EXISTS merge_method(singleton INTEGER PRIMARY KEY CHECK(singleton=1), method TEXT NOT NULL CHECK(method IN('squash','merge','rebase')));";
 /// What each node said last as a turn of it ended; created on every open like task_models.

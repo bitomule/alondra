@@ -224,6 +224,7 @@ enum LocalActionResource {
     PullRequest(String),
     OrchestratorDecision,
     NodeLimitSettings,
+    AccountSettings,
     AllowedRules,
     Mcp(String),
 }
@@ -281,6 +282,8 @@ impl LocalActionResource {
             },
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
+            Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
+            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves => add(Self::AccountSettings, true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
             Verb::McpSignOut | Verb::McpCheck => add(Self::Mcp(action.subject.clone()), true),
             _ => {},
@@ -352,7 +355,8 @@ fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
-        Verb::McpSignOut | Verb::McpCheck)
+        Verb::McpSignOut | Verb::McpCheck | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves)
 }
 
 pub(crate) async fn execute_action(
@@ -470,6 +474,13 @@ async fn execute_external(
         Verb::RemoveRule => "Removed",
         Verb::McpSignOut => "Signed out",
         Verb::McpCheck => "Checking",
+        Verb::AccountEnable => "Turned on",
+        Verb::AccountDisable => "Turned off",
+        Verb::AccountRemove => "Removed",
+        Verb::AccountUp | Verb::AccountDown => "Moved",
+        Verb::AccountWeight => "Weight updated",
+        Verb::AccountPolicy => "Updated",
+        Verb::AccountMoves => "Updated",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -481,7 +492,9 @@ async fn execute_external(
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
         Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado",
-        Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", _ => stamp,
+        Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando",
+        Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
+        Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -714,6 +727,19 @@ async fn execute_external(
                 Ok(server) => Ok(to_applied(200, json!({"signed_out": server}))),
                 Err(error) if error.code == "not_found" => Ok(no_longer_available(lang, "No running task uses this MCP server any more")),
                 Err(error) => Ok(error_value(&error.code, &error.message)),
+            }
+        }
+        Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
+        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves => {
+            let Some(change) = account_change(action, request.option_id.as_deref()) else {
+                return Ok(rejected_field(lang, "option_id", "Choose an option"));
+            };
+            let (runtime, at, actor) = (client.domain.clone(), home.to_path_buf(), Actor::User { user_id: user_id.clone() });
+            let made = tokio::task::spawn_blocking(move || crate::accounts::change(&runtime, &at, &actor, &change)).await?;
+            match made {
+                Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
+                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
             }
         }
         Verb::McpCheck => {
@@ -1586,6 +1612,41 @@ fn no_longer_available(lang: Lang, message: &str) -> Value {
 
 /// A refusal worded for the user. Clients still reading the old `outcome` see the same kinds as
 /// before; the sentence is the catalog's, in the user's language.
+/// The change a Settings button of the accounts makes, from its verb, the account it names and
+/// the option chosen.
+fn account_change(action: &ActionId, option: Option<&str>) -> Option<alondra_core::accounts::AccountChange> {
+    use alondra_core::accounts::{AccountChange, AccountId, Policy};
+    if action.verb == Verb::AccountMoves {
+        let on = match option? {
+            "on" => true,
+            "off" => false,
+            _ => return None,
+        };
+        return Some(AccountChange::SetMoveWhenExhausted { on });
+    }
+    if action.verb == Verb::AccountPolicy {
+        let policy = match option? {
+            "margin" => Policy::Margin,
+            "chain" => Policy::Chain,
+            _ => return None,
+        };
+        return Some(AccountChange::SetPolicy { policy });
+    }
+    let account = AccountId::parse(&action.subject).ok()?;
+    Some(match action.verb {
+        Verb::AccountEnable => AccountChange::Enable { account },
+        Verb::AccountDisable => AccountChange::Disable { account },
+        Verb::AccountRemove => AccountChange::Remove { account },
+        Verb::AccountUp => AccountChange::MoveUp { account },
+        Verb::AccountDown => AccountChange::MoveDown { account },
+        Verb::AccountWeight => AccountChange::SetWeight { account, weight: match option? {
+            "auto" => None,
+            weight => Some(weight.parse().ok()?),
+        } },
+        _ => return None,
+    })
+}
+
 fn refused_value(refusal: &Refusal, lang: Lang) -> Value {
     let gone = matches!(refusal, Refusal::NoLongerAvailable | Refusal::AlreadyAnswered | Refusal::TaskNotActive
         | Refusal::Withdrawn | Refusal::Changed | Refusal::NewerResult | Refusal::PrClosed { .. });
