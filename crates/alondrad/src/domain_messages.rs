@@ -133,10 +133,10 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         None => None,
     };
     let text = wording(&body, task, name, home)?;
-    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.silent(alondra_core::now_millis()))
+    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.halt().is_some())
         && !crate::domain_holds::waits_on_user(&state, &agent.0)
     {
-        return Err(refused("session_stalled", format!("{name} stopped processing in the middle of a turn, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
+        return Err(refused("session_stalled", format!("{name}'s turn stopped: the command it waited on or its session is gone, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
     }
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let told = crate::sdk_handover::tell(domain, &agent.0, &author, &text, as_user)
@@ -384,17 +384,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_that_stopped_processing_is_refused_instead_of_reported_handed() {
+    async fn a_session_whose_turn_stopped_is_refused_instead_of_reported_handed() {
         let (fixture, domain) = world();
         let node = Node::connect(&domain, "agent-a");
-        let long_ago = alondra_core::now_millis() - alondra_core::states::TURN_QUIET_MS - 60_000;
+        let now = alondra_core::now_millis();
         let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-        domain.connect_node(hello, long_ago);
-        domain.live.mods.sample_cpu("agent-a", 500, long_ago);
-        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
+        domain.connect_node(hello, now);
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now);
+        let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), true).await;
+        assert!(quiet.is_ok(), "a quiet turn takes messages however long it has been quiet");
+        domain.live.mods.set_session_alive("agent-a", Some(false));
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
-        assert!(node.texts().is_empty(), "nothing was written down its connection");
+        assert_eq!(node.texts(), ["quiet"], "nothing more was written down its connection");
     }
 
     #[tokio::test]

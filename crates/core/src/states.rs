@@ -1,9 +1,9 @@
 //! What a node shows. The node itself is only free, busy or waiting for the machine: the first
 //! row of `NODE_TABLE` whose evidence is present decides it. Whatever else today's clients read in
-//! its `state` (waiting for an answer, in review, done, stalled…) comes from its tasks
-//! (`from_tasks`). Time only enters through the `now` the caller passes: the reducer passes the
-//! time of the event it applies, and `Event::Clock` lets the daemon record in the log that time
-//! has moved, so a replay reaches exactly the same states.
+//! its `state` (waiting for an answer, in review, done…) comes from its tasks (`from_tasks`).
+//! Every row rests on a fact the node's hooks, its process or the Claude daemon reported; none
+//! depends on how long ago that was, so the same events give the same states on any clock. The
+//! `now` the caller passes only reaches the task rows that read GitHub's merge state.
 
 use crate::model::{
     Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
@@ -12,46 +12,6 @@ use crate::model::{
 use crate::pr::{PrState, PullRequest};
 use crate::tasks::{BlockerKind, Task, TaskState};
 use crate::view::View;
-
-const MINUTE: Millis = 60 * 1000;
-
-/// A hook that shows the node inside a turn counts as work for this long.
-pub const HOOK_FRESH_MS: Millis = 5 * MINUTE;
-/// A single call counts as work for this long; past it, a background node is stuck in it.
-pub const CALL_LIMIT_MS: Millis = 45 * MINUTE;
-/// A node inside a turn with no tool in flight and no live background work counts as working
-/// for this long after its mod last reported anything; past it the session has stopped
-/// processing, and it is stalled.
-pub const TURN_QUIET_MS: Millis = 10 * MINUTE;
-/// A background session whose job state says it works, with nothing in flight, counts as stalled
-/// once its state has not changed and its process has used no CPU for this long.
-pub const JOB_STALL_MS: Millis = 3 * MINUTE;
-/// The session process using less CPU than this over a 30 s look counts as idle. Measured on
-/// bg-spare session processes on 2026-10-05: apparently idle sessions used at most 0.65 s per 30 s
-/// (typically 0.36 to 0.51 s), working ones 0.9, 2.0 and 6.4 s. A model that is
-/// generating or thinking keeps it busy, a stopped session does not.
-pub const IDLE_CPU_CS_PER_LOOK: u64 = 120;
-/// Subagents legitimately run longer than any other call.
-pub const SUBAGENT_CALL_LIMIT_MS: Millis = 120 * MINUTE;
-
-pub fn call_limit(tool: &str) -> Millis {
-    if matches!(tool, "Agent" | "Task") { SUBAGENT_CALL_LIMIT_MS } else { CALL_LIMIT_MS }
-}
-/// The Claude daemon saying "active" counts for this long after it was last observed.
-pub const DAEMON_FRESH_MS: Millis = 30 * MINUTE;
-/// A background task (a Bash run in the background, a subagent, a monitor) reported by the
-/// Claude daemon counts for this long after it was last observed.
-pub const BACKGROUND_TASK_FRESH_MS: Millis = 120 * MINUTE;
-/// A subagent thread with no tool in flight drops out of the activity ledger after this long
-/// without a hook.
-pub const THREAD_QUIET_MS: Millis = 30 * MINUTE;
-/// A declared wait for the machine lapses when nothing happens for this long and the machine
-/// is fine.
-pub const MACHINE_WAIT_QUIET_MS: Millis = 20 * MINUTE;
-/// After David types into a node's terminal, he counts as watching it for this long.
-pub const WATCH_WINDOW_MS: Millis = 10 * MINUTE;
-/// A usage limit (StopFailure) keeps the node waiting for this long at most.
-pub const USAGE_LIMIT_WAIT_MS: Millis = 5 * 60 * MINUTE;
 
 /// What made the reducer look at the node again.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -63,7 +23,6 @@ pub enum Trigger {
     Report,
     Declaration,
     Message,
-    Clock,
     Other,
 }
 
@@ -81,28 +40,18 @@ const fn row<S>(name: &'static str, when: Signal, to: S) -> Row<S> {
     Row { name, from: &[], on: &[], when, to }
 }
 
-const WORKING: &[NodeState] = &[NodeState::Working];
-
 /// The node's own evidence, tried in order; the first row that matches wins and the last one
-/// always does. A row that ends in `unclear` leaves the node free.
+/// always does.
 pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a permission prompt is on screen", Signal::PermissionPrompt, NodeState::WaitingAnswer),
-    row("a single call ran far longer than usual", Signal::CallStuck, NodeState::Stalled),
     row("a tool is in flight", Signal::ToolInFlight, NodeState::Working),
-    row("a recent hook inside a turn", Signal::Hook, NodeState::Working),
-    row("Alondra just typed a message into the session", Signal::MessageHanded, NodeState::Working),
+    row("a hook inside a turn", Signal::Hook, NodeState::Working),
+    row("Alondra typed a message into the session and its turn has not ended", Signal::MessageHanded, NodeState::Working),
     row("the Claude daemon reports the session active", Signal::DaemonActive, NodeState::Working),
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
-    Row {
-        name: "working evidence went stale: handed to the sentinel",
-        from: WORKING,
-        on: &[Trigger::Clock],
-        when: Signal::Nothing,
-        to: NodeState::Unclear,
-    },
-    row("idle with nothing to show: handed to the sentinel", Signal::Nothing, NodeState::Unclear),
+    row("nothing runs", Signal::Nothing, NodeState::Idle),
 ];
 
 pub const ORCHESTRATOR_TABLE: &[Row<OrchestratorState>] = &[
@@ -136,22 +85,44 @@ impl Facts {
     }
 }
 
-fn fresh(at: Option<Millis>, now: Millis, window: Millis) -> Option<Millis> {
-    at.filter(|at| now - at <= window)
-}
-
 fn after_stop(node: &Node) -> impl Fn(&Millis) -> bool + '_ {
     |at| node.last_stop_at.is_none_or(|stop| *at > stop)
 }
 
-fn daemon_active(node: &Node, now: Millis) -> Option<Millis> {
+fn daemon_active(node: &Node) -> Option<Millis> {
     let active = node.alive && node.daemon_tempo.as_deref() == Some("active");
-    fresh(node.daemon_seen_at.filter(|_| active).filter(after_stop(node)), now, DAEMON_FRESH_MS)
+    node.daemon_seen_at.filter(|_| active).filter(after_stop(node))
 }
 
+/// The Claude daemon saw the session idle after `since`: nothing it started then still runs.
+fn daemon_idle_after(node: &Node, since: Millis) -> bool {
+    node.alive && node.daemon_tempo.as_deref() == Some("idle") && node.daemon_seen_at.is_some_and(|at| at > since)
+}
 
-pub fn facts(view: &View, node: &Node, now: Millis) -> Facts {
-    facts_with(view, node, now, view.machine_strained)
+pub fn facts(view: &View, node: &Node) -> Facts {
+    let mut f = Facts::default();
+    f.add(Signal::OpenQuestion, open_questions(view, node, false).map(|q| q.asked_at).max());
+    f.add(Signal::PermissionPrompt, (node.waiting_permission || node.menu_waiting.is_some()).then_some(node.last_seen));
+
+    let live = reopened(view, node);
+    f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| live && !daemon_idle_after(node, t.since)).map(|t| t.since));
+    f.add(Signal::Hook, node.last_work_at.filter(|at| live && node.busy && !daemon_idle_after(node, *at)));
+    f.add(Signal::MessageHanded, node.handed_at.filter(after_stop(node)).filter(|at| live && !daemon_idle_after(node, *at)));
+    f.add(Signal::DaemonActive, daemon_active(node).filter(|_| live));
+    let tasks_seen = if node.background.is_empty() {
+        node.daemon_tasks_since.filter(|_| node.alive && node.daemon_tasks > 0)
+    } else {
+        node.daemon_seen_at.filter(|_| node.alive)
+    };
+    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live));
+
+    f.add(Signal::UsageLimit, node.usage_limited_at.filter(|_| node.usage_limited));
+    if node.turn_signal == Some(TurnSignal::WaitingMachine) {
+        f.add(Signal::DeclaredWait, Some(node.signal_at.unwrap_or(node.episode_since)));
+    }
+    f.add(Signal::NoProcess, (!node.alive).then_some(node.last_seen));
+    f.add(Signal::Nothing, Some(node.last_seen));
+    f
 }
 
 /// Only David or the orchestrator reopen a done node: a message of theirs typed in after it was
@@ -164,36 +135,6 @@ fn reopened(view: &View, node: &Node) -> bool {
     let written = view.messages.values().any(|m| m.session_id == node.session_id && m.from != MessageFrom::Alondra && m.handed_at.is_some_and(|at| at > done));
     let typed = talking_with_user(view, node) && node.last_prompt_at.is_some_and(|at| at > done);
     written || typed
-}
-
-fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> Facts {
-    let mut f = Facts::default();
-    f.add(Signal::OpenQuestion, open_questions(view, node, false).map(|q| q.asked_at).max());
-    f.add(Signal::PermissionPrompt, (node.waiting_permission || node.menu_waiting.is_some()).then_some(node.last_seen));
-
-    let live = reopened(view, node);
-    f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| live && node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
-    f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| live && now - t.since <= call_limit(&t.name)).map(|t| t.since));
-    f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| live && node.busy), now, HOOK_FRESH_MS));
-    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)).filter(|_| live), now, HOOK_FRESH_MS));
-    f.add(Signal::DaemonActive, daemon_active(node, now).filter(|_| live));
-    let tasks_seen = if node.background.is_empty() {
-        fresh(node.daemon_tasks_since.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS)
-    } else {
-        fresh(node.daemon_seen_at.filter(|_| node.alive), now, BACKGROUND_TASK_FRESH_MS)
-    };
-    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live));
-
-    f.add(Signal::UsageLimit, fresh(node.usage_limited_at.filter(|_| node.usage_limited), now, USAGE_LIMIT_WAIT_MS));
-    let declared = node.signal_at.unwrap_or(node.episode_since);
-    if node.turn_signal == Some(TurnSignal::WaitingMachine) {
-        let quiet_since = declared.max(node.last_seen);
-        let holds = machine_strained || now - quiet_since <= MACHINE_WAIT_QUIET_MS;
-        f.add(Signal::DeclaredWait, holds.then_some(declared));
-    }
-    f.add(Signal::NoProcess, (!node.alive).then_some(node.last_seen));
-    f.add(Signal::Nothing, Some(node.last_seen));
-    f
 }
 
 fn first<S: Copy + PartialEq>(table: &'static [Row<S>], facts: &Facts, current: S, trigger: Trigger) -> (&'static Row<S>, Millis) {
@@ -214,16 +155,11 @@ pub struct Outcome {
     pub status: NodeStatus,
     pub orchestrator: Option<OrchestratorState>,
     pub evidence: Evidence,
-    /// The tool the node opened is stale and nothing says it still runs: stop showing it.
+    /// The Claude daemon saw the session idle after the tool the node opened: stop showing it.
     pub drop_tool: bool,
 }
 
 pub fn evaluate(view: &View, node: &Node, now: Millis, trigger: Trigger) -> Outcome {
-    evaluate_with(view, node, now, trigger, view.machine_strained)
-}
-
-/// What the node would show at `now` if the machine were (or were not) strained.
-pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, machine_strained: bool) -> Outcome {
     if node.session_id == crate::orchestrator::NODE_ID && let Some(runtime) = &view.orchestrator {
         let state = runtime.state();
         return Outcome {
@@ -231,15 +167,11 @@ pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, ma
             orchestrator: Some(state), evidence: Evidence { row: "durable orchestrator lifecycle".into(), signal: Signal::Nothing, at: runtime.updated_at }, drop_tool: !runtime.is_active(),
         };
     }
-    let facts = facts_with(view, node, now, machine_strained);
-    let drop_tool = node.tool.is_some()
-        && facts.at(Signal::ToolInFlight).is_none()
-        && facts.at(Signal::CallStuck).is_none()
-        && facts.at(Signal::DaemonActive).is_none()
-        && facts.at(Signal::BackgroundTask).is_none();
+    let facts = facts(view, node);
+    let drop_tool = node.tool.as_ref().is_some_and(|tool| daemon_idle_after(node, tool.since));
     let (own, own_at) = first(NODE_TABLE, &facts, node.state, trigger);
     let status = match own.to {
-        NodeState::Working | NodeState::Stalled | NodeState::WaitingAnswer => NodeStatus::Busy,
+        NodeState::Working | NodeState::WaitingAnswer => NodeStatus::Busy,
         NodeState::WaitingMachine => NodeStatus::WaitingMachine,
         _ => NodeStatus::Free,
     };
@@ -268,7 +200,6 @@ pub const TASK_ASKS: &str = "a task of the node waits for the user's answer";
 pub const TASK_ACTION: &str = "a task of the node waits for the user's action";
 pub const MERGE_NOTICE_DUE: &str = "the merge of its PR has yet to reach it";
 pub const REVIEW_REPLY_DUE: &str = "the user's review has yet to reach it";
-pub const TASK_IDLE: &str = "a task of the node should move and its turn ended without a declaration";
 pub const TASK_AWAITS_MERGE: &str = "its task has nothing left but a dependency's PR to see merged";
 pub const TASK_AUTO_MERGING: &str = "Alondra waits on GitHub to merge a PR of its task";
 pub const TASK_DELIVERED: &str = "its task runs and it delivered a report";
@@ -281,7 +212,6 @@ pub const TASK_ROWS: &[&str] = &[
     TASK_ACTION,
     MERGE_NOTICE_DUE,
     REVIEW_REPLY_DUE,
-    TASK_IDLE,
     TASK_AWAITS_MERGE,
     TASK_AUTO_MERGING,
     TASK_DELIVERED,
@@ -292,7 +222,7 @@ pub const TASK_ROWS: &[&str] = &[
 
 /// What the node's tasks make of it, over what it shows of its own: waiting for the user's
 /// answer or action (its task's blocker, or an open card the machine could not take), and, when
-/// it is free, in review, done, or stalled when a task of it should move and it said nothing.
+/// it is free, in review or done.
 /// `None` leaves the node's own row.
 fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_at: Millis) -> Option<(NodeState, Evidence)> {
     let said = |state: NodeState, row: &str, signal: Signal, at: Millis| Some((state, Evidence { row: row.to_string(), signal, at }));
@@ -310,7 +240,7 @@ fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_a
     if let Some(at) = blocked(true) {
         return said(NodeState::YourTurn, TASK_ACTION, Signal::ActionRequested, at);
     }
-    if own.to != NodeState::Unclear {
+    if own.to != NodeState::Idle {
         return None;
     }
     if let Some(at) = view.merge_notice_due(&node.session_id) {
@@ -322,9 +252,7 @@ fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_a
     let since = |states: &[TaskState]| tasks.iter().filter(|t| states.contains(&t.state)).map(|t| t.state_since).max();
     if let Some(at) = since(&[TaskState::Running, TaskState::Closing]) {
         let working = tasks.iter().filter(|t| matches!(t.state, TaskState::Running | TaskState::Closing));
-        return if idle_task(view, node, now).is_some() {
-            said(NodeState::Stalled, TASK_IDLE, Signal::TurnEndedUndeclared, node.last_stop_at.unwrap_or(at))
-        } else if awaits_merge(view, node, now).is_some() {
+        return if awaits_merge(view, node).is_some() {
             said(NodeState::WaitingMerge, TASK_AWAITS_MERGE, Signal::PrAwaitingUser, at)
         } else if tasks.iter().any(|t| view.auto_merge_pending(t, now)) {
             said(NodeState::WaitingMerge, TASK_AUTO_MERGING, Signal::PrAwaitingUser, at)
@@ -350,19 +278,19 @@ fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_a
 }
 
 /// Whether the node shows work right now, ignoring what it is waiting for.
-pub fn works(view: &View, node: &Node, now: Millis) -> bool {
-    let f = facts(view, node, now);
+pub fn works(view: &View, node: &Node) -> bool {
+    let f = facts(view, node);
     [Signal::ToolInFlight, Signal::Hook, Signal::MessageHanded, Signal::DaemonActive, Signal::BackgroundTask].iter().any(|s| f.at(*s).is_some())
 }
 
 /// Nodes in limbo at `now`: a background node whose state is out of date, or that is not
-/// working and has no inbox item for its state and is not in the sentinel's hands, or that has
-/// an open question while showing another state. Empty after every sweep.
+/// working and has no inbox item for its state, or that has an open question while showing
+/// another state. Empty after every event.
 pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
     let mut found = vec![];
     for node in view.nodes.values().filter(|n| n.watched()) {
         let sid = &node.session_id;
-        let outcome = evaluate(view, node, now, Trigger::Clock);
+        let outcome = evaluate(view, node, now, Trigger::Other);
         if outcome.state != node.state {
             found.push((sid.clone(), "its state is out of date"));
             continue;
@@ -379,14 +307,14 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
             view.tasks_of(sid).any(|t| t.state == TaskState::NeedsYou && t.blocker.is_some_and(|b| (b.kind == BlockerKind::Action) == action))
         };
         let missing = match node.state {
-            NodeState::Working => !works(view, node, now),
+            NodeState::Working => !works(view, node),
             NodeState::WaitingAnswer => !open(false) && !blocked(false) && !node.waiting_permission && node.menu_waiting.is_none(),
             NodeState::YourTurn => !open(true) && !blocked(true),
             NodeState::WaitingMerge => !matches!(outcome.evidence.signal, Signal::PrAwaitingUser | Signal::ReviewAwaitingUser),
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
             NodeState::Done => !view.tasks_of(sid).all(|t| t.state.finished()),
             NodeState::Delivered => !reported(&[ReportKind::Final, ReportKind::Notice, ReportKind::Document]),
-            NodeState::Unclear | NodeState::Stalled => false,
+            NodeState::Idle => false,
         };
         if missing {
             found.push((sid.clone(), "its state has no inbox item behind it"));
@@ -422,12 +350,6 @@ pub fn talking_with_user(v: &View, node: &Node) -> bool {
     !typed_by_alondra
 }
 
-/// David is handling the node himself: a terminal is attached to it, or he typed into it a
-/// moment ago. While that lasts the node raises nothing in Alondra.
-pub fn watching(v: &View, node: &Node, now: Millis) -> bool {
-    node.attached || (talking_with_user(v, node) && node.last_prompt_at.is_some_and(|at| now - at <= WATCH_WINDOW_MS))
-}
-
 /// What the node declared in its episode covers the task: a declaration covers the task it
 /// named, or every task of the node when it named none. A wait for the machine covers them all.
 pub fn declared_for(node: &Node, task: &Task) -> bool {
@@ -440,7 +362,7 @@ pub fn declared_for(node: &Node, task: &Task) -> bool {
 
 /// The node's turn ended and nothing moves it: no work in sight, nothing on screen waiting for
 /// anyone, nothing from David, the orchestrator or a merge on its way to it.
-fn quiet(view: &View, node: &Node, now: Millis) -> bool {
+fn quiet(view: &View, node: &Node) -> bool {
     let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
     node.watched()
         && node.has_plugin
@@ -451,29 +373,15 @@ fn quiet(view: &View, node: &Node, now: Millis) -> bool {
         && node.background.is_empty()
         && !crate::upkeep::died_working(node)
         && !crate::upkeep::stopped_on_purpose(node)
-        && !works(view, node, now)
+        && !works(view, node)
         && !view.deliverable_messages(&node.session_id).any(|m| m.from != MessageFrom::Alondra || view.is_merge_notice(m))
-}
-
-/// The running (or closing: after its merge) task of a node idle when it should work: its turn
-/// ended, it shows no work and it declared nothing about that task. A task whose auto-merge PR
-/// Alondra is waiting on GitHub to merge waits on GitHub, not on its node; one that can only
-/// wait for a dependency's merge waits on that merge (`awaits_merge`); a node whose process died
-/// is restarted instead (`upkeep`).
-pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
-    if !quiet(view, node, now) || watching(view, node, now) {
-        return None;
-    }
-    view.tasks_of(&node.session_id).find(|t| {
-        matches!(t.state, TaskState::Running | TaskState::Closing) && !declared_for(node, t) && !view.auto_merge_pending(t, now) && view.awaitable_merge(t).is_none()
-    })
 }
 
 /// The running task of a quiet node that has nothing left but a dependency's PR to see merged,
 /// and that PR: whatever the node said, the task waits for that merge. A node waiting for the
 /// machine waits for the machine.
-pub fn awaits_merge<'a>(view: &'a View, node: &Node, now: Millis) -> Option<(&'a Task, &'a PullRequest)> {
-    if node.turn_signal == Some(TurnSignal::WaitingMachine) || !quiet(view, node, now) {
+pub fn awaits_merge<'a>(view: &'a View, node: &Node) -> Option<(&'a Task, &'a PullRequest)> {
+    if node.turn_signal == Some(TurnSignal::WaitingMachine) || !quiet(view, node) {
         return None;
     }
     view.tasks_of(&node.session_id).find_map(|t| Some((t, view.awaitable_merge(t)?)))
@@ -585,16 +493,16 @@ mod tests {
         [Event::MessageQueued(m), Event::MessageHanded { id: 9 }]
     }
 
-    /// Events one second apart from T0, then an optional sweep `after` ms past the last one.
-    fn run(events: &[Event], after: Option<(Millis, bool)>) -> View {
+    /// Events one second apart from T0.
+    fn run(events: &[Event]) -> View {
+        spaced(events, 1000)
+    }
+
+    /// Events `gap` ms apart from T0.
+    fn spaced(events: &[Event], gap: Millis) -> View {
         let mut v = View::default();
-        let mut at = T0;
         for (i, e) in events.iter().enumerate() {
-            at = T0 + i as Millis * 1000;
-            v.apply(i as u64 + 1, at, e);
-        }
-        if let Some((later, strained)) = after {
-            v.apply(events.len() as u64 + 1, at + later, &Event::Clock { machine_strained: strained });
+            v.apply(i as u64 + 1, T0 + i as Millis * gap, e);
         }
         v
     }
@@ -602,7 +510,6 @@ mod tests {
     struct Case {
         what: &'static str,
         events: Vec<Event>,
-        sweep: Option<(Millis, bool)>,
         state: NodeState,
         row: &'static str,
     }
@@ -622,37 +529,32 @@ mod tests {
 
     fn cases() -> Vec<Case> {
         let min = 60_000;
-        let stale = NODE_TABLE.iter().find(|r| !r.on.is_empty()).unwrap().name;
         let [queued, handed] = message(MessageFrom::Alondra);
         let [notice, _] = merge_notice();
         let comments = verdict(1, crate::event::ReviewVerdict::Comments, 9);
         vec![
-            Case { what: "an open ask", events: vec![hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: TASK_ASKS },
-            Case { what: "a permission prompt", events: vec![hook("UserPromptSubmit"), hook("PermissionRequest")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PermissionPrompt) },
-            Case { what: "an action for the user", events: vec![daemon("done", "idle", 0, None), question(true, QuestionOrigin::Classifier)], sweep: None, state: NodeState::YourTurn, row: TASK_ACTION },
-            Case { what: "a long tool, no hook for 10 min", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((10 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::ToolInFlight) },
-            Case { what: "a hook a minute ago", events: vec![hook("UserPromptSubmit")], sweep: Some((min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::Hook) },
-            Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
-            Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
-            Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0 + 80 * min)])], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
-            Case { what: "a wait loop running for 40 min is still work", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], sweep: Some((40 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
-            Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
-            Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
-            Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
-            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
-            Case { what: "an artifact sent for review", events: vec![hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
-            Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: TASKS_FINISHED },
-            Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
-            Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
-            Case { what: "a handoff final report, nothing else pending", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: TASKS_FINISHED },
-            Case { what: "a handoff notice, still working", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
-            Case { what: "a background call past its limit", events: background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), sweep: Some((46 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::CallStuck) },
-            Case { what: "a foreground tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((46 * min, false)), state: NodeState::Unclear, row: stale },
-            Case { what: "a background node that ended its turn without declaring", events: vec![daemon("working", "active", 0, None), hook("UserPromptSubmit"), hook("Stop")], sweep: Some((30 * min, false)), state: NodeState::Stalled, row: TASK_IDLE },
-            Case { what: "merged, the notice on its way", events: background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice, merged()]), sweep: None, state: NodeState::WaitingMerge, row: MERGE_NOTICE_DUE },
-            Case { what: "the user's comments on their way", events: [&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")][..], &comments[..2]].concat(), sweep: None, state: NodeState::WaitingMerge, row: REVIEW_REPLY_DUE },
-            Case { what: "an auto-merge PR waiting on its checks", events: auto_merging(CheckState::Running), sweep: None, state: NodeState::WaitingMerge, row: TASK_AUTO_MERGING },
-            Case { what: "a turn that ended with nothing", events: vec![hook("UserPromptSubmit"), hook("Stop")], sweep: None, state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::Nothing) },
+            Case { what: "an open ask", events: vec![hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")], state: NodeState::WaitingAnswer, row: TASK_ASKS },
+            Case { what: "a permission prompt", events: vec![hook("UserPromptSubmit"), hook("PermissionRequest")], state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PermissionPrompt) },
+            Case { what: "an action for the user", events: vec![daemon("done", "idle", 0, None), question(true, QuestionOrigin::Classifier)], state: NodeState::YourTurn, row: TASK_ACTION },
+            Case { what: "a long tool", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], state: NodeState::Working, row: row_named(NodeState::Working, Signal::ToolInFlight) },
+            Case { what: "a hook inside a turn", events: vec![hook("UserPromptSubmit")], state: NodeState::Working, row: row_named(NodeState::Working, Signal::Hook) },
+            Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
+            Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
+            Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0 + 80 * min)])], state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
+            Case { what: "a wait loop is still work", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
+            Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
+            Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
+            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
+            Case { what: "an artifact sent for review", events: vec![hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")], state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
+            Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], state: NodeState::Done, row: TASKS_FINISHED },
+            Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], state: NodeState::Delivered, row: TASK_DELIVERED },
+            Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], state: NodeState::Delivered, row: TASK_DELIVERED },
+            Case { what: "a handoff final report, nothing else pending", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Final), hook("Stop")], state: NodeState::Done, row: TASKS_FINISHED },
+            Case { what: "a handoff notice, still working", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Notice), hook("Stop")], state: NodeState::Delivered, row: TASK_DELIVERED },
+            Case { what: "merged, the notice on its way", events: background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice, merged()]), state: NodeState::WaitingMerge, row: MERGE_NOTICE_DUE },
+            Case { what: "the user's comments on their way", events: [&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")][..], &comments[..2]].concat(), state: NodeState::WaitingMerge, row: REVIEW_REPLY_DUE },
+            Case { what: "an auto-merge PR waiting on its checks", events: auto_merging(CheckState::Running), state: NodeState::WaitingMerge, row: TASK_AUTO_MERGING },
+            Case { what: "a turn that ended with nothing", events: vec![hook("UserPromptSubmit"), hook("Stop")], state: NodeState::Idle, row: row_named(NodeState::Idle, Signal::Nothing) },
         ]
     }
 
@@ -660,14 +562,14 @@ mod tests {
     fn every_row_of_the_table_is_reached_and_asserted() {
         let cases = cases();
         for c in &cases {
-            let v = run(&c.events, c.sweep);
+            let v = run(&c.events);
             let n = &v.nodes["s"];
             assert_eq!(n.state, c.state, "{}", c.what);
             assert_eq!(n.evidence.as_ref().map(|e| e.row.as_str()), Some(c.row), "{}", c.what);
         }
-        let mut waiting = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+        let mut waiting = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]));
         waiting.board.tasks.get_mut("t-s").expect("the node's task").state = TaskState::WaitingDependency;
-        waiting.apply(99, T0 + 60_000, &Event::Clock { machine_strained: false });
+        waiting.recompute("s", T0 + 60_000, Trigger::Other);
         let n = &waiting.nodes["s"];
         assert_eq!((n.state, n.evidence.as_ref().map(|e| e.row.as_str())), (NodeState::WaitingMerge, Some(TASK_WAITING)), "a task waiting for another");
         let asserted_apart = [TASK_WAITING, TASK_AWAITS_MERGE];
@@ -677,31 +579,49 @@ mod tests {
         }
     }
 
+    /// David's rule: a state changes only on facts, never for how long it has lasted. Every case
+    /// of the table, its events a second or two days apart, and read again an hour or two days
+    /// after its last event, ends in the same state on the same row.
+    #[test]
+    fn the_same_events_on_any_clock_give_the_same_states() {
+        let hour = 60 * 60_000;
+        for c in cases() {
+            for gap in [1000, 48 * hour] {
+                let v = spaced(&c.events, gap);
+                let n = &v.nodes["s"];
+                let last = T0 + (c.events.len() as Millis - 1) * gap;
+                for later in [0, hour, 48 * hour] {
+                    let read = evaluate(&v, n, last + later, Trigger::Other);
+                    assert_eq!((read.state, read.status, read.evidence.row.as_str()), (c.state, n.status, c.row),
+                        "{}: events {gap} ms apart, read {later} ms after the last", c.what);
+                    assert!(!read.drop_tool, "{}: no clock drops a tool", c.what);
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_node_itself_is_only_free_busy_or_waiting_for_the_machine() {
-        let min = 60_000;
-        let cases: Vec<(&str, Vec<Event>, Option<(Millis, bool)>, NodeStatus, NodeState)> = vec![
-            ("inside a turn", vec![hook("UserPromptSubmit")], None, NodeStatus::Busy, NodeState::Working),
-            ("on a permission prompt", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], None, NodeStatus::Busy, NodeState::WaitingAnswer),
-            ("inside a call past its limit", background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), Some((46 * min, false)), NodeStatus::Busy, NodeState::Stalled),
-            ("stopped by a usage limit", vec![hook("UserPromptSubmit"), usage_limit()], None, NodeStatus::WaitingMachine, NodeState::WaitingMachine),
-            ("its question waits for the user", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")]), None, NodeStatus::Free, NodeState::WaitingAnswer),
-            ("its task is done", vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], None, NodeStatus::Free, NodeState::Done),
-            ("its task should move", background(&[hook("UserPromptSubmit"), hook("Stop")]), None, NodeStatus::Free, NodeState::Stalled),
+        let cases: Vec<(&str, Vec<Event>, NodeStatus, NodeState)> = vec![
+            ("inside a turn", vec![hook("UserPromptSubmit")], NodeStatus::Busy, NodeState::Working),
+            ("on a permission prompt", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], NodeStatus::Busy, NodeState::WaitingAnswer),
+            ("stopped by a usage limit", vec![hook("UserPromptSubmit"), usage_limit()], NodeStatus::WaitingMachine, NodeState::WaitingMachine),
+            ("its question waits for the user", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")]), NodeStatus::Free, NodeState::WaitingAnswer),
+            ("its task is done", vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], NodeStatus::Free, NodeState::Done),
+            ("its turn ended with nothing declared", background(&[hook("UserPromptSubmit"), hook("Stop")]), NodeStatus::Free, NodeState::Idle),
         ];
-        for (what, events, sweep, status, state) in cases {
-            let n = run(&events, sweep).nodes["s"].clone();
+        for (what, events, status, state) in cases {
+            let n = run(&events).nodes["s"].clone();
             assert_eq!((n.status, n.state), (status, state), "{what}");
         }
     }
 
     #[test]
     fn a_background_task_counts_as_work_however_long_it_runs() {
-        let min = 60_000;
-        let started = [hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0), (BackgroundKind::Agent, T0 + 25 * min)])];
-        let swept = run(&started, Some((40 * min, false)));
-        assert_eq!(swept.nodes["s"].state, NodeState::Working, "the shell started 40 min ago is still work");
-        let v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
+        let started = [hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0), (BackgroundKind::Agent, T0)])];
+        let later = spaced(&started, 48 * 60 * 60_000);
+        assert_eq!(later.nodes["s"].state, NodeState::Working, "the shell started two days ago is still work");
+        let v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)]);
         assert!(v.nodes["s"].background.is_empty(), "no task in flight means nothing runs, whatever the list says");
     }
 
@@ -726,26 +646,26 @@ mod tests {
     }
 
     #[test]
-    fn only_an_undeclared_end_of_turn_of_a_background_node_is_stalled() {
+    fn an_undeclared_end_of_turn_leaves_the_node_idle_and_only_declarations_and_cards_say_more() {
         let [queued, handed] = message(MessageFrom::User);
         let typed = Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some("what is left?".into()), ..Default::default() });
         let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
-            ("ended its turn saying what it will do next", background(&[hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("ended its turn saying what it will do next", background(&[hook("UserPromptSubmit"), hook("Stop")]), NodeState::Idle),
             ("asked first", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")]), NodeState::WaitingAnswer),
             ("handed the user an action", background(&[hook("UserPromptSubmit"), question(true, QuestionOrigin::Ask), hook("Stop")]), NodeState::YourTurn),
             ("reported final", background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
             ("declared a machine wait", background(&[hook("UserPromptSubmit"), wait(), hook("Stop")]), NodeState::WaitingMachine),
             ("opened a PR, which has its card", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop")]), NodeState::WaitingMerge),
-            ("its PR was merged", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }, hook("Stop")]), NodeState::Stalled),
-            ("changes were requested on its PR", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrChangesRequested { id: 1 }, hook("Stop")]), NodeState::Stalled),
-            ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Unclear),
-            ("Claude Code typed a subagent's notice", background(&[harness("<task-notification>\n<task-id>a1</task-id>"), hook("Stop")]), NodeState::Stalled),
-            ("another session's message arrived", background(&[harness("<agent-message from=\"x\">done</agent-message>"), hook("Stop")]), NodeState::Stalled),
-            ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], NodeState::Unclear),
-            ("declared, then got a new message and stopped silently", background(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("its PR was merged", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }, hook("Stop")]), NodeState::Idle),
+            ("changes were requested on its PR", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrChangesRequested { id: 1 }, hook("Stop")]), NodeState::Idle),
+            ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Idle),
+            ("Claude Code typed a subagent's notice", background(&[harness("<task-notification>\n<task-id>a1</task-id>"), hook("Stop")]), NodeState::Idle),
+            ("another session's message arrived", background(&[harness("<agent-message from=\"x\">done</agent-message>"), hook("Stop")]), NodeState::Idle),
+            ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], NodeState::Idle),
+            ("declared, then got a new message and stopped silently", background(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]), NodeState::Idle),
         ];
         for (what, events, state) in cases {
-            assert_eq!(run(&events, None).nodes["s"].state, state, "{what}");
+            assert_eq!(run(&events).nodes["s"].state, state, "{what}");
         }
     }
 
@@ -755,25 +675,6 @@ mod tests {
 
     fn attach(on: bool) -> Event {
         Event::AttachChanged { session_id: "s".into(), attached: on }
-    }
-
-    #[test]
-    fn the_user_watches_a_node_while_attached_or_right_after_typing_into_it() {
-        let min = 60_000;
-        let [queued, handed] = message(MessageFrom::Alondra);
-        let cases: Vec<(&str, Vec<Event>, Millis, bool)> = vec![
-            ("a terminal attached", background(&[attach(true)]), 60 * min, true),
-            ("the terminal left", background(&[attach(true), attach(false)]), 0, false),
-            ("typed a moment ago", background(&[typed("what is left?"), hook("Stop")]), 5 * min, true),
-            ("typed 11 minutes ago", background(&[typed("what is left?"), hook("Stop")]), 11 * min, false),
-            ("the prompt was Alondra's", background(&[queued, handed, typed("go on"), hook("Stop")]), min, false),
-            ("nothing", background(&[hook("UserPromptSubmit"), hook("Stop")]), 0, false),
-        ];
-        for (what, events, later, expected) in cases {
-            let v = run(&events, None);
-            let at = T0 + (events.len() as Millis - 1) * 1000 + later;
-            assert_eq!(watching(&v, &v.nodes["s"], at), expected, "{what}");
-        }
     }
 
     fn menu(waiting: Option<&str>) -> Event {
@@ -792,48 +693,40 @@ mod tests {
             ("a foreground session", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], NodeState::WaitingAnswer),
         ];
         for (what, events, state) in cases {
-            let v = run(&events, None);
+            let v = run(&events);
             assert_eq!(v.nodes["s"].state, state, "{what}");
         }
     }
 
-    /// alondra/sin-dormidos (45b58bd9), 24 Sep: idle for hours, `daemon_tasks: 1`, `background: []`,
-    /// and `daemon_seen_at` refreshed on every poll. The count alone kept it working forever.
+    /// alondra/sin-dormidos (45b58bd9), 24 Sep: idle for hours, `daemon_tasks: 1`, `background: []`.
+    /// The count is what the Claude daemon reports: it is work until the daemon reports none.
     #[test]
-    fn a_task_count_with_nothing_listed_ages_from_its_last_change_not_the_last_poll() {
+    fn a_task_count_is_work_until_the_daemon_reports_none_however_long_it_is_polled() {
         let min = 60_000;
-        let cases = [
-            ("listed task, polled for 3 h", true, 180 * min, NodeState::Working),
-            ("count only, 30 min after it appeared", false, 30 * min, NodeState::Working),
-            ("count only, polled for 3 h", false, 180 * min, NodeState::Stalled),
-        ];
-        for (what, listed, after, expected) in cases {
-            let mut v = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+        for listed in [true, false] {
+            let mut v = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]));
             let seen = |at: Millis| if listed { daemon_running(&[(BackgroundKind::Shell, at)]) } else { daemon("working", "idle", 1, None) };
-            for (i, at) in (0..=after).step_by((10 * min) as usize).enumerate() {
+            for (i, at) in (0..=180 * min).step_by((10 * min) as usize).enumerate() {
                 v.apply(100 + i as u64, T0 + 10_000 + at, &seen(T0 + 10_000 + at));
             }
-            assert_eq!(v.nodes["s"].state, expected, "{what}");
+            assert_eq!(v.nodes["s"].state, NodeState::Working, "listed {listed}, polled for 3 h");
+            v.apply(200, T0 + 200 * min, &daemon("working", "idle", 0, None));
+            assert_eq!(v.nodes["s"].state, NodeState::Idle, "listed {listed}: the daemon reports nothing running");
         }
     }
 
     #[test]
-    fn working_without_fresh_evidence_is_demoted() {
-        let min = 60_000;
-        assert_eq!(run(&[hook("UserPromptSubmit")], Some((6 * min, false))).nodes["s"].state, NodeState::Unclear);
-        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], Some((31 * min, false))).nodes["s"].state, NodeState::Stalled);
-        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], Some((121 * min, false))).nodes["s"].state, NodeState::Stalled);
-    }
-
-    #[test]
     fn a_daemon_active_before_the_stop_does_not_count() {
-        let v = run(&[hook("UserPromptSubmit"), daemon("working", "active", 0, None), hook("Stop")], None);
-        assert_eq!(v.nodes["s"].state, NodeState::Stalled);
+        let v = run(&[hook("UserPromptSubmit"), daemon("working", "active", 0, None), hook("Stop")]);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
     }
 
     #[test]
-    fn a_stale_tool_is_no_longer_shown() {
-        let v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")], Some((46 * 60_000, false)));
+    fn a_tool_stays_on_show_for_any_time_until_the_daemon_sees_the_session_idle_after_it() {
+        let v = spaced(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")], 48 * 60 * 60_000);
+        assert!(v.nodes["s"].tool.is_some());
+        assert_eq!(v.nodes["s"].state, NodeState::Working);
+        let v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "t"), daemon("working", "idle", 0, None)]);
         assert!(v.nodes["s"].tool.is_none());
     }
 
@@ -842,30 +735,23 @@ mod tests {
     }
 
     #[test]
-    fn a_call_is_stuck_only_past_the_limit_for_its_kind() {
-        let min = 60_000;
-        let cases = [
-            ("a build at 40 min", "Bash", 40 * min, NodeState::Working),
-            ("a build at 46 min", "Bash", 46 * min, NodeState::Stalled),
-            ("a subagent at 90 min", "Agent", 90 * min, NodeState::Working),
-            ("a subagent at 121 min", "Task", 121 * min, NodeState::Stalled),
-        ];
-        for (what, name, after, state) in cases {
-            let v = run(&background(&[hook("UserPromptSubmit"), call(name)]), Some((after, false)));
-            assert_eq!(v.nodes["s"].state, state, "{what}");
-            assert!(v.nodes["s"].tool.is_some(), "{what}: the call stays on show");
+    fn a_call_of_any_kind_works_for_two_days() {
+        for name in ["Bash", "Agent", "Task", "mcp__x__deploy"] {
+            let v = spaced(&background(&[hook("UserPromptSubmit"), call(name)]), 48 * 60 * 60_000);
+            assert_eq!(v.nodes["s"].state, NodeState::Working, "{name}");
+            assert!(v.nodes["s"].tool.is_some(), "{name}: the call stays on show");
         }
     }
 
     #[test]
-    fn a_declared_wait_lapses_when_nothing_happens_and_the_machine_is_fine() {
-        let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop")], Some((21 * 60_000, false)));
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+    fn a_declared_wait_holds_for_any_time_until_the_node_moves_on() {
+        let v = spaced(&[hook("UserPromptSubmit"), wait(), hook("Stop")], 48 * 60 * 60_000);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
     }
 
     #[test]
     fn a_final_report_while_tools_run_is_working_until_the_turn_ends() {
-        let mut v = run(&[hook("UserPromptSubmit"), report(ReportKind::Final), tool("PreToolUse", "t")], None);
+        let mut v = run(&[hook("UserPromptSubmit"), report(ReportKind::Final), tool("PreToolUse", "t")]);
         assert_eq!(v.nodes["s"].state, NodeState::Working);
         v.apply(9, T0 + 9000, &hook("Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Done);
@@ -873,17 +759,17 @@ mod tests {
 
     #[test]
     fn a_finished_task_is_not_undone_by_what_the_daemon_guesses() {
-        let v = run(&[daemon("working", "active", 0, None), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop"), daemon("blocked", "blocked", 0, Some("decide"))], None);
+        let v = run(&[daemon("working", "active", 0, None), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop"), daemon("blocked", "blocked", 0, Some("decide"))]);
         assert_eq!(v.nodes["s"].state, NodeState::Done, "the node's own final report finished its task");
     }
 
     #[test]
     fn a_message_from_the_user_ends_what_the_node_declared() {
         let [queued, handed] = message(MessageFrom::User);
-        let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")], None);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
         let [queued, handed] = message(MessageFrom::Alondra);
-        let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")], None);
+        let v = run(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]);
         assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
     }
 
@@ -893,7 +779,7 @@ mod tests {
         if let Event::QuestionAsked(q) = &mut q {
             q.tool_use_id = Some("plan".into());
         }
-        let mut v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "plan"), q], None);
+        let mut v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "plan"), q]);
         assert!(v.nodes["s"].tool.is_some());
         v.apply(9, T0 + 9000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: None });
         assert!(v.nodes["s"].tool.is_none());
@@ -901,12 +787,12 @@ mod tests {
 
     #[test]
     fn a_waking_node_without_the_plugin_starts_a_new_turn() {
-        let mut v = run(&[daemon("done", "idle", 0, None), report(ReportKind::Notice)], None);
+        let mut v = run(&[daemon("done", "idle", 0, None), report(ReportKind::Notice)]);
         assert_eq!(v.nodes["s"].state, NodeState::Delivered);
         v.apply(9, T0 + 9000, &daemon("working", "active", 0, None));
         v.apply(10, T0 + 10_000, &daemon("done", "idle", 0, None));
         assert_eq!(v.nodes["s"].turn, 1);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
     }
 
     fn merge_notice() -> [Event; 2] {
@@ -962,7 +848,7 @@ mod tests {
         let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
             ("a document with the artifact", sent(ReportKind::Document), NodeState::WaitingMerge),
             ("a final report with the artifact is not done", sent(ReportKind::Final), NodeState::WaitingMerge),
-            ("a progress report sends nothing for review", background(&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Progress), hook("Stop")]), NodeState::Stalled),
+            ("a progress report sends nothing for review", background(&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Progress), hook("Stop")]), NodeState::Idle),
             ("the comments on their way", [sent(ReportKind::Document), vec![comments.clone(), comments_queued.clone()]].concat(), NodeState::WaitingMerge),
             ("the comments typed in", reviewed(&[]), NodeState::Working),
             ("republished for another round", reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop")]), NodeState::WaitingMerge),
@@ -975,13 +861,13 @@ mod tests {
             ("inside an open PR card the PR decides", background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some(format!("{PAGE} and https://github.com/a/b/pull/7")), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]), NodeState::WaitingMerge),
         ];
         for (what, events, state) in cases {
-            let v = run(&events, None);
+            let v = run(&events);
             assert_eq!(v.nodes["s"].state, state, "{what}");
             assert!(limbo(&v, T0 + events.len() as Millis * 1000).is_empty(), "{what}: {:?}", limbo(&v, T0 + events.len() as Millis * 1000));
         }
-        let v = run(&reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved, approved_queued, approved_handed, hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]), None);
+        let v = run(&reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved, approved_queued, approved_handed, hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]));
         assert!(v.reports[&3].read, "a report about an approved artifact asks nothing of David");
-        let pr = run(&background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some("https://github.com/a/b/pull/7".into()), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]), None);
+        let pr = run(&background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some("https://github.com/a/b/pull/7".into()), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]));
         assert_eq!(pr.nodes["s"].evidence.as_ref().map(|e| e.signal), Some(Signal::PrAwaitingUser), "the PR card, not a review card");
     }
 
@@ -1003,7 +889,7 @@ mod tests {
             ("merged, the notice typed in", with_pr(&[notice.clone(), merged(), notice_handed.clone()]), NodeState::Working),
             ("merged, acted on it and reported final", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
             ("merged after its final report, acted on the notice all the same", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Done),
-            ("merged with work left after it, stopped without a word", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("merged with work left after it, stopped without a word", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Idle),
             ("merged on GitHub, nobody to tell", with_pr(&[merged()]), NodeState::Done),
             ("done", then(&[]), NodeState::Done),
             ("done, David writes to it", then(&[from_user, user_handed]), NodeState::Working),
@@ -1019,7 +905,7 @@ mod tests {
         let wrong: Vec<String> = cases
             .into_iter()
             .filter_map(|(what, events, state)| {
-                let got = run(&events, None).nodes["s"].state;
+                let got = run(&events).nodes["s"].state;
                 (got != state).then(|| format!("{what}: {got:?}, expected {state:?}"))
             })
             .collect();
@@ -1027,45 +913,14 @@ mod tests {
     }
 
     #[test]
-    fn a_state_this_build_does_not_know_reads_as_unclear() {
-        let s: NodeState = serde_json::from_str("\"being_watched\"").unwrap();
-        assert_eq!(s, NodeState::Unclear);
+    fn a_state_this_build_does_not_know_is_an_error_reading_it() {
+        assert!(serde_json::from_str::<NodeState>("\"being_watched\"").is_err());
+        assert!(serde_json::from_str::<NodeState>("\"stalled\"").is_err(), "no node is stalled by the clock any more");
+        let s: NodeState = serde_json::from_str("\"unclear\"").unwrap();
+        assert_eq!(s, NodeState::Idle, "what earlier builds called idle");
         let s: NodeState = serde_json::from_str("\"your_turn\"").unwrap();
         assert_eq!(s, NodeState::YourTurn);
         let o: OrchestratorState = serde_json::from_str("\"asleep\"").unwrap();
         assert_eq!(o, OrchestratorState::Unknown);
-    }
-
-    fn seen_without_process(state: &str) -> Event {
-        Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), state: Some(state.into()), tempo: Some("idle".into()), ..Default::default() })
-    }
-
-    fn exited() -> Event {
-        Event::ProcessExited { session_id: "s".into(), pid: 7 }
-    }
-
-    #[test]
-    fn a_node_is_idle_when_it_should_work_only_with_a_running_task_no_work_and_nothing_declared() {
-        let turn = |events: &[Event]| background(&[&[hook("UserPromptSubmit")], events].concat());
-        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
-            ("ended its turn saying nothing", turn(&[hook("Stop")]), true),
-            ("reported final", turn(&[report(ReportKind::Final), hook("Stop")]), false),
-            ("sent a notice", turn(&[report(ReportKind::Notice), hook("Stop")]), false),
-            ("asked", turn(&[question(false, QuestionOrigin::Ask), hook("Stop")]), false),
-            ("declared a machine wait", turn(&[wait(), hook("Stop")]), false),
-            ("still in its turn", turn(&[tool("PreToolUse", "t")]), false),
-            ("opened a PR, now in review", turn(&[pr_opened(), hook("Stop")]), false),
-            ("a background task still runs", turn(&[hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])]), false),
-            ("the user is typing in it", background(&[typed("what is left?"), hook("Stop")]), false),
-            ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], false),
-            ("its process died while working: restarted instead", turn(&[hook("Stop"), exited(), seen_without_process("working")]), false),
-            ("someone stopped it on purpose", turn(&[hook("Stop"), exited(), seen_without_process("stopped")]), false),
-            ("the daemon let it go after its turn: the nudge brings it back", turn(&[hook("Stop"), exited(), seen_without_process("done")]), true),
-        ];
-        for (what, events, idle) in cases {
-            let v = run(&events, None);
-            let now = T0 + events.len() as Millis * 1000;
-            assert_eq!(idle_task(&v, &v.nodes["s"], now).map(|t| t.id.as_str()), idle.then_some("t-s"), "{what}");
-        }
     }
 }

@@ -698,7 +698,7 @@ type Fact = (Option<alondra_core::Millis>, bool);
 /// has nothing to be reminded of. `reminded` keeps the fact each node was last sent one for: the
 /// clock never sends another, only a new fact (a turn end, its work's notification, its shell seen
 /// gone).
-pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis,
+pub(crate) fn behind_hung_work(domain: &DomainRuntime,
     reminded: &mut std::collections::HashMap<String, Fact>) -> Vec<(String, String)> {
     let Ok(state) = domain.state() else { return vec![] };
     let mut out = vec![];
@@ -707,7 +707,7 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis
         let Some(fact) = domain.live.mods.session(session).map(|reported| (reported.last_event_at, reported.work_gone())) else { continue };
         let counted = |task: &TaskId| domain.store.lock().expect("domain store poisoned").stop_blocks(task).ok().flatten();
         if matches!(agent.phase, alondra_core::domain::NodePhase::Starting { .. }) || reminded.get(session) == Some(&fact)
-            || stopped_without_delivering(domain, &state, agent_id, now, counted).is_none()
+            || stopped_without_delivering(domain, &state, agent_id, counted).is_none()
         {
             continue;
         }
@@ -732,12 +732,12 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis
 /// is sent back too, so it asks through a card.
 /// `stop_blocks` reads the count kept for a Task, so a caller holding the store can answer.
 pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
-    now: alondra_core::Millis, stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
+    stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
     let session = agent_id.0.as_str();
     let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
         && reported.tool.is_none() && (reported.background.is_empty() || reported.work_gone())
         && (reported.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Blocked)
-            || reported.working_since.is_none() && !reported.silent(now)));
+            || reported.working_since.is_none() && reported.halt().is_none()));
     if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id) || waits_on_own_work(state, agent_id)
         || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
@@ -2046,7 +2046,7 @@ mod tests {
 
         mod_report(&domain, json!({"event": "background", "tasks": []}), now);
         let mut reminded = std::collections::HashMap::new();
-        assert!(behind_hung_work(&domain, now + HOURS, &mut reminded).is_empty(), "it waits on that card");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "it waits on that card");
     }
 
     const ABLATE: &str = "python3 ablate.py > ablation.txt";
@@ -2224,20 +2224,20 @@ mod tests {
         let now = alondra_core::now_millis();
 
         background_subagent(&domain, 150);
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "its work still runs, however long");
-        assert!(behind_hung_work(&domain, now + HOURS, &mut reminded).is_empty(), "hours of it change nothing");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "its work still runs, however long");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "hours of it change nothing");
 
         mod_report(&domain, json!({"event": "subagent.end", "id": "sub"}), now);
         for round in 0..STOP_BLOCKS {
             let at = now + i64::from(round) * HOURS;
-            let sent = behind_hung_work(&domain, at, &mut reminded);
+            let sent = behind_hung_work(&domain, &mut reminded);
             assert_eq!(sent.len(), 1, "round {round}");
             assert_eq!(sent[0].0, "agent-a");
             assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
-            assert!(behind_hung_work(&domain, at + HOURS, &mut reminded).is_empty(), "round {round}: nothing new from it, nothing sent, hours later");
+            assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "round {round}: nothing new from it, nothing sent, hours later");
             mod_report(&domain, json!({"event": "turn.complete", "turn_id": "t", "answer": "Waiting."}), at + 1);
         }
-        assert!(behind_hung_work(&domain, now + 4 * HOURS, &mut reminded).is_empty(), "the cap: no more reminders");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "the cap: no more reminders");
         assert!(problems(&domain).is_empty());
         let listed = alondra_core::now_millis();
         lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), listed).unwrap();
@@ -2246,7 +2246,7 @@ mod tests {
 
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         mod_report(&domain, json!({"event": "turn.complete", "turn_id": "t", "answer": "Asked."}), now + 5 * HOURS);
-        assert!(behind_hung_work(&domain, now + 5 * HOURS, &mut reminded).is_empty(), "a node waiting on its question is left alone");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "a node waiting on its question is left alone");
     }
 
     /// The Stop hook of a node never reached Alondra (its connection broke): the node comes back
@@ -2261,15 +2261,15 @@ mod tests {
         let connect = |at| domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         let mut reminded = std::collections::HashMap::new();
         connect(now);
-        assert!(behind_hung_work(&domain, now + HOURS, &mut reminded).is_empty(), "no turn has begun: nothing to remind it of");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "no turn has begun: nothing to remind it of");
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "go"}), Some(6)).await.1.unwrap();
         connect(now + 1);
-        assert_eq!(behind_hung_work(&domain, now + 1, &mut reminded).len(), 1, "it came back without a turn running");
+        assert_eq!(behind_hung_work(&domain, &mut reminded).len(), 1, "it came back without a turn running");
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap().map(|(blocks, _)| blocks), Some(1));
-        assert!(behind_hung_work(&domain, now + HOURS, &mut reminded).is_empty(), "hours with nothing new from it");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "hours with nothing new from it");
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap().map(|(blocks, _)| blocks), Some(1));
         connect(now + HOURS);
-        assert_eq!(behind_hung_work(&domain, now + HOURS, &mut reminded).len(), 1, "a new connection is a new fact");
+        assert_eq!(behind_hung_work(&domain, &mut reminded).len(), 1, "a new connection is a new fact");
     }
 
     /// What `wait_for_machine` records: the gate's declared pause, which the node machine holds,
@@ -2297,7 +2297,7 @@ mod tests {
         waits_for_machine(&domain, now);
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
         quiet_since(&domain, now);
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty());
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty());
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None);
         assert!(problems(&domain).is_empty());
     }
@@ -2334,9 +2334,9 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert!(cards[0].body.starts_with("The fix is not finished"), "{}", cards[0].body);
         quiet_since(&domain, now);
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it waits on the card with its words");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "it waits on the card with its words");
         now += HOURS;
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty());
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty());
         assert!(problems(&domain).is_empty());
     }
 
@@ -2364,7 +2364,7 @@ mod tests {
         domain.live.mods.set_job("agent-a", Some(crate::job_state::Job {
             phase: crate::job_state::Phase::Blocked, detail: "needs user repro".into(), tasks: 0, updated_at: now, settings: None, worktree: None,
         }), None);
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it waits on that card");
+        assert!(behind_hung_work(&domain, &mut reminded).is_empty(), "it waits on that card");
     }
 
     #[tokio::test]

@@ -242,6 +242,10 @@ pub struct LiveNode {
     pub last_turn_aborted: bool,
     #[serde(default)]
     pub tool: Option<String>,
+    /// When that call started, as local clock text: a long call runs until it, its own timeout or
+    /// Claude ends it, and says since when.
+    #[serde(default)]
+    pub tool_since: Option<String>,
     #[serde(default)]
     pub context_percent: Option<u32>,
     #[serde(default)]

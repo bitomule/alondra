@@ -117,8 +117,7 @@ pub(crate) struct Reported {
     pub disconnected_at: Option<Millis>,
     pub ended: bool,
     pub working_since: Option<Millis>,
-    /// When the mod last reported anything or connected: a turn that goes quiet is a session that
-    /// stopped processing.
+    /// When the mod last reported anything or connected.
     pub last_event_at: Option<Millis>,
     /// The process of the mod's connection, whose parent is the session's own process.
     pub peer_pid: Option<u32>,
@@ -127,10 +126,11 @@ pub(crate) struct Reported {
     pub shell_alive: Option<bool>,
     /// When that look was taken: a shell started after it is not yet seen either way.
     pub shell_looked_at: Option<Millis>,
-    /// The session process's cumulative CPU time at the last look, in hundredths of a second.
-    pub cpu_cs: Option<u64>,
-    /// When the session process last used more than idle CPU between two looks, or was first seen.
-    pub cpu_busy_at: Option<Millis>,
+    /// How many looks in a row, taken after the running call started, found no shell call: two
+    /// say a Bash call's shell is gone and the call will never end.
+    pub call_shell_gone: u32,
+    /// Whether the session's own process still runs, as the last look at its processes saw.
+    pub session_alive: Option<bool>,
     /// What Claude Code's own job state says, when its file could be read.
     pub job: Option<crate::job_state::Job>,
     /// Where that file was found, so the folder is not searched for every look.
@@ -163,29 +163,34 @@ pub(crate) fn short_label(text: &str) -> String {
 /// What a node does, as its mod's events and connection say it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Activity {
-    /// Inside a turn, or a tool call is running within the time such a call can take.
+    /// Inside a turn, a call or background work runs, or Claude Code's job state says it works.
     Working,
-    /// One tool call has run far longer than such a call can.
+    /// Its turn is under way and a fact says nothing will move it on (`Halt`).
     Stalled,
     /// Claude Code's job state says the session failed; its detail says why.
     Failed,
     Idle,
 }
 
+/// The fact that stopped a turn under way: only these make a node stalled, never how long it has
+/// been quiet. A call or a turn that runs for hours is still work until it, its own timeout or
+/// Claude ends it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Halt {
+    /// The Bash call it waits on has no shell left: two looks after it started found none.
+    ShellGone,
+    /// The session's own process is gone while its turn was under way.
+    SessionGone,
+}
+
 impl Reported {
-    pub(crate) fn activity(&self, now: Millis) -> Activity {
+    pub(crate) fn activity(&self) -> Activity {
         match self.job.as_ref().map(|job| job.phase) {
-            Some(crate::job_state::Phase::Failed) => return Activity::Failed,
-            Some(crate::job_state::Phase::Working) => return if self.silent(now) { Activity::Stalled } else { Activity::Working },
-            _ => {}
-        }
-        let call_overran = self.sdk.is_none() && self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name));
-        if (call_overran && self.shell_alive != Some(true)) || self.silent(now) {
-            Activity::Stalled
-        } else if self.working_since.is_some() || self.tool.is_some() || self.background.iter().any(|(_, item)| !self.shell_gone(item)) {
-            Activity::Working
-        } else {
-            Activity::Idle
+            Some(crate::job_state::Phase::Failed) => Activity::Failed,
+            _ if self.halt().is_some() => Activity::Stalled,
+            Some(crate::job_state::Phase::Working) => Activity::Working,
+            _ if self.working_since.is_some() || self.tool.is_some() || self.background.iter().any(|(_, item)| !self.shell_gone(item)) => Activity::Working,
+            _ => Activity::Idle,
         }
     }
 
@@ -194,42 +199,21 @@ impl Reported {
         self.shell_alive == Some(true)
     }
 
-    fn agent_running(&self, now: Millis) -> bool {
-        self.background.iter().any(|(_, item)| item.kind == BackgroundKind::Agent && now - item.started_at <= alondra_core::states::SUBAGENT_CALL_LIMIT_MS)
+    fn in_turn(&self) -> bool {
+        self.working_since.is_some() || self.tool.is_some()
+            || self.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Working)
     }
 
-    /// A tool call, a shell or a subagent is running: a foreground build or a wait on a deploy
-    /// leaves the job state and the session's own CPU still for many minutes, so only the call
-    /// limits and the dead-shell rule may call it stalled.
-    fn busy_with_a_call(&self, now: Millis) -> bool {
-        self.tool.is_some() || self.shell_running() || self.agent_running(now)
-    }
-
-    /// Connected, yet nothing the session does shows for `TURN_QUIET_MS`: no report from the mod,
-    /// no CPU used by the session process, no shell call alive, no subagent. Either it is inside a turn that stopped processing, or
-    /// it waits on a call or a background shell that is gone and nothing resumed it.
-    pub(crate) fn silent(&self, now: Millis) -> bool {
-        match &self.job {
-            Some(job) if job.phase == crate::job_state::Phase::Failed => return false,
-            Some(job) if job.phase == crate::job_state::Phase::Working && !self.busy_with_a_call(now) => return self.job_stalled(job, now),
-            _ => {}
+    /// What stopped the node's turn under way, if a fact says one did.
+    pub(crate) fn halt(&self) -> Option<Halt> {
+        if self.ended || !self.in_turn() || self.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Failed) {
+            return None;
         }
-        if self.connection.is_none() || self.shell_running() || self.agent_running(now) {
-            return false;
+        if self.session_alive == Some(false) {
+            return Some(Halt::SessionGone);
         }
-        let quiet_for = |at: Option<Millis>| at.is_some_and(|at| now - at > alondra_core::states::TURN_QUIET_MS);
-        let quiet = quiet_for(self.last_event_at.or(self.working_since)) && quiet_for(self.cpu_busy_at);
-        let stuck_turn = self.working_since.is_some() && self.tool.is_none();
-        let waits_on_dead_shell = self.shell_alive == Some(false)
-            && (self.tool.as_ref().is_some_and(|tool| tool.name == "Bash") || self.background.iter().any(|(_, item)| item.kind == BackgroundKind::Shell));
-        quiet && (stuck_turn || waits_on_dead_shell)
-    }
-
-    /// Claude Code says it works yet nothing is in flight, its state has not moved and its process
-    /// has used no CPU for `JOB_STALL_MS`: a long reply being generated shows in the CPU.
-    fn job_stalled(&self, job: &crate::job_state::Job, now: Millis) -> bool {
-        let still_for = |at: Option<Millis>| at.is_some_and(|at| now - at > alondra_core::states::JOB_STALL_MS);
-        self.connection.is_some() && job.tasks == 0 && still_for(Some(job.updated_at)) && still_for(self.cpu_busy_at)
+        let waits_on_shell = self.tool.as_ref().is_some_and(|tool| tool.name == "Bash");
+        (waits_on_shell && self.call_shell_gone >= 2).then_some(Halt::ShellGone)
     }
 
     /// A background command ended when a look taken after it started found its shell gone.
@@ -289,6 +273,7 @@ impl Reported {
             Report::ToolStart { tool, tool_use_id, input } => {
                 let summary = crate::hook_text::tool_summary(Some(&tool), Some(&input));
                 self.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
+                self.call_shell_gone = 0;
             }
             Report::Background { tasks } => {
                 let listed: Vec<_> = tasks.iter().map(|task| crate::node_work::Listed {
@@ -452,15 +437,13 @@ impl Reports {
         self.sessions.lock().expect("node reports poisoned").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
     }
 
-    /// One look at the session process's cumulative CPU time.
-    pub(crate) fn sample_cpu(&self, session_id: &str, cpu_cs: u64, now: Millis) {
-        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
-            let busy = session.cpu_cs.is_none_or(|before| cpu_cs < before || cpu_cs - before >= alondra_core::states::IDLE_CPU_CS_PER_LOOK);
-            if busy || session.cpu_busy_at.is_none() {
-                session.cpu_busy_at = Some(now);
-            }
-            session.cpu_cs = Some(cpu_cs);
-        }
+    /// One look at whether the session's own process still runs.
+    pub(crate) fn set_session_alive(&self, session_id: &str, alive: Option<bool>) {
+        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            Some(session) => std::mem::replace(&mut session.session_alive, alive) != alive,
+            None => false,
+        };
+        if changed { self.changed.publish(); }
     }
 
     pub(crate) fn set_job(&self, session_id: &str, job: Option<crate::job_state::Job>, dir: Option<PathBuf>) {
@@ -479,7 +462,10 @@ impl Reports {
     pub(crate) fn set_shell_alive(&self, session_id: &str, alive: Option<bool>, now: Millis) {
         let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
             Some(session) => {
-                let changed = session.shell_alive != alive;
+                let halted = session.halt();
+                let after_call = session.tool.as_ref().is_some_and(|tool| now > tool.since);
+                session.call_shell_gone = if alive == Some(false) && after_call { session.call_shell_gone.saturating_add(1) } else { 0 };
+                let changed = session.shell_alive != alive || session.halt() != halted;
                 session.shell_alive = alive;
                 session.shell_looked_at = Some(now);
                 changed
@@ -674,137 +660,84 @@ mod tests {
         assert_eq!(reports.session("s").unwrap().working_since, None);
     }
 
-    #[test]
-    fn a_turn_that_goes_quiet_is_stalled_unless_a_call_runs_or_anything_is_reported() {
-        let quiet = alondra_core::states::TURN_QUIET_MS;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 100, 0);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        let activity = |at| reports.session("s").unwrap().activity(at);
-        assert_eq!(activity(quiet), Activity::Working, "quiet for less than the limit");
-        assert_eq!(activity(quiet + 2), Activity::Stalled, "inside a turn and silent past the limit");
-        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u"})), quiet + 3);
-        assert_eq!(activity(quiet * 2), Activity::Working, "a call in flight is governed by its own limit");
-        reports.apply(report(json!({"session_id": "s", "event": "tool.end", "tool_use_id": "u"})), quiet * 2);
-        assert_eq!(activity(quiet * 2 + 1), Activity::Working, "the last report is recent");
-        reports.apply(report(json!({"session_id": "s", "event": "turn.complete", "turn_id": "t", "answer": "Done."})), quiet * 2 + 2);
-        assert_eq!(activity(quiet * 5), Activity::Idle, "between turns silence is idleness");
-    }
-
-    #[test]
-    fn a_session_without_a_connection_is_not_silent_and_a_new_connection_restarts_the_clock() {
-        let quiet = alondra_core::states::TURN_QUIET_MS;
-        let reports = Reports::default();
-        let first = reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 100, 0);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        assert!(reports.session("s").unwrap().silent(quiet + 2));
-        reports.disconnect("s", first);
-        assert!(!reports.session("s").unwrap().silent(quiet + 2), "unreachable is the revival's business, not a silent turn");
-        let mut busy = hello("s");
-        busy.working = true;
-        reports.connect(busy, quiet + 3);
-        assert!(!reports.session("s").unwrap().silent(quiet + 4), "a fresh connection is activity");
-        reports.connect(hello("s"), quiet + 5);
-        assert_eq!(reports.session("s").unwrap().working_since, None, "a restarted session is not mid-turn");
-    }
-
     const HOUR: Millis = 60 * 60 * 1000;
 
     #[test]
-    fn a_foreground_build_that_stays_silent_for_an_hour_is_working_while_its_shell_lives_and_stalled_when_it_is_gone() {
+    fn a_quiet_turn_or_a_quiet_call_works_for_two_days_and_only_a_fact_stalls_it() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u", "input": {"command": "bazel test //..."}})), 2);
-        reports.set_shell_alive("s", Some(true), 3);
-        let activity = |at| reports.session("s").unwrap().activity(at);
-        assert_eq!(activity(HOUR), Activity::Working, "past the call limit, but its shell is alive");
-        assert!(!reports.session("s").unwrap().silent(HOUR));
-        reports.set_shell_alive("s", Some(false), 3);
-        assert_eq!(activity(HOUR), Activity::Stalled, "the call never ends: its shell is gone");
-        assert!(reports.session("s").unwrap().silent(HOUR), "and Alondra restarts it");
-        reports.set_shell_alive("s", None, 3);
-        assert_eq!(activity(HOUR), Activity::Stalled, "nothing known: the call limit decides, as before");
+        let session = || reports.session("s").unwrap();
+        assert_eq!((session().activity(), session().halt()), (Activity::Working, None), "a turn with nothing reported for two days still runs");
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "mcp__x__deploy", "tool_use_id": "u"})), 2);
+        assert_eq!(session().activity(), Activity::Working, "a call runs until it, its timeout or Claude ends it");
+        reports.apply(report(json!({"session_id": "s", "event": "tool.end", "tool_use_id": "u"})), 48 * HOUR);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.complete", "turn_id": "t", "answer": "Done."})), 48 * HOUR + 1);
+        assert_eq!(session().activity(), Activity::Idle);
+    }
+
+    /// A closed connection is not a stall: `node_revival` brings the node back, and the node
+    /// keeps its last factual state meanwhile.
+    #[test]
+    fn the_connection_closing_mid_turn_stops_nothing_by_itself() {
+        let reports = Reports::default();
+        let first = reports.connect(hello("s"), 0);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        reports.disconnect("s", first);
+        let session = reports.session("s").unwrap();
+        assert!(session.connection_lost());
+        assert_eq!((session.activity(), session.halt()), (Activity::Working, None));
     }
 
     #[test]
-    fn a_live_background_shell_with_an_idle_turn_is_working_and_a_dead_one_with_no_turn_is_stalled() {
+    fn a_foreground_build_works_while_its_shell_lives_and_stalls_once_two_looks_find_it_gone() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 100, 0);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u", "input": {"command": "bazel test //..."}})), 2);
+        let session = || reports.session("s").unwrap();
+        reports.set_shell_alive("s", Some(true), 3);
+        assert_eq!(session().activity(), Activity::Working, "its shell is alive");
+        reports.set_shell_alive("s", Some(false), 4);
+        assert_eq!(session().activity(), Activity::Working, "one look may race the call's own end");
+        reports.set_shell_alive("s", None, 5);
+        reports.set_shell_alive("s", Some(false), 6);
+        assert_eq!(session().activity(), Activity::Working, "the looks in a row start again after one that saw nothing");
+        reports.set_shell_alive("s", Some(false), 7);
+        assert_eq!((session().activity(), session().halt()), (Activity::Stalled, Some(Halt::ShellGone)), "the call never ends: its shell is gone");
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "v"})), 8);
+        assert_eq!(session().halt(), None, "a new call starts its own looks");
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Read", "tool_use_id": "w"})), 9);
+        reports.set_shell_alive("s", Some(false), 10);
+        reports.set_shell_alive("s", Some(false), 11);
+        assert_eq!(session().halt(), None, "only a Bash call waits on a shell");
+    }
+
+    #[test]
+    fn the_session_process_gone_mid_turn_stalls_the_node() {
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.set_session_alive("s", Some(false));
+        assert_eq!(reports.session("s").unwrap().halt(), None, "between turns nothing is stopped");
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        assert_eq!(reports.session("s").unwrap().halt(), Some(Halt::SessionGone));
+        reports.set_session_alive("s", Some(true));
+        assert_eq!(reports.session("s").unwrap().activity(), Activity::Working);
+    }
+
+    #[test]
+    fn a_live_background_shell_is_working_and_a_dead_one_ends_without_stalling_anything() {
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
         reports.apply(report(json!({"session_id": "s", "event": "shell.start", "id": "b", "command": "musts run bazel-test-root"})), 1);
         let session = || reports.session("s").unwrap();
         reports.set_shell_alive("s", Some(true), 3);
-        assert_eq!(session().activity(2 * HOUR), Activity::Working, "an hour-long wait on a live shell is work");
-        assert!(session().background.iter().all(|(_, item)| session().shell_end(item).is_none()), "a live shell runs");
-        assert!(!session().silent(2 * HOUR));
-        reports.set_shell_alive("s", Some(false), 3);
-        assert_eq!(session().activity(2 * HOUR), Activity::Stalled, "its shell is gone, no turn and nothing reported since");
-        assert!(session().silent(2 * HOUR));
-        assert!(session().background.iter().all(|(_, item)| session().shell_end(item) == Some(End { at: 3, outcome: RunOutcome::Finished })),
+        assert_eq!(session().activity(), Activity::Working, "a wait on a live shell is work");
+        reports.set_shell_alive("s", Some(false), 4);
+        reports.set_shell_alive("s", Some(false), 5);
+        assert_eq!(session().activity(), Activity::Idle, "its shell is gone and no turn runs");
+        assert!(session().background.iter().all(|(_, item)| session().shell_end(item) == Some(End { at: 5, outcome: RunOutcome::Finished })),
             "a look after it started found its shell gone: it ended then");
-        assert_eq!(session().activity(alondra_core::states::TURN_QUIET_MS), Activity::Idle, "nothing runs, yet it is not quiet long enough to be stalled");
-    }
-
-    #[test]
-    fn a_running_subagent_keeps_a_quiet_turn_working() {
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 100, 0);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        reports.apply(report(json!({"session_id": "s", "event": "subagent.start", "id": "a", "description": "review"})), 2);
-        let quiet = alondra_core::states::TURN_QUIET_MS;
-        assert_eq!(reports.session("s").unwrap().activity(quiet * 3), Activity::Working);
-        reports.apply(report(json!({"session_id": "s", "event": "subagent.end", "id": "a"})), 3);
-        assert_eq!(reports.session("s").unwrap().activity(quiet * 3), Activity::Stalled);
-    }
-
-    #[test]
-    fn a_quiet_turn_is_working_while_the_session_uses_cpu_and_stalled_once_it_is_flat_for_the_whole_window() {
-        let quiet = alondra_core::states::TURN_QUIET_MS;
-        let step = alondra_core::states::IDLE_CPU_CS_PER_LOOK;
-        let look = 30_000;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        let session = || reports.session("s").unwrap();
-        assert!(!session().silent(quiet + 2), "no look at the process yet: idleness is not proven");
-        let mut cpu = 0;
-        let mut at = 0;
-        while at < quiet + 5 * look {
-            cpu += step;
-            reports.sample_cpu("s", cpu, at);
-            at += look;
-        }
-        assert_eq!(session().activity(at), Activity::Working, "the model is generating: the CPU keeps advancing");
-        assert!(!session().silent(at));
-        let busy_until = at;
-        while at < busy_until + quiet + 2 * look {
-            cpu += step - 1;
-            reports.sample_cpu("s", cpu, at);
-            at += look;
-        }
-        assert_eq!(session().activity(at), Activity::Stalled, "flat CPU across the whole window");
-        assert!(session().silent(at));
-        reports.sample_cpu("s", cpu + step, at);
-        assert!(!session().silent(at + 1), "it moved again");
-    }
-
-    #[test]
-    fn a_dead_shell_wait_is_not_revived_while_the_session_still_uses_cpu() {
-        let quiet = alondra_core::states::TURN_QUIET_MS;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.apply(report(json!({"session_id": "s", "event": "shell.start", "id": "b", "command": "make"})), 1);
-        reports.set_shell_alive("s", Some(false), 3);
-        reports.sample_cpu("s", 0, 0);
-        reports.sample_cpu("s", 10_000, 2 * quiet);
-        assert!(!reports.session("s").unwrap().silent(2 * quiet + 1));
-        reports.sample_cpu("s", 10_001, 4 * quiet);
-        assert!(reports.session("s").unwrap().silent(4 * quiet));
     }
 
     fn job(phase: crate::job_state::Phase, tasks: u64, updated_at: Millis) -> crate::job_state::Job {
@@ -812,119 +745,27 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_job_is_a_failed_node_that_is_never_restarted_for_being_quiet() {
-        use crate::job_state::Phase;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.set_job("s", Some(job(Phase::Failed, 0, 0)), None);
-        reports.sample_cpu("s", 0, 0);
-        let session = reports.session("s").unwrap();
-        assert_eq!(session.activity(HOUR), Activity::Failed);
-        assert!(!session.silent(HOUR));
-    }
-
-    #[test]
-    fn a_working_job_is_working_with_tasks_in_flight_or_a_state_that_moves_and_stalled_when_both_stop_and_the_cpu_is_flat() {
-        use crate::job_state::Phase;
-        let window = alondra_core::states::JOB_STALL_MS;
-        let look = 30_000;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 0, 0);
-        let activity = |at| reports.session("s").unwrap().activity(at);
-        reports.set_job("s", Some(job(Phase::Working, 1, 0)), None);
-        assert_eq!(activity(HOUR), Activity::Working, "a build in flight, however long it is silent");
-        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        assert_eq!(activity(window), Activity::Working, "the state moved less than the window ago");
-        assert_eq!(activity(window + 1), Activity::Stalled, "nothing in flight, the state still, the CPU flat since the first look");
-        reports.sample_cpu("s", 10_000, window + 2 * look);
-        assert_eq!(activity(window + 2 * look + 1), Activity::Working, "the CPU moved: a long reply being generated");
-        assert!(!reports.session("s").unwrap().silent(window + 2 * look + 1));
-    }
-
-    #[test]
-    fn a_foreground_build_or_a_deploy_wait_with_a_still_job_and_flat_cpu_is_working_while_its_shell_lives() {
-        use crate::job_state::Phase;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 0, 0);
-        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u", "input": {"command": "until curl -sf https://x/health; do sleep 30; done"}})), 2);
-        reports.set_shell_alive("s", Some(true), 3);
-        let session = || reports.session("s").unwrap();
-        assert_eq!(session().activity(HOUR), Activity::Working, "the shell is alive however still the job and the CPU are");
-        assert!(!session().silent(HOUR));
-        reports.set_shell_alive("s", Some(false), 3);
-        assert_eq!(session().activity(HOUR), Activity::Stalled, "the shell it waits on is gone");
-    }
-
-    #[test]
-    fn a_long_tool_call_or_a_subagent_with_a_still_job_is_not_stalled_after_the_job_window() {
-        use crate::job_state::Phase;
-        let window = alondra_core::states::JOB_STALL_MS;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.sample_cpu("s", 0, 0);
-        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "mcp__x__deploy", "tool_use_id": "u", "input": {}})), 2);
-        assert_eq!(reports.session("s").unwrap().activity(window * 3), Activity::Working, "a tool call in flight");
-        reports.apply(report(json!({"session_id": "s", "event": "tool.end", "tool": "mcp__x__deploy", "tool_use_id": "u"})), 3);
-        reports.apply(report(json!({"session_id": "s", "event": "subagent.start", "id": "a", "description": "review"})), 4);
-        assert_eq!(reports.session("s").unwrap().activity(window * 3), Activity::Working, "a subagent in flight");
-    }
-
-    #[test]
-    fn a_reply_generated_for_five_minutes_stays_working_and_three_flat_minutes_stall() {
-        use crate::job_state::Phase;
-        let window = alondra_core::states::JOB_STALL_MS;
-        let step = alondra_core::states::IDLE_CPU_CS_PER_LOOK;
-        let look = 30_000;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        let (mut at, mut cpu) = (0, 0);
-        while at <= 5 * 60_000 {
-            cpu += step;
-            reports.sample_cpu("s", cpu, at);
-            assert_eq!(reports.session("s").unwrap().activity(at), Activity::Working, "generating at {at}");
-            at += look;
-        }
-        let flat_since = at - look;
-        while at <= flat_since + window {
-            cpu += step - 1;
-            reports.sample_cpu("s", cpu, at);
-            assert_eq!(reports.session("s").unwrap().activity(at), Activity::Working, "flat for less than the window at {at}");
-            at += look;
-        }
-        cpu += step - 1;
-        reports.sample_cpu("s", cpu, at);
-        assert_eq!(reports.session("s").unwrap().activity(at), Activity::Stalled, "flat for the whole window");
-        assert!(reports.session("s").unwrap().silent(at));
-    }
-
-    #[test]
-    fn a_working_job_without_a_look_at_the_process_is_not_stalled_and_an_idle_one_leaves_the_decision_to_the_mod() {
+    fn a_failed_job_is_a_failed_node_and_a_working_one_works_however_still_it_stays() {
         use crate::job_state::Phase;
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
         reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working, "no CPU look: idleness is not proven");
+        assert_eq!(reports.session("s").unwrap().activity(), Activity::Working, "nothing in flight and its state still: Claude Code says it works");
         reports.set_job("s", Some(job(Phase::Blocked, 0, 0)), None);
-        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Idle, "the mod reports no turn");
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working, "the mod's events decide, as without a job state");
-        reports.set_job("s", None, None);
-        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working);
+        assert_eq!(reports.session("s").unwrap().activity(), Activity::Idle, "the mod reports no turn");
+        reports.set_job("s", Some(job(Phase::Failed, 0, 0)), None);
+        reports.set_session_alive("s", Some(false));
+        let session = reports.session("s").unwrap();
+        assert_eq!((session.activity(), session.halt()), (Activity::Failed, None));
     }
 
-    /// David's rule, 15 October: whether a node's own work is over, and which of it is flagged,
-    /// follows from what the mod reported and what the looks at its processes saw, in their order,
-    /// never from how long any of it has run. The same 256 generated histories on a clock that
-    /// moves a millisecond a fact and on one that moves up to two days give the same answers.
+    /// David's rule, 15 October: what a node does (working, stalled, failed or idle), what stopped
+    /// it, and whether its own work is over follow from what the mod reported, its connection and
+    /// what the looks at its processes and its job saw, in their order, never from how long any of
+    /// it has run. The same 256 generated histories on a clock that moves a millisecond a fact and
+    /// on one that moves up to two days give the same answers.
     #[test]
-    fn the_same_reports_and_looks_on_any_clock_say_the_same_of_a_node_s_own_work() {
+    fn the_same_facts_on_any_clock_give_the_same_states() {
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = move |below: u64| {
             seed ^= seed << 13;
@@ -942,7 +783,7 @@ mod tests {
         for run in 0..256 {
             let facts: Vec<Value> = (0..1 + next(40)).map(|_| {
                 let id = ids[next(ids.len() as u64) as usize];
-                match next(8) {
+                match next(16) {
                     0 => {
                         let listed: Vec<Value> = ids.iter().filter(|_| next(2) == 0).map(|id| {
                             let (kind, field) = kind(id);
@@ -955,6 +796,23 @@ mod tests {
                     3 => json!({"event": "subagent.end", "id": id}),
                     4 => json!({"event": "workflow.start", "id": id, "name": "review"}),
                     5 => json!({"event": "session.end"}),
+                    6 => json!({"event": "turn.start"}),
+                    7 => json!({"event": "turn.complete", "answer": "Done."}),
+                    8 => {
+                        let tool = ["Bash", "Read"][next(2) as usize];
+                        json!({"event": "tool.start", "tool": tool, "tool_use_id": id})
+                    }
+                    9 => json!({"event": "tool.end", "tool_use_id": id}),
+                    10 => json!({"connect": next(2) == 0}),
+                    11 => json!({"disconnect": true}),
+                    12 => {
+                        let alive = [Some(true), Some(false), None][next(3) as usize];
+                        json!({"session_alive": alive})
+                    }
+                    13 => {
+                        let phase = ["working", "idle", "failed", "none"][next(4) as usize];
+                        json!({"job": phase})
+                    }
                     _ => {
                         let alive = [Some(true), Some(false), None][next(3) as usize];
                         json!({"look": alive})
@@ -964,19 +822,33 @@ mod tests {
             let gaps: Vec<Millis> = (0..facts.len()).map(|_| 1 + next(48 * HOUR as u64) as Millis).collect();
             let (fast, slow) = (Reports::default(), Reports::default());
             let (mut fast_now, mut slow_now) = (0, 0);
-            fast.connect(hello("s"), fast_now);
-            slow.connect(hello("s"), slow_now);
+            let mut connections = [fast.connect(hello("s"), fast_now), slow.connect(hello("s"), slow_now)];
             for (fact, gap) in facts.iter().zip(&gaps) {
                 fast_now += 1;
                 slow_now += gap;
-                for (reports, now) in [(&fast, fast_now), (&slow, slow_now)] {
-                    match fact.get("look") {
-                        Some(alive) => reports.set_shell_alive("s", alive.as_bool(), now),
-                        None => {
-                            let mut fact = fact.clone();
-                            fact["session_id"] = json!("s");
-                            reports.apply(report(fact), now);
-                        }
+                for (index, (reports, now)) in [(&fast, fast_now), (&slow, slow_now)].into_iter().enumerate() {
+                    let phase = |name: &str| match name {
+                        "working" => Some(crate::job_state::Phase::Working),
+                        "idle" => Some(crate::job_state::Phase::Idle),
+                        "failed" => Some(crate::job_state::Phase::Failed),
+                        _ => None,
+                    };
+                    if let Some(alive) = fact.get("look") {
+                        reports.set_shell_alive("s", alive.as_bool(), now);
+                    } else if let Some(working) = fact.get("connect") {
+                        let mut again = hello("s");
+                        again.working = working.as_bool().unwrap();
+                        connections[index] = reports.connect(again, now);
+                    } else if fact.get("disconnect").is_some() {
+                        reports.disconnect("s", connections[index]);
+                    } else if let Some(alive) = fact.get("session_alive") {
+                        reports.set_session_alive("s", alive.as_bool());
+                    } else if let Some(name) = fact.get("job").and_then(Value::as_str) {
+                        reports.set_job("s", phase(name).map(|phase| job(phase, 0, now)), None);
+                    } else {
+                        let mut fact = fact.clone();
+                        fact["session_id"] = json!("s");
+                        reports.apply(report(fact), now);
                     }
                 }
                 let said = |reports: &Reports| {
@@ -984,7 +856,7 @@ mod tests {
                     let items: Vec<(String, BackgroundKind, Option<RunOutcome>)> = session.background.iter()
                         .map(|(id, item)| (id.clone(), item.kind, session.shell_end(item).map(|end| end.outcome))).collect();
                     let ended: Vec<(String, RunOutcome)> = session.work.ended_tasks.iter().map(|task| (task.item.label.clone(), task.end.outcome)).collect();
-                    (session.work_gone(), items, ended)
+                    (session.activity(), session.halt(), session.work_gone(), items, ended)
                 };
                 assert_eq!(said(&fast), said(&slow), "run {run}, after {fact}");
             }

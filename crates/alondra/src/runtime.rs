@@ -190,10 +190,6 @@ impl Runtime {
     pub fn request(&self, id: &str) -> Option<&RequestRuntime> {
         self.requests.get(id)
     }
-
-    pub fn working(&self) -> usize {
-        self.nodes.iter().filter(|n| n.state == alondra_core::NodeState::Working).count()
-    }
 }
 
 /// A task's history as the daemon recorded it, with the brief it was launched with.

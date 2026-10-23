@@ -101,8 +101,7 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
     loop {
         tokio::time::sleep(STALL_CHECK).await;
         look_at_shells(&domain);
-        let now = alondra_core::now_millis();
-        for session in stalled_sessions(&domain, now) {
+        for session in stalled_sessions(&domain) {
             let domain = domain.clone();
             tokio::spawn(async move { revive_stalled(&domain, &session).await });
         }
@@ -111,7 +110,7 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
                 log!("could not record that the background work of {agent} is over: {error}");
             }
         }
-        for (session, text) in crate::domain_transport::behind_hung_work(&domain, now, &mut reminded) {
+        for (session, text) in crate::domain_transport::behind_hung_work(&domain, &mut reminded) {
             if crate::sdk_handover::tell(&domain, &session, crate::node_push::ALONDRA, &text, false).is_err() {
                 log!("could not send {session} back to its task: its connection is gone");
             }
@@ -119,7 +118,7 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
     }
 }
 
-/// Records, for every connected session, whether it has a shell call running and how much CPU it uses.
+/// Records, for every connected session, whether it has a shell call running and whether its process still runs.
 fn look_at_shells(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     let table = crate::process_watch::snapshot();
@@ -127,9 +126,7 @@ fn look_at_shells(domain: &DomainRuntime) {
         look_at_job(domain, &agent.0);
         let Some(pid) = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid) else { continue };
         domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid), alondra_core::now_millis());
-        if let Some(cpu) = crate::process_watch::session_cpu(&table, pid) {
-            domain.live.mods.sample_cpu(&agent.0, cpu, alondra_core::now_millis());
-        }
+        domain.live.mods.set_session_alive(&agent.0, crate::process_watch::session_running(&table, pid));
     }
 }
 
@@ -156,13 +153,14 @@ pub(crate) fn session_ended_in(domain: &DomainRuntime, claude_home: &std::path::
     !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
 }
 
-/// The sessions whose agent works on an open task and whose mod is connected, yet shows no
-/// activity inside a turn: the session stopped processing and nothing will resume it. Only a node
+/// The sessions whose agent works on an open task and whose turn a fact stopped (`Halt`): the
+/// shell of the call it waits on is gone, or its process is. Nothing will resume them. A closed
+/// connection is `revive`'s, and how long a turn has been quiet stops nothing. Only a node
 /// the node machine has in a turn can stall: a quiet mod says nothing of one paused (the gate
 /// brings it back), waiting on the user, resting or being brought back already. A session with a
 /// held card open waits for the user: restarting it would cut the call and withdraw the card, and
 /// the node would put the same card to the user again.
-pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis) -> Vec<String> {
+pub(crate) fn stalled_sessions(domain: &DomainRuntime) -> Vec<String> {
     let Ok(state) = domain.state() else { return vec![] };
     state.agents.values()
         .filter(|agent| matches!(agent.phase, NodePhase::Working | NodePhase::Delivered { in_turn: true }))
@@ -172,7 +170,7 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .filter(|session| !crate::sdk_handover::moved(domain, &AgentId(session.clone())))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
         .filter(|session| domain.live.gate.paused(&domain, session).is_none())
-        .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
+        .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.halt().is_some()))
         .collect()
 }
 
@@ -256,7 +254,7 @@ fn needs_work(domain: &DomainRuntime, session: &str) -> bool {
 }
 
 fn still_stalled(domain: &DomainRuntime, session: &str) -> bool {
-    stalled_sessions(domain, alondra_core::now_millis()).iter().any(|stalled| stalled == session)
+    stalled_sessions(domain).iter().any(|stalled| stalled == session)
 }
 
 /// Whether the session still has to be brought back: its agent works on an open task and its mod
@@ -487,41 +485,41 @@ mod tests {
         assert!(moves(&domain).is_empty(), "the closer removes it; nothing brings it back");
     }
 
-    const QUIET_FOR: i64 = alondra_core::states::TURN_QUIET_MS + 60_000;
-
-    /// A node whose mod is connected and whose turn started a while ago, with nothing since.
-    fn silent_turn(domain: &DomainRuntime) -> tokio::sync::mpsc::UnboundedReceiver<String> {
-        let long_ago = alondra_core::now_millis() - QUIET_FOR;
-        domain.connect_node(hello(), long_ago);
+    /// A node whose mod is connected, inside a turn whose Bash call has no shell left: two looks
+    /// after the call started found none.
+    fn halted_turn(domain: &DomainRuntime) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        let started = alondra_core::now_millis() - 60 * 60_000;
+        domain.connect_node(hello(), started);
         let link = domain.live.pushes.attach(SESSION, 90);
-        domain.live.mods.sample_cpu(SESSION, 500, long_ago);
-        domain.live.mods.sample_cpu(SESSION, 500, long_ago + 1);
-        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "turn.start", "turn_id": "t"})).unwrap(), started);
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "tool.start", "tool": "Bash", "tool_use_id": "u"})).unwrap(), started);
+        domain.live.mods.set_shell_alive(SESSION, Some(false), started + 1);
+        domain.live.mods.set_shell_alive(SESSION, Some(false), started + 2);
         link
     }
 
     #[tokio::test]
-    async fn a_session_that_stopped_processing_inside_a_turn_moves_to_the_sdk_told_to_continue() {
+    async fn a_session_whose_call_lost_its_shell_moves_to_the_sdk_told_to_continue() {
         let (_home, domain) = world(true);
-        let _link = silent_turn(&domain);
-        assert_eq!(stalled_sessions(&domain, alondra_core::now_millis()), [SESSION], "connected, in a turn, silent: stalled");
+        let _link = halted_turn(&domain);
+        assert_eq!(stalled_sessions(&domain), [SESSION], "connected, in a turn, its call's shell gone: stalled");
         revive_stalled(&domain, SESSION).await;
         brought_back_told(&domain, CONTINUE);
-        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "the session moving to the SDK is not stalled");
+        assert!(stalled_sessions(&domain).is_empty(), "the session moving to the SDK is not stalled");
         assert!(domain.state().unwrap().interactions.is_empty());
     }
 
     /// After a daemon restart Alondra no longer knows the node is inside its plan call, yet the
     /// plan's card is still open in the domain: the node waits for the user and is left alone.
     #[tokio::test]
-    async fn a_silent_session_whose_held_card_is_open_waits_for_the_user_and_is_never_restarted() {
+    async fn a_stalled_session_whose_held_card_is_open_waits_for_the_user_and_is_never_restarted() {
         let (_home, domain) = world(true);
-        let _link = silent_turn(&domain);
+        let _link = halted_turn(&domain);
         let card = serde_json::from_value(json!({"session_id": SESSION, "id": "call-1", "kind": "plan", "input": {"plan": "- [ ] Ship it"}})).unwrap();
         assert!(matches!(crate::domain_holds::post(&domain, &card, true).unwrap(), crate::domain_holds::Posted::Held(_)));
-        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "waiting for the user, not stalled");
+        assert!(stalled_sessions(&domain).is_empty(), "waiting for the user, not stalled");
         crate::domain_holds::release_call(&domain, SESSION, "call-1").unwrap();
-        assert_eq!(stalled_sessions(&domain, alondra_core::now_millis()), [SESSION], "the card is gone: the usual rule again");
+        assert_eq!(stalled_sessions(&domain), [SESSION], "the card is gone: the usual rule again");
     }
 
     /// The settings file an earlier release launched the node's `claude --bg` session with.
@@ -567,14 +565,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_with_recent_activity_or_no_open_task_is_not_stalled() {
+    async fn a_session_whose_call_ended_or_with_no_open_task_is_not_stalled() {
         let (_home, domain) = world(true);
-        let _link = silent_turn(&domain);
+        let _link = halted_turn(&domain);
         domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "model", "model": "claude-opus-5-5"})).unwrap(), alondra_core::now_millis());
-        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "any report is activity");
+        assert_eq!(stalled_sessions(&domain), [SESSION], "a report says nothing of the call's shell");
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "tool.end", "tool_use_id": "u"})).unwrap(), alondra_core::now_millis());
+        assert!(stalled_sessions(&domain).is_empty(), "its call ended");
         let (_home, finished) = world(false);
-        let _link = silent_turn(&finished);
-        assert!(stalled_sessions(&finished, alondra_core::now_millis()).is_empty(), "no open task: nothing to resume");
+        let _link = halted_turn(&finished);
+        assert!(stalled_sessions(&finished).is_empty(), "no open task: nothing to resume");
     }
 
     fn move_node(domain: &DomainRuntime, id: &str, event: NodeEvent) {
@@ -590,17 +590,17 @@ mod tests {
 
     /// 13 October: 1d6d53c5 ended its turn blocked on the user without its turn end reaching
     /// Alondra, so its mod still said "in a turn"; it was queued as stalled 73 times. Only the node
-    /// machine says whether a turn runs: once it says the turn is over, a quiet mod is no stall.
+    /// machine says whether a turn runs: once it says the turn is over, nothing the mod left is a stall.
     #[tokio::test]
-    async fn a_quiet_mod_is_no_stall_once_the_node_machine_says_no_turn_runs() {
+    async fn a_stale_mod_is_no_stall_once_the_node_machine_says_no_turn_runs() {
         let (_home, domain) = world(true);
-        let _link = silent_turn(&domain);
-        assert_eq!(stalled_sessions(&domain, alondra_core::now_millis()), [SESSION]);
+        let _link = halted_turn(&domain);
+        assert_eq!(stalled_sessions(&domain), [SESSION]);
         command(&domain, Actor::System, "listed", Command::ReconcileNodes {
             listed: [(SESSION.into(), alondra_core::domain::Listed::Blocked)].into(), at: alondra_core::now_millis(),
         });
         assert_eq!(domain.state().unwrap().node_phase(&SESSION.into()), Some(&NodePhase::WaitingUser { in_turn: false }));
-        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "blocked on the user, not stalled");
+        assert!(stalled_sessions(&domain).is_empty(), "blocked on the user, not stalled");
     }
 
     /// 13 October: db23219f, paused and without a session, logged "waits at the admission gate to come
@@ -805,10 +805,10 @@ mod tests {
     async fn a_node_resting_on_other_tasks_is_never_a_stalled_turn() {
         let (_home, domain) = world(true);
         waiting(&domain);
-        let _link = silent_turn(&domain);
+        let _link = halted_turn(&domain);
         crate::domain_agent_lifecycle::node_event(&domain, &AgentId(SESSION.into()), NodeEvent::Listed { listed: alondra_core::domain::Listed::Working }).unwrap();
         assert_eq!(phase(&domain), NodePhase::WaitingDependency, "a listing does not start its turn");
-        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty());
+        assert!(stalled_sessions(&domain).is_empty());
         revive_stalled(&domain, SESSION).await;
         assert!(moves(&domain).is_empty());
     }

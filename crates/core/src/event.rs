@@ -229,10 +229,6 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         withdrawn: bool,
     },
-    Clock {
-        #[serde(default)]
-        machine_strained: bool,
-    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

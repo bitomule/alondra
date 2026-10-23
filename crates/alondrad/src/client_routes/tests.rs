@@ -1076,7 +1076,8 @@ async fn the_task_detail_shows_what_its_node_mod_reports() {
 
     let detail = view_json(&fixture, "task:task-1", "es").await;
     let readings = section_facts(&detail, "readings");
-    assert!(readings.iter().any(|fact| fact["label"] == "Ejecutando" && fact["value"] == "Bash: bazel test //crates/..."), "{readings:?}");
+    assert!(readings.iter().any(|fact| fact["label"] == "Ejecutando"
+        && fact["value"].as_str().is_some_and(|value| value.starts_with("Bash: bazel test //crates/... · desde las "))), "{readings:?}");
     let options = section_facts(&detail, "options");
     assert!(options.iter().any(|fact| fact["label"] == "Modelo" && fact["value"] == "Opus 5.5"), "{options:?}");
 
@@ -1113,8 +1114,11 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     report(json!({"event": "turn.start", "turn_id": "t1"}), now);
     assert_eq!(state(&fixture).await, "Working");
 
-    report(json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "sleep 99999"}}), now - 46 * 60 * 1000);
-    assert_eq!(state(&fixture).await, "Stalled", "one call far past the time a call can take");
+    report(json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "sleep 99999"}}), now - 48 * 60 * 60 * 1000);
+    assert_eq!(state(&fixture).await, "Working", "a call two days long is still work");
+    mods.live.mods.set_shell_alive("agent-a", Some(false), now);
+    mods.live.mods.set_shell_alive("agent-a", Some(false), now + 1);
+    assert_eq!(state(&fixture).await, "Stalled", "its shell is gone: the call will never end");
     report(json!({"event": "tool.end", "tool_use_id": "u1"}), now);
     assert_eq!(state(&fixture).await, "Working");
 

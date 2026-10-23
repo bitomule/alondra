@@ -513,8 +513,8 @@ mod tests {
         assert!(!reports.connected("sdk-a"));
         assert!(!reports.is_node("sdk-a"), "only a mod that loaded makes a session a node of Claude Code");
         assert!(!session.connection_lost(), "nothing brings an SDK node back as a claude --bg one");
-        assert!(!session.silent(hours));
-        assert_eq!(session.activity(hours), crate::node_reports::Activity::Working, "a call the SDK has not ended is still running");
+        assert_eq!(session.halt(), None);
+        assert_eq!(session.activity(), crate::node_reports::Activity::Working, "a call the SDK has not ended is still running");
         assert_eq!(session.working_since, None, "its turn is the domain's to start");
         reports.sdk_ended("sdk-a", hours);
         let session = reports.session("sdk-a").unwrap();

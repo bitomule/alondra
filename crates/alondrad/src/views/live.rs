@@ -320,7 +320,7 @@ async fn gather_inner(
             } else {
                 launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let activity = match reported.activity(now) {
+            let activity = match reported.activity() {
                 Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
                 activity => activity,
             };
@@ -425,6 +425,7 @@ async fn gather_inner(
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
                 tool: tool.map(|tool| tool.chars().take(141).collect()),
+                tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
                 context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: context.and_then(|(_, window)| window),
                 cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),
@@ -1170,7 +1171,7 @@ mod cache_tests {
     }
 
     #[tokio::test]
-    async fn report_updates_and_elapsed_tool_limits_invalidate_unobserved_nodes() {
+    async fn report_updates_and_a_call_whose_shell_is_gone_invalidate_unobserved_nodes() {
         use alondra_core::views::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
@@ -1180,11 +1181,14 @@ mod cache_tests {
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
         let state = domain.state().unwrap();
-        let limit = 2_000 + alondra_core::states::call_limit("Bash");
+        let limit = 2_000 + 48 * 60 * 60_000;
         let working = gather_at(&client, &state, Lang::En, &[], false, false, limit).await;
+        assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"), "two days in one call is still work");
+        assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
+        domain.live.mods.set_shell_alive("reported", Some(false), limit);
+        domain.live.mods.set_shell_alive("reported", Some(false), limit + 1);
         let stalled = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
-        assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"));
-        assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"));
+        assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"), "its shell is gone: the call will never end");
         let working_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let stalled_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(stalled_view.cursor, working_view.cursor);

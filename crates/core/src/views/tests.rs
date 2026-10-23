@@ -3327,6 +3327,18 @@ fn task_working_views_match_goldens() {
     }
 }
 
+/// A call that runs for hours is still work: the task says what runs and since when, never that
+/// the node stalled, until the call, its own timeout or Claude ends it.
+#[test]
+fn a_long_call_reads_running_since_its_start() {
+    let (state, mut live) = task_working_fixture();
+    live.nodes[0].tool_since = Some("09:12".into());
+    let english = render(&state, &live, Client::Tui, Lang::En, "task:t-1", "");
+    assert_eq!(section_facts(&english, "readings")[0], ("Running".into(), "Bash: cargo test · since 09:12".into()));
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    assert_eq!(section_facts(&spanish, "readings")[0], ("Ejecutando".into(), "Bash: cargo test · desde las 09:12".into()));
+}
+
 /// The task is the unit: what the node's screen showed about the node working on it is on the
 /// task's own screen, for every client, while that task is the node's current one.
 #[test]

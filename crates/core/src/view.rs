@@ -37,8 +37,6 @@ pub struct View {
     #[serde(default, deserialize_with = "removed_nodes")]
     pub removed: BTreeMap<String, Millis>,
     #[serde(default)]
-    pub machine_strained: bool,
-    #[serde(default)]
     pub orchestrator_launched_at: Option<Millis>,
     #[serde(default)]
     pub prs: BTreeMap<u64, crate::pr::PullRequest>,
@@ -625,15 +623,6 @@ impl View {
                 }
                 None
             }
-            Event::Clock { machine_strained } => {
-                self.machine_strained = *machine_strained;
-                let sessions: Vec<String> = self.nodes.keys().cloned().collect();
-                for sid in sessions {
-                    self.recompute(&sid, at, Trigger::Clock);
-                }
-                debug_assert!(states::limbo(self, at).is_empty(), "nodes in limbo after a sweep: {:?}", states::limbo(self, at));
-                None
-            }
         };
         self.derive_tasks(at, event, before);
         if let Some((sid, trigger)) = touched {
@@ -972,7 +961,7 @@ impl View {
         }
     }
 
-    fn recompute(&mut self, session_id: &str, at: Millis, trigger: Trigger) {
+    pub(crate) fn recompute(&mut self, session_id: &str, at: Millis, trigger: Trigger) {
         let Some(node) = self.nodes.get(session_id) else { return };
         let outcome = states::evaluate(self, node, at, trigger);
         let Some(node) = self.nodes.get_mut(session_id) else { return };
@@ -1286,7 +1275,7 @@ mod tests {
     #[test]
     fn turn_without_signal_is_unclear_not_frozen_working() {
         let v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
     }
 
     #[test]
@@ -1708,13 +1697,13 @@ mod tests {
     fn a_classification_never_decides_the_state() {
         let mut v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
         v.apply(3, 3000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::WaitingAnswer, confidence: Some(0.97) });
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
     }
 
     #[test]
     fn a_daemon_node_with_needs_goes_to_the_sentinel_until_it_has_a_question() {
         let mut v = run(&[seen("s", "blocked", "blocked", Some("decide merge"), Some(7))]);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
         assert_eq!(v.nodes["s"].state_source, StateSource::Daemon);
         v.apply(2, 2000, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Classifier)));
         assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
@@ -1730,7 +1719,7 @@ mod tests {
     #[test]
     fn a_daemon_saying_done_is_not_done_without_a_report() {
         let mut v = run(&[seen("s", "done", "idle", None, None)]);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
         v.apply(2, 2000, &report(1, "s", ReportKind::Notice, 2000));
         assert_eq!(v.nodes["s"].state, NodeState::Delivered);
     }
@@ -1855,7 +1844,7 @@ mod tests {
         v.apply(3, 3000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: None });
         assert_eq!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &hook("s", "Stop"));
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Idle);
     }
 
     #[test]

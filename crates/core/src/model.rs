@@ -13,17 +13,17 @@ pub enum NodeState {
     /// A PR or an artifact of the node waits for David's review. Still `waiting_merge` on the wire,
     /// so the apps already installed keep reading it.
     WaitingMerge,
-    Unclear,
+    /// Nothing runs and nothing waits on anyone.
+    Idle,
     Delivered,
     WaitingMachine,
-    Stalled,
     Working,
     Done,
 }
 
 impl NodeState {
-    fn parse(value: &str) -> Self {
-        match value {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
             "working" => NodeState::Working,
             "waiting_answer" => NodeState::WaitingAnswer,
             "your_turn" => NodeState::YourTurn,
@@ -31,17 +31,18 @@ impl NodeState {
             "delivered" => NodeState::Delivered,
             "waiting_machine" => NodeState::WaitingMachine,
             "done" => NodeState::Done,
-            "stalled" => NodeState::Stalled,
-            _ => NodeState::Unclear,
-        }
+            "idle" | "unclear" => NodeState::Idle,
+            _ => return None,
+        })
     }
 }
 
-/// A state this build does not know yet reads as `unclear`, so an older client keeps working
-/// when the daemon learns a new state.
+/// `unclear` is what earlier builds called `idle`. A state this build does not know is an error
+/// reading it, never a node that shows "unknown".
 impl<'de> Deserialize<'de> for NodeState {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(NodeState::parse(&String::deserialize(d)?))
+        let value = String::deserialize(d)?;
+        NodeState::parse(&value).ok_or_else(|| serde::de::Error::custom(format!("unknown node state `{value}`")))
     }
 }
 
@@ -75,12 +76,10 @@ pub enum Signal {
     OpenQuestion,
     PermissionPrompt,
     ActionRequested,
-    CallStuck,
     ToolInFlight,
     Hook,
     MessageHanded,
     DaemonActive,
-    #[serde(alias = "background_suspect")]
     BackgroundTask,
     UsageLimit,
     DeclaredWait,
@@ -88,7 +87,6 @@ pub enum Signal {
     ReviewAwaitingUser,
     FinalReport,
     Report,
-    TurnEndedUndeclared,
     NoProcess,
     #[serde(other)]
     Nothing,

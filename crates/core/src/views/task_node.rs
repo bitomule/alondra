@@ -268,7 +268,11 @@ pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>)
     let lang = context.lang;
     let mut readings = vec![];
     if let Some(tool) = &node.tool {
-        readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
+        let value = match &node.tool_since {
+            Some(at) => tf!(lang, "{tool} · since {at}", "{tool} · desde las {at}", tool = tool, at = at),
+            None => tool.clone(),
+        };
+        readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value, tone: None, link: None });
     }
     if let Some(text) = &node.background_badge {
         readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),

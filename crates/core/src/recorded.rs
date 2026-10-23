@@ -28,75 +28,46 @@ const COLMENA_SID: &str = "a3934428-f43b-45b1-974d-8cb023b45e23";
 const QUILL_SID: &str = "11f98ac0-771f-4725-88f5-7e5176ffff92";
 const CTRL_TRIVIAL_SID: &str = "128f3fa5-71f3-4376-8948-6ee1cf147c22";
 
-const MINUTE: Millis = 60_000;
-
-/// Whether time alone has changed what some node shows, so a sweep at `now` records an
-/// `Event::Clock`.
-fn due(view: &View, now: Millis) -> bool {
-    view.nodes.values().any(|n| {
-        let o = states::evaluate_with(view, n, now, states::Trigger::Clock, false);
-        o.state != n.state || o.status != n.status || o.orchestrator != n.orchestrator_state || o.drop_tool
-    })
-}
-
 fn records(fixture: &str) -> Vec<Recorded> {
     fixture.lines().map(|l| serde_json::from_str(l).expect("fixture line")).collect()
 }
 
-/// The state after every event, plus a sweep every minute in between, as the daemon would
-/// record them: an `Event::Clock` only when time alone changed something.
+/// The state after every event, every node out of limbo after each.
 fn replay(fixture: &str, sid: &str) -> (View, Vec<(u64, Millis, NodeState)>) {
     let mut view = View::default();
     let mut states = vec![];
-    let mut seq = 0;
-    let record = |view: &View, seq: u64, at: Millis, states: &mut Vec<(u64, Millis, NodeState)>| {
+    for r in records(fixture) {
+        view.apply(r.seq, r.at, &r.event);
+        let limbo = states::limbo(&view, r.at);
+        assert!(limbo.is_empty(), "limbo at seq {}: {limbo:?}, {:?}", r.seq,
+            limbo.iter().map(|(sid, _)| (view.nodes[sid].state, view.nodes[sid].evidence.clone())).collect::<Vec<_>>());
         if let Some(n) = view.nodes.get(sid)
             && states.last().is_none_or(|(_, _, s)| *s != n.state)
         {
-            states.push((seq, at, n.state));
+            states.push((r.seq, r.at, n.state));
         }
-    };
-    let mut last_at = None;
-    for r in records(fixture) {
-        if let Some(mut t) = last_at {
-            while t + MINUTE < r.at {
-                t += MINUTE;
-                if due(&view, t) {
-                    view.apply(seq, t, &Event::Clock { machine_strained: false });
-                    record(&view, seq, t, &mut states);
-                }
-                assert!(states::limbo(&view, t).is_empty(), "limbo at {t}: {:?}", states::limbo(&view, t));
-            }
-        }
-        seq = r.seq;
-        view.apply(r.seq, r.at, &r.event);
-        record(&view, r.seq, r.at, &mut states);
-        last_at = Some(r.at);
     }
     (view, states)
 }
 
-/// The state the node shows at `seq`, sweeps included.
+/// The state the node shows at `seq`.
 fn at_seq(states: &[(u64, Millis, NodeState)], seq: u64) -> NodeState {
     states.iter().rev().find(|(s, _, _)| *s <= seq).map(|(_, _, st)| *st).expect("node seen by then")
 }
 
-/// The states the node went through between two events, sweeps included.
+/// The states the node went through between two events.
 fn between(states: &[(u64, Millis, NodeState)], from: u64, to: u64) -> Vec<NodeState> {
     let mut v = vec![at_seq(states, from)];
     v.extend(states.iter().filter(|(s, _, _)| *s > from && *s < to).map(|(_, _, st)| *st));
     v
 }
 
+/// No node is left in limbo after any event of any fixture: with nothing swept on a clock, each
+/// event leaves every node in a state some fact stands behind.
 #[test]
-fn every_fixture_ends_every_sweep_without_limbo() {
-    for fixture in [AUDITORIA, COLMENA, QUILL, CTRL_TRIVIAL] {
-        let (mut view, _) = replay(fixture, "");
-        let end = records(fixture).last().unwrap().at;
-        for later in [MINUTE, 10 * MINUTE, 60 * MINUTE, 6 * 60 * MINUTE] {
-            view.apply(view.seq, end + later, &Event::Clock { machine_strained: false });
-            assert!(states::limbo(&view, end + later).is_empty());
-        }
+fn every_fixture_ends_every_event_without_limbo() {
+    for (fixture, sid) in [(AUDITORIA, AUDITORIA_SID), (COLMENA, COLMENA_SID), (QUILL, QUILL_SID), (CTRL_TRIVIAL, CTRL_TRIVIAL_SID)] {
+        assert!(!replay(fixture, sid).1.is_empty(), "{sid}");
     }
 }
 
@@ -123,7 +94,7 @@ fn a_restart_changes_nothing() {
 #[test]
 fn auditoria_an_ask_that_was_closed_explains_nothing() {
     let (_, states) = replay(AUDITORIA, AUDITORIA_SID);
-    assert_eq!(at_seq(&states, 1715), NodeState::Stalled, "stopped at 10:08:49 with nothing declared");
+    assert_eq!(at_seq(&states, 1715), NodeState::Idle, "stopped at 10:08:49 with nothing declared");
     assert_eq!(at_seq(&states, 1720), NodeState::WaitingAnswer, "asked question 31 at 10:09:03");
     assert!(between(&states, 1823, 4206).iter().all(|s| *s != NodeState::Working), "withdrawn at 10:12, idle until 13:46");
 }
@@ -147,7 +118,7 @@ fn colmena_a_tool_nobody_closed_stops_counting() {
     let (view, states) = replay(COLMENA, COLMENA_SID);
     assert_eq!(at_seq(&states, 2300), NodeState::WaitingAnswer, "plan 39 open");
     assert_eq!(at_seq(&states, 2312), NodeState::Working, "plan approved; the daemon says active");
-    assert_eq!(at_seq(&states, 2532), NodeState::Unclear, "the daemon says idle at 12:42");
+    assert_eq!(at_seq(&states, 2532), NodeState::Idle, "the daemon says idle at 12:42");
     assert!(view.nodes[COLMENA_SID].tool.as_ref().is_none_or(|t| t.name != "ExitPlanMode"));
 }
 
@@ -168,7 +139,7 @@ fn quill_a_declared_wait_survives_wakes_nobody_sent() {
 #[test]
 fn ctrl_trivial_one_report_settles_a_dormant_node_for_good() {
     let (_, states) = replay(CTRL_TRIVIAL, CTRL_TRIVIAL_SID);
-    assert_eq!(at_seq(&states, 2930), NodeState::Unclear, "dormant, idle, no plugin: the sentinel's");
+    assert_eq!(at_seq(&states, 2930), NodeState::Idle, "dormant, idle, no plugin");
     assert!(
         between(&states, 2966, 4439).iter().all(|s| matches!(s, NodeState::Delivered | NodeState::Done)),
         "delivered from the first report on, done once the user read it"
