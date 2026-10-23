@@ -519,12 +519,16 @@ pub enum Command {
     /// The Task's SDK host of `generation` ended: no process holds its lock any more. What it had
     /// running ended with it. When a host that resumes the same Claude session takes its place
     /// (`resumes`), what was cut goes on by itself; otherwise, when nothing explains the Task's next
-    /// step, its card asks the user.
+    /// step, its card asks the user. `ended_work` names, as Claude knows it, each background task the
+    /// host left running or whose notification it had not yet read: the resumed session is told they
+    /// ended and will not report back.
     RecordHostEnded {
         task_id: TaskId,
         generation: u64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resumes: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ended_work: Vec<String>,
     },
     /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
     /// it showed the input was read. When a host that resumes the same Claude session takes its

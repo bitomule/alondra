@@ -1038,7 +1038,7 @@ fn answer(s: &mut DomainState, card: &InteractionId, option: &str) {
 fn a_host_that_ends_mid_turn_asks_once_how_the_task_goes_on() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the interrupted task asks").clone();
     assert_eq!(s.interactions[&card].card.need, "“Task t” was interrupted when its session closed: tell it how to go on");
     assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
@@ -1074,7 +1074,7 @@ fn a_turn_that_stays_open_after_claude_accepted_its_interrupt_can_be_forced_to_s
     assert_eq!(exec(&mut s.clone(), user(), force()).unwrap_err().refusal, Some(Refusal::AlreadyStopping), "once");
     assert_aggregate_rules(&s);
 
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the stopped task asks").clone();
     assert_eq!(s.interactions[&card].card.need, "You interrupted “Task t”: tell it how to go on", "Claude exiting ends the turn as the user's interrupt");
     assert_eq!(s.interactions[&card].card.why, INTERRUPTED_WHY);
@@ -1103,7 +1103,7 @@ fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "its turn card already asks");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("host_ended"));
     assert_aggregate_rules(&s);
@@ -1116,7 +1116,7 @@ fn doubtful(s: &mut DomainState, written: &str) -> (InteractionId, String) {
     must(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: turn.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(written.into()))]) });
     let Some(LifecycleRecord::Answered { input, text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
-    must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     must(s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: input.clone(), text: text.clone(), resumes: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX)).expect("the doubt asks the user").clone();
     (card, text)
@@ -1386,7 +1386,7 @@ fn queued_unasked(s: &DomainState, id: &str) -> (String, String) {
 fn a_host_that_ends_mid_turn_and_is_replaced_lets_the_task_go_on_without_a_card() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "no card");
     assert!(ended.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "and no notice");
     let (input, text) = queued_unasked(&s, "t");
@@ -1397,18 +1397,105 @@ fn a_host_that_ends_mid_turn_and_is_replaced_lets_the_task_go_on_without_a_card(
     assert_aggregate_rules(&s);
 }
 
+/// An SDK task whose delivery the user replied to: the node's turn on the reply left a background
+/// command running when it ended.
+fn answering_the_reply_with_background_work(s: &mut DomainState) {
+    sdk_turn(s, "t", "a");
+    deliver(s, "t", "a", "result");
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "result".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Why this way?".into(), instruction: Instruction::Reply });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Reply.message("Why this way?") });
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    let reply = replayed.pending_inputs()[0].as_str().to_owned();
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: reply },
+        RuntimeObservation::WorkStarted { turn: "turn-2".into(), work: "claude-task:snapshots".into() },
+    ] });
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
+    assert_eq!(s.task_handed_back(&"t".into()), Some(Instruction::Reply), "the user waits on the node's answer");
+}
+
+// t-parcel-open-issues-widget: the user replied to its delivery, the node's turn on the reply left
+// `bazel test` running in the background, and a daemon upgrade replaced its host. The delivery was
+// under review, so nothing told the resumed session to go on and it waited 12 h for a notification
+// no process would send. A host's end that cuts what the node does for the user resumes it, and
+// the session is told the background work ended.
+#[test]
+fn a_host_that_ends_while_the_node_works_on_the_users_reply_resumes_it_and_names_the_work_that_ended() {
+    let mut s = world();
+    answering_the_reply_with_background_work(&mut s);
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true,
+        ended_work: vec!["b5sa3a3rd (bazelisk test //App/Tests:ParcelSnapshotTests)".into()] });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "no card");
+    assert!(ended.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "and no notice");
+    let (input, text) = queued_unasked(&s, "t");
+    assert_eq!(text, "Your session was cut off when its host stopped, and Alondra resumed it. Check where you were and go on with your task: \
+        deliver your result, or ask the user through a card when you need them.\n\nThis background work ended with that host and will not report back:\n\
+        - b5sa3a3rd (bazelisk test //App/Tests:ParcelSnapshotTests)\nRun again what you still need and wait for its result.");
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(input).unwrap()], "the resumed session is told to go on");
+    assert_eq!(replayed.phase(), alondra_domain::TaskPhase::Delivered, "the delivery stays the one the user reviews");
+    assert_aggregate_rules(&s);
+}
+
+// Found capturing the TUI for t-parcel-open-issues-widget: an SDK node ended its turn on the user's
+// reply without presenting again, and the delivery never came back: the task read «Delivered»
+// with nothing in the user's inbox. Its node phase never moves with its turns; the end of the
+// turn that leaves its session resting on the delivery is the fact that brings it back.
+#[test]
+fn a_reply_the_node_of_the_sdk_answered_brings_the_same_delivery_back_once_its_session_rests() {
+    let mut s = world();
+    answering_the_reply_with_background_work(&mut s);
+    assert_eq!(s.task_handed_back(&"t".into()), Some(Instruction::Reply), "its background work still runs for the reply");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:snapshots".into(), continuation: "claude-notification:snapshots".into() },
+        RuntimeObservation::TurnResumed { turn: "turn-3".into(), continuation: "claude-notification:snapshots".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-3".into(), failure: None, failed: None });
+    assert_eq!((s.tasks[&TaskId::from("t")].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None),
+        "the same delivery waits for the user again");
+    assert_aggregate_rules(&s);
+}
+
+// Without a host that resumes the session, nothing would ever answer the reply: the delivery is the
+// user's again, as when the node ends its turn on it.
+#[test]
+fn a_host_that_ends_while_the_node_works_on_the_users_reply_with_no_resume_gives_the_delivery_back() {
+    let mut s = world();
+    answering_the_reply_with_background_work(&mut s);
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::HostEnded { resume: None, .. })));
+    assert_eq!((s.tasks[&TaskId::from("t")].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None),
+        "the same delivery waits for the user again");
+    assert_aggregate_rules(&s);
+}
+
+// A delivery the node rests on waits for the user: its host's end wakes nothing.
+#[test]
+fn a_host_that_ends_on_a_delivery_the_node_rests_on_tells_it_nothing() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "result");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::HostEnded { resume: None, .. })));
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)));
+    assert_aggregate_rules(&s);
+}
+
 // A session that ends again before a turn of it ended would only end the same way: the second
 // time the task asks the user, and says why.
 #[test]
 fn a_resumed_session_that_ends_again_before_a_turn_ends_asks_the_user_with_the_reason() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     let (input, _) = queued_unasked(&s, "t");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    let again = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    let again = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the task asks this time").clone();
     assert_eq!(s.interactions[&card].card.why, SESSION_ENDED_AGAIN_WHY);
     assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
@@ -1422,7 +1509,7 @@ fn a_resumed_session_that_ends_again_before_a_turn_ends_asks_the_user_with_the_r
 fn a_resumed_session_that_finished_a_turn_is_resumed_again_without_a_card() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     let (input, _) = queued_unasked(&s, "t");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
@@ -1434,7 +1521,7 @@ fn a_resumed_session_that_finished_a_turn_is_resumed_again_without_a_card() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-3".into(), input },
     ] });
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     queued_unasked(&s, "t");
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)));
     assert_aggregate_rules(&s);
@@ -1451,7 +1538,7 @@ fn a_message_the_ended_host_may_not_have_read_goes_again_to_the_resumed_session_
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: turn.as_str().into(), option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]) });
     let Some(LifecycleRecord::Answered { input, text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     let doubted = must(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input, text: text.clone(), resumes: true });
     assert!(doubted.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "nobody is asked");
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX) || id.0.starts_with(SESSION_ENDED_PREFIX)));
@@ -1486,7 +1573,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
 
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     let asked = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the task asks how to go on").clone();
     must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "launching the host that resumes the session failed".into() });
     let open: Vec<&InteractionId> = s.interactions.values().filter(|i| s.open(i)).map(|i| &i.id).collect();
@@ -1642,7 +1729,7 @@ fn force_stopped(s: &mut DomainState) -> (CommandOutcome, InteractionId) {
     must(s, user(), Command::InterruptTurn { agent_id: "a".into() });
     must(s, Actor::System, Command::RecordInterruptAccepted { task_id: "t".into(), generation: 1, turn: "turn-1".into() });
     must(s, user(), Command::ForceStopTurn { agent_id: "a".into() });
-    let ended = must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    let ended = must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the stopped work after the merge asks").clone();
     (ended, card)
 }
@@ -1691,7 +1778,7 @@ fn closing_the_task_on_that_card_ends_the_work_after_the_merge_and_the_task_fini
 fn a_host_that_crashes_during_the_work_after_the_merge_resumes_it_or_asks() {
     let mut s = world();
     working_after_the_merge(&mut s);
-    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true });
+    let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "a resumed session goes on by itself");
     assert!(!ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     let Some(LifecycleRecord::HostEnded { resume: Some(_), text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("resumed") };
@@ -1700,7 +1787,7 @@ fn a_host_that_crashes_during_the_work_after_the_merge_resumes_it_or_asks() {
 
     let mut s = world();
     working_after_the_merge(&mut s);
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false });
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("no session takes its place: the user is asked").clone();
     assert_eq!(s.interactions[&card].card.why, POST_MERGE_ENDED_WHY);
     assert_eq!(options(&s, &card), [CARRY_ON, CLOSE_TASK]);

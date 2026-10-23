@@ -1244,6 +1244,11 @@ impl DomainState {
             self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
         }
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone() })?;
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if lifecycle.phase() == TaskPhase::Delivered && lifecycle.activity() == ActivityView::Resting
+            && let Some(agent) = self.tasks[task].agent_id.clone() {
+            self.return_replied_delivery(&agent);
+        }
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             let title = self.tasks[task].title.clone();
             let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
@@ -1367,8 +1372,12 @@ impl DomainState {
     /// go on, as a session reopens with `resume` on its next turn: a host's end is not the user's
     /// decision. Only when it cannot (the launch never confirmed, or the session already ended
     /// again before a turn of it ended) does a card ask the user, saying why; a turn the user
-    /// forced to stop ends as the interrupt they asked for.
-    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// forced to stop ends as the interrupt they asked for. A delivery the user still reviews is
+    /// left as it is unless the host cut what the node was doing for them: then it goes on too, or,
+    /// when it cannot, the delivery comes back to the user.
+    /// The resumed session is told which background work (`ended_work`) ended with the host, so
+    /// it never waits for a notification no process will send.
+    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
@@ -1377,16 +1386,22 @@ impl DomainState {
         let available = lifecycle.resource() == Some(ResourceEvidence::Available);
         let looped = resumes && resumed_without_progress(self.lifecycle_journal[task].iter());
         let after_merge = self.work_after_merge(task, lifecycle);
-        let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction);
+        let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction) + &ended_work_note(ended_work);
         let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
             unheard_card: card.clone(),
             text: resume.as_ref().map(|_| resumed_text.clone()),
             resume,
         };
-        let under_review = lifecycle.phase() == TaskPhase::Delivered && after_merge.is_none();
+        let delivered = lifecycle.phase() == TaskPhase::Delivered && after_merge.is_none();
+        let cut = matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
+        let for_the_user = delivered && cut && self.task_handed_back(task).is_some();
+        let under_review = delivered && !for_the_user;
         let resumed = resumes && !forced && !looped && available && !under_review && self.decide(lifecycles, task, ended(Some(self.next_input(task)))).is_ok();
         if !resumed {
             self.decide(lifecycles, task, ended(None))?;
+            if let Some(agent) = self.tasks[task].agent_id.clone().filter(|_| for_the_user) {
+                self.return_replied_delivery(&agent);
+            }
         }
         let now: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
         for gone in held.iter().filter(|card| !now.contains(card)) {
@@ -2198,6 +2213,16 @@ pub const CLOSE_TASK_LABEL: &str = "Close the task";
 const CLOSE_TASK_MEANS: &str = "Its work after the merge counts as done: the task is completed and Alondra closes its session";
 pub const POST_MERGE_ENDED_WHY: &str = "Its PR is merged. Its session closed while it ran what it said comes after the merge, and whatever ran in the background stopped. Tell it to go on, with all its context, or close the task if that work is done.";
 pub const POST_MERGE_STOPPED_WHY: &str = "Its PR is merged and you stopped what it ran after the merge. Tell it to go on, with all its context, or close the task if that work is done.";
+
+/// What the resumed session is told about the background work that ended with its host: nothing
+/// will report it back, so it runs again what it still needs.
+fn ended_work_note(ended_work: &[String]) -> String {
+    if ended_work.is_empty() {
+        return String::new();
+    }
+    let list: String = ended_work.iter().map(|work| format!("\n- {work}")).collect();
+    format!("\n\nThis background work ended with that host and will not report back:{list}\nRun again what you still need and wait for its result.")
+}
 
 fn post_merge_resumed_instruction(reason: &str) -> String {
     format!("Your session was cut off when its host stopped, and Alondra resumed it. Your PR is merged: check where you were and go on with the work you said runs after the merge (“{reason}”). When it is done, call post_merge_work without a reason, clean up and call cleanup_done.")

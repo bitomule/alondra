@@ -454,6 +454,22 @@ for raw in sys.stdin:
                       message=dict(role='user', content=[dict(type='tool_result', tool_use_id='toolu_fixture_huge', content=output)]),
                       tool_use_result=dict(stdout=output, stderr='', interrupted=False)))
             result(message)
+        elif text.endswith('background-shell') or 'background-shell\n' in text:
+            # Like the native Claude running a Bash call with run_in_background: the command runs as
+            # its child, the task starts, and the turn ends saying it goes on once the command ends.
+            # Its notification would come only from this process: nothing outside it reports back.
+            consume(message, dict(type='tool_use', id='toolu_fixture_background_shell', name='Bash',
+                                  input=dict(command='bazel test //app:snapshots', run_in_background=True)))
+            child = subprocess.Popen(['/bin/sleep', '600'])
+            with open(capture + '.background', 'a') as stream:
+                stream.write(str(child.pid) + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            serial += 1
+            send(dict(type='system', subtype='task_started', task_id='bfixture1', tool_use_id='toolu_fixture_background_shell',
+                      description='bazel test //app:snapshots', task_type='local_bash', is_backgrounded=True,
+                      uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+            result(message)
         elif text.startswith('[From ') and len(pending) > 1:
             # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is
             # taken into that same turn, which then ends.

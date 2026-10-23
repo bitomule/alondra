@@ -157,7 +157,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
 /// What someone tells the node of an SDK task becomes an input of its lifecycle, kept before it
 /// leaves: it reaches the node's Claude inside the turn that runs, or as a turn of its own, and
 /// waits for the host that resumes the session when the host is gone. Its delivery is the
-/// lifecycle's to follow, so it answers `dispatching`.
+/// lifecycle's to follow, so it answers `dispatching`, and `reaches` says where it stands.
 fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::DomainState, home: &Path, user: &Actor, name: &str,
     agent: &AgentId, body: MessageBody) -> Result<Value, DomainError> {
     let open = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
@@ -170,7 +170,28 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::Domain
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let command_id = format!("tell-{}", crate::auth::random_hex(16));
     tell_sdk_node(domain, &task.id, &author, &text, &command_id)?;
-    Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching})))
+    let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
+    let reaches = reaches(&lifecycle);
+    Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches})))
+}
+
+/// Where an input just told to an SDK task stands, by its lifecycle: `turn` when Claude reads it
+/// inside the turn that runs, `now` when it starts a turn on it, else what holds it: the user's
+/// pause (`pause`), a message in doubt the user settles first (`doubt`), or a session that is not
+/// connected until its host is back (`session`).
+fn reaches(lifecycle: &alondra_domain::TaskLifecycle) -> &'static str {
+    let cards = lifecycle.cards();
+    if cards.iter().any(|(_, reason)| *reason == alondra_domain::WaitReason::Pause) {
+        "pause"
+    } else if cards.iter().any(|(_, reason)| *reason == alondra_domain::WaitReason::Doubt) {
+        "doubt"
+    } else if !matches!(lifecycle.resource(), Some(alondra_domain::ResourceEvidence::Available | alondra_domain::ResourceEvidence::Reserved)) {
+        "session"
+    } else if lifecycle.activity() == alondra_domain::ActivityView::Working {
+        "turn"
+    } else {
+        "now"
+    }
 }
 
 /// Tells the node of the SDK task `task` `text`, stamped with who sent it and when. A retry with

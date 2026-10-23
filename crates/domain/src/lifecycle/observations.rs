@@ -26,6 +26,7 @@ impl TaskLifecycle {
         let mut resume_instead = None;
         let mut ended_callbacks = Vec::new();
         let mut host_end = None;
+        let mut cut_by_end = false;
         // Claude went on by itself: the cards that asked the user how it goes on no longer hold.
         let mut unprompted = false;
         if execution.resource != ResourceEvidence::Available
@@ -407,6 +408,7 @@ impl TaskLifecycle {
                 if cut {
                     execution.activity = Activity::Resting;
                 }
+                cut_by_end = cut;
                 if cut || !ended_callbacks.is_empty() {
                     resting_card = Some(unheard_card);
                 }
@@ -575,14 +577,17 @@ impl TaskLifecycle {
                     delivered.decisions.entry(card.id.clone()).or_insert(card);
                 }
                 // The work after the merge can only be reported by the session that ran it: once
-                // that session ends, a resumed one goes on with it or the user is asked how it goes on.
+                // that session ends, a resumed one goes on with it or the user is asked how it goes
+                // on. What the session was doing for the user on the delivery goes on the same way
+                // when a resumed session is told to; without one, the delivery is the user's again.
                 if let Some(id) = host_end.filter(|_| {
-                    owes_post_merge
+                    (owes_post_merge || cut_by_end)
                         && delivered.decisions.is_empty()
                         && matches!(execution.activity, Activity::Resting)
                 }) {
                     match resume_instead.take() {
                         Some(input) => queue_input(&mut execution, input)?,
+                        None if !owes_post_merge => {}
                         None => {
                             delivered.decisions.insert(
                                 id.clone(),

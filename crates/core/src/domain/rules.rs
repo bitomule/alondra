@@ -4325,10 +4325,10 @@ impl DomainState {
                 nonempty(text)?;
                 self.record_dropped_input(task_id, *generation, input, text, effects, lifecycles)?;
             }
-            Command::RecordHostEnded { task_id, generation, resumes } => {
+            Command::RecordHostEnded { task_id, generation, resumes, ended_work } => {
                 system(actor)?;
                 self.task(task_id)?;
-                self.record_host_ended(task_id, *generation, *resumes, effects, lifecycles)?;
+                self.record_host_ended(task_id, *generation, *resumes, ended_work, effects, lifecycles)?;
             }
             Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes } => {
                 system(actor)?;

@@ -615,7 +615,7 @@ fn carrying_on_from_a_client_commits_and_reaches_the_sdk() {
     let told = tokio::runtime::Runtime::new().unwrap()
         .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
         .unwrap();
-    assert_eq!(told["delivery_state"], "dispatching", "{told}");
+    assert_eq!((told["delivery_state"].as_str(), told["reaches"].as_str()), (Some("dispatching"), Some("now")), "the resting node starts on it: {told}");
     assert_eq!(driver.pending_permits(), 1, "what the user told the resting node left for its host");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -1291,6 +1291,93 @@ fn a_running_daemon_ends_a_live_host_that_refuses_its_adoption_and_resumes_the_s
     let (session, stranded) = strand_host(&slice, driver);
     let replaced = slice.take_over(&slice.domain);
     assert_replaced(&slice, &slice.domain, replaced, &session, &stranded);
+}
+
+/// The background commands the fake Claude started, by process id.
+fn background_commands(slice: &Slice) -> Vec<libc::pid_t> {
+    std::fs::read_to_string(format!("{}.background", slice.capture.display())).unwrap_or_default().lines().map(|line| line.parse().unwrap()).collect()
+}
+
+fn running(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Reads the host until the task's lifecycle waits only on the background work Claude left running.
+fn until_own_work(slice: &Slice, driver: &mut Driver) {
+    while lifecycle(&slice.domain).activity() != ActivityView::OwnWork {
+        driver.observe().unwrap();
+    }
+    assert!(background_commands(slice).into_iter().all(running), "the background command runs");
+}
+
+/// The host that replaced the stranded one ended the background command with it, the resumed
+/// session is told that command ended and will not report back, and it goes on: its turn ends.
+fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str) {
+    assert!(background_commands(slice).into_iter().all(|pid| !running(pid)), "the background command ended with its host");
+    assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+    assert_eq!(driver.pending_permits(), 1, "the resumed session is told to go on");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let starts = slice.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session), "the same session is resumed: {starts:?}");
+    let told = slice.prompts().last().unwrap().clone();
+    assert!(told.starts_with("Your session was cut off when its host stopped"), "{told}");
+    assert!(told.contains("This background work ended with that host and will not report back:\n- bfixture1 (bazel test //app:snapshots)\n"), "{told}");
+    assert_eq!(lifecycle(domain).activity(), ActivityView::Resting, "its turn ended: nothing waits for a notification");
+    driver.stop().unwrap();
+}
+
+// t-parcel-open-issues-widget, 22 October: the session ended its turn on «I go on when it ends»
+// with `bazel test` running in the background, and the 0.3.5 daemon ended its 0.3.4 host, which
+// it would not adopt, and the command with it. A host's end is a fact: the resumed session is told
+// the command ended and will not report back, instead of waiting for a notification no process
+// will send.
+#[test]
+fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_which_goes_on() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("background-shell");
+    until_own_work(&slice, &mut driver);
+    let (session, _) = strand_host(&slice, driver);
+    let restarted = slice.restart();
+    let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
+    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    assert_told_the_work_ended(&slice, &restarted, driver, &session);
+    assert_eq!(Slice::read_cards(&restarted).iter().filter(|(_, answered)| !answered).count(), 1, "the task goes on: its turn ended on a card");
+}
+
+// The same, with the task delivered: the user replied to the result and the node's turn on the
+// reply left the command running. A delivery under review asked nothing of a resumed session, so
+// nothing ever woke it: the task read «Answering you» for 12 hours.
+#[test]
+fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_to_the_resumed_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
+    let told = tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .unwrap();
+    assert_eq!(told["reaches"], "turn", "Claude reads it inside the turn that runs: {told}");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!((lifecycle(&slice.domain).phase(), lifecycle(&slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
+    slice.run(&user(), "reply", Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets,
+        body: "background-shell".into(), instruction: alondra_core::domain::Instruction::Reply });
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the reply is told to the node");
+    driver.step(&|| false).unwrap();
+    until_own_work(&slice, &mut driver);
+    let (session, _) = strand_host(&slice, driver);
+    let restarted = slice.restart();
+    let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
+    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    assert_eq!(lifecycle(&restarted).phase(), alondra_domain::TaskPhase::Delivered, "the delivery stays the one the user reviews");
+    assert_told_the_work_ended(&slice, &restarted, driver, &session);
 }
 
 // B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the

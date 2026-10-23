@@ -861,7 +861,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..39, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..41, 1..160)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for action in actions {
             let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -904,9 +904,16 @@ proptest! {
                 36 => Some(Event::Tell { input: input("told") }),
                 37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
                 38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
+                39 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
+                40 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(input("resumed")) }),
                 _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
             };
             let Some(event) = event else { continue };
+            let host_ended = matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { .. }, .. });
+            let open = matches!(task.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
+            let users = task.phase() == TaskPhase::InProgress
+                || matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { resume: Some(_), .. }, .. });
+            let revision = task.revision();
             let control = matches!(event, Event::RequestControl { .. });
             let before = format!("{task:?}");
             let observed = (task.phase(), task.activity(), task.cursor(), task.turn().cloned(), task.cards().len(), task.pending_inputs().len(), task.holds_slot());
@@ -922,6 +929,10 @@ proptest! {
             }
             if task.phase() == TaskPhase::Finishing { prop_assert!(task.drain().count() > 0); }
             if task.activity() == ActivityView::OwnWork { prop_assert!(task.holds_slot()); }
+            if host_ended && open && users && task.revision() != revision {
+                prop_assert!(!task.pending_inputs().is_empty() || !task.cards().is_empty() || !task.dependencies().is_empty(),
+                    "a session its host's end cut gets an input or a card when the user waits on it or a resumed session is told to go on: {:?}", task);
+            }
             if task.phase() == TaskPhase::InProgress && task.activity() == ActivityView::Resting { prop_assert!(!task.cards().is_empty() || !task.dependencies().is_empty()); }
             if let Some(stamp) = task.execution() { prop_assert_eq!(stamp.task(), task.task()); }
             prop_assert_eq!(task.turn_stop().is_some(), task.turn().is_some());
@@ -2590,6 +2601,55 @@ fn ending_the_work_after_the_merge_or_telling_the_node_settles_the_card_of_its_e
     apply(&mut task, Event::Tell { input: input("told") });
     assert!(task.cards().is_empty());
     assert_eq!(task.pending_inputs(), [&input("told")]);
+}
+
+/// A delivery the user answered with a reply: the node works on it in a turn of its own, which
+/// left a background shell running when it ended.
+fn answering_a_reply_with_background_work() -> TaskLifecycle {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    assert!(task.cards().is_empty() && task.activity() == ActivityView::Resting, "the delivery waits on the user");
+    apply(&mut task, Event::Tell { input: input("reply") });
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("reply"), trigger: Trigger::Input(input("reply")) });
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("reply"), work: work("snapshots") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("reply"), unheard_card: card("reply-card") });
+    assert_eq!((task.phase(), task.activity()), (TaskPhase::Delivered, ActivityView::OwnWork));
+    task
+}
+
+#[test]
+fn a_host_that_ends_while_the_node_works_on_the_users_reply_resumes_its_session() {
+    let mut task = answering_a_reply_with_background_work();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) });
+    assert_eq!(task.phase(), TaskPhase::Delivered);
+    assert!(task.cards().is_empty(), "no card asks the user");
+    assert_eq!(task.pending_inputs(), [&input("resumed")], "the resumed session is told to go on");
+    assert_eq!(task.activity(), ActivityView::Starting);
+}
+
+#[test]
+fn a_host_that_ends_while_the_node_works_on_the_users_reply_without_a_resume_leaves_the_delivery_standing() {
+    let mut task = answering_a_reply_with_background_work();
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    assert_eq!((task.phase(), task.activity()), (TaskPhase::Delivered, ActivityView::Resting));
+    assert!(task.cards().is_empty() && task.pending_inputs().is_empty(), "the delivery the user decides on is what stands");
+}
+
+#[test]
+fn a_host_that_ends_on_a_delivery_at_rest_leaves_it_waiting_for_the_user() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card") });
+    let cursor = task.cursor().unwrap() + 1;
+    let stamp = task.execution().unwrap().clone();
+    assert_eq!(
+        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) } }),
+        Err(Refusal::InvalidState),
+        "nothing was cut: the session has nothing to go on with"
+    );
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
+    assert!(task.cards().is_empty() && task.pending_inputs().is_empty(), "the delivery still waits on the user");
 }
 
 #[test]

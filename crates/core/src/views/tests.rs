@@ -6843,6 +6843,32 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
     }
 }
 
+/// t-parcel-open-issues-widget, 23 October: its node's phase still said working from its start
+/// while its session had long rested on its delivery, so the task read «Answering you» for 12
+/// hours. A task whose node runs through the SDK reads what its lifecycle does.
+#[test]
+fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_something() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    let answering = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+        LifecycleRecord::Presented { delivery: "d".into() },
+    ];
+    let live = LiveSnapshot::default();
+    state.lifecycle_journal.insert("t-1".into(), answering.clone());
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn still runs");
+    state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into() }]].concat());
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its session rests on the delivery");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Entregada");
+}
+
 #[test]
 fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};

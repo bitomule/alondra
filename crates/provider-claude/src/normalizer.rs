@@ -70,6 +70,11 @@ struct Checkpoint {
 struct Woken {
     run: String,
     continuation: String,
+    /// The work that ended, as Claude names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,7 +100,28 @@ struct LogicalTurn {
 struct LogicalWork {
     run: Option<String>,
     id: String,
+    /// What Claude said the work does when it started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
+const DESCRIPTION_LIMIT: usize = 200;
+
+/// The background work of Claude's that a host left behind when it ended, by the checkpoint of its
+/// last observation: each task still running, and each that ended whose notification Claude had
+/// not taken up yet, named as Claude knows it.
+pub fn background_left(checkpoint: &[u8]) -> Vec<String> {
+    let Ok(checkpoint) = serde_json::from_slice::<Checkpoint>(checkpoint) else { return Vec::new() };
+    let named = |task: &str, description: Option<&str>| match description {
+        Some(description) => format!("{task} ({description})"),
+        None => task.to_owned(),
+    };
+    let running = checkpoint.work.iter().map(|(task, work)| named(task, work.description.as_deref()));
+    let unread = checkpoint.woken.iter().filter_map(|woken| {
+        woken.task.as_deref().map(|task| format!("{}, which had ended: its notification was never read", named(task, woken.description.as_deref())))
+    });
+    running.chain(unread).collect()
+}
+
 impl ObservationNormalizer for Normalizer {
     fn normalize(
         &self,
@@ -431,6 +457,7 @@ fn fold(
                     LogicalWork {
                         run,
                         id: id.clone(),
+                        description: payload.get("description").and_then(Value::as_str).map(|text| text.chars().take(DESCRIPTION_LIMIT).collect()),
                     },
                 );
                 facts.push(Observation::WorkStarted {
@@ -454,6 +481,7 @@ fn fold(
                     return Err(AdapterError::Unsupported);
                 }
                 let work = state.work.remove(task).ok_or(AdapterError::Unsupported)?;
+                let task = task.to_owned();
                 let basis = native_uuid(payload, "uuid")?;
                 let continuation = ContinuationId::new(format!("claude-notification:{}", basis.as_str()))
                     .map_err(|_| AdapterError::InvalidObservation)?;
@@ -467,7 +495,7 @@ fn fold(
                 if state.turn.is_some() {
                     facts.push(Observation::ContinuationConsumed { continuation });
                 } else if let Some(run) = run {
-                    state.woken.push(Woken { run, continuation: continuation.as_str().into() });
+                    state.woken.push(Woken { run, continuation: continuation.as_str().into(), task: Some(task.into()), description: work.description });
                 }
             }
             Some("conversation_reset") => return Err(AdapterError::Unsupported),
@@ -1431,7 +1459,7 @@ mod tests {
         fold(&requested(10, "decision-2"), &session(), &mut state, input).unwrap();
         assert_eq!(fold(&settled(11, "decision-2", 10, DecisionOutcome::Cancelled), &session(), &mut state, input).unwrap(),
             vec![Observation::DecisionSettled { epoch: 10, answered: false, continued: false }]);
-        state.work.insert("agent-1".into(), LogicalWork { run: Some("run-1".into()), id: "claude-task:agent".into() });
+        state.work.insert("agent-1".into(), LogicalWork { run: Some("run-1".into()), id: "claude-task:agent".into(), description: None });
         fold(&requested(12, "decision-3"), &session(), &mut state, input).unwrap();
         assert_eq!(fold(&settled(13, "decision-3", 12, DecisionOutcome::Answered), &session(), &mut state, input).unwrap(),
             vec![Observation::DecisionSettled { epoch: 12, answered: true, continued: true }], "the background work that asked goes on with it");

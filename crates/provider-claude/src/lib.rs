@@ -24,6 +24,7 @@ pub use batch::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;
 pub use records::conversation_session;
+pub use normalizer::background_left;
 
 #[cfg(test)]
 mod controller_tests;

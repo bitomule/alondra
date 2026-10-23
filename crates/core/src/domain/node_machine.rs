@@ -499,13 +499,34 @@ impl DomainState {
             Some(NodePhase::Starting { reviving: false, .. }) => TaskActivity::Starting,
             Some(NodePhase::Lost) if task.state == TaskState::WaitingDependency => TaskActivity::WaitingDependency,
             Some(NodePhase::Lost) => TaskActivity::ComingBack,
-            Some(NodePhase::Working | NodePhase::Resuming { .. }) => TaskActivity::Working,
+            Some(NodePhase::Working | NodePhase::Resuming { .. }) => self.sdk_rest(task, agent).unwrap_or(TaskActivity::Working),
             Some(NodePhase::WaitingBackground(work)) => TaskActivity::WaitingBackground(work.clone()),
             Some(NodePhase::WaitingUser { .. }) => TaskActivity::WaitingUser,
             Some(NodePhase::WaitingDependency) => TaskActivity::WaitingDependency,
             Some(NodePhase::Paused(pause)) => TaskActivity::Paused(pause.clone()),
             Some(NodePhase::Delivered { .. }) => TaskActivity::Delivered,
         })
+    }
+
+    /// What the SDK task `task` waits for while its lifecycle rests: no session phase of its node
+    /// moves with its turns, so a phase that still says working is not what the task does.
+    fn sdk_rest(&self, task: &Task, agent: &AgentId) -> Option<TaskActivity> {
+        if !super::read_index::admitted_through_sdk(self, &task.id, agent) {
+            return None;
+        }
+        let lifecycle = self.lifecycle_of(&task.id).ok()?;
+        if lifecycle.activity() != alondra_domain::ActivityView::Resting {
+            return None;
+        }
+        if !lifecycle.cards().is_empty() {
+            Some(TaskActivity::WaitingUser)
+        } else if lifecycle.phase() == alondra_domain::TaskPhase::Delivered {
+            Some(TaskActivity::Delivered)
+        } else if !lifecycle.dependencies().is_empty() {
+            Some(TaskActivity::WaitingDependency)
+        } else {
+            None
+        }
     }
 
     /// The task a node works on: its open one, else the last it had.
@@ -612,7 +633,7 @@ impl DomainState {
 
     /// A delivery the user replied to comes back to them, the same one, once its node is done
     /// with the reply: it ended its turn without presenting again, or it cannot act on it.
-    fn return_replied_delivery(&mut self, agent: &AgentId) {
+    pub(super) fn return_replied_delivery(&mut self, agent: &AgentId) {
         let delivery = self.tasks.values()
             .filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent))
             .filter_map(|t| t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)))

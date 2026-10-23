@@ -504,6 +504,8 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         domain.own(scope.clone(), |owner| owner.resolve_control(&stamp, control.id, owner_generation, receipt)).map_err(failed("resolving a control"))?;
     }
     let generation = stamp.generation();
+    let ended_work = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?.0
+        .checkpoint().map(|checkpoint| alondra_provider_claude::background_left(checkpoint.bytes())).unwrap_or_default();
     domain.own(scope.clone(), |owner| {
         let envelope = |name: String, command: Command| CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -512,7 +514,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             expected_revision: 0,
             command,
         };
-        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch }), Attached::None)?;
+        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch, ended_work: ended_work.clone() }), Attached::None)?;
         let doubted: Vec<InputId> = owner.lifecycle(&task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
         for (input, status) in owner.pending_handoffs(&task)? {
             let (id, text) = (input.id().as_str().to_owned(), input.text().to_owned());

@@ -1826,14 +1826,16 @@ fn rejected_field(lang: Lang, field: &str, message: &str) -> Value {
 }
 
 /// What a local reply's status and body mean to the client. A message the node has taken says so,
-/// one waiting on a busy node says that, and a node that is not connected is refused as such,
-/// not as an action that is no longer available.
+/// one told to a node of the SDK says where it stands, one waiting on a busy node says that, and a
+/// node that is not connected is refused as such, not as an action that is no longer available.
 fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body: Value) -> Value {
     let code = body.get("code").and_then(Value::as_str);
     if (200..300).contains(&status) {
+        let reaches = body.get("reaches").and_then(Value::as_str);
         let stamp = match (verb, body.get("delivery_state").and_then(Value::as_str), lang == Lang::Es) {
             (Verb::Msg, Some("handed"), false) => "Message delivered",
             (Verb::Msg, Some("handed"), true) => "Mensaje entregado",
+            (Verb::Msg, Some("dispatching"), es) if reaches.is_some() => sdk_message_stamp(reaches, es),
             (Verb::Msg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends",
             (Verb::Msg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno",
             _ => stamp,
@@ -1847,6 +1849,22 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
         let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
         let code = code.unwrap_or("action_rejected");
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":rejection_message(lang, code, message),"code":code})
+    }
+}
+
+/// Where a message told to a node of the SDK stands, as the stamp says it.
+fn sdk_message_stamp(reaches: Option<&str>, es: bool) -> &'static str {
+    match (reaches, es) {
+        (Some("turn"), false) => "Message sent: the node reads it during its current turn",
+        (Some("turn"), true) => "Mensaje enviado: el nodo lo lee durante su turno actual",
+        (Some("pause"), false) => "Message kept: the node gets it when you resume it",
+        (Some("pause"), true) => "Mensaje guardado: el nodo lo recibe cuando lo reanudes",
+        (Some("doubt"), false) => "Message kept: the node gets it once you settle the message in doubt",
+        (Some("doubt"), true) => "Mensaje guardado: el nodo lo recibe cuando resuelvas el mensaje en duda",
+        (Some("session"), false) => "Message kept: the node gets it when its session is back",
+        (Some("session"), true) => "Mensaje guardado: el nodo lo recibe cuando vuelva su sesión",
+        (_, false) => "Message sent: the node starts on it now",
+        (_, true) => "Mensaje enviado: el nodo se pone con él ahora",
     }
 }
 
@@ -2361,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_says_whether_the_node_took_it_is_busy_or_is_not_connected() {
+    fn a_message_says_whether_the_node_took_it_is_busy_where_it_stands_or_is_not_connected() {
         let reply = |lang, status, body: Value| applied(Verb::Msg, lang, "Message sent", 7, status, body);
         let handed = reply(Lang::En, 200, json!({"delivery_state": "handed"}));
         assert_eq!((handed["outcome"].as_str(), handed["stamp"].as_str()), (Some("applied"), Some("Message delivered")));
@@ -2369,6 +2387,17 @@ mod tests {
         let busy = reply(Lang::En, 200, json!({"delivery_state": "dispatching"}));
         assert_eq!(busy["stamp"], "Message queued: the node is busy and takes it when its turn ends");
         assert!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"].as_str().unwrap().starts_with("Mensaje en cola"));
+        for (reaches, english, spanish) in [
+            ("now", "Message sent: the node starts on it now", "Mensaje enviado: el nodo se pone con él ahora"),
+            ("turn", "Message sent: the node reads it during its current turn", "Mensaje enviado: el nodo lo lee durante su turno actual"),
+            ("pause", "Message kept: the node gets it when you resume it", "Mensaje guardado: el nodo lo recibe cuando lo reanudes"),
+            ("doubt", "Message kept: the node gets it once you settle the message in doubt", "Mensaje guardado: el nodo lo recibe cuando resuelvas el mensaje en duda"),
+            ("session", "Message kept: the node gets it when its session is back", "Mensaje guardado: el nodo lo recibe cuando vuelva su sesión"),
+        ] {
+            let told = json!({"delivery_state": "dispatching", "reaches": reaches});
+            assert_eq!(reply(Lang::En, 200, told.clone())["stamp"], english, "a message told to a node of the SDK says where it stands");
+            assert_eq!(reply(Lang::Es, 200, told)["stamp"], spanish);
+        }
         let refused = reply(Lang::En, 409, json!({"code": "session_unreachable", "message": "the node is not connected to Alondra"}));
         assert_eq!((refused["outcome"].as_str(), refused["code"].as_str(), refused["message"].as_str()),
             (Some("rejected"), Some("session_unreachable"), Some("the node is not connected to Alondra")));
