@@ -126,7 +126,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(((!inbox.contains(&ended)).then_some(()), format!("{inbox:?}")))
         })?;
         state(report, &user, "t-s5", WORKING)?;
-        let agent = wait(report, "the task names its working node", || Ok((node_of(&user, "Plan the onboarding")?, "no node yet".into())))?;
+        let agent = wait(report, "the task names its working node", || Ok((node_of(&user, S5_TITLE)?, "no node yet".into())))?;
         report.step("the user writes to the node while its turn runs", || {
             let (status, body) = user.send("POST", &format!("/agents/{agent}/messages"), Some(json!({"text": "Submit your plan"})))?;
             anyhow::ensure!((200..300).contains(&status), "{status} {body}");

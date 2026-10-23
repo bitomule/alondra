@@ -14,7 +14,7 @@ mod user;
 
 use std::{path::PathBuf, time::Duration};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     fake::{self, Fakes},
@@ -76,12 +76,18 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
     report.finish(&fakes, sandbox)
 }
 
-/// Cancels on every Mac each scripted task still open and waits until no node works, so a journey
-/// starts with every slot free whatever the ones before it left behind.
+/// Cancels on every Mac each scripted task still open, puts its node limit back to automatic and
+/// waits until no node works, so a journey starts with every slot free whatever the ones before it
+/// left behind.
 fn cancel_open_tasks(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) -> Result<()> {
     let tasks: Vec<String> = fakes.request_scripts()?.into_iter().flat_map(|script| script.tasks).map(|task| task.task_id).collect();
     for number in 1..=sandbox.mac_count() {
         let user = report.step(&format!("a phone pairs directly with Mac {number} to tidy it"), || User::paired(sandbox, "tidy", number, true))?;
+        report.step(&format!("Mac {number} runs as many nodes at once as it takes"), || {
+            let machine = user.view("machine")?;
+            let action = user.action(&machine, "set_limit:").context("the machine view offers no node limit")?;
+            user.press(action["id"].as_str().unwrap_or_default(), Some("auto"), None).map(drop)
+        })?;
         for task in &tasks {
             let Ok(view) = user.view(&format!("task:{task}")) else { continue };
             if user.action(&view, "cancel:").is_some() {
