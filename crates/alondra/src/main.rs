@@ -15,6 +15,7 @@ mod cleanup;
 mod handover;
 mod doctor;
 mod delivery;
+mod doc_images;
 mod help;
 mod mcp;
 mod models;

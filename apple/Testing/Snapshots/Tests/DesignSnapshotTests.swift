@@ -55,6 +55,15 @@ final class DesignSnapshotTests: XCTestCase {
         }
     }
 
+    func test_markdownStoredImage() async throws {
+        let png = StoredImageSample.png
+        let files = StoredFiles { _ in png }
+        _ = try await files.fetch(try XCTUnwrap(StoredImage.attachment(StoredImageSample.url)))
+        assertVariants {
+            StoredImageSample().padding().environment(\.storedFiles, files)
+        }
+    }
+
     func test_diffFile() {
         assertVariants {
             DiffSample().padding()
@@ -151,5 +160,34 @@ private struct DiffSample: View {
                 ForEach(file.lines) { DiffCodeLine(line: $0, coloured: nil) }
             }
         }
+    }
+}
+
+private struct StoredImageSample: View {
+    static let url = URL(string: "/files?path=files/images/\(String(repeating: "c", count: 64)).png")!
+    static let png: Data = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 160)).pngData { context in
+        UIColor.systemTeal.setFill()
+        context.fill(CGRect(x: 0, y: 0, width: 320, height: 160))
+        UIColor.white.setFill()
+        context.fill(CGRect(x: 24, y: 24, width: 120, height: 112))
+        context.fill(CGRect(x: 168, y: 24, width: 128, height: 20))
+        context.fill(CGRect(x: 168, y: 60, width: 96, height: 20))
+    }
+    private let segments = MarkdownParser.segments(from: """
+    ## Screens
+
+    The main screen, from the worktree:
+
+    ![Main screen](\(url.absoluteString))
+
+    ![Missing](docs/missing.png)
+    """)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(segments) { MarkdownSegmentView(segment: $0) }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

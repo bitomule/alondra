@@ -114,7 +114,8 @@ extension AlondraAPIClient: ViewTransport {
     }
 
     public func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data {
-        guard let digest = attachment.digest, attachment.fetch.hasPrefix("/"), attachment.fetch.hasPrefix("/files/") else {
+        guard let digest = attachment.digest, attachment.fetch.hasPrefix("files/"),
+              !attachment.fetch.split(separator: "/").contains("..") else {
             throw FeedError.unsupportedContent
         }
         return try await readFileChunks(reference: attachment.fetch, digest: digest)

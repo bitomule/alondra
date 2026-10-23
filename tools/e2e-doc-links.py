@@ -7,8 +7,9 @@ The sandbox's scripted node writes a document with Markdown and inline HTML link
 asks for its review, as tools/e2e-doc-review.py does. `alondra` runs in tmux with
 `ALONDRA_SANDBOX_OPENED`, where the sandbox TUI writes what it would hand the Mac's `open`. The test
 checks the HTML reads as text and image markers, that `v` opens the one link of a block, that a
-block with several shows the numbered list and opens the one picked, and that a local image is
-refused with its reason. E2E_CAPTURES=<dir> keeps what the TUI showed at each step there; the
+block with several shows the numbered list and opens the one picked, that an image the node had in
+its worktree was copied into Alondra's files folder and `v` opens that copy, and that an image it
+could not copy is refused with its reason. E2E_CAPTURES=<dir> keeps what the TUI showed at each step there; the
 sandbox and every other file it made are removed at the end, whatever happens.
 """
 
@@ -42,7 +43,12 @@ DOCUMENT = """<!-- badges -->
 Read [the install guide](https://alondra.dev/install) first.
 
 A screenshot: ![main screen](docs/main.png)
+
+Not in the worktree: ![old screen](docs/gone.png)
 """
+
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                    "1f15c4890000000d49444154789c6360f80f0000010100005b0a2e6f0000000049454e44ae426082")
 
 
 def opened(path, count):
@@ -73,6 +79,10 @@ def main():
             child[key] = value.strip('"')
         child.update(TERM="xterm-256color", ALONDRA_LANG="es", ALONDRA_SANDBOX="1", ALONDRA_SANDBOX_OPENED=log)
         node = review.Node(sandbox, child)
+        worktree = node.session()["cwd"]
+        os.makedirs(os.path.join(worktree, "docs"), exist_ok=True)
+        with open(os.path.join(worktree, "docs/main.png"), "wb") as file:
+            file.write(PNG)
         node.call(node.document("readme-r1", DOCUMENT, first=True), *node.ask("links-1", "readme-r1", "Review the README"))
         captures = os.environ.get("E2E_CAPTURES") or os.path.join(scratch, "captures")
         os.makedirs(captures, exist_ok=True)
@@ -83,7 +93,8 @@ def main():
         for raw in ("<p", "<img", "<a ", "<h1", "<!--"):
             assert raw not in screen, f"{raw} shows as raw HTML:\n{screen}"
         assert "Docs (alondra.dev) · Code (github.com)" in screen, screen
-        assert "📷 main screen (imagen local, no disponible aquí)" in screen, screen
+        assert "📷 main screen" in screen and "📷 main screen (" not in screen, screen
+        assert "📷 old screen (imagen local, no disponible aquí)" in screen, screen
         tui.capture("readme")
 
         tui.send("/")
@@ -111,11 +122,23 @@ def main():
         tui.type("screenshot")
         tui.send("Enter")
         tui.send("v")
+        copy = opened(log, 3)[2]
+        try:
+            assert copy.endswith(".png") and open(copy, "rb").read() == PNG, copy
+        finally:
+            shutil.rmtree(os.path.dirname(copy), ignore_errors=True)
+        tui.capture("worktree-image")
+        print("ok: an image from the node's worktree was copied and opens from the daemon", file=sys.stderr, flush=True)
+
+        tui.send("/")
+        tui.type("Not in the worktree")
+        tui.send("Enter")
+        tui.send("v")
         tui.expect("no se puede abrir desde aquí")
         tui.capture("local-image")
         time.sleep(1)
-        assert len(opened(log, 2)) == 2, "the local image was handed to open"
-        print("ok: a local image says why it does not open", file=sys.stderr, flush=True)
+        assert len(opened(log, 3)) == 3, "the local image was handed to open"
+        print("ok: an image it could not copy says why it does not open", file=sys.stderr, flush=True)
         if os.environ.get("E2E_CAPTURES"):
             print(f"TUI captures in {captures}", file=sys.stderr, flush=True)
         print("e2e doc links: the TUI showed the HTML as text and images and opened what each block links to.")

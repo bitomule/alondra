@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-mod html;
+pub(crate) mod html;
 mod mermaid;
 
 pub const QUOTE_MAX: usize = 200;
@@ -61,11 +61,21 @@ pub struct Target {
 impl Target {
     /// Only the web and mail open from a document: anything else would run whatever an agent wrote.
     pub fn openable(&self) -> bool {
-        self.kind == TargetKind::Stored || (web(&self.url) && !self.url.chars().any(char::is_control))
+        self.stored().is_some() || (web(&self.url) && !self.url.chars().any(char::is_control))
     }
 
     pub fn local(&self) -> bool {
-        self.kind != TargetKind::Stored && !self.url.contains(':')
+        self.stored().is_none() && !self.url.contains(':')
+    }
+
+    /// The daemon's route to the file this opens: an attachment, or an image the document's
+    /// author had copied into Alondra's files folder.
+    pub fn stored(&self) -> Option<&str> {
+        match self.kind {
+            TargetKind::Stored => Some(&self.url),
+            TargetKind::Image => crate::doc_images::stored_image(&self.url).map(|_| self.url.as_str()),
+            TargetKind::Link => None,
+        }
     }
 }
 
@@ -514,7 +524,10 @@ impl Builder {
             .map(|t| t.url.clone())
             .unwrap_or_default();
         if image && text.is_empty() {
-            text = file_name(&url).to_string();
+            text = match crate::doc_images::stored_image(&url) {
+                Some(_) => tr!("image", "imagen").to_string(),
+                None => file_name(&url).to_string(),
+            };
             self.push_fmt(
                 &text,
                 Fmt {
@@ -529,7 +542,7 @@ impl Builder {
                 t.label = if text.is_empty() { url.clone() } else { text.clone() };
             }
         }
-        let local = !url.is_empty() && !url.contains(':');
+        let local = !url.is_empty() && !url.contains(':') && crate::doc_images::stored_image(&url).is_none();
         if image && self.links.iter().any(|o| !o.image && o.target.is_some()) {
             return;
         }
@@ -1074,7 +1087,7 @@ pub fn hyperlinks(buf: &mut Buffer, area: Rect, blocks: &[Block], emit: bool) {
                 let url = blocks
                     .get(usize::from(hi) << 8 | usize::from(lo))
                     .and_then(|b| b.targets.get(usize::from(t)))
-                    .filter(|t| emit && t.kind != TargetKind::Stored && t.openable())
+                    .filter(|t| emit && t.stored().is_none() && t.openable())
                     .map(|t| t.url.clone());
                 let symbol = cell.symbol().to_string();
                 let width = str_width(&symbol).max(1);
@@ -1626,6 +1639,18 @@ mod tests {
         let target = &parse("<img src=\"docs/main.png\">")[0].targets[0];
         assert!(target.local() && !target.openable());
         assert_eq!(target.label, "main.png");
+    }
+
+    #[test]
+    fn an_image_alondra_copied_shows_as_an_image_and_opens_from_the_daemon() {
+        let route = format!("/files?path=files/images/{}.png", "a".repeat(64));
+        assert_eq!(rendered(&format!("![main screen]({route})"), 80), vec!["📷 main screen"]);
+        assert_eq!(rendered(&format!("<img src=\"{route}\">"), 80), vec!["📷 imagen"]);
+        let target = &parse(&format!("![main screen]({route})"))[0].targets[0];
+        assert!(!target.local() && target.openable());
+        assert_eq!(target.stored(), Some(route.as_str()));
+        let forged = &parse("![x](/files?path=/etc/hosts.png)")[0].targets[0];
+        assert!(forged.stored().is_none() && !forged.openable());
     }
 
     #[test]

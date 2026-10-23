@@ -2,6 +2,7 @@
   "sourceLanguage": "en",
   "strings": {
     "Local image, not available here": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Imagen local, no disponible aquí"}}}},
+    "Image": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Imagen"}}}},
     "Nodes at once: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nodos a la vez: %@"}}}},
     "until %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "hasta %@"}}}},
     "for %lld more min": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "durante %lld min más"}}}},

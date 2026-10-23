@@ -309,6 +309,9 @@ public struct ContentRef: Codable, Equatable, Sendable { public let kind: Conten
 public struct Attachment: Codable, Equatable, Sendable {
     public let id: String; public let name: String; public let kind: AttachmentKind; public let size: UInt64; public let fetch: String; public let digest: String?
     enum CodingKeys: String, CodingKey { case id, name, kind, size, fetch, digest }
+    public init(id: String, name: String, kind: AttachmentKind, size: UInt64, fetch: String, digest: String?) {
+        self.id = id; self.name = name; self.kind = kind; self.size = size; self.fetch = fetch; self.digest = digest
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); name = try c.decode(String.self, forKey: .name)

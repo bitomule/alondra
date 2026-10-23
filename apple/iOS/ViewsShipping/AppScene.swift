@@ -86,6 +86,7 @@ private struct DemoAccountView: View {
 
 @MainActor @Observable private final class SceneContext {
     let settings = SettingsContext()
+    private(set) var storedFiles: StoredFiles?
     private(set) var store: StoreOf<AppFeature>?
 
     func consumeNotification(_ notifications: NotificationRuntime, services: Connection, active: Bool) {
@@ -97,6 +98,7 @@ private struct DemoAccountView: View {
         let viewsFeed = await services.viewsFeed
         let sender = await services.viewActionSender
         guard !Task.isCancelled else { return }
+        storedFiles = StoredFiles { try await viewsFeed.fetchAttachment($0) }
         store = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
             $0.mcpSignIn = services.mcpSignInClient(browser: McpSignInBrowser())
@@ -132,6 +134,7 @@ private struct ApprovedServiceScene: View {
                                            localNetworkSettings: { owner.openLocalNetworkSettings() })
                     .environment(\.connectionRecovery, ConnectionRecovery(retry: retry,
                                                                           localNetworkSettings: { owner.openLocalNetworkSettings() }))
+                    .environment(\.storedFiles, context.storedFiles)
                     .environment(\.connectionState, store.connection)
             } else { ProgressView("Opening workspace…") }
         }

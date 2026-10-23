@@ -581,9 +581,45 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "open_cards"
         | "post_merge_work"
         | "wait_for_mcp"
-        | "wait_for_machine" => execute_tool(client, name, args),
+        | "wait_for_machine" => {
+            let (args, notice) = match (std::env::current_dir(), name) {
+                (Ok(cwd), "create_document" | "revise_document" | "present_result") => {
+                    with_relative_images(name, args, &cwd, &alondra_core::config::alondra_home(&|k| std::env::var(k).ok()))
+                }
+                _ => (args.clone(), None),
+            };
+            let answer = execute_tool(client, name, &args)?;
+            Ok(notice.map_or_else(|| answer.clone(), |notice| format!("{answer} {notice}")))
+        }
         _ => anyhow::bail!("incompatible_protocol: this tool is unavailable to the node MCP"),
     }
+}
+
+/// A document or result reaches the user with the images it cites from the node's worktree
+/// copied into Alondra's files folder; the node hears about any it left out.
+fn with_relative_images(name: &str, args: &Value, cwd: &std::path::Path, home: &std::path::Path) -> (Value, Option<String>) {
+    let mut args = args.clone();
+    let mut skipped = vec![];
+    if name == "present_result" {
+        for pointer in ["/content/body", "/body"] {
+            if let Some(body) = args.pointer_mut(pointer).filter(|b| b.is_string()) {
+                let (carried, left) = crate::doc_images::carry(body.as_str().unwrap_or_default(), cwd, home);
+                *body = json!(carried);
+                for (dest, why) in left {
+                    if !skipped.iter().any(|(seen, _)| *seen == dest) {
+                        skipped.push((dest, why));
+                    }
+                }
+            }
+        }
+    } else if let (Some(reference), Some(digest)) = (args["content_reference"].as_str(), args["content_digest"].as_str())
+        && let Some((path, digest, left)) = crate::doc_images::carry_document(reference, digest, cwd, home)
+    {
+        args["content_reference"] = json!(path.to_string_lossy());
+        args["content_digest"] = json!(digest);
+        skipped = left;
+    }
+    (args, crate::doc_images::notice(&skipped))
 }
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
@@ -2679,5 +2715,29 @@ mod card_tool_tests {
             let error = answer_clarification(&client, &args).unwrap_err().to_string();
             assert!(error.starts_with("invalid_input") && error.contains(said), "{args}: {error}");
         }
+    }
+
+    #[test]
+    fn a_result_and_a_document_carry_their_relative_images_and_the_node_hears_which_stayed_out() {
+        use sha2::Digest;
+        let hex = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let dir = crate::test_support::Directory::new();
+        let (cwd, home) = (dir.join("worktree"), dir.join("home"));
+        std::fs::create_dir_all(cwd.join("docs")).unwrap();
+        std::fs::create_dir_all(home.join("files")).unwrap();
+        std::fs::write(cwd.join("docs/shot.png"), b"png").unwrap();
+        let route = format!("/files?path=files/images/{}.png", hex(b"png"));
+        let result = json!({"task_id":"t-1","content":{"kind":"report","body":"![s](docs/shot.png) ![g](docs/gone.png)"}});
+        let (carried, notice) = with_relative_images("present_result", &result, &cwd, &home);
+        assert_eq!(carried["content"]["body"], format!("![s]({route}) ![g](docs/gone.png)"));
+        assert!(notice.unwrap().contains("docs/gone.png (there is no such file in your working folder)"));
+        std::fs::write(home.join("files/doc.md"), "![s](docs/shot.png)").unwrap();
+        let digest = hex(b"![s](docs/shot.png)");
+        let document = json!({"task_id":"t-1","document_id":"d","content_reference":"files/doc.md","content_digest":digest});
+        let (carried, notice) = with_relative_images("create_document", &document, &cwd, &home);
+        let stored = std::fs::read_to_string(carried["content_reference"].as_str().unwrap()).unwrap();
+        assert_eq!(stored, format!("![s]({route})"));
+        assert_eq!(carried["content_digest"], hex(stored.as_bytes()));
+        assert_eq!(notice, None);
     }
 }

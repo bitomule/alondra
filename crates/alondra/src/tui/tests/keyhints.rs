@@ -419,3 +419,13 @@ fn v_on_a_stored_file_fetches_it_to_open() {
     assert_eq!(app.spawned.borrow().len(), spawned + 1);
     assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("build.zip")));
 }
+
+#[test]
+fn v_on_an_image_alondra_copied_fetches_it_to_open() {
+    let route = format!("/files?path=files/images/{}.png", "b".repeat(64));
+    let mut app = reader_on(vec![Part::Text(format!("![main screen]({route})"))], 1);
+    let spawned = app.spawned.borrow().len();
+    app.on_key(plain(KeyCode::Char('v')));
+    assert_eq!(app.spawned.borrow().len(), spawned + 1);
+    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("main screen")));
+}

@@ -1108,7 +1108,7 @@ fn draw_targets(f: &mut Frame, doc: Rect, targets: &[md::Target]) {
                 md::TargetKind::Stored => "📎",
             };
             let label = md::truncate(&format!("{glyph} {}", md::one_line(&t.label)), width / 2);
-            let place = if t.kind == md::TargetKind::Stored || t.label == t.url {
+            let place = if t.stored().is_some() || t.label == t.url {
                 String::new()
             } else {
                 format!("  {}", md::truncate(&t.url, width.saturating_sub(md::str_width(&label) + 6)))

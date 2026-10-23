@@ -7,7 +7,7 @@ mod inbox;
 mod input;
 mod keys;
 mod mcp_sign_in;
-mod md;
+pub(crate) mod md;
 mod optimistic;
 mod restore;
 mod rules;
@@ -3175,8 +3175,12 @@ impl App {
 
     fn open_target(&mut self, target: &md::Target) {
         let label = md::one_line(&target.label);
-        if target.kind == md::TargetKind::Stored {
-            let (name, route) = (target.label.clone(), target.url.clone());
+        if let Some(route) = target.stored() {
+            let name = match crate::doc_images::stored_image(route) {
+                Some(reference) => reference.rsplit('/').next().unwrap_or(reference).to_owned(),
+                None => target.label.clone(),
+            };
+            let route = route.to_owned();
             self.pending(trf!("Opening “{label}”…", "Abriendo «{label}»…"));
             self.spawn(move |tx, mac| {
                 if let Err(e) = open_stored(mac, &name, &route) {
