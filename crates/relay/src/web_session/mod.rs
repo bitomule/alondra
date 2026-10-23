@@ -517,13 +517,19 @@ async fn callback(
     }
     response
 }
-async fn session(identity: Option<axum::Extension<BrowserIdentity>>) -> Response {
-    match identity {
-        Some(axum::Extension(value)) => {
-            Json(json!({"csrf_token":value.csrf,"account":value.account})).into_response()
-        }
-        None => unauthorized(),
-    }
+async fn session(
+    State(server): State<Arc<Server>>,
+    identity: Option<axum::Extension<BrowserIdentity>>,
+) -> Response {
+    session_response(identity.map(|e| e.0), server.testflight_url.as_deref())
+}
+fn session_response(identity: Option<BrowserIdentity>, testflight_url: Option<&str>) -> Response {
+    let Some(identity) = identity else {
+        return unauthorized();
+    };
+    let mut body = json!({"csrf_token":identity.csrf,"account":identity.account});
+    crate::testflight::offer(&mut body, testflight_url);
+    Json(body).into_response()
 }
 async fn logout(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
     let Some(web) = &server.web_session else {
@@ -600,6 +606,34 @@ pub async fn reconcile(web: Arc<WebSession>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn session_body(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+    #[tokio::test]
+    async fn the_testflight_link_is_only_given_to_a_session() {
+        const LINK: &str = "https://testflight.apple.com/join/yuRS3apy";
+        let identity = BrowserIdentity {
+            csrf: "csrf".into(),
+            account: Account {
+                id: uuid::Uuid::nil(),
+                status: "active".into(),
+                is_admin: false,
+                display_name: "Friend".into(),
+            },
+        };
+        let (status, body) = session_body(session_response(None, Some(LINK))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.contains("testflight"), "{body}");
+        let (status, body) = session_body(session_response(Some(identity.clone()), Some(LINK))).await;
+        assert_eq!(status, StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["testflight_url"], LINK);
+        assert_eq!(value["account"]["display_name"], "Friend");
+        let (_, body) = session_body(session_response(Some(identity), None)).await;
+        assert!(!body.contains("testflight"), "{body}");
+    }
     #[test]
     fn cookie_parser_rejects_duplicates_and_invalid_capabilities() {
         let token = random_token().unwrap();
@@ -733,6 +767,7 @@ mod tests {
             epoch: "synthetic".into(),
             iroh_access_token: None,
             iroh_relay: None,
+            testflight_url: None,
             test_directory: Some(scratch_directory),
         });
         let run = tokio::spawn(async move {

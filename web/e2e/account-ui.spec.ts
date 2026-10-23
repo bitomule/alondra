@@ -421,3 +421,46 @@ test('client name uses its own link, rejects controls and can clear an alias', a
  await expect(page.getByText('Cliente vinculado', { exact: true })).toBeVisible();
  expect(writes).toBe(1);
 });
+const testflight = 'https://testflight.apple.com/join/synthetic';
+async function acceptInvitation(page: Page, response: Record<string, unknown>) {
+ await page.route('**/v1/invitations/status', route => route.fulfill({ json: { status: 'pending' } }));
+ await page.route('**/v1/invitations/accept', route => route.fulfill({ status: 201, json: response }));
+ await page.goto(`/invite#${token}`);
+ await page.getByLabel('Cómo te llamas').fill('Amiga de prueba');
+ await page.getByLabel('Elige una contraseña').fill('synthetic password only');
+ await page.getByRole('button', { name: 'Crear mi cuenta' }).click();
+ await expect(page.getByRole('heading', { name: 'Tu cuenta está preparada.' })).toBeVisible();
+}
+test('finishing the invitation offers the TestFlight link the relay sent', async ({ page }) => {
+ await acceptInvitation(page, { status: 'active', login_required: true, credential_already_created: false, testflight_url: testflight });
+ await expect(page.getByRole('link', { name: 'Instala la app desde TestFlight' })).toHaveAttribute('href', testflight);
+ await expect(page.getByRole('link', { name: 'Entrar en Alondra' })).toBeVisible();
+});
+test('finishing the invitation shows no TestFlight link when none is configured', async ({ page }) => {
+ await acceptInvitation(page, { status: 'active', login_required: true, credential_already_created: false });
+ await expect(page.getByRole('link', { name: 'Entrar en Alondra' })).toBeVisible();
+ await expect(page.getByRole('link', { name: 'Instala la app desde TestFlight' })).toHaveCount(0);
+});
+test('install shows the TestFlight link only to a session that carries one', async ({ page }) => {
+ const link = page.getByRole('link', { name: 'Instala la app desde TestFlight' });
+ await page.route('**/v1/session', route => route.fulfill({ status: 401, json: { error: { code: 'unauthorized' } } }));
+ await page.goto('/install');
+ await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toBeVisible();
+ await expect(link).toHaveCount(0);
+ await page.unroute('**/v1/session');
+ await session(page, false);
+ await page.reload();
+ await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toBeVisible();
+ await expect(link).toHaveCount(0);
+ await page.unroute('**/v1/session');
+ await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: false }, testflight_url: testflight } }));
+ await page.reload();
+ await expect(link).toHaveAttribute('href', testflight);
+ await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toHaveCount(0);
+});
+test('account shows the TestFlight link from the session', async ({ page }) => {
+ await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: false }, testflight_url: testflight } }));
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [] } }));
+ await page.goto('/account');
+ await expect(page.getByRole('link', { name: 'Instala la app desde TestFlight' })).toHaveAttribute('href', testflight);
+});

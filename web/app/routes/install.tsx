@@ -1,15 +1,20 @@
+import { useQuery } from '@tanstack/react-query';
 import { Lark } from '../public/Lark';
+import { TestFlightLink } from '../components/testflight';
+import { api, type Session } from '../lib/api';
 
 export function meta() { return [{ title: 'Instalar — Alondra' }, { name: 'description', content: 'Instala Alondra en tu Mac con Homebrew, prepáralo con alondra y vincula el iPhone o la app de Mac.' }]; }
 
 const STEPS = [
   { title: 'Instala Alondra', commands: ['brew install bitomule/tap/alondra'], body: 'Incluye el servicio, la CLI y la TUI. Las apps de iPhone y de Mac se instalan aparte.' },
   { title: 'Prepara tu Mac', commands: ['alondra'], body: 'La primera vez, el asistente te pregunta la carpeta de proyectos y si activas las notificaciones, arranca el servicio y espera a tu iPhone. Después, alondra abre la TUI con Bandeja, Tareas, Programadas y Flota.' },
-  { title: 'Vincula el iPhone o la app de Mac', commands: [], body: 'Abre la app que te llega por TestFlight en la misma wifi: encuentra tu Mac y los dos muestran el mismo código. Permítelo en el Mac. Durante la alpha, David te da acceso a TestFlight.' },
+  { title: 'Vincula el iPhone o la app de Mac', commands: [], body: 'Abre la app que te llega por TestFlight en la misma wifi: encuentra tu Mac y los dos muestran el mismo código. Permítelo en el Mac.', testflight: true },
   { title: 'Si algo falla', commands: ['alondra doctor --fix'], body: 'doctor te dice qué funciona y qué falta; con --fix lo arregla.' },
 ];
 
 export default function Install() {
+  const session = useQuery({ queryKey: ['session'], queryFn: ({ signal }) => api<Session>('/v1/session', { signal }) });
+  const testflightUrl = session.data?.account.status === 'active' ? session.data.testflight_url : undefined;
   return (
     <article className="doc">
       <header className="doc-head">
@@ -23,6 +28,9 @@ export default function Install() {
             <h2>{step.title}</h2>
             {step.commands.map(command => <pre key={command}><code>{command}</code></pre>)}
             <p>{step.body}</p>
+            {step.testflight && (testflightUrl
+              ? <TestFlightLink url={testflightUrl} className="pub-link doc-testflight"/>
+              : <p>El enlace para instalarla desde TestFlight aparece al terminar el alta y aquí cuando <a className="pub-link" href="/auth/login">entras con tu cuenta</a>.</p>)}
           </li>
         ))}
       </ol>

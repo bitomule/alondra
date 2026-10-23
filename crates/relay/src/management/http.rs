@@ -568,6 +568,11 @@ struct AcceptBody {
     display_name: String,
     password: String,
 }
+fn accepted_body(credential_already_created: bool, testflight_url: Option<&str>) -> Value {
+    let mut body = json!({"status":"active","login_required":true,"credential_already_created":credential_already_created});
+    crate::testflight::offer(&mut body, testflight_url);
+    body
+}
 async fn accept(State(server): State<Arc<Server>>, Json(body): Json<AcceptBody>) -> ApiResult {
     public_budget()?;
     let keycloak = server
@@ -587,9 +592,22 @@ async fn accept(State(server): State<Arc<Server>>, Json(body): Json<AcceptBody>)
             .complete(&provisioned.subject)
             .await
             .map_err(failure)?;
-        Ok::<_,Response>((StatusCode::CREATED,Json(json!({"status":"active","login_required":true,"credential_already_created":provisioned.already_existed}))).into_response())
+        Ok::<_,Response>((StatusCode::CREATED,Json(accepted_body(provisioned.already_existed,server.testflight_url.as_deref()))).into_response())
     };
     tokio::time::timeout(Duration::from_secs(35), work)
         .await
         .map_err(|_| failure(anyhow::anyhow!("provisioning deadline")))?
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+
+    #[test]
+    fn the_account_confirmation_carries_the_testflight_link_only_when_configured() {
+        let link = "https://testflight.apple.com/join/yuRS3apy";
+        assert_eq!(accepted_body(false, Some(link))["testflight_url"], link);
+        assert!(accepted_body(true, None).get("testflight_url").is_none());
+        assert_eq!(accepted_body(true, None)["credential_already_created"], true);
+    }
 }

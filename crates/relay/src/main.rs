@@ -6,6 +6,7 @@ mod auth;
 mod management;
 mod pairing;
 mod push;
+mod testflight;
 mod web_session;
 mod web_assets;
 
@@ -43,6 +44,7 @@ struct Server {
     iroh_access_token: Option<String>,
     /// The iroh relay this relay admits endpoints to, announced to Macs and phones in bootstrap.
     iroh_relay: Option<String>,
+    testflight_url: Option<String>,
     #[cfg(test)]
     test_directory: Option<crate::test_support::Directory>,
 }
@@ -753,6 +755,7 @@ async fn main() -> anyhow::Result<()> {
         epoch,
         iroh_access_token,
         iroh_relay,
+        testflight_url: testflight::from_env()?,
         #[cfg(test)]
         test_directory: None,
     });
@@ -921,6 +924,7 @@ mod http_tests {
             epoch,
             iroh_relay: iroh_access_token.as_ref().map(|_| TEST_IROH_RELAY.to_owned()),
             iroh_access_token,
+            testflight_url: None,
             #[cfg(test)]
             test_directory: Some(directory),
         });
