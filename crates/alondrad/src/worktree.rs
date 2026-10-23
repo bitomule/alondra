@@ -59,6 +59,50 @@ async fn git(dir: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Where the commits of `dir`'s HEAD already live without a push.
+#[derive(Debug, PartialEq)]
+enum LocalHome {
+    /// The repository has no remote to push them to.
+    NoRemote,
+    /// They are in the local default branch, which HEAD is not on.
+    DefaultBranch,
+}
+
+/// The repository's default branch as a local branch: origin/HEAD's name, else `main` or `master`.
+async fn local_default_branch(dir: &Path) -> Option<String> {
+    if let Some(head) = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
+        let name = head.strip_prefix("origin/").unwrap_or(&head).to_owned();
+        if git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).await.is_some() {
+            return Some(name);
+        }
+    }
+    for name in ["main", "master"] {
+        if git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).await.is_some() {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+async fn local_home(dir: &Path) -> Option<LocalHome> {
+    if git(dir, &["remote"]).await?.is_empty() {
+        return Some(LocalHome::NoRemote);
+    }
+    let default = local_default_branch(dir).await?;
+    if branch_in(dir).await.as_deref() == Some(default.as_str()) {
+        return None;
+    }
+    git(dir, &["merge-base", "--is-ancestor", "HEAD", &format!("refs/heads/{default}")]).await.map(|_| LocalHome::DefaultBranch)
+}
+
+/// The commits of HEAD that no remote has and that are not kept by a [`LocalHome`].
+async fn unpushed_commits(dir: &Path) -> Option<usize> {
+    if local_home(dir).await.is_some() {
+        return Some(0);
+    }
+    git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await?.parse().ok()
+}
+
 /// What a node would leave behind in its worktree: uncommitted files or commits no remote has.
 /// None when the node has no worktree of its own or it is clean.
 pub async fn leftovers(session_id: &str) -> Option<String> {
@@ -119,7 +163,8 @@ fn listed(files: &[String]) -> String {
 }
 
 /// Why a node's final delivery cannot be taken yet: files it did not commit, commits no remote
-/// has, or work that is neither on the default branch nor in the PR registered for its Task.
+/// has, or work that is neither on the default branch nor in the PR registered for its Task. Work in
+/// a repository without a remote, or already in the local default branch, needs no push and no PR.
 /// Nothing when the node has no worktree of its own, or when git cannot tell.
 pub(crate) async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
     final_refusal_in(state, &node_worktree(state, session_id, task)?, task, targets).await
@@ -143,8 +188,7 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
             if new { untracked.push(file) } else { changed.push(file) }
             (untracked, changed)
         });
-    let unpushed: usize = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await
-        .and_then(|count| count.parse().ok()).unwrap_or(0);
+    let unpushed = unpushed_commits(dir).await.unwrap_or(0);
     let mut left = vec![];
     if !changed.is_empty() {
         left.push(format!("uncommitted changes to {}", listed(&changed)));
@@ -165,7 +209,7 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
     }
     let in_pr = targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. }))
         || state.tasks.get(task).is_some_and(|task| task.pr_id.is_some());
-    if in_pr {
+    if in_pr || local_home(dir).await.is_some() {
         return None;
     }
     match on_default_branch(dir).await {
@@ -265,10 +309,11 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
     Ok(TaskWorktree::Removed)
 }
 
-/// The work `top` holds that no remote has: uncommitted files and commits not pushed.
+/// The work `top` holds that no remote has: uncommitted files and commits not pushed that no
+/// [`LocalHome`] keeps.
 pub(crate) async fn unsaved(top: &Path) -> Result<Option<String>, String> {
     let status = git(top, &["status", "--porcelain", "--untracked-files=all"]).await;
-    let unpushed = git(top, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await.and_then(|count| count.parse::<usize>().ok());
+    let unpushed = unpushed_commits(top).await;
     let (Some(status), Some(unpushed)) = (status, unpushed) else {
         return Err(format!("git could not tell whether {} holds work not saved", top.display()));
     };
@@ -427,6 +472,74 @@ mod tests {
         assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None,
             "when it cannot be told where the default branch is, the result is taken");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A repository under `root` with no remote, and the worktree of task `t` with one commit of
+    /// its own on its branch.
+    fn worktree_without_remote(root: &Path) -> PathBuf {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "base"]] {
+            run(&repo, args);
+        }
+        let dir = repo.join(".claude/worktrees/t");
+        run(&repo, &["worktree", "add", "-q", "-b", "worktree-t", dir.to_str().unwrap()]);
+        run(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        dir
+    }
+
+    fn refusal_code(refusal: Option<DomainError>) -> Option<String> {
+        refusal.map(|error| error.code)
+    }
+
+    #[tokio::test]
+    async fn a_final_text_result_of_a_clean_worktree_without_a_remote_is_taken() {
+        let root = crate::test_support::Directory::new();
+        let dir = worktree_without_remote(&root);
+        let text = [DeliveryTarget::Text { text: "Report".into() }];
+        assert_eq!(refusal_code(final_refusal_in(&DomainState::new("e"), &dir, &TaskId::from("t"), &text).await), None);
+        assert_eq!(unsaved(&dir).await, Ok(None), "closing the task keeps nothing back: the branch stays");
+    }
+
+    #[tokio::test]
+    async fn a_final_result_of_a_dirty_worktree_without_a_remote_is_refused() {
+        let root = crate::test_support::Directory::new();
+        let dir = worktree_without_remote(&root);
+        std::fs::write(dir.join("notes.txt"), "draft").unwrap();
+        let text = [DeliveryTarget::Text { text: "Report".into() }];
+        let refused = final_refusal_in(&DomainState::new("e"), &dir, &TaskId::from("t"), &text).await.expect("an untracked file is refused");
+        assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
+        assert!(refused.message.contains("`notes.txt`") && !refused.message.contains("not pushed"), "{}", refused.message);
+    }
+
+    #[tokio::test]
+    async fn a_final_result_with_commits_not_pushed_to_its_remote_is_refused() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t");
+        run(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        let text = [DeliveryTarget::Text { text: "Report".into() }];
+        let refused = final_refusal_in(&DomainState::new("e"), &dir, &TaskId::from("t"), &text).await.expect("an unpushed commit is refused");
+        assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
+        assert!(refused.message.contains("1 commit(s) not pushed"), "{}", refused.message);
+    }
+
+    #[tokio::test]
+    async fn a_final_result_whose_commits_are_in_the_local_default_branch_is_taken() {
+        let root = crate::test_support::Directory::new();
+        let text = [DeliveryTarget::Text { text: "Report".into() }];
+        let state = DomainState::new("e");
+
+        let dir = worktree_without_remote(&root.join("local"));
+        run(&root.join("local/repo"), &["merge", "-q", "--ff-only", "worktree-t"]);
+        assert_eq!(refusal_code(final_refusal_in(&state, &dir, &TaskId::from("t"), &text).await), None, "no remote, already on main");
+
+        let dir = testing::task_worktree(&root.join("remote"), "t");
+        run(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        let repo = root.join("remote/repo");
+        let main = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]).await.unwrap();
+        run(&repo, &["merge", "-q", "--ff-only", "worktree-t"]);
+        assert_eq!(refusal_code(final_refusal_in(&state, &dir, &TaskId::from("t"), &text).await), None, "merged into local {main}");
+        assert_eq!(unsaved(&dir).await, Ok(None));
     }
 
     #[tokio::test]
