@@ -266,6 +266,18 @@ pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
          are told only if it did not start.", task_title(&domain, &task))}))
 }
 
+/// The account paid per use the user chose for the request, while it is still registered, on and
+/// paid per use: its tasks run there whatever the subscriptions' margin. Otherwise Alondra picks.
+fn pinned_account(home: &Path, options: &alondra_core::options::Resolved) -> Option<alondra_core::accounts::AccountId> {
+    let chosen = options.account()?;
+    let config = crate::accounts::config(home).ok()?;
+    config
+        .accounts(alondra_core::accounts::Provider::Claude)
+        .into_iter()
+        .find(|account| account.id == chosen && account.enabled && account.billing == alondra_core::accounts::AccountBilling::PayPerUse)
+        .map(|account| account.id)
+}
+
 fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
     domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
 }
@@ -316,8 +328,13 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
-    let account = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis());
-    if let Some(exhausted) = domain.live.usage_pause.current() {
+    let choices = choices(&task.request_id);
+    let pinned = choices.as_ref().and_then(|choices| pinned_account(home, &choices.options));
+    let account = match &pinned {
+        Some(pinned) => Some(pinned.clone()),
+        None => crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis()),
+    };
+    if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| pinned.is_none() || exhausted.by_user) {
         remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
         let why = if exhausted.by_user { "The user paused Claude work" } else { "No Claude account on this Mac has usage left" };
         return Err(DomainError::new("usage_exhausted", format!(
@@ -348,7 +365,6 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     };
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let request = current.requests.get(&task.request_id);
-    let choices = choices(&task.request_id);
     let requested = match &choices {
         Some(choices) => choices.options.clone(),
         None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&cwd)).as_deref(), None),

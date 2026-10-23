@@ -815,22 +815,75 @@ private func color(forTaskRow row: Row) -> Color {
 
 private struct MacViewStatusGauges: View {
     let gauges: [WireGauge]
+    @State private var opened: String?
     var body: some View {
         HStack(spacing: 12) {
             ForEach(Array(gauges.enumerated()), id: \.offset) { _, gauge in
-                HStack(spacing: 5) {
-                    Capsule().fill(.quaternary).frame(width: 28, height: 4).overlay(alignment: .leading) {
-                        Capsule().fill(color(gauge.level)).frame(width: 28 * max(0.06, min(gauge.value, 1)))
-                    }
-                    Text(gauge.text).font(.caption).monospacedDigit().foregroundStyle(gauge.level == .hot ? .red : .secondary)
+                if let parts = gauge.parts {
+                    Button { opened = gauge.id } label: { reading(gauge) }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: Binding(get: { opened == gauge.id }, set: { if !$0 { opened = nil } })) {
+                            MacGaugeParts(gauge: gauge, parts: parts)
+                        }
+                        .help(gauge.detail ?? "\(gauge.label): \(gauge.text)")
+                        .accessibilityLabel("\(gauge.label): \(gauge.text)")
+                } else {
+                    reading(gauge)
+                        .help(gauge.detail ?? "\(gauge.label): \(gauge.text)")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(gauge.label): \(gauge.text)")
                 }
-                .help(gauge.detail ?? "\(gauge.label): \(gauge.text)")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(gauge.label): \(gauge.text)")
             }
         }.padding(.horizontal, 6)
     }
-    private func color(_ level: Level) -> Color {
+    private func reading(_ gauge: WireGauge) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(.quaternary).frame(width: 28, height: 4).overlay(alignment: .leading) {
+                Capsule().fill(MacGaugeParts.color(gauge.level)).frame(width: 28 * max(0.06, min(gauge.value, 1)))
+            }
+            Text(gauge.text).font(.caption).monospacedDigit().foregroundStyle(gauge.level == .hot ? .red : .secondary)
+        }
+        .contentShape(.rect)
+    }
+}
+
+/// The Claude margin opened: one row per account with its own margin and where it comes from.
+public struct MacGaugeParts: View {
+    let gauge: WireGauge
+    let parts: [GaugePart]
+    public init(gauge: WireGauge, parts: [GaugePart]) { self.gauge = gauge; self.parts = parts }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(gauge.label).font(.headline)
+                Spacer(minLength: 16)
+                Text(gauge.text).font(.headline).monospacedDigit().foregroundStyle(gauge.level == .hot ? .red : .primary)
+            }
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(part.label).fontWeight(.medium)
+                        Spacer(minLength: 16)
+                        Capsule().fill(.quaternary).frame(width: 36, height: 4).overlay(alignment: .leading) {
+                            Capsule().fill(Self.color(part.level)).frame(width: 36 * max(0.06, min(part.value, 1)))
+                        }
+                        Text(part.text).monospacedDigit().foregroundStyle(part.level == .hot ? .red : .secondary)
+                    }
+                    if let detail = part.detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if let detail = gauge.detail {
+                Divider()
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(width: 340, alignment: .leading)
+    }
+    static func color(_ level: Level) -> Color {
         switch level { case .calm: .accentColor; case .warm: .orange; case .hot: .red }
     }
 }

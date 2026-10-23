@@ -287,11 +287,11 @@ pub(crate) fn clock_text(millis: Millis, now: Millis, spanish: bool) -> String {
 
 pub(crate) fn out_text(until: Millis, now: Millis, spanish: bool) -> String {
     let clock = clock_text(until, now, spanish);
-    if spanish { format!("Sin cuota hasta {clock}") } else { format!("Out of Claude usage until {clock}") }
+    if spanish { format!("Sin margen hasta {clock}") } else { format!("No Claude margin until {clock}") }
 }
 
 pub(crate) fn back_text(spanish: bool) -> String {
-    if spanish { "Vuelve la cuota de Claude: los nodos continúan".into() } else { "Claude usage is back: nodes are carrying on".into() }
+    if spanish { "Vuelve el margen de Claude: los nodos continúan".into() } else { "Claude has margin again: nodes are carrying on".into() }
 }
 
 /// The next local midnight after `now`.
@@ -553,10 +553,10 @@ mod tests {
     #[test]
     fn the_notice_names_the_time_in_the_users_language_and_the_day_when_it_is_not_today() {
         let now = at(7, 14, 0);
-        assert_eq!(out_text(at(7, 15, 45), now, false), "Out of Claude usage until 15:45");
-        assert_eq!(out_text(at(7, 15, 45), now, true), "Sin cuota hasta 15:45");
-        assert_eq!(out_text(at(12, 0, 0), now, false), "Out of Claude usage until Mon 00:00");
-        assert_eq!(out_text(at(12, 0, 0), now, true), "Sin cuota hasta lun 00:00");
+        assert_eq!(out_text(at(7, 15, 45), now, false), "No Claude margin until 15:45");
+        assert_eq!(out_text(at(7, 15, 45), now, true), "Sin margen hasta 15:45");
+        assert_eq!(out_text(at(12, 0, 0), now, false), "No Claude margin until Mon 00:00");
+        assert_eq!(out_text(at(12, 0, 0), now, true), "Sin margen hasta lun 00:00");
     }
 
     use crate::domain_runtime::DomainRuntime;
@@ -673,8 +673,8 @@ mod tests {
         assert_eq!(node.texts(), [RESUME_MESSAGE], "the node the limit stopped is told once");
         let told = told.0.lock().unwrap().clone();
         assert_eq!(told.len(), 2, "one when it started and one when it ended: {told:?}");
-        assert!(told[0].0.starts_with("Out of Claude usage until "), "{told:?}");
-        assert_eq!(told[1].0, "Claude usage is back: nodes are carrying on");
+        assert!(told[0].0.starts_with("No Claude margin until "), "{told:?}");
+        assert_eq!(told[1].0, "Claude has margin again: nodes are carrying on");
         std::fs::remove_dir_all(home).unwrap();
     }
 

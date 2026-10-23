@@ -1,6 +1,6 @@
 use alondra_core::views::UsageExhausted;
 
-/// The line shown across the top while Claude usage has run out.
+/// The line shown across the top while every Claude account is at its real limit: only then do launches wait.
 pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {
     if usage.paused_by_user {
         let clock = usage.until.get(11..16).unwrap_or(&usage.until);
@@ -10,23 +10,23 @@ pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {
     let (exhausted, total) = (usage.macs_exhausted, usage.macs_total);
     if total > 1 && exhausted >= total {
         trf!(
-            "All your Macs are out of Claude usage {when} · everything is paused",
-            "Todos tus Macs sin cuota de Claude {when} · todo está en pausa"
+            "No margin on any of your Macs {when} · every Claude account is at its limit",
+            "Ningún Mac tiene margen {when} · todas las cuentas de Claude están en su límite"
         )
     } else if total > 1 {
         trf!(
-            "{exhausted} of {total} Macs out of Claude usage {when} · everything is paused",
-            "{exhausted} de {total} Macs sin cuota de Claude {when} · todo está en pausa"
+            "{exhausted} of {total} Macs with no margin {when} · their Claude accounts are at their limit",
+            "{exhausted} de {total} Macs sin margen {when} · sus cuentas de Claude están en su límite"
         )
     } else if usage.scope == "this_mac" {
         trf!(
-            "Out of Claude usage on this Mac {when} · everything is paused",
-            "Sin cuota de Claude en este Mac {when} · todo está en pausa"
+            "No margin on this Mac {when} · every Claude account is at its limit",
+            "Sin margen en este Mac {when} · todas las cuentas de Claude están en su límite"
         )
     } else {
         trf!(
-            "Out of Claude usage {when} · everything is paused",
-            "Sin cuota de Claude {when} · todo está en pausa"
+            "No margin {when} · every Claude account is at its limit",
+            "Sin margen {when} · todas las cuentas de Claude están en su límite"
         )
     }
 }
@@ -101,15 +101,15 @@ mod tests {
         let now = parse_millis("2026-10-05T10:00:00.000+02:00").unwrap();
         let single = usage("this_mac", "2026-10-05T14:30:00.000+02:00", 1, 1);
         set_for_this_thread(Lang::En);
-        assert_eq!(banner_text(&single, now), "Out of Claude usage on this Mac until 14:30 · everything is paused");
+        assert_eq!(banner_text(&single, now), "No margin on this Mac until 14:30 · every Claude account is at its limit");
         set_for_this_thread(Lang::Es);
-        assert_eq!(banner_text(&single, now), "Sin cuota de Claude en este Mac hasta 14:30 · todo está en pausa");
+        assert_eq!(banner_text(&single, now), "Sin margen en este Mac hasta 14:30 · todas las cuentas de Claude están en su límite");
         let some = usage("all_macs", "2026-10-05T14:30:00.000+02:00", 2, 3);
-        assert_eq!(banner_text(&some, now), "2 de 3 Macs sin cuota de Claude hasta 14:30 · todo está en pausa");
+        assert_eq!(banner_text(&some, now), "2 de 3 Macs sin margen hasta 14:30 · sus cuentas de Claude están en su límite");
         let all = usage("all_macs", "2026-10-05T14:30:00.000+02:00", 3, 3);
-        assert_eq!(banner_text(&all, now), "Todos tus Macs sin cuota de Claude hasta 14:30 · todo está en pausa");
+        assert_eq!(banner_text(&all, now), "Ningún Mac tiene margen hasta 14:30 · todas las cuentas de Claude están en su límite");
         set_for_this_thread(Lang::En);
-        assert_eq!(banner_text(&all, now), "All your Macs are out of Claude usage until 14:30 · everything is paused");
+        assert_eq!(banner_text(&all, now), "No margin on any of your Macs until 14:30 · every Claude account is at its limit");
     }
 
     #[test]
@@ -127,6 +127,6 @@ mod tests {
         set_for_this_thread(Lang::En);
         let now = parse_millis("2026-10-05T10:00:00.000+02:00").unwrap();
         let soon = usage("this_mac", "2026-10-05T10:25:00.000+02:00", 1, 1);
-        assert_eq!(banner_text(&soon, now), "Out of Claude usage on this Mac for 25 more min · everything is paused");
+        assert_eq!(banner_text(&soon, now), "No margin on this Mac for 25 more min · every Claude account is at its limit");
     }
 }

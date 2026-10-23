@@ -1528,3 +1528,35 @@ async fn while_no_account_can_work_a_launch_waits_for_capacity_and_goes_ahead_on
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "on the account that came back");
 }
+
+/// The user also has API, paid per use, and chose it for the request: its task runs there even
+/// while every subscription is at its limit. A request left on automatic waits as before.
+#[tokio::test]
+async fn a_request_that_chose_an_account_paid_per_use_runs_there_and_only_then() {
+    let f = world();
+    with_work_account(&f);
+    std::fs::write(alondra_core::options::path_in(&f.home),
+        "[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n\n[[accounts.claude]]\nid = \"api\"\nname = \"API\"\nbilling = { kind = \"pay_per_use\" }\n").unwrap();
+    let api = f.home.join("accounts/api");
+    std::fs::create_dir_all(&api).unwrap();
+    let now = alondra_core::now_millis();
+    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
+    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
+    let file = OptionsFile::parse(&std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap()).unwrap();
+    let choices = |account: &str| Choices {
+        project: None,
+        options: file.resolve(None, &std::collections::BTreeMap::from([(alondra_core::options::ACCOUNT.to_owned(),
+            alondra_core::options::Choice::Value(account.into()))])).unwrap(),
+        issue: None, issue_text: None, attachments: vec![],
+    };
+
+    let automatic = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("auto"))).await.unwrap_err();
+    assert_eq!(automatic.code, "usage_exhausted", "Alondra never picks the account paid per use: {}", automatic.message);
+    assert!(f.sdk().starts().is_empty());
+
+    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("api"))).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(config_dir_sha256(&f), Some(sha256(api.to_str().unwrap())), "Claude runs with the API account's folder");
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("api"));
+}

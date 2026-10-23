@@ -95,14 +95,46 @@ public struct MachineDetail: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Mac").font(.display(.title3, weight: .bold))
             ForEach(gauges, id: \.id) { gauge in
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    ReadingIcon(gauge: gauge).frame(width: 22)
-                    Text(gauge.detail ?? "\(gauge.label): \(gauge.text)")
-                        .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        ReadingIcon(gauge: gauge).frame(width: 22)
+                        Text(gauge.parts == nil ? gauge.detail ?? "\(gauge.label): \(gauge.text)" : "\(gauge.label) \(gauge.text)")
+                            .fontWeight(gauge.parts == nil ? .regular : .semibold)
+                            .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let parts = gauge.parts {
+                        ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                            GaugePartRow(part: part).padding(.leading, 32)
+                        }
+                        if let detail = gauge.detail {
+                            Text(detail).font(.caption).foregroundStyle(Palette.ink.opacity(0.6))
+                                .fixedSize(horizontal: false, vertical: true).padding(.leading, 32)
+                        }
+                    }
                 }
             }
         }.font(.subheadline).padding(20).frame(minWidth: 260, alignment: .leading)
+    }
+}
+
+/// One account of the Claude margin: its name and margin, then what that margin comes from.
+private struct GaugePartRow: View {
+    let part: GaugePart
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(part.label).fontWeight(.medium)
+                Spacer(minLength: 12)
+                Text(part.text).monospacedDigit()
+                    .foregroundStyle(part.level == .hot ? Palette.rose : part.level == .warm ? Palette.dawn : Palette.ink.opacity(0.65))
+            }
+            if let detail = part.detail {
+                Text(detail).font(.caption).foregroundStyle(Palette.ink.opacity(0.6)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -185,8 +217,7 @@ private struct ReadingIcon: View {
         case "memory": ("memorychip", "memorychip.fill")
         case "cpu": ("cpu", "cpu.fill")
         case "claude_five_hours": ("hourglass", "hourglass")
-        case "claude_today": ("sun.max", "sun.max.fill")
-        case "claude_week": ("calendar", "calendar")
+        case "claude_margin": ("battery.0percent", "battery.100percent")
         default: ("gauge.with.dots.needle.67percent", "gauge.with.dots.needle.67percent")
         }
     }

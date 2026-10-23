@@ -191,6 +191,13 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
                 Some(value) => common::effort_label(value, lang).unwrap_or(fallback).into(),
             };
         }
+        if id == crate::options::ACCOUNT {
+            return match value {
+                None => t!(lang, "Account", "Cuenta").into(),
+                Some(crate::options::AUTO) => t!(lang, "Automatic", "Automática").into(),
+                Some(_) => fallback.into(),
+            };
+        }
         if client == Client::Tui { return fallback.into(); }
         match (id, value, lang) {
             ("pr", None, _) => "PRs",
@@ -212,6 +219,8 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
             ("effort", "light") => Some("Un modelo rápido y más barato para trabajo pequeño y claro"),
             ("effort", "normal") => Some("El modelo y el esfuerzo por defecto de Claude"),
             ("effort", "hard") => Some("El modelo más potente y el máximo esfuerzo"),
+            ("account", "auto") => Some("Alondra elige una cuenta de suscripción por su margen"),
+            ("account", _) => Some("De pago por uso: las tareas de esta petición trabajan con ella"),
             _ => return value.description.clone(),
         }
         .map(str::to_owned)

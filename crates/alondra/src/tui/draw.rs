@@ -24,9 +24,11 @@ const COMMENT: Color = Color::LightMagenta;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let usage = app.view_status.as_ref().and_then(|s| s.usage_exhausted.clone());
-    let [banner, head, body, foot] = Layout::vertical([
+    let accounts = if app.loaded { account_lines(app.view_status.as_ref()) } else { vec![] };
+    let [banner, head, accounts_area, body, foot] = Layout::vertical([
         Constraint::Length(u16::from(usage.is_some())),
         Constraint::Length(1),
+        Constraint::Length(accounts.len() as u16),
         Constraint::Min(3),
         Constraint::Length(foot_height(app, f.area().width)),
     ])
@@ -42,6 +44,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
     }
     draw_head(f, app, head);
+    if !accounts.is_empty() {
+        f.render_widget(Paragraph::new(accounts).alignment(ratatui::layout::Alignment::Right), accounts_area);
+    }
     let body = match app.composer.as_ref() {
         Some(c) => {
             let preview = c
@@ -461,6 +466,38 @@ fn bars(
 }
 
 const BAR_CELLS: usize = 4;
+
+/// One line per Claude account under the header, each with its own margin, while there is more
+/// than one: with a single account the header's margin is that account's.
+fn account_lines(status: Option<&alondra_core::views::Status>) -> Vec<Line<'static>> {
+    let Some(margin) = status.and_then(|status| status.gauges.iter().find(|gauge| gauge.id == "claude_margin")) else { return vec![] };
+    if margin.parts.len() < 2 {
+        return vec![];
+    }
+    margin
+        .parts
+        .iter()
+        .map(|part| {
+            let color = match part.level {
+                alondra_core::views::Level::Calm => ACCENT,
+                alondra_core::views::Level::Warm => Color::Yellow,
+                alondra_core::views::Level::Hot => Color::LightRed,
+            };
+            let filled = ((part.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
+            let mut spans = vec![
+                Span::styled(format!("{} ", part.label), Style::new().fg(SOFT)),
+                Span::styled("▰".repeat(filled), Style::new().fg(color)),
+                Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)),
+                Span::styled(format!(" {}", part.text), Style::new().fg(if part.level == alondra_core::views::Level::Hot { Color::LightRed } else { DIM })),
+            ];
+            if let Some(detail) = &part.detail {
+                spans.push(Span::styled(format!(" · {detail}"), Style::new().fg(DIM)));
+            }
+            spans.push(Span::raw(" "));
+            Line::from(spans)
+        })
+        .collect()
+}
 
 fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
     let w = area.width;
@@ -1860,18 +1897,15 @@ pub(super) fn help_lines(app: &App) -> Vec<Line<'static>> {
             "Barras de la cabecera, de izquierda a derecha"
         )),
         row(
-            tr!("week", "semana"),
+            tr!("margin", "margen"),
             tr!(
-                "Claude's weekly limit used; it turns red past 85%",
-                "límite semanal de Claude usado; en rojo pasado el 85%"
+                "room left on your Claude accounts (week, today's share, 5-hour window), one line per account below; red only when every account is at its limit and new work waits",
+                "lo que queda en tus cuentas de Claude (semana, parte de hoy, ventana de 5 h), con una línea por cuenta debajo; en rojo solo si todas están en su límite y el trabajo nuevo espera"
             ),
         ),
         row(
-            tr!("today", "hoy"),
-            tr!(
-                "today's spend / today's share of the week; red when over it (no launches without asking)",
-                "gastado hoy / lo que te toca hoy de la semana; en rojo si te pasas (no se lanzan sesiones sin preguntarte)"
-            ),
+            "5 h",
+            tr!("the 5-hour window of Claude used", "ventana de 5 horas de Claude usada"),
         ),
         row(
             "RAM",
@@ -1915,6 +1949,10 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         for gauge in &status.gauges {
             if let Some(detail) = &gauge.detail {
                 lines.push(Line::from(format!("{}: {detail}", gauge.label)).fg(DIM));
+            }
+            for part in &gauge.parts {
+                let detail = part.detail.as_deref().map(|detail| format!(" · {detail}")).unwrap_or_default();
+                lines.push(Line::from(format!("  {}: {}{detail}", part.label, part.text)).fg(DIM));
             }
         }
     }

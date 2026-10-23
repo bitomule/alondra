@@ -157,7 +157,12 @@ public struct UsageExhausted: Codable, Equatable, Sendable {
     }
 }
 public struct ViewCount: Codable, Equatable, Sendable { public let id: String; public let label: String; public let value: UInt32 }
-public struct Gauge: Codable, Equatable, Sendable { public let id: String; public let label: String; public let value: Double; public let text: String; public let detail: String?; public let level: Level }
+public struct Gauge: Codable, Equatable, Sendable {
+    public let id: String; public let label: String; public let value: Double; public let text: String; public let detail: String?; public let level: Level
+    /// What the reading is made of, listed when the gauge is opened: the Claude margin's accounts.
+    public let parts: [GaugePart]?
+}
+public struct GaugePart: Codable, Equatable, Sendable { public let label: String; public let value: Double; public let text: String; public let detail: String?; public let level: Level }
 public struct Label: Codable, Equatable, Sendable { public let text: String; public let tone: Tone }
 public struct ViewSection: Codable, Equatable, Sendable {
     public let id: String; public let title: String?; public let count: UInt32?; public let collapsed: Bool

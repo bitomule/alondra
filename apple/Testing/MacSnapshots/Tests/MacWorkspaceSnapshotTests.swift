@@ -76,6 +76,19 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    private static let margin = #"{"id":"claude_margin","label":"Claude · margin","value":0.35,"text":"35%","detail":"Room left in the week, today's share and the 5-hour window; work only waits when every account is at its limit · the week resets Monday at 02:00","level":"calm","parts":[{"label":"Principal","value":0.7,"text":"70%","detail":"week 30% · 5 h 10% · today 2/15%","level":"calm"},{"label":"Trabajo","value":0.0,"text":"0%","detail":"week 60% · 5 h 95% · today 4/8%","level":"warm"},{"label":"API","value":0.0,"text":"per use","detail":"Paid per use: only requests that choose it run on it","level":"calm"}]}"#
+    private static let margen = #"{"id":"claude_margin","label":"Claude · margen","value":0.0,"text":"0%","detail":"Todas las cuentas de Claude están en su límite: el trabajo nuevo espera","level":"hot","parts":[{"label":"Principal","value":0.0,"text":"límite","detail":"En su límite; vuelve en 2 h (14:30) · semana 100% · 5 h 40%","level":"hot"},{"label":"Trabajo","value":0.0,"text":"sin sesión","detail":"Inicia sesión en el Mac: alondra accounts login \"Trabajo\"","level":"hot"}]}"#
+
+    func test_claudeMargin_opensOneRowPerAccount() throws {
+        let gauge = try ContractCodec.decode(WireGauge.self, from: Data(Self.margin.utf8))
+        assertWindow(size: CGSize(width: 340, height: 300)) { MacGaugeParts(gauge: gauge, parts: gauge.parts ?? []) }
+    }
+
+    func test_claudeMargin_whenEveryAccountIsAtItsLimit_es() throws {
+        let gauge = try ContractCodec.decode(WireGauge.self, from: Data(Self.margen.utf8))
+        assertWindow(size: CGSize(width: 340, height: 240), spanish: true) { MacGaugeParts(gauge: gauge, parts: gauge.parts ?? []) }
+    }
+
     func test_sidebar_listsWhatWaitsForYou() throws {
         let store = try presentation(edit: { $0.selection = .viewKey("card:a98d034b-249e-4487-a89b-57de38c26372") })
         assertWindow(size: CGSize(width: 320, height: 880)) { MacServiceSidebar(presentation: store) }

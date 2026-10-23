@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vb92e3624eeab2265",
+  "version": "vdbef3ce93f759773",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -379,6 +379,10 @@
             {
               "label": "PR handling",
               "value": "Auto-merge: Alondra merges it once its checks pass"
+            },
+            {
+              "label": "Claude account",
+              "value": "Trabajo"
             }
           ]
         }

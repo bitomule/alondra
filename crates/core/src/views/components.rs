@@ -193,6 +193,19 @@ pub struct Gauge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub level: Level,
+    /// What the reading is made of, one part each, for a client to list when the gauge is opened:
+    /// the Claude margin's accounts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<GaugePart>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GaugePart {
+    pub label: String,
+    pub value: f64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub level: Level,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Label {

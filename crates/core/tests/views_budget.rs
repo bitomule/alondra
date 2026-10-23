@@ -265,6 +265,10 @@ fn real_size() -> DomainState {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: format!("Synthetic {id}"), state: AccountState::SignedIn,
         email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     }).collect();
+    let accounts: Vec<AccountId> = state.accounts.iter().map(|account| account.id.clone()).collect();
+    for (number, task) in state.tasks.values_mut().enumerate() {
+        task.account = Some(accounts[number % accounts.len()].clone());
+    }
     state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
     state.validate().expect("the synthetic domain is valid");
     loaded(state)

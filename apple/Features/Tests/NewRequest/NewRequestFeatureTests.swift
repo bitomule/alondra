@@ -119,7 +119,7 @@ final class NewRequestFeatureTests: XCTestCase {
         XCTAssertEqual(request.input.fields?["text"], .string("Polish the beta"))
         XCTAssertEqual(request.input.fields?["effort"], .string("hard"))
         XCTAssertEqual(store.state.values["effort"], .string("hard"), "the options stay for the next request")
-        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "v2587062e8cd968a9"))
+        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "vbcce706b7df9fa50"))
     }
 
     @MainActor
@@ -165,7 +165,7 @@ final class NewRequestFeatureTests: XCTestCase {
 
         XCTAssertEqual(sent.requests.map(\.commandId), [first, first], "the daemon never takes it twice")
         XCTAssertEqual(sent.requests.last?.input, sent.requests.first?.input, "nothing written or chosen is lost")
-        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "v2587062e8cd968a9"))
+        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "vbcce706b7df9fa50"))
     }
 
     @MainActor
@@ -197,7 +197,7 @@ final class NewRequestFeatureTests: XCTestCase {
 
         await gate.open()
         await store.receive(\.answered)
-        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "v2587062e8cd968a9"))
+        XCTAssertEqual(store.state.unshown.first?.phase, .applied(shown: "vbcce706b7df9fa50"))
     }
 
     @MainActor
@@ -354,7 +354,7 @@ final class NewRequestFeatureTests: XCTestCase {
         let store = try await composer()
 
         await store.send(.optionsTapped)
-        XCTAssertEqual(store.state.options?.fields.map(\.id), ["project", "pr", "effort", "issue"])
+        XCTAssertEqual(store.state.options?.fields.map(\.id), ["project", "pr", "effort", "account", "issue"])
 
         await store.send(.options(.presented(.choose("pr", "auto_merge"))))
         await store.skipReceivedActions()

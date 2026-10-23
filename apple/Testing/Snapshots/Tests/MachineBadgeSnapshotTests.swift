@@ -27,7 +27,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
         }
     }
 
-    private static let status = #"{"version":"v1","summary":"0 nodos trabajando","badge":0,"counts":[],"gauges":[{"id":"claude_week","label":"Claude semana","value":0.83,"text":"83%","detail":"El límite semanal se reinicia","level":"calm"},{"id":"claude_today","label":"Claude hoy","value":0.0,"text":"0/6%","detail":"Gastado 0% de la cuota diaria del 6%","level":"calm"},{"id":"claude_five_hours","label":"Claude 5 h","value":0.0,"text":"0%","detail":"El límite de 5 horas se reinicia","level":"calm"},{"id":"memory","label":"RAM","value":0.39,"text":"39%","level":"calm"},{"id":"cpu","label":"CPU","value":0.24,"text":"24%","level":"calm"},{"id":"disk","label":"Disco","value":0.88,"text":"58 GB libres","level":"warm"}],"orchestrator":{"text":"inactivo","tone":"neutral"}}"#
+    private static let status = #"{"version":"v1","summary":"0 nodos trabajando","badge":0,"counts":[],"gauges":[{"id":"claude_margin","label":"Claude · margen","value":0.35,"text":"35%","detail":"Lo que queda de la semana, de la parte de hoy y de la ventana de 5 h; el trabajo solo espera cuando todas las cuentas llegan a su límite · la semana se reinicia el lunes a las 02:00","level":"calm","parts":[{"label":"Principal","value":0.7,"text":"70%","detail":"semana 30% · 5 h 10% · hoy 2/15%","level":"calm"},{"label":"Trabajo","value":0.0,"text":"0%","detail":"semana 60% · 5 h 95% · hoy 4/8%","level":"warm"},{"label":"API","value":0.0,"text":"por uso","detail":"De pago por uso: solo la usan las peticiones que la eligen","level":"calm"}]},{"id":"claude_five_hours","label":"Claude 5 h","value":0.0,"text":"0%","detail":"El límite de 5 horas se reinicia","level":"calm"},{"id":"memory","label":"RAM","value":0.39,"text":"39%","level":"calm"},{"id":"cpu","label":"CPU","value":0.24,"text":"24%","level":"calm"},{"id":"disk","label":"Disco","value":0.88,"text":"58 GB libres","level":"warm"}],"orchestrator":{"text":"inactivo","tone":"neutral"}}"#
 
     private static let fullDiskStatus = status
         .replacingOccurrences(of: #""value":0.88,"text":"58 GB libres","level":"warm""#, with: #""value":0.96,"text":"16 GB libres","level":"hot""#)
@@ -81,8 +81,15 @@ final class MachineBadgeSnapshotTests: XCTestCase {
                           as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
+    private static let englishMargin = #"[{"id":"claude_margin","label":"Claude · margin","value":0.0,"text":"0%","detail":"Every Claude account is at its limit: new work waits","level":"hot","parts":[{"label":"Principal","value":0.0,"text":"limit","detail":"At its limit; back in 2 h (14:30) · week 100% · 5 h 40%","level":"hot"},{"label":"Trabajo","value":0.0,"text":"signed out","detail":"Sign in on the Mac: alondra accounts login \"Trabajo\"","level":"hot"}]},{"id":"claude_five_hours","label":"Claude 5 h","value":0.4,"text":"40%","detail":"5-hour limit resets in 2 h (14:30)","level":"calm"}]"#
+
     func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {
         let status = try ContractCodec.decode(ViewStatus.self, from: Data(Self.status.utf8))
-        assertScreen([.light]) { ScreenFrame(height: 260) { MachineDetail(gauges: status.gauges) } }
+        assertScreen([.light, .dark], language: .spanish) { ScreenFrame(height: 480) { MachineDetail(gauges: status.gauges) } }
+    }
+
+    func test_popover_listsEveryClaudeAccountWhenNoneCanWork() throws {
+        let gauges = try ContractCodec.decode([AlondraContract.Gauge].self, from: Data(Self.englishMargin.utf8))
+        assertScreen([.light, .dark]) { ScreenFrame(height: 300) { MachineDetail(gauges: gauges) } }
     }
 }

@@ -4,11 +4,11 @@
   "view": "new_request",
   "key": "new_request",
   "client": "mac",
-  "version": "vc54e6cb7db665465",
+  "version": "v4e5f122530599d01",
   "cursor": "cursor-1",
   "title": "Ask for Something New",
   "status": {
-    "version": "v8f627439edfdda19",
+    "version": "vf84c4996f0984c30",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -156,6 +156,28 @@
                     "id": "hard",
                     "label": "Hard",
                     "description": "The strongest model and the most effort"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "account",
+              "label": "Account",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Automatic",
+                    "description": "Alondra picks a subscription account by its margin"
+                  },
+                  {
+                    "id": "api",
+                    "label": "API",
+                    "description": "Paid per use: this request's tasks run on it"
                   }
                 ]
               },

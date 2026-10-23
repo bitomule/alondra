@@ -1,7 +1,7 @@
 import AlondraContract
 import SwiftUI
 
-/// What the banner says about a run-out of Claude usage, kept apart from the view so it can be tested.
+/// What the banner says while every Claude account is at its real limit, kept apart from the view so it can be tested.
 public struct UsageExhaustedWording: Equatable, Sendable {
     public enum Subject: Equatable, Sendable {
         case unspecified
@@ -47,7 +47,7 @@ public struct UsageExhaustedWording: Equatable, Sendable {
     }
 }
 
-/// One line across the top of a screen while Claude usage has run out and everything is paused.
+/// One line across the top of a screen while every Claude account is at its limit and new work waits.
 public struct UsageExhaustedBanner: View {
     private let usage: UsageExhausted
     @Environment(\.locale) private var locale
@@ -109,15 +109,15 @@ public struct UsageExhaustedBanner: View {
         let when = whenText(wording.when, now: now)
         switch wording.subject {
         case .unspecified:
-            return Text("Out of Claude usage \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("No margin \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
         case .thisMac:
-            return Text("Out of Claude usage on this Mac \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("No margin on this Mac \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
         case .someMacs(let exhausted, let total):
-            return Text("\(exhausted) of \(total) Macs out of Claude usage \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("\(exhausted) of \(total) Macs with no margin \(when) · their Claude accounts are at their limit", tableName: "AlondraDesign", bundle: #bundle)
         case .pausedByUser:
             return Text("Paused by you until tomorrow \(timeText(wording.when, now: now))", tableName: "AlondraDesign", bundle: #bundle)
         case .allMacs:
-            return Text("All your Macs are out of Claude usage \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("No margin on any of your Macs \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
         }
     }
 }

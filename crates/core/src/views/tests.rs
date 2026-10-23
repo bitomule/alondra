@@ -511,7 +511,12 @@ fn golden_fixture() -> DomainState {
     }
     if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
         task.title = "Restore the native review experience".into();
+        task.account = Some(crate::accounts::AccountId::parse("work").unwrap());
     }
+    state.accounts = golden_accounts().into_iter().map(|account| crate::accounts::AccountStatus {
+        provider: crate::accounts::Provider::Claude, id: account.id, name: account.name, state: crate::accounts::AccountState::SignedIn,
+        email: None, plan: None, billing: account.billing, sign_ins: 0,
+    }).collect();
     if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
         agent.id = agent_id.into();
         agent.name = "Alondra · iOS".into();
@@ -937,6 +942,14 @@ fn a_task_whose_node_was_closed_matches_goldens() {
     }
 }
 
+/// Principal and Trabajo on subscriptions, and API paid per use.
+fn golden_accounts() -> Vec<crate::accounts::ProviderAccount> {
+    use crate::accounts::{AccountBilling, AccountId, ProviderAccount};
+    let account = |id: &str, name: &str, billing| ProviderAccount { id: AccountId::parse(id).unwrap(), name: name.into(), enabled: true, billing };
+    vec![account("default", "Principal", AccountBilling::default()), account("work", "Trabajo", AccountBilling::default()),
+        account("api", "API", AccountBilling::PayPerUse)]
+}
+
 fn golden_live() -> LiveSnapshot {
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode {
@@ -997,12 +1010,13 @@ fn golden_live() -> LiveSnapshot {
         last_used: Some(1_759_226_280_000),
         nodes: 1,
     });
-    live.options = crate::options::OptionsFile::default().catalog(None);
+    let accounts = crate::accounts::AccountsConfig { claude: golden_accounts(), ..Default::default() };
+    live.options = crate::options::OptionsFile { accounts, ..Default::default() }.catalog(None);
     live.gauges = vec![
         Gauge { id: "memory".into(), label: "Memory".into(), value: 0.38,
-            text: "6.1 GB of 16 GB".into(), detail: None, level: Level::Calm },
+            text: "6.1 GB of 16 GB".into(), detail: None, level: Level::Calm, parts: vec![] },
         Gauge { id: "disk".into(), label: "Disk available".into(), value: 0.72,
-            text: "120 GB".into(), detail: None, level: Level::Calm },
+            text: "120 GB".into(), detail: None, level: Level::Calm, parts: vec![] },
     ];
     live
 }
@@ -3450,6 +3464,30 @@ fn a_task_detail_says_the_model_it_was_launched_with_and_who_chose_it() {
 }
 
 #[test]
+fn a_task_detail_names_the_claude_account_its_node_runs_on_once_there_are_several() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    let mut state = fixture();
+    let account = |state: &DomainState, lang| {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
+        view.sections.iter().flat_map(|section| &section.items)
+            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] })
+            .find(|fact| fact.label == "Claude account" || fact.label == "Cuenta de Claude").map(|fact| (fact.label, fact.value))
+    };
+    state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::default_account());
+    assert_eq!(account(&state, Lang::En), None, "with the one default account there is nothing to tell apart");
+    let status = |id: &str, name: &str, billing| AccountStatus { provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(),
+        state: AccountState::SignedIn, email: None, plan: None, billing, sign_ins: 0 };
+    state.accounts = vec![status("default", "Principal", AccountBilling::default()), status("work", "Trabajo", AccountBilling::default()),
+        status("api", "API", AccountBilling::PayPerUse)];
+    assert_eq!(account(&state, Lang::En), Some(("Claude account".into(), "Principal".into())));
+    state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::parse("work").unwrap());
+    assert_eq!(account(&state, Lang::Es), Some(("Cuenta de Claude".into(), "Trabajo".into())));
+    state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::parse("api").unwrap());
+    assert_eq!(account(&state, Lang::En).unwrap().1, "API · paid per use");
+    assert_eq!(account(&state, Lang::Es).unwrap().1, "API · de pago por uso");
+}
+
+#[test]
 fn task_detail_says_which_question_it_is_waiting_on() {
     let state = fixture();
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
@@ -3793,7 +3831,7 @@ fn every_builder_string_has_spanish() {
         "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
         "The simulator pass completed successfully.", "Started", "Waiting for a decision",
-        "Reading the localization catalog",
+        "Reading the localization catalog", "API",
     ];
     const FIXTURE_TEXT_PREFIXES: &[&str] = &[
         "## Beta candidate ready", "All required checks passed", "Prepare the next Alondra beta",

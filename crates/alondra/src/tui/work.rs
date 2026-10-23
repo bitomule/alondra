@@ -572,6 +572,7 @@ mod tests {
                 ("Issue", "none"),
                 ("PRs", "Review each one"),
                 ("Effort", "Auto"),
+                ("Account", "Automatic"),
             ]
             .map(|(l, v)| (l.to_owned(), v.to_owned()))
         );
@@ -675,7 +676,7 @@ mod tests {
             sent,
             json!({
                 "text": "Fix the crash", "attachments": ["att-1"], "project": "", "issue": "",
-                "pr": "review", "effort": "auto"
+                "pr": "review", "effort": "auto", "account": "auto"
             })
         );
         assert!(form.submitted("Fix the crash", &[]).get("attachments").is_none());

@@ -128,3 +128,26 @@ fn a_settings_change_moves_disables_weighs_and_removes_accounts_in_the_users_ord
     assert_eq!(chain.distribution.policy, Policy::Chain);
     assert!(config.changed(Provider::Claude, &AccountChange::Remove { account: id("nobody") }).is_err());
 }
+
+#[test]
+fn a_request_offers_automatic_or_an_account_paid_per_use_and_only_then() {
+    let api = ProviderAccount { id: AccountId::parse("api").unwrap(), name: "API".into(), enabled: true, billing: AccountBilling::PayPerUse };
+    let off = ProviderAccount { id: AccountId::parse("old-api").unwrap(), name: "Old API".into(), enabled: false, billing: AccountBilling::PayPerUse };
+    let only_subscriptions = AccountsConfig { claude: vec![work()], ..AccountsConfig::default() };
+    let file = OptionsFile::parse(&with_accounts("", &only_subscriptions).unwrap()).unwrap();
+    assert!(file.catalog(None).iter().all(|spec| spec.id != crate::options::ACCOUNT), "without an account paid per use there is nothing to choose");
+
+    let config = AccountsConfig { claude: vec![work(), api, off], ..AccountsConfig::default() };
+    let file = OptionsFile::parse(&with_accounts("", &config).unwrap()).unwrap();
+    let account = file.catalog(None).into_iter().find(|spec| spec.id == crate::options::ACCOUNT).expect("the account option");
+    let values: Vec<_> = account.values.iter().map(|value| (value.id.as_str(), value.label.as_str())).collect();
+    assert_eq!(values, [("auto", "automatic"), ("api", "API")], "subscriptions are picked by margin; an account that is off is not offered");
+    assert_eq!(account.default, crate::options::Choice::Value("auto".into()));
+
+    let automatic = file.resolve(None, &std::collections::BTreeMap::new()).unwrap();
+    assert_eq!(automatic.account(), None, "by default Alondra picks the account");
+    let chosen = std::collections::BTreeMap::from([(crate::options::ACCOUNT.to_owned(), crate::options::Choice::Value("api".into()))]);
+    assert_eq!(file.resolve(None, &chosen).unwrap().account(), Some(AccountId::parse("api").unwrap()));
+    let subscription = std::collections::BTreeMap::from([(crate::options::ACCOUNT.to_owned(), crate::options::Choice::Value("work".into()))]);
+    assert!(file.resolve(None, &subscription).is_err(), "a subscription account is never pinned from a request");
+}

@@ -534,6 +534,85 @@ pub struct Usage {
     pub over_pace: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin: Option<f64>,
+    /// Every account of the provider in the user's order, as the margin's detail lists them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountLine>,
+}
+
+impl Usage {
+    /// No account can take work: each is at its limit, signed out, off or paid per use. Only then
+    /// do launches wait; a margin of 0 from the reserve or today's slice alone holds nothing back.
+    pub fn none_can_work(&self) -> bool {
+        !self.accounts.is_empty() && !self.accounts.iter().any(|line| line.stand == AccountStand::CanWork)
+    }
+}
+
+/// Where one account stands for new work.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AccountStand {
+    CanWork,
+    /// Its session or its week ran out; `until` is when both have reset, when known.
+    AtLimit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<Millis>,
+    },
+    SignedOut,
+    Disabled,
+    /// Paid per use: only a request that chooses it runs on it.
+    PayPerUse,
+}
+
+/// One account in the margin's detail: its own margin and the windows it comes from.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AccountLine {
+    pub name: String,
+    pub stand: AccountStand,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today_spent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today_share: Option<f64>,
+}
+
+/// Every account of `provider`, in the user's order, with where it stands and its own margin.
+pub fn account_lines(provider: Provider, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Vec<AccountLine> {
+    let accounts = or_implicit(accounts);
+    accounts
+        .iter()
+        .filter(|account| account.provider == provider)
+        .map(|account| {
+            let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
+            let stand = match (&account.billing, account.state) {
+                (_, AccountState::Disabled) => AccountStand::Disabled,
+                (AccountBilling::PayPerUse, _) => AccountStand::PayPerUse,
+                (_, AccountState::SignedOut) => AccountStand::SignedOut,
+                _ if measured.is_some_and(|measured| measured.plan_exhausted(now)) => {
+                    AccountStand::AtLimit { until: measured.and_then(|measured| measured.can_work_at(now)) }
+                }
+                _ => AccountStand::CanWork,
+            };
+            let percent = |kind: WindowKind| measured.and_then(|u| u.current(&kind, now)).map(|reading| 100.0 * reading.used.fraction());
+            let pace = measured.and_then(|u| pace(u, now, today));
+            AccountLine {
+                name: account.name.clone(),
+                margin: match stand {
+                    AccountStand::Disabled | AccountStand::PayPerUse => None,
+                    _ => own_margin(account.state, measured, reserve, now, today),
+                },
+                week_percent: percent(WindowKind::Weekly),
+                five_hour_percent: percent(WindowKind::Session),
+                today_spent: pace.and_then(|pace| pace.today_spent).map(|spent| 100.0 * spent),
+                today_share: pace.and_then(|pace| pace.today_share).map(|share| 100.0 * share),
+                stand,
+            }
+        })
+        .collect()
 }
 
 pub fn summary(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Option<Usage> {
@@ -568,6 +647,7 @@ pub fn summary(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Shar
         measured_at: margins.accounts.iter().filter_map(|m| m.measured_at).max().unwrap_or_default(),
         over_pace: today_spent.zip(today_share).is_some_and(|(spent, share)| spent >= share),
         margin: margins.combined,
+        accounts: account_lines(Provider::Claude, accounts, usage, reserve, now, today),
     })
 }
 

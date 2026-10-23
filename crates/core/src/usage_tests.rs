@@ -295,6 +295,21 @@ proptest! {
     }
 
     #[test]
+    fn the_margin_says_no_account_can_work_exactly_when_launches_wait((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64, later in 0..6 * 86_400_000i64) {
+        let (reserve, now) = (Share::of(reserve), NOW + later);
+        let lines = account_lines(Provider::Claude, &accounts, &usage, reserve, now, TODAY);
+        prop_assert_eq!(lines.len(), accounts.len(), "every account has its line, in the user's order");
+        for (line, account) in lines.iter().zip(&accounts) {
+            prop_assert_eq!(&line.name, &account.name);
+            prop_assert_eq!(line.stand == AccountStand::CanWork, usable(account, &usage, now), "{:?}", line);
+            prop_assert!(line.margin.is_none_or(|margin| (0.0..=1.0).contains(&margin)));
+        }
+        let summed = Usage { accounts: lines, ..Usage::default() };
+        prop_assert_eq!(summed.none_can_work(), choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, now, TODAY).is_none(),
+            "a margin of 0 from the reserve or today's slice alone never reads as launches waiting");
+    }
+
+    #[test]
     fn when_no_account_can_work_one_can_once_its_limits_reset((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
         if choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY).is_some() {

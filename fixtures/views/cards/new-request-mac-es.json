@@ -4,11 +4,11 @@
   "view": "new_request",
   "key": "new_request",
   "client": "mac",
-  "version": "v5307569752f98a89",
+  "version": "v21354304a300465e",
   "cursor": "cursor-1",
   "title": "Pide algo nuevo",
   "status": {
-    "version": "ve1fd29addaecad00",
+    "version": "v21e817e49a9c8092",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Flota",
+        "label": "En marcha",
         "value": 0
       },
       {
@@ -156,6 +156,28 @@
                     "id": "hard",
                     "label": "A fondo",
                     "description": "El modelo más potente y el máximo esfuerzo"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "account",
+              "label": "Cuenta",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Automática",
+                    "description": "Alondra elige una cuenta de suscripción por su margen"
+                  },
+                  {
+                    "id": "api",
+                    "label": "API",
+                    "description": "De pago por uso: las tareas de esta petición trabajan con ella"
                   }
                 ]
               },

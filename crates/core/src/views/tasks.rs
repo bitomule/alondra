@@ -1183,6 +1183,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     } else if let Some(now) = running_model {
         task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value: crate::model_label::model_label(now), tone: None, link: None });
     }
+    if let Some(account) = account_text(task, context) {
+        task_options.push(Fact { label: t!(context.lang, "Claude account", "Cuenta de Claude").into(), value: account, tone: None, link: None });
+    }
     view.sections.push(common::section(
         "options",
         Some(t!(context.lang, "Options", "Opciones").into()),
@@ -1367,4 +1370,20 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
         }
     }
     Ok(view)
+}
+
+/// The account the task's node runs on, by the name the user gave it, once there is more than one
+/// to tell apart. A task admitted before accounts were recorded runs on the default one.
+fn account_text(task: &crate::domain::Task, context: &RenderContext<'_>) -> Option<String> {
+    let accounts = context.index.accounts();
+    let account = task.account.as_ref()?;
+    if accounts.len() < 2 && account.is_default() {
+        return None;
+    }
+    let status = accounts.iter().find(|status| status.id == *account);
+    let name = status.map_or_else(|| account.as_str().to_owned(), |status| status.name.clone());
+    Some(match status.map(|status| &status.billing) {
+        Some(crate::accounts::AccountBilling::PayPerUse) => tf!(context.lang, "{name} · paid per use", "{name} · de pago por uso", name = name),
+        _ => name,
+    })
 }

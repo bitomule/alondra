@@ -14,6 +14,8 @@ pub const EFFORT: &str = "effort";
 pub const REVIEW: &str = "review";
 pub const AUTO_MERGE: &str = "auto_merge";
 pub const AUTO: &str = "auto";
+/// The built-in option that pins a request's work to one account paid per use.
+pub const ACCOUNT: &str = "account";
 const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const MODEL_ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
@@ -426,7 +428,29 @@ impl OptionsFile {
     }
 
     fn specs_without_defaults(&self, project: Option<&str>) -> Vec<Spec> {
-        builtins().into_iter().chain(self.user_options(project).map(UserOption::spec)).collect()
+        let account = self.account_spec().filter(|_| !self.user_options(project).any(|o| o.id == ACCOUNT));
+        builtins().into_iter().chain(account).chain(self.user_options(project).map(UserOption::spec)).collect()
+    }
+
+    /// Automatic, or one of the accounts paid per use that are on: Alondra never picks those by
+    /// itself, so a request runs on one only when the user chooses it. Absent without any.
+    fn account_spec(&self) -> Option<Spec> {
+        let paid: Vec<_> = self
+            .accounts
+            .accounts(crate::accounts::Provider::Claude)
+            .into_iter()
+            .filter(|account| account.enabled && account.billing == crate::accounts::AccountBilling::PayPerUse)
+            .collect();
+        if paid.is_empty() {
+            return None;
+        }
+        let mut values = vec![SpecValue { id: AUTO.into(), label: "automatic".into(), description: Some("Alondra picks a subscription account by its margin".into()) }];
+        values.extend(paid.into_iter().map(|account| SpecValue {
+            id: account.id.as_str().into(),
+            label: account.name,
+            description: Some("Paid per use: this request's tasks run on it".into()),
+        }));
+        Some(Spec { id: ACCOUNT.into(), label: "Account".into(), kind: Kind::Choice, values, default: Choice::Value(AUTO.into()), builtin: true })
     }
 
     /// What a client draws for this project: built-ins first, then the user's, in file order,
@@ -609,6 +633,14 @@ impl Approach {
 }
 
 impl Resolved {
+    /// The account the user chose for the request's work; none when Alondra picks it.
+    pub fn account(&self) -> Option<crate::accounts::AccountId> {
+        self.picked.iter().find(|picked| picked.id == ACCOUNT).and_then(|picked| match &picked.choice {
+            Choice::Value(value) if value != AUTO => crate::accounts::AccountId::parse(value).ok(),
+            _ => None,
+        })
+    }
+
     /// One line for the orchestrator: what the user chose, and that Alondra writes the rules.
     pub fn summary(&self) -> String {
         let mut parts = vec![format!("project {}", self.project.as_deref().unwrap_or("not chosen (you decide)"))];

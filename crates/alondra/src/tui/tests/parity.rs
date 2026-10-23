@@ -856,7 +856,7 @@ fn new_work_sends_the_typed_text_and_the_chosen_rows_by_action_id() {
     assert_eq!(
         sent[0].1["input"],
         serde_json::json!({"fields": {
-            "text": "Fix the crash", "project": "", "issue": "", "pr": "auto_merge", "effort": "auto"
+            "text": "Fix the crash", "project": "", "issue": "", "pr": "auto_merge", "effort": "auto", "account": "auto"
         }})
     );
 }
@@ -1248,15 +1248,42 @@ fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
     let first_row: String = shown.chars().take(120).collect();
     let rest: String = shown.chars().skip(120).collect();
     assert!(
-        first_row.contains("Out of Claude usage on this Mac until 14:30 · everything is paused"),
+        first_row.contains("No margin on this Mac until 14:30 · every Claude account is at its limit"),
         "{shown}"
     );
     assert!(rest.contains(" Alondra "), "the header sits under the banner: {shown}");
 
     app.view_status = Some(status_with(production_gauges()));
     let shown = screen(&mut app, 120, 6);
-    assert!(!shown.contains("Claude usage"), "{shown}");
+    assert!(!shown.contains("No margin"), "{shown}");
     assert!(shown.chars().take(120).collect::<String>().contains(" Alondra "), "{shown}");
+}
+
+#[test]
+fn the_header_shows_the_claude_margin_and_one_line_per_account() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    let margin = |parts: serde_json::Value| serde_json::json!([
+        {"id": "claude_margin", "label": "Claude · margen", "value": 0.35, "text": "35%", "level": "calm", "parts": parts},
+        {"id": "disk", "label": "Disco", "value": 0.72, "text": "120 GB libres", "level": "calm"}
+    ]);
+    app.view_status = Some(status_with(margin(serde_json::json!([
+        {"label": "Principal", "value": 0.7, "text": "70%", "detail": "semana 30% · 5 h 10%", "level": "calm"},
+        {"label": "Trabajo", "value": 0.0, "text": "límite", "detail": "En su límite; vuelve en 2 h (14:30)", "level": "hot"}
+    ]))));
+    let shown = screen(&mut app, 140, 8);
+    let rows: Vec<String> = shown.chars().collect::<Vec<_>>().chunks(140).map(|row| row.iter().collect()).collect();
+    assert!(rows[0].contains("Claude · margen ▰▱▱▱ 35%"), "{shown}");
+    assert!(rows[1].trim_end().ends_with("Principal ▰▰▰▱ 70% · semana 30% · 5 h 10%"), "{shown}");
+    assert!(rows[2].trim_end().ends_with("Trabajo ▰▱▱▱ límite · En su límite; vuelve en 2 h (14:30)"), "{shown}");
+
+    app.view_status = Some(status_with(margin(serde_json::json!([
+        {"label": "Principal", "value": 0.35, "text": "35%", "detail": "semana 30% · 5 h 10%", "level": "calm"}
+    ]))));
+    let shown = screen(&mut app, 140, 8);
+    assert!(!shown.contains("Principal"), "one account adds no line: the header's margin is its own: {shown}");
 }
 
 #[test]

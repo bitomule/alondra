@@ -188,7 +188,7 @@ final class TasksSnapshotTests: XCTestCase {
 
     func test_taskDetail_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("task-ios")
-        assertScreen(lightAndDark) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark) { ScreenFrame(height: 1400) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_nodeClosed_offersRelaunch() throws {

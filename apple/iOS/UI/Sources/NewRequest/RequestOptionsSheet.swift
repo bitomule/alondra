@@ -16,7 +16,7 @@ public struct RequestOptionsSheet: View {
             Form {
                 if store.state.field("project") != nil { projectSection }
                 if store.state.field("issue") != nil { issueSection }
-                ForEach(["pr", "effort"], id: \.self) { id in
+                ForEach(["pr", "effort", "account"], id: \.self) { id in
                     if let field = store.state.field(id) { choiceSection(field) }
                 }
             }
