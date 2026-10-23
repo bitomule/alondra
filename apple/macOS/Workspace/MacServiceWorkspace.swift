@@ -482,10 +482,13 @@ private struct MacClarifyForm: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("What should it clarify? (optional)").font(.subheadline.weight(.semibold))
-                TextField(placeholder, text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(3...6).focused($noteFocused)
-                    .padding(10)
-                    .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
+                ZStack(alignment: .topLeading) {
+                    Text(verbatim: "\n\n").hidden().accessibilityHidden(true)
+                    TextField(placeholder, text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(6).focused($noteFocused)
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
             }
             if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
             StallNoticeView(store: store)

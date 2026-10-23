@@ -15,7 +15,7 @@ struct MacReplyField: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField(action.replyPlaceholder, text: $text, axis: .vertical)
-                .textFieldStyle(.plain).lineLimit(1...5)
+                .textFieldStyle(.plain).lineLimit(5)
                 .focused(focus)
                 .onSubmit(send)
                 .onKeyPress(.escape) { focus.wrappedValue = false; return .handled }
