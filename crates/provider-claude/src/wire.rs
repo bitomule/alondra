@@ -56,6 +56,21 @@ fn required_capabilities(execution: &Execution) -> &'static [&'static str] {
     }
 }
 
+/// The host as it was launched, by the manifest it runs with: this daemon's artifact, or for a host
+/// a daemon of another release left running, the one that daemon recorded. Its files may be gone:
+/// Homebrew removes a release once the next is installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LaunchedAs {
+    pub host_sha256: String,
+    pub executable_sha256: String,
+    pub sdk_version: String,
+}
+impl LaunchedAs {
+    pub fn this_release(artifact: &VerifiedArtifact) -> Self {
+        Self { host_sha256: artifact.artifact_sha256().into(), executable_sha256: artifact.executable_sha256().into(), sdk_version: SDK_VERSION.into() }
+    }
+}
+
 pub(super) struct ControlIdentity {
     pub profile_id: String,
     pub account_id: String,
@@ -71,6 +86,7 @@ pub(super) struct Connection {
     writer: UnixStream,
     probe: UnixStream,
     pending_attach: Attach,
+    capabilities: Vec<String>,
     commands: CommandRegistry,
     queued: VecDeque<ReceivedFrame>,
     queued_bytes: usize,
@@ -81,7 +97,7 @@ impl Connection {
     pub fn attach(
         stream: UnixStream,
         owner: &impl HostOwner,
-        artifact: &VerifiedArtifact,
+        launched: &LaunchedAs,
         control: &ControlIdentity,
         committed_cursor: u64,
         deadline: Instant,
@@ -108,7 +124,8 @@ impl Connection {
             .negotiate(&HostExpectation {
                 fence: &fence,
                 host_release: &control.host_release,
-                host_sha256: artifact.artifact_sha256(),
+                host_sha256: &launched.host_sha256,
+                sdk_version: &launched.sdk_version,
                 required_capabilities: required_capabilities(&execution),
             })
             .map_err(protocol)?;
@@ -119,7 +136,7 @@ impl Connection {
         if challenge.fence != fence
             || challenge.execution != execution
             || challenge.host_instance_id != control.host_instance_id
-            || challenge.executable_sha256 != artifact.executable_sha256()
+            || challenge.executable_sha256 != launched.executable_sha256
         {
             return Err(invalid("host challenge identity mismatch"));
         }
@@ -130,9 +147,9 @@ impl Connection {
             nonce: challenge.nonce,
             owner_generation: owner.owner_generation(),
             host_release: control.host_release.clone(),
-            host_sha256: artifact.artifact_sha256().into(),
-            executable_sha256: artifact.executable_sha256().into(),
-            sdk_version: SDK_VERSION.into(),
+            host_sha256: launched.host_sha256.clone(),
+            executable_sha256: launched.executable_sha256.clone(),
+            sdk_version: launched.sdk_version.clone(),
             proof: String::new(),
         };
         pending_attach.proof = owner_proof(&control.secret, &pending_attach).map_err(protocol)?;
@@ -152,6 +169,7 @@ impl Connection {
             writer,
             probe,
             pending_attach,
+            capabilities: hello.capabilities,
             commands: CommandRegistry::new(fence, execution).map_err(protocol)?,
             queued: VecDeque::new(),
             queued_bytes: 0,
@@ -196,6 +214,9 @@ impl Connection {
         };
         if encode(received.frame()).map_err(protocol)? != prepared.bytes() {
             return Err(invalid("prepared command encoding changed"));
+        }
+        if !self.carries(&command.action) {
+            return Ok(Handoff::RefusedBeforeOffer);
         }
         if self.commands.record(command).map_err(protocol)? == CommandStatus::Duplicate {
             return Err(invalid("command replay requires positive reconciliation"));
@@ -264,6 +285,9 @@ impl Connection {
         if encode(received.frame()).map_err(protocol)? != prepared.bytes() {
             return Err(invalid("prepared command encoding changed"));
         }
+        if !self.carries(&command.action) {
+            return Ok(Handoff::RefusedBeforeOffer);
+        }
         // A re-send is a deliberate replay, so a duplicate is expected, not a conflict.
         self.commands.record(command).map_err(protocol)?;
         write(&mut self.writer, prepared.bytes(), deadline)?;
@@ -284,6 +308,11 @@ impl Connection {
                 _ => return Err(invalid("unexpected host response after attach")),
             }
         }
+    }
+    /// Whether the host announced the capability that carries `action`. One that did not is never
+    /// sent it, as its release may not even read it: the action is refused before any offer.
+    fn carries(&self, action: &alondra_agent_protocol::Action) -> bool {
+        action.capability().is_none_or(|capability| self.capabilities.iter().any(|announced| announced == capability))
     }
     pub fn prepare(
         &self,
@@ -593,6 +622,82 @@ mod tests {
             )
         }
     }
+    struct FixtureOwner(DataEpoch);
+    impl HostOwner for FixtureOwner {
+        fn owner_generation(&self) -> u64 {
+            1
+        }
+        fn epoch(&self) -> &DataEpoch {
+            &self.0
+        }
+        fn host(&self) -> &str {
+            "host-test"
+        }
+        fn wire_execution(&self) -> Execution {
+            Execution::Task(alondra_agent_protocol::TaskExecution {
+                task_id: "task-test".into(),
+                agent_id: "agent-test".into(),
+                conversation_id: "conversation-test".into(),
+                process_instance_id: "process-test".into(),
+                generation: 7,
+            })
+        }
+    }
+    // A host of an earlier release announces the capabilities it was built with. An action it did
+    // not announce is refused before any offer, and not a byte of it reaches the host, which might
+    // not even read it.
+    #[test]
+    fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
+        let owner = FixtureOwner("epoch-test".into());
+        let control = ControlIdentity { profile_id: "default".into(), account_id: "account-test".into(), host_instance_id: "instance-test".into(), secret: [7; 32], host_release: "0.3.5".into() };
+        let launched = LaunchedAs { host_sha256: "b".repeat(64), executable_sha256: "c".repeat(64), sdk_version: SDK_VERSION.into() };
+        let (daemon, host) = UnixStream::pair().unwrap();
+        let (fence, execution) = (fence(&owner, &control), execution(&owner));
+        let hello = Frame::new(Body::Hello(alondra_agent_protocol::Hello {
+            protocol_versions: vec![alondra_agent_protocol::PROTOCOL_VERSION],
+            capabilities: ["streaming_input", "owner_attach", "commit_ack", "exact_decisions"].map(String::from).to_vec(),
+            fence: fence.clone(),
+            host_release: control.host_release.clone(),
+            host_sha256: launched.host_sha256.clone(),
+            sdk_version: launched.sdk_version.clone(),
+        }));
+        let challenge = Frame::new(Body::Challenge(alondra_agent_protocol::Challenge {
+            fence: fence.clone(),
+            execution: execution.clone(),
+            host_instance_id: control.host_instance_id.clone(),
+            nonce: "d".repeat(64),
+            executable_sha256: launched.executable_sha256.clone(),
+        }));
+        let secret = control.secret;
+        let host = std::thread::spawn(move || {
+            let mut writer = alondra_agent_protocol::FramedWriter::new(host.try_clone().unwrap());
+            let mut reader = FramedReader::new(host);
+            writer.write(&hello).unwrap();
+            writer.write(&challenge).unwrap();
+            let Some(Frame { body: Body::Attach(attach), .. }) = reader.read().unwrap() else { panic!("the owner attaches") };
+            let proof = alondra_agent_protocol::host_proof(&secret, &attach).unwrap();
+            writer.write(&Frame::new(Body::Attached(alondra_agent_protocol::Attached {
+                fence: attach.fence.clone(),
+                execution: attach.execution.clone(),
+                host_instance_id: attach.host_instance_id.clone(),
+                owner_generation: attach.owner_generation,
+                proof,
+            }))).unwrap();
+            std::iter::from_fn(|| reader.read().ok().flatten()).count()
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut connection = Connection::attach(daemon, &owner, &launched, &control, 0, deadline).unwrap();
+        let clear = connection.prepare(&owner, Command {
+            fence,
+            execution,
+            command_id: "command-test".into(),
+            deadline_ms: 123_456_789,
+            action: alondra_agent_protocol::Action::McpClearAuth { server: "linear".into() },
+        }).unwrap();
+        assert_eq!(connection.submit(&owner, &clear, deadline).unwrap(), Handoff::RefusedBeforeOffer);
+        drop(connection);
+        assert_eq!(host.join().unwrap(), 0, "the host got nothing after the attach");
+    }
     #[test]
     fn a_task_host_that_cannot_carry_decisions_is_refused_and_an_orchestrator_host_needs_none() {
         let Body::Hello(mut hello) = serde_json::from_slice::<Frame>(include_bytes!("../../agent-protocol/fixtures/hello.json")).unwrap().body else { unreachable!() };
@@ -614,6 +719,7 @@ mod tests {
             fence: &hello.fence,
             host_release: &hello.host_release,
             host_sha256: &hello.host_sha256,
+            sdk_version: &hello.sdk_version,
             required_capabilities: required_capabilities(execution),
         });
         assert!(matches!(expect(&hello, &task), Err(alondra_agent_protocol::Error::MissingCapability)));

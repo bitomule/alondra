@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES, fitObservation, fitValue, framingProblem } from './frame.js';
+import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES, fitObservation, fitValue, framingProblem, ACTION_CAPABILITIES, HOST_CAPABILITIES } from './frame.js';
 process.env.HOME = process.env.TEST_TMPDIR;
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CLAUDE_HOME;
@@ -19,6 +19,9 @@ for (const name of ['start', 'decision', 'hello', 'receipt', 'event']) {
   assert.throws(() => decode(encoded.subarray(0, -1)));
 }
 assert.equal(commandDigest(fixture('start')), JSON.parse(fixture('receipt')).body.command_sha256);
+const shared = JSON.parse(fixture('action-capabilities'));
+assert.deepEqual(Object.fromEntries(Object.entries(ACTION_CAPABILITIES).map(([action, capability]) => [action, capability ?? null])), shared, 'the host carries each action under the capability the daemon names');
+for (const capability of Object.values(ACTION_CAPABILITIES)) if (capability) assert.ok(HOST_CAPABILITIES.includes(capability), `${capability} is announced`);
 for (const name of ['integer-tokens', 'opaque-objects', 'nesting-depth', 'controls', 'decisions']) {
   const corpus = JSON.parse(fixture(name));
   for (const entry of corpus) {

@@ -74,14 +74,17 @@ impl VerifiedArtifact {
         &self.artifact_sha256
     }
 }
+/// Where a host of one execution keeps its lock and its endpoint.
 #[derive(Debug)]
-pub struct LaunchIdentity {
+pub struct HostFolder {
     state_dir: PathBuf,
     ownership_path: PathBuf,
     socket_path: PathBuf,
-    artifact: VerifiedArtifact,
 }
-impl LaunchIdentity {
+impl HostFolder {
+    fn at(state_dir: PathBuf) -> Self {
+        Self { ownership_path: state_dir.join("host.lock"), socket_path: state_dir.join("s"), state_dir }
+    }
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -90,6 +93,22 @@ impl LaunchIdentity {
     }
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+}
+#[derive(Debug)]
+pub struct LaunchIdentity {
+    folder: HostFolder,
+    artifact: VerifiedArtifact,
+}
+impl LaunchIdentity {
+    pub fn state_dir(&self) -> &Path {
+        self.folder.state_dir()
+    }
+    pub fn ownership_path(&self) -> &Path {
+        self.folder.ownership_path()
+    }
+    pub fn socket_path(&self) -> &Path {
+        self.folder.socket_path()
     }
     pub fn artifact(&self) -> &VerifiedArtifact {
         &self.artifact
@@ -165,14 +184,9 @@ impl<O> OwnedHost<O> {
     ) -> io::Result<Self> {
         private_directory(state_dir)?;
         let state_dir = state_dir.canonicalize()?;
-        let identity = LaunchIdentity {
-            ownership_path: state_dir.join("host.lock"),
-            socket_path: state_dir.join("s"),
-            state_dir,
-            artifact,
-        };
+        let identity = LaunchIdentity { folder: HostFolder::at(state_dir), artifact };
         use std::os::unix::ffi::OsStrExt;
-        if identity.socket_path.as_os_str().as_bytes().len() > 103 {
+        if identity.socket_path().as_os_str().as_bytes().len() > 103 {
             return Err(refused("owned Unix endpoint path is too long"));
         }
         let mut file = OpenOptions::new()
@@ -182,7 +196,7 @@ impl<O> OwnedHost<O> {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&identity.ownership_path)?;
+            .open(identity.ownership_path())?;
         let metadata = file.metadata()?;
         if !metadata.is_file()
             || metadata.nlink() != 1
@@ -194,7 +208,7 @@ impl<O> OwnedHost<O> {
         file.try_lock()
             .map_err(|error| io::Error::other(format!("owned host lock unavailable: {error}")))?;
         let metadata = file.metadata()?;
-        let named = fs::symlink_metadata(&identity.ownership_path)?;
+        let named = fs::symlink_metadata(identity.ownership_path())?;
         if named.is_symlink() || (named.dev(), named.ino()) != (metadata.dev(), metadata.ino()) {
             return Err(refused("owned lock inode changed before handoff"));
         }
@@ -352,7 +366,7 @@ impl<O> OwnedHost<O> {
         }
     }
     fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
-        connect_identity(&self.identity, self.lock_identity, deadline)
+        connect_identity(&self.identity.folder, self.lock_identity, deadline)
     }
     /// The host's exit, observed without reaping it, so its process group stays reserved.
     pub fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -557,26 +571,22 @@ impl OwnedHost<OwnerGrant> {
 /// It conveys no authenticated peer state until the concrete adapter verifies mutual proof.
 pub struct AdoptedHost {
     owner: OwnerGrant,
-    identity: LaunchIdentity,
+    identity: HostFolder,
     lock_identity: (u64, u64),
     /// The process this daemon reached at the host's endpoint, by PID and start time.
     peer: Arc<Mutex<Option<alondra_process_group::Member>>>,
 }
 impl AdoptedHost {
+    /// Reads the bootstrap a host running in `state_dir` was launched with and lets `inspect` check
+    /// it. Nothing of the host's release is read from disk: the host may run a release that is no
+    /// longer installed, and only its bootstrap says what it runs.
     pub fn adopt<T>(
         owner: OwnerGrant,
-        artifact: VerifiedArtifact,
         state_dir: &Path,
-        inspect: impl FnOnce(&OwnerGrant, &LaunchIdentity, &[u8]) -> io::Result<T>,
+        inspect: impl FnOnce(&OwnerGrant, &HostFolder, &[u8]) -> io::Result<T>,
     ) -> io::Result<(Self, T)> {
         private_directory(state_dir)?;
-        let identity = LaunchIdentity {
-            state_dir: state_dir.to_path_buf(),
-            ownership_path: state_dir.join("host.lock"),
-            socket_path: state_dir.join("s"),
-            artifact,
-        };
-        identity.artifact.revalidate()?;
+        let identity = HostFolder::at(state_dir.to_path_buf());
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -635,7 +645,7 @@ impl AdoptedHost {
     pub fn owner(&self) -> &OwnerGrant {
         &self.owner
     }
-    pub fn identity(&self) -> &LaunchIdentity {
+    pub fn identity(&self) -> &HostFolder {
         &self.identity
     }
     pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
@@ -797,7 +807,7 @@ impl EndedHost {
     }
 }
 fn connect_identity(
-    identity: &LaunchIdentity,
+    identity: &HostFolder,
     expected_lock: (u64, u64),
     deadline: Instant,
 ) -> io::Result<UnixStream> {

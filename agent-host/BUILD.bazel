@@ -76,6 +76,7 @@ js_test(
     data = [
         ":host_lib",
         ":node_modules/zod",
+        "//crates/agent-protocol:fixtures/action-capabilities.json",
         "//crates/agent-protocol:fixtures/controls.json",
         "//crates/agent-protocol:fixtures/decision.json",
         "//crates/agent-protocol:fixtures/decisions.json",

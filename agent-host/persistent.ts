@@ -2,20 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
-import { commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, MAX_MCP_URL_BYTES, MAX_SIGN_IN_URL_BYTES, PROTOCOL_VERSION, type Action, type ControlResult, type Frame, type McpServer, type SignIn } from './frame.js';
+import { ACTION_CAPABILITIES, commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, MAX_MCP_URL_BYTES, MAX_SIGN_IN_URL_BYTES, PROTOCOL_VERSION, HOST_CAPABILITIES, type Capability, type ControlResult, type Frame, type McpServer, type SignIn } from './frame.js';
 import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { Session, type Observation } from './session.js';
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
-export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in', 'mcp_clear_auth'] as const;
-export type Capability = typeof HOST_CAPABILITIES[number];
+export { HOST_CAPABILITIES, type Capability } from './frame.js';
 type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
-const REQUIRED: Record<Action['type'], Capability | undefined> = {
-  start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', force_stop: 'force_stop', close: undefined,
-  set_model: 'set_model', set_permission_mode: 'set_permission_mode', mcp_status: 'mcp_status',
-  mcp_reconnect: 'mcp_reconnect', mcp_authenticate: 'mcp_sign_in', mcp_clear_auth: 'mcp_clear_auth',
-};
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
 function bounded(value: unknown): string | undefined {
@@ -185,7 +179,7 @@ export class PersistentHost {
     if (this.config.orchestrator && command.action.type !== 'start' && command.action.type !== 'interrupt' && command.action.type !== 'close') {
       this.receipt(record, { status: 'rejected', code: 'single_turn', message: 'An orchestrator batch is one turn: a later input waits for the next batch' }); return;
     }
-    const required = REQUIRED[command.action.type];
+    const required = ACTION_CAPABILITIES[command.action.type];
     if (required && !this.capabilities.has(required)) {
       this.receipt(record, { status: 'rejected', code: 'unsupported', message: `This host does not support ${command.action.type}` }); return;
     }

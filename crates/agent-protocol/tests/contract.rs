@@ -289,6 +289,7 @@ fn handshake_requires_owned_host_sdk_version_and_every_capability() {
         fence: &expected_fence,
         host_release: "fixture-release",
         host_sha256: &"a".repeat(64),
+        sdk_version: SDK_VERSION,
         required_capabilities: &required,
     };
     assert_eq!(hello.negotiate(&expected).unwrap(), PROTOCOL_VERSION);
@@ -1666,4 +1667,96 @@ fn an_answer_names_its_request_and_only_answers_its_kind() {
     let Observation::DecisionSettled { epoch, .. } = &mut settled.observation else { unreachable!() };
     *epoch = MAX_SAFE_INTEGER + 1;
     assert!(settled.validate().is_err());
+}
+
+const ACTION_CAPABILITIES: &str = include_str!("../fixtures/action-capabilities.json");
+
+/// One of each action, by an exhaustive match: a new action does not compile until it is here.
+fn every_action() -> Vec<Action> {
+    let server = || "fixture-server".to_owned();
+    let actions = vec![
+        command().action,
+        Action::Offer { input_id: MessageUuid::new("00000000-0000-4000-8000-000000000002").unwrap(), prompt: "next".into() },
+        match frame(DECISION).body {
+            Body::Command(command) => command.action,
+            _ => panic!("fixture decision"),
+        },
+        Action::Close,
+        Action::Interrupt,
+        Action::ForceStop,
+        Action::SetModel { model: "fixture-model".into() },
+        Action::SetPermissionMode { mode: PermissionMode::Default },
+        Action::McpStatus,
+        Action::McpReconnect { server: server() },
+        Action::McpAuthenticate { server: server() },
+        Action::McpClearAuth { server: server() },
+    ];
+    for action in &actions {
+        match action {
+            Action::Start { .. } | Action::Offer { .. } | Action::Respond { .. } | Action::Close | Action::Interrupt | Action::ForceStop
+            | Action::SetModel { .. } | Action::SetPermissionMode { .. } | Action::McpStatus | Action::McpReconnect { .. }
+            | Action::McpAuthenticate { .. } | Action::McpClearAuth { .. } => {}
+        }
+    }
+    actions
+}
+
+#[test]
+fn every_action_names_the_capability_the_host_carries_it_under() {
+    let shared: serde_json::Map<String, Value> = serde_json::from_str(ACTION_CAPABILITIES).unwrap();
+    let actions = every_action();
+    let named: std::collections::BTreeSet<String> = actions.iter().map(|action| serde_json::to_value(action).unwrap()["type"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(named, shared.keys().cloned().collect(), "every action, and only those, is in the capability map the host shares");
+    for action in &actions {
+        let name = serde_json::to_value(action).unwrap()["type"].as_str().unwrap().to_owned();
+        assert_eq!(action.capability().map(Value::from).unwrap_or(Value::Null), shared[&name], "{name}");
+    }
+}
+
+/// What every host of protocol 1 reads: the actions it was born with. Any other action is one a
+/// host of an earlier release may not know, so it is carried by a capability of its own and an
+/// owner never sends it to a host that did not announce it.
+#[test]
+fn an_action_added_after_the_protocol_version_is_carried_by_a_capability_of_its_own() {
+    let base = ["streaming_input", "exact_decisions"];
+    let born_with: std::collections::BTreeSet<&str> = every_action()
+        .iter()
+        .filter(|action| action.capability().is_none_or(|capability| base.contains(&capability)))
+        .map(|action| match action {
+            Action::Start { .. } => "start",
+            Action::Offer { .. } => "offer",
+            Action::Respond { .. } => "respond",
+            Action::Close => "close",
+            _ => "a later action",
+        })
+        .collect();
+    assert_eq!(born_with, ["close", "offer", "respond", "start"].into_iter().collect());
+}
+
+#[test]
+fn a_host_of_another_release_is_expected_as_it_was_launched_and_only_with_an_sdk_this_daemon_reads() {
+    let Body::Hello(mut hello) = frame(HELLO).body else { panic!("fixture hello") };
+    hello.host_release = "0.3.4".into();
+    hello.host_sha256 = "c".repeat(64);
+    let fence = hello.fence.clone();
+    let required = ["streaming_input", "exact_decisions"];
+    let launched_as = HostExpectation { fence: &fence, host_release: "0.3.4", host_sha256: &"c".repeat(64), sdk_version: SDK_VERSION, required_capabilities: &required };
+    assert_eq!(hello.negotiate(&launched_as).unwrap(), PROTOCOL_VERSION);
+    hello.sdk_version = "0.2.999".into();
+    let unknown_sdk = HostExpectation { sdk_version: "0.2.999", ..launched_as };
+    assert!(matches!(hello.negotiate(&unknown_sdk), Err(Error::HostMismatch)), "an SDK this daemon does not read is no host it adopts");
+}
+
+#[test]
+fn a_live_host_is_adopted_from_the_oldest_adoptable_release_on_and_only_with_an_sdk_this_daemon_reads() {
+    assert_eq!(refuses_adoption(OLDEST_ADOPTABLE_HOST_RELEASE, SDK_VERSION), None);
+    assert_eq!(refuses_adoption("0.3.10", SDK_VERSION), None, "releases compare by number, not as text");
+    assert_eq!(refuses_adoption("1.0.0", SDK_VERSION), None);
+    for older in ["0.3.4", "0.2.99"] {
+        assert!(refuses_adoption(older, SDK_VERSION).is_some_and(|why| why.contains(older)), "{older}");
+    }
+    for unreadable in ["", "0.3", "0.3.5.1", "0.3.x", "0.3.5-beta"] {
+        assert!(refuses_adoption(unreadable, SDK_VERSION).is_some(), "{unreadable:?}");
+    }
+    assert!(refuses_adoption("0.3.9", "0.2.999").is_some_and(|why| why.contains("0.2.999")));
 }

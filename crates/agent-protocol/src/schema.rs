@@ -1,4 +1,4 @@
-use crate::{Error, MAX_FRAME_BYTES, MAX_SAFE_INTEGER, PROTOCOL_VERSION, SDK_VERSION};
+use crate::{ADOPTABLE_SDK_VERSIONS, Error, MAX_FRAME_BYTES, MAX_SAFE_INTEGER, PROTOCOL_VERSION};
 use alondra_foundation::{AgentId, CommandId, DataEpoch, MessageUuid, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -126,11 +126,13 @@ pub struct Acknowledge {
     pub cursor: u64,
 }
 
-/// Expectations come from the owned host manifest, never from the peer's hello.
+/// Expectations come from the owned host manifest, never from the peer's hello: the one this daemon
+/// launched the host with, or the one an adopted host was launched with.
 pub struct HostExpectation<'a> {
     pub fence: &'a Fence,
     pub host_release: &'a str,
     pub host_sha256: &'a str,
+    pub sdk_version: &'a str,
     pub required_capabilities: &'a [&'a str],
 }
 
@@ -142,7 +144,8 @@ impl Hello {
         }
         if self.host_release != expected.host_release
             || self.host_sha256 != expected.host_sha256
-            || self.sdk_version != SDK_VERSION
+            || self.sdk_version != expected.sdk_version
+            || !ADOPTABLE_SDK_VERSIONS.contains(&self.sdk_version.as_str())
         {
             return Err(Error::HostMismatch);
         }
@@ -241,6 +244,27 @@ pub enum Action {
     McpClearAuth {
         server: String,
     },
+}
+
+impl Action {
+    /// The capability a host announces in its hello when it carries this action. An owner never
+    /// sends an action its host did not announce: a host of an earlier release cannot even read
+    /// one it does not know, so every action added after the protocol's version names its own.
+    pub fn capability(&self) -> Option<&'static str> {
+        match self {
+            Self::Start { .. } | Self::Offer { .. } => Some("streaming_input"),
+            Self::Respond { .. } => Some("exact_decisions"),
+            Self::Close => None,
+            Self::Interrupt => Some("interrupt"),
+            Self::ForceStop => Some("force_stop"),
+            Self::SetModel { .. } => Some("set_model"),
+            Self::SetPermissionMode { .. } => Some("set_permission_mode"),
+            Self::McpStatus => Some("mcp_status"),
+            Self::McpReconnect { .. } => Some("mcp_reconnect"),
+            Self::McpAuthenticate { .. } => Some("mcp_sign_in"),
+            Self::McpClearAuth { .. } => Some("mcp_clear_auth"),
+        }
+    }
 }
 
 /// The only permission modes Alondra can ask for: none of them grants a permission by itself.

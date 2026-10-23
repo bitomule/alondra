@@ -1,0 +1,1 @@
+{"start":"streaming_input","offer":"streaming_input","respond":"exact_decisions","close":null,"interrupt":"interrupt","force_stop":"force_stop","set_model":"set_model","set_permission_mode":"set_permission_mode","mcp_status":"mcp_status","mcp_reconnect":"mcp_reconnect","mcp_authenticate":"mcp_sign_in","mcp_clear_auth":"mcp_clear_auth"}

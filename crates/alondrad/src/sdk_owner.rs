@@ -168,6 +168,9 @@ pub(crate) struct Driver {
     owner_failed: bool,
     /// The Claude session the host last said it runs, so the log names each one once.
     claude_session: Option<String>,
+    /// The node rests on a host a daemon of another release launched: a host of this release that
+    /// resumes the same session takes its place.
+    moves_to_this_release: bool,
     #[cfg(test)]
     pub(crate) fail_next_step: bool,
 }
@@ -402,9 +405,10 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
     take_host(domain, backend, task, plugin, relaunch, true)
 }
 
-/// A live host that refuses its adoption (its owner's socket is gone, it runs another release's
-/// artifact, its bootstrap no longer matches) can never be reached again: with `end_refused`, it is
-/// ended by the lock it holds and the execution is taken again, now with a host that ended.
+/// A live host that refuses its adoption (its owner's socket is gone, it runs a release this one
+/// cannot carry on with, its bootstrap no longer matches) can never be reached again: with
+/// `end_refused`, it is ended by the lock it holds and the execution is taken again, now with a
+/// host that ended. A live host of a release this one can carry on with is adopted as it runs.
 fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool) -> Result<Option<Driver>, Failed> {
     let backend = &backend.for_start().map_err(|error| Failed(format!("{error:#}")))?;
     let state = domain.state().map_err(|error| Failed(format!("reading the domain: {error:#}")))?;
@@ -454,6 +458,9 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed(format!("its host refused to be taken over and did not stop: {error}")))?;
             return take_host(domain, backend, task, plugin, relaunch, false);
+        }
+        if worker.runs_another_release() {
+            log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
         driver.log_host("was adopted");
@@ -732,7 +739,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: ClaudeWorker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, claude_session: None, #[cfg(test)] fail_next_step: false }
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, claude_session: None, moves_to_this_release: false, #[cfg(test)] fail_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -914,6 +921,16 @@ impl Driver {
             || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
     }
 
+    /// Whether the node rests on a host a daemon of another release left running: no turn, no
+    /// work of Claude's own, no input, answer or event of the host on its way. Nothing runs in it,
+    /// so a host of this release can take its place before the node is told anything else.
+    fn rests_on_another_release(&mut self) -> Result<bool, Failed> {
+        if !self.worker.runs_another_release() || self.expects_host()? {
+            return Ok(false);
+        }
+        Ok(!self.worker.readable(Duration::ZERO).unwrap_or(true))
+    }
+
     /// One step: send a waiting control first, then a waiting dispatch unless a pause holds it,
     /// else read the host when the lifecycle waits for it or the host has something, else wait a
     /// moment for what the store issues for this task.
@@ -931,6 +948,10 @@ impl Driver {
             return Err(Failed("a step of the owner failed".into()));
         }
         self.sealed();
+        if self.rests_on_another_release()? {
+            self.moves_to_this_release = true;
+            return Ok(());
+        }
         if let Some(permit) = self.controls.pop_front() {
             return self.control(permit);
         }
@@ -1053,7 +1074,7 @@ impl Driver {
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed) && !self.replacement
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && !self.replacement
     }
 }
 
@@ -1155,7 +1176,7 @@ impl Owner {
                 let told = || flag.load(Ordering::SeqCst);
                 let mut lost_because = None;
                 loop {
-                    while !told() {
+                    while !told() && !driver.moves_to_this_release {
                         if let Err(error) = driver.step(&told) {
                             // Told to stop, the owner ended its host itself: what the host's end
                             // breaks in the step it was reading is that end, not a failure.
@@ -1175,11 +1196,18 @@ impl Owner {
                     };
                     let task = driver.task.clone();
                     let plugin = crate::plugins::node_in(driver.domain.home());
+                    let moved = driver.moves_to_this_release;
+                    let controls = std::mem::take(&mut driver.controls);
                     match driver.replace_ended_host(&backend, plugin.as_deref()) {
-                        Ok(next) => {
+                        Ok(mut next) => {
                             *current.lock().expect("host stop poisoned") = next.worker.stopper();
+                            if moved {
+                                next.controls.extend(controls);
+                                log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");
+                            } else {
+                                log!("the SDK host of {task} ended under this daemon: a host that resumes the same Claude session took its place");
+                            }
                             driver = next;
-                            log!("the SDK host of {task} ended under this daemon: a host that resumes the same Claude session took its place");
                         }
                         Err(Failed(why)) => {
                             ending.store(true, Ordering::SeqCst);

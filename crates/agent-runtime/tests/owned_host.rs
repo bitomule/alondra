@@ -120,7 +120,7 @@ fn retained_bootstrap_and_live_lock_never_authorize_a_replacement_host() {
     );
     let owner = support::owner(&directory, 2);
     let (adopted, retained) =
-        AdoptedHost::adopt(owner, artifact(), &directory, |_, _, material| {
+        AdoptedHost::adopt(owner, &directory, |_, _, material| {
             Ok(material.to_vec())
         })
         .unwrap();
@@ -347,7 +347,6 @@ fn actual_host_survives_only_its_owned_fake_daemon_group_death() {
     drop(contender);
     let (adopted, retained) = AdoptedHost::adopt(
         support::owner(&directory, 1),
-        artifact(),
         &directory,
         |_, _, material| Ok(material.to_vec()),
     )
@@ -445,7 +444,7 @@ fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds()
         .expect("the descendant runs in the host's process group");
     assert_eq!(group, leader, "the host leads its own group");
     fs::remove_file(directory.join("s")).unwrap();
-    let (adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), artifact(), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
+    let (adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
     assert!(
         adopted.connect(Instant::now() + Duration::from_secs(10)).is_err(),
         "with its owner's socket gone no owner reaches the host"

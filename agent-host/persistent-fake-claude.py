@@ -211,6 +211,42 @@ def own_turn_ended():
     consume(queued)
     result(queued)
 
+# Like the native Claude 2.1.300 with a Bash command it left running in the background: a real
+# process in the host's process group, whose PID is kept next to the capture. The command ends once
+# the test writes a line to the FIFO beside it; its notification wakes a turn of Claude's own,
+# which takes it up and ends, and the node rests.
+def background_command(message):
+    global serial
+    release = capture + '.release'
+    if not os.path.exists(release):
+        os.mkfifo(release)
+    command = subprocess.Popen(['/bin/sh', '-c', 'read line < "$1"', 'sh', release], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    with open(capture + '.background', 'w') as stream:
+        stream.write(str(command.pid))
+        stream.flush()
+        os.fsync(stream.fileno())
+    consume(message, dict(type='tool_use', id='toolu_fixture_background', name='Bash', input=dict(command='read line < release', run_in_background=True)))
+    serial += 1
+    send(dict(type='system', subtype='task_started', task_id='fixture-command', tool_use_id='toolu_fixture_background', run_id='run-fixture-command',
+              description='read line < release', task_type='local_bash', is_backgrounded=True, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+    result(message)
+    def ended():
+        global serial
+        status = 'completed' if command.wait() == 0 else 'failed'
+        serial += 1
+        send(dict(type='system', subtype='task_notification', task_id='fixture-command', tool_use_id='toolu_fixture_background', run_id='run-fixture-command', status=status,
+                  output_file='fixture-output', summary='read line < release', uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+        serial += 1
+        send(dict(type='assistant', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
+                  message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant', model='fixture',
+                               content=[dict(type='text', text='The command ended')], stop_reason=None, stop_sequence=None, usage=SMALL_USAGE)))
+        serial += 1
+        send(dict(type='result', subtype='success', is_error=False, session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+                  duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
+                  result='The command ended', terminal_reason='completed', origin=dict(kind='task-notification', producer='session-task', runId='run-fixture-command')))
+    import threading
+    threading.Thread(target=ended, daemon=True).start()
+
 ALONDRA_TOOL = 'mcp__plugin_alondra_alondra__ask'
 # Claude Code names a plugin's MCP server `plugin:<plugin>:<server>`; its tools `mcp__plugin_<plugin>_<server>__<tool>`.
 ALONDRA_SERVER = 'plugin:alondra:alondra'
@@ -470,6 +506,8 @@ for raw in sys.stdin:
                       description='bazel test //app:snapshots', task_type='local_bash', is_backgrounded=True,
                       uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
             result(message)
+        elif text.endswith('background-command'):
+            background_command(message)
         elif text.startswith('[From ') and len(pending) > 1:
             # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is
             # taken into that same turn, which then ends.

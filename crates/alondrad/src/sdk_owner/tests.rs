@@ -358,7 +358,11 @@ impl Slice {
 
     /// Launches the task told `prompt`, on a binding that permits `capabilities`.
     fn launch_told(&self, prompt: &str, capabilities: BTreeSet<Capability>) -> Driver {
-        start_bound(Arc::clone(&self.domain), &self.backend, Launch {
+        self.launch_with_backend(&self.backend, prompt, capabilities)
+    }
+
+    fn launch_with_backend(&self, backend: &SdkBackend, prompt: &str, capabilities: BTreeSet<Capability>) -> Driver {
+        start_bound(Arc::clone(&self.domain), backend, Launch {
             task: TASK.into(),
             name: "Release notes".into(),
             directory: self.worktree.to_str().unwrap().into(),
@@ -3534,4 +3538,141 @@ async fn a_host_that_dies_while_its_task_is_open_is_a_failure_of_its_owner() {
     changed.wait_for(|_| open_card(&reader, HOST_LOST_PREFIX).is_some()).await.unwrap();
     let failure = failures.try_recv().unwrap();
     assert!(failure.starts_with("the SDK host closed") || failure.starts_with("the connection to the SDK host failed"), "{failure}");
+}
+
+impl Slice {
+    /// The backend a daemon of the release before ran: the same host with other bytes, as the host
+    /// of every release is, kept apart from this release's.
+    fn release_before(&self) -> SdkBackend {
+        use std::io::Write;
+        let host = self._home.join("alondra-host-before");
+        std::fs::copy(&self.backend.host, &host).unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&host).unwrap().write_all(b"\n// the release before\n").unwrap();
+        let sha256 = backend::digest(&host).unwrap();
+        assert_ne!(sha256, self.backend.host_sha256);
+        SdkBackend { node: host.clone(), node_sha256: sha256.clone(), host, host_sha256: sha256, ..self.backend.clone() }
+    }
+
+    /// The command Claude left running in the background (`background-command`).
+    fn background_command(&self) -> alondra_process_group::Member {
+        let pid: i32 = std::fs::read_to_string(format!("{}.background", self.capture.display())).unwrap().parse().unwrap();
+        alondra_process_group::members(alondra_process_group::group(pid).unwrap().unwrap()).unwrap()
+            .into_iter().find(|member| member.pid == pid).expect("the background command runs")
+    }
+
+    /// Ends the command Claude left running in the background.
+    fn release_background_command(&self) {
+        std::fs::write(format!("{}.release", self.capture.display()), "done\n").unwrap();
+    }
+
+    /// The cards of the task that are not how a turn ended, open or not.
+    fn other_cards(domain: &DomainRuntime) -> Vec<String> {
+        domain.read().state().interactions.keys()
+            .filter(|card| card.0.contains(TASK) && !card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
+            .map(|card| card.0.clone())
+            .collect()
+    }
+}
+
+// Production, 2026-10-22 20:46: daemon 0.3.5 refused every live host 0.3.4 had launched, because
+// its executable was not its own, and ended each with its process group: a background bazel test
+// died with exit 143. A daemon of the next release adopts the host of the release before as it
+// runs, so the command Claude left running goes on; once the command ended and Claude took up its
+// notification, the node rests, and a host of this release that resumes the same session takes the
+// old one's place, with no card. What the user says next reaches that session.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before_and_moves_the_node_once_it_rests() {
+    let slice = Slice::new();
+    let before = slice.release_before();
+    let mut driver = slice.launch_with_backend(&before, "background-command", capabilities());
+    while lifecycle(&slice.domain).activity() != ActivityView::OwnWork {
+        driver.observe().unwrap();
+    }
+    let command = slice.background_command();
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let old_host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    // The daemon upgrades: it exits and leaves its hosts running for the next one.
+    drop(driver);
+    let upgraded = slice.restart();
+    upgraded.enable_sdk(slice.backend.clone());
+    let (_, adopted) = take_all(&upgraded, &slice.backend).pop().expect("the start takes the execution");
+    let adopted = adopted.unwrap_or_else(|Failed(why)| panic!("the execution was not taken over: {why}"));
+    assert!(alondra_process_group::alive(&command).unwrap(), "the background command survived the upgrade");
+    assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
+    assert_eq!(slice.starts().len(), 1, "no Claude started again");
+    let mut changed = upgraded.subscribe();
+    let owner = Owner::spawn(adopted);
+    slice.release_background_command();
+    let reader = Arc::clone(&upgraded);
+    changed.wait_for(|_| lifecycle(&reader).activity() == ActivityView::Resting).await.unwrap();
+    let rested = Slice::read_cards(&upgraded).len();
+    carry_on(&upgraded, "Add the tests first");
+    changed.wait_for(|_| Slice::read_cards(&reader).len() > rested).await.unwrap();
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "one more Claude started, on this release's host: {starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "it resumed the same session");
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "the new host's Claude got only what the user said, nothing about a cut: {prompts:?}");
+    assert!(prompts[1].ends_with("Add the tests first") && !prompts[1].contains("cut off"), "nothing about a cut: {prompts:?}");
+    let left: Vec<String> = old_host.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+    assert!(left.is_empty(), "the host of the release before is gone: {left:?}");
+    assert_eq!(Slice::other_cards(&upgraded), Vec::<String>::new(), "moving the node asked the user nothing");
+    upgraded.add_sdk_owner(owner);
+    upgraded.stop_sdk_owners();
+}
+
+// The same upgrade, with the daemon gone right after it stopped the host of the release before
+// and before a host of this release took its place: the next start finds the host ended and puts
+// one of this release that resumes the session in its place, and nothing is lost or asked.
+#[test]
+fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_next_start() {
+    let slice = Slice::new();
+    let before = slice.release_before();
+    let mut driver = slice.launch_with_backend(&before, "Write the release notes", capabilities());
+    slice.settle(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    drop(driver);
+    let upgraded = slice.restart();
+    let mut adopted = slice.take_over(&upgraded);
+    assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
+    while !adopted.moves_to_this_release {
+        adopted.step(&|| false).unwrap();
+    }
+    adopted.stop().unwrap();
+    drop(adopted);
+    let started = slice.restart();
+    let mut taken = slice.take_over(&started);
+    assert!(!taken.worker.runs_another_release(), "the next start launched a host of this release");
+    carry_on(&started, "Add the tests first");
+    taken.step(&|| false).unwrap();
+    slice.settle(&mut taken);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(!prompts[1].contains("cut off"), "its first prompt is what the user said, nothing about a cut: {prompts:?}");
+    assert_eq!(Slice::other_cards(&started), Vec::<String>::new(), "nothing was asked");
+    taken.stop().unwrap();
+}
+
+// A live host this release cannot carry on with (here, one of a release older than the oldest it
+// adopts) is ended and replaced by one that resumes the session, as every host was before.
+#[test]
+fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_before() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let lock = slice.backend.state_root.join(&driver.agent().0).join("host.lock");
+    drop(driver);
+    let mut bootstrap: serde_json::Value = serde_json::from_slice(&std::fs::read(&lock).unwrap()).unwrap();
+    bootstrap["manifest"]["host_release"] = "0.3.4".into();
+    std::fs::write(&lock, serde_json::to_vec(&bootstrap).unwrap()).unwrap();
+    let restarted = slice.restart();
+    let replaced = slice.take_over(&restarted);
+    assert!(!replaced.worker.runs_another_release());
+    assert_replaced(&slice, &restarted, replaced, &session, &processes);
 }

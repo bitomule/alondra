@@ -215,6 +215,149 @@ class HandoverCaseTests(unittest.TestCase):
         self.assertTrue(u.has_sdk_backend('1.0.0'))
 
 
+class UpgradeCaseTests(Fixture):
+    def test_a_release_with_the_agent_sdk_leaves_hosts_to_keep_and_one_before_it_claude_bg_nodes_to_move(self):
+        self.assertEqual(u.sdk_cases('0.2.91'), (u.SDK_CASE, u.FRESH_SDK_CASE))
+        self.assertEqual(u.sdk_cases('0.3.5'), (u.UPGRADE_CASE, u.FRESH_SDK_CASE))
+
+    def test_only_the_named_cases_run_and_one_that_cannot_run_from_the_previous_release_is_refused(self):
+        sdk = object()
+        self.assertEqual(u.chosen_cases('0.3.5', sdk), [*u.CASES, u.UPGRADE_CASE, u.FRESH_SDK_CASE])
+        self.assertEqual(u.chosen_cases('0.3.5', None), list(u.CASES))
+        self.assertEqual(u.chosen_cases('0.3.5', sdk, [u.UPGRADE_CASE]), [u.UPGRADE_CASE])
+        with self.assertRaisesRegex(u.Failed, f'{u.SDK_CASE} does not run when upgrading from 0.3.5'):
+            u.chosen_cases('0.3.5', sdk, [u.SDK_CASE])
+
+    def test_a_rehearsal_of_some_cases_writes_no_result_a_release_could_publish_with(self):
+        run = subprocess.run([sys.executable, '-I', SCRIPT, '--new', self.work / 'alondrad', '--case', u.UPGRADE_CASE,
+                              '--output', self.work / 'upgrade-rehearsal.json'], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertIn('leave out --output', run.stderr)
+        self.assertFalse((self.work / 'upgrade-rehearsal.json').exists())
+
+    def facts(self, command=(11, 'Thu Oct 22 10:00:00 2026'), host=(10, 'Thu Oct 22 09:59:00 2026'), release='0.3.5', ended=0, starts=1):
+        return {'command': command, 'host': host, 'release': release, 'ended': ended, 'starts': [{'session': 's'}] * starts}
+
+    def test_an_update_that_ends_the_hosts_with_their_commands_is_named_for_each_thing_it_lost(self):
+        before = self.facts()
+        self.assertEqual(u.kept(u.KEEPS, before, self.facts()), [])
+        killed = self.facts(command=None, host=(20, 'Thu Oct 22 10:05:00 2026'), release='0.3.6', ended=1, starts=2)
+        problems = u.kept(u.KEEPS, before, killed)
+        self.assertEqual(len(problems), 4, problems)
+        for said in ('command t-keeps left running in the background stopped', 'SDK host of t-keeps did not go on',
+                     'retired 1 times', 'started 1 more times'):
+            self.assertTrue(any(said in problem for problem in problems), (said, problems))
+        reused = self.facts(command=(11, 'Thu Oct 22 10:07:00 2026'))
+        self.assertEqual(len(u.kept(u.KEEPS, before, reused)), 1, 'a PID given to another process is not the command')
+
+    def test_a_node_moved_once_a_host_of_another_release_holds_its_folder_and_the_old_one_is_gone(self):
+        before = self.facts()
+        new_host = (20, 'Thu Oct 22 10:05:00 2026')
+        self.assertTrue(u.moved(before, self.facts(host=new_host, release='0.3.6', ended=1), old_host_runs=False))
+        self.assertFalse(u.moved(before, self.facts(host=new_host, release='0.3.6', ended=1), old_host_runs=True))
+        self.assertFalse(u.moved(before, self.facts(host=new_host, release='0.3.5', ended=1), old_host_runs=False))
+        self.assertFalse(u.moved(before, self.facts(host=new_host, release=None, ended=1), old_host_runs=False))
+        self.assertFalse(u.moved(before, self.facts(host=None, release='0.3.6', ended=1), old_host_runs=False))
+        self.assertFalse(u.moved(before, self.facts(host=new_host, release='0.3.6', ended=0), old_host_runs=False))
+        self.assertFalse(u.moved(before, self.facts(host=new_host, release='0.3.6', ended=2), old_host_runs=False),
+                         'a second retired folder is a second replacement')
+
+    def host_folder(self, root, name, session, release):
+        folder = root / name
+        folder.mkdir(parents=True)
+        (folder / 'host.lock').write_text(json.dumps({'native': {'session_id': session}, 'manifest': {'host_release': release}}))
+        return folder
+
+    def test_a_sessions_host_folder_and_its_retired_ones_are_found_by_what_the_host_lock_holds(self):
+        root = self.work / 'sdk'
+        session, other = '0f0e0d0c-0000-4000-8000-000000000001', '0f0e0d0c-0000-4000-8000-000000000002'
+        retired = self.host_folder(root, 'instance-a.ended-host-1', session, '0.3.5')
+        live = self.host_folder(root, 'instance-a', session, '0.3.6')
+        self.host_folder(root, 'instance-b', other, '0.3.6')
+        (root / 'instance-c').mkdir()
+        (root / 'instance-c/host.lock').write_text('{"native": {"sess')
+        (root / 'stray-file').write_text('')
+        self.assertEqual(u.session_hosts(root, session), (live, [retired]))
+        self.assertEqual(u.session_hosts(root, '0f0e0d0c-0000-4000-8000-000000000003'), (None, []))
+        self.assertEqual(u.session_hosts(self.work / 'missing', session), (None, []))
+        self.assertEqual(u.bootstrap(root / 'instance-c'), None, 'a host.lock being written is no fact yet')
+
+    def test_only_cards_about_a_lost_host_count_against_the_move(self):
+        cards = [{'id': f'host-lost-{u.KEEPS}-7', 'task_id': u.KEEPS}, {'id': f'unheard-{u.KEEPS}-3', 'task_id': u.KEEPS},
+                 {'id': f'session-ended-{u.CRASHES}-1-2', 'task_id': u.CRASHES}, {'id': f'handoff-doubt-{u.KEEPS}-1-input', 'task_id': u.KEEPS}]
+        self.assertEqual(u.move_cards(cards, u.KEEPS), [f'handoff-doubt-{u.KEEPS}-1-input', f'host-lost-{u.KEEPS}-7'])
+        self.assertEqual(u.move_cards(cards, u.CRASHES), [f'session-ended-{u.CRASHES}-1-2'])
+
+    def test_each_turn_of_a_node_that_ends_leaves_a_card_of_its_own(self):
+        cards = [{'id': 'turn-ended-t-keeps-1'}, {'id': 'turn-ended-t-keeps-2'}, {'id': 'host-lost-t-keeps-1'}]
+        self.assertEqual(u.turns_ended(cards, 't-keeps'), 2)
+        self.assertEqual(u.turns_ended(cards, 't-crashes'), 0)
+
+    def stub(self, name):
+        u.write_executable(self.work / name, f'#!{sys.executable}\nimport json, os, sys\n'
+                           f'print(json.dumps({{"who": {name!r}, "args": sys.argv[1:], "capture": os.environ.get("FIXTURE_CAPTURE")}}))\n')
+        return self.work / name
+
+    def test_claude_on_the_path_sends_a_tasks_session_to_the_fixture_and_everything_else_to_the_sandbox(self):
+        captures = self.work / 'captures'
+        claude = self.work / 'claude'
+        u.write_executable(claude, u.router(captures, self.stub('fixture'), self.stub('sandbox')))
+        spawn = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
+        session = '0f0e0d0c-0000-4000-8000-000000000001'
+
+        def called(*args):
+            run = subprocess.run([claude, *args], capture_output=True, text=True, env={'PATH': '/usr/bin:/bin'})
+            self.assertEqual(run.returncode, 0, run.stderr)
+            return json.loads(run.stdout)
+
+        for args in ([*spawn, '--session-id', session, '--model', 'opus'], [*spawn, f'--resume={session}']):
+            self.assertEqual(called(*args), {'who': 'fixture', 'args': args, 'capture': str(captures / f'capture-{session}')})
+        for args in (['--version'], ['auth', 'status', '--json'], [*spawn, '--session-id', session, '--restricted'],
+                     [*spawn, '--strict-mcp-config'], spawn):
+            self.assertEqual(called(*args), {'who': 'sandbox', 'args': args, 'capture': None})
+
+    def test_a_line_on_the_fifo_lets_the_background_command_end_and_without_one_waiting_the_case_fails(self):
+        capture = self.work / 'capture-session'
+        with self.assertRaisesRegex(u.Failed, 'no background command waits'):
+            u.release_command(capture)
+        os.mkfifo(f'{capture}.release')
+        with self.assertRaisesRegex(u.Failed, 'no background command waits'):
+            u.release_command(capture)
+        reader = os.open(f'{capture}.release', os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, reader)
+        u.release_command(capture)
+        self.assertEqual(os.read(reader, 64), b'done\n')
+
+    def test_a_process_is_known_by_its_pid_and_start_and_is_gone_once_it_exits(self):
+        child = subprocess.Popen(['/bin/cat'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        seen = u.identity(child.pid)
+        self.assertEqual(seen[0], child.pid)
+        self.assertEqual(u.identity(child.pid), seen)
+        self.assertEqual(u.parent(child.pid), os.getpid())
+        child.stdin.close()
+        child.wait()
+        self.assertIsNone(u.identity(child.pid))
+        self.assertIsNone(u.identity(None))
+
+    def test_the_host_is_the_process_that_holds_its_lock(self):
+        lock = self.work / 'host.lock'
+        lock.write_text('{}')
+        holder = subprocess.Popen([sys.executable, '-I', '-c', 'import fcntl, sys\nlock = open(sys.argv[1])\nfcntl.flock(lock, fcntl.LOCK_EX)\n'
+                                   'print("held", flush=True)\nsys.stdin.read()', str(lock), 'alondra-host-fixture'],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline(), 'held\n')
+        with lock.open() as reader:
+            self.assertEqual(u.lock_holders(lock), [u.identity(holder.pid)], 'only a process named as the host counts')
+        holder.stdin.close()
+        holder.wait()
+        self.assertEqual(u.lock_holders(lock), [])
+
+
 class SandboxTests(Fixture):
     def sandboxed(self, code):
         return subprocess.run(u.sandboxed([sys.executable, '-I', '-c', code], self.protected, self.work),

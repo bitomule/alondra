@@ -952,6 +952,19 @@ def fresh_session(world):
     return next((session for session in fresh_sessions(world) if session.get('task_id') == FRESH_TASK and session.get('starts', 0) >= 1), None)
 
 
+def restart_into(world, old, new):
+    """Homebrew's upgrade: opt points at the new keg, and the previous daemon restarts into it by
+    itself. Returns when, in Unix milliseconds, opt changed."""
+    link(world.root / 'opt/alondra', new['keg'])
+    swapped = time.time() * 1000
+    code = world.supervisor.exited(world.daemon.pid, EXIT_WITHIN)
+    if code is None:
+        raise Failed(f'{old["version"]} did not restart into {new["version"]} within {EXIT_WITHIN} s')
+    if code != RELAUNCH:
+        raise Failed(f'{old["version"]} exited {code} instead of {RELAUNCH}: {last_line(world.log.read_text())}')
+    return swapped
+
+
 def run_handover(world, old, new):
     world.lay_out(old, new['keg'], new['make_keg'])
     fresh_previous(world.rehearsal, world.home, old)
@@ -972,13 +985,7 @@ def run_handover(world, old, new):
     for session in sessions.values():
         (world.runtime / f'capture.transcript-{session}').write_text(TRANSCRIPT)
     before = domain_snapshot(world.home)
-    link(world.root / 'opt/alondra', new['keg'])
-    swapped = time.time() * 1000
-    code = world.supervisor.exited(world.daemon.pid, EXIT_WITHIN)
-    if code is None:
-        raise Failed(f'{old["version"]} did not restart into {new["version"]} within {EXIT_WITHIN} s')
-    if code != RELAUNCH:
-        raise Failed(f'{old["version"]} exited {code} instead of {RELAUNCH}: {last_line(world.log.read_text())}')
+    swapped = restart_into(world, old, new)
     world.act(LOST, 'die')
     world.start(new['version'])
     changes = snapshot_changes(before, domain_snapshot(world.home))
@@ -1083,7 +1090,297 @@ def check_moved(world, task, session, first_input):
         raise Failed(f'the claude --bg node of {task} still runs after its move')
 
 
-def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg=None, sdk=None):
+UPGRADE_CASE = 'sdk-upgrade'
+# The tasks the previous release leaves with a command running in the background: the node that
+# moves to a host of the new release once it rests, and the one that moves too while the new daemon
+# dies before and after its move.
+KEEPS, CRASHES = 't-keeps', 't-crashes'
+UPGRADE_SEEDED = {KEEPS: 'Run the slow check', CRASHES: 'Run the long build'}
+BACKGROUND_COMMAND = 'background-command'
+AFTER_MOVE = 'Say what the command found'
+UPGRADE_CRASHES = ('adopted', 'moved')
+# The cards of a task whose host could not be taken over, whose session ended mid-way, or whose
+# input its host may have lost.
+MOVE_CARDS = ('host-lost-', 'session-ended-', 'handoff-doubt-')
+TURN_ENDED = 'turn-ended-'
+# Claude Code on the daemon's PATH when the release runs its own host and finds `claude` there.
+ROUTER = '''#!/usr/bin/python3
+"""A task's session, as the Agent SDK host spawns it, runs the persistent fixture with a capture of
+its own; the version and sign-in checks, an orchestrator batch and the usage probe run the
+sandbox's claude."""
+import os, sys
+# paths
+SPAWN = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
+args = sys.argv[1:]
+def flag(name):
+    for at, argument in enumerate(args):
+        if argument.startswith(name + '='):
+            return argument.split('=', 1)[1]
+        if argument == name and at + 1 < len(args):
+            return args[at + 1]
+    return None
+session = flag('--resume') or flag('--session-id')
+if args[:len(SPAWN)] == SPAWN and session and not {'--restricted', '--strict-mcp-config'} & set(args):
+    os.environ['FIXTURE_CAPTURE'] = os.path.join(CAPTURES, 'capture-' + session)
+    os.execv('/usr/bin/python3', ['/usr/bin/python3', FIXTURE] + args)
+os.execv(SANDBOX, [SANDBOX] + args)
+'''
+
+
+def router(captures, fixture, sandbox):
+    return ROUTER.replace('# paths\n', f'CAPTURES, FIXTURE, SANDBOX = {str(captures)!r}, {str(fixture)!r}, {str(sandbox)!r}\n')
+
+
+def identity(pid):
+    """A process as `ps` sees it, its PID with its start time, so a PID given to another process
+    later is not taken for it; None once it is gone."""
+    if pid is None:
+        return None
+    shown = subprocess.run(['/bin/ps', '-o', 'stat=,lstart=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+    if not shown or shown.startswith('Z'):
+        return None
+    return (pid, shown.split(None, 1)[1])
+
+
+def parent(pid):
+    shown = subprocess.run(['/bin/ps', '-o', 'ppid=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+    return int(shown) if shown else None
+
+
+def lock_holders(lock, marker=pathlib.PurePath(release.HOST).name):
+    """The processes named `marker` that hold `lock` open: an SDK host keeps its host.lock as its
+    stdin, and its flock, for as long as it runs."""
+    listed = subprocess.run(['/usr/sbin/lsof', '-t', '--', str(lock)], capture_output=True, text=True).stdout.split()
+    holders = []
+    for pid in sorted(set(map(int, listed))):
+        command = subprocess.run(['/bin/ps', '-o', 'command=', '-p', str(pid)], capture_output=True, text=True).stdout
+        found = identity(pid) if marker in command else None
+        if found:
+            holders.append(found)
+    return holders
+
+
+def bootstrap(folder):
+    """What the daemon gave the host of `folder` (its session, its release), which the host.lock
+    holds; None while it is being written."""
+    try:
+        return json.loads((folder / 'host.lock').read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def session_hosts(state_root, session):
+    """The folder of the host that runs `session` under the SDK state root, and the folders of its
+    hosts that ended and were retired beside it as `<folder>.ended-<host>`."""
+    live, ended = None, []
+    for folder in sorted(state_root.iterdir()) if state_root.is_dir() else []:
+        config = bootstrap(folder) if folder.is_dir() else None
+        if not config or (config.get('native') or {}).get('session_id') != session:
+            continue
+        if '.ended-' in folder.name:
+            ended.append(folder)
+        else:
+            live = folder
+    return live, ended
+
+
+def host_facts(world, session, command):
+    """The background command, the host that holds the session's folder, its release, the retired
+    folders and every start of the native Claude, as the processes and files show them."""
+    live, ended = session_hosts(world.home / 'sdk', session)
+    holders = lock_holders(live / 'host.lock') if live else []
+    config = (bootstrap(live) if live else None) or {}
+    return {'command': identity(command), 'host': holders[0] if holders else None,
+            'release': (config.get('manifest') or {}).get('host_release'), 'ended': len(ended),
+            'starts': read_lines(world.runtime / f'capture-{session}.starts')}
+
+
+def kept(task, before, now):
+    """What an update or a crash of the new daemon owes a node whose command runs in the
+    background: the same command and the same host go on, and Claude does not start again."""
+    problems = []
+    if now['command'] != before['command']:
+        problems.append(f'the command {task} left running in the background stopped: it was {before["command"]}, now {now["command"]}')
+    if now['host'] != before['host']:
+        problems.append(f'the SDK host of {task} did not go on: it was {before["host"]}, now {now["host"]}')
+    if now['ended']:
+        problems.append(f'the host folder of {task} was retired {now["ended"]} times')
+    if len(now['starts']) != len(before['starts']):
+        problems.append(f'the native Claude of {task} started {len(now["starts"]) - len(before["starts"])} more times')
+    return problems
+
+
+def moved(before, now, old_host_runs):
+    """The resting node's old host is gone, its folder retired once, and a host of another release
+    holds the folder for the same session."""
+    return (not old_host_runs and now['host'] is not None and now['host'] != before['host']
+            and now['release'] not in (None, before['release']) and now['ended'] == 1)
+
+
+def turns_ended(interactions, task):
+    """How many turns of the task's node ended: each leaves a card of its own."""
+    return sum(row['id'].startswith(f'{TURN_ENDED}{task}-') for row in interactions)
+
+
+def move_cards(interactions, task):
+    """The cards that ask the user about a host the update or a move lost."""
+    return sorted(row['id'] for row in interactions if row.get('task_id') == task and row['id'].startswith(MOVE_CARDS))
+
+
+def release_command(capture):
+    """Lets the fixture's background command end: it reads one line from the FIFO beside the capture."""
+    try:
+        fifo = os.open(f'{capture}.release', os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as error:
+        raise Failed(f'no background command waits on {capture}.release: {error}') from None
+    try:
+        os.write(fifo, b'done\n')
+    finally:
+        os.close(fifo)
+
+
+def new_sessions(runtime, known):
+    return sorted({path.name[len('capture-'):-len('.starts')] for path in runtime.glob('capture-*.starts')} - set(known))
+
+
+def install_router(world):
+    """The release's own host with the persistent fixture as Claude Code: `claude` on the daemon's
+    PATH sends a task's session to it and everything else to the sandbox's claude."""
+    world.runtime.mkdir()
+    fixture = world.runtime / FIXTURES[0]
+    shutil.copy2(world.sdk.fixtures / FIXTURES[0], fixture)
+    sandbox = world.fakes / 'sandbox-claude'
+    os.replace(world.fakes / 'claude', sandbox)
+    write_executable(world.fakes / 'claude', router(world.runtime, fixture, sandbox))
+
+
+def sdk_upgrade(rehearsal, old, new, sdk):
+    """The previous release leaves nodes on its own SDK hosts with a command running in the
+    background; the update keeps each command and host, and each node moves to a host of the new
+    release once it rests, resuming its session, also with the new daemon killed around the move."""
+    world = HandoverWorld(rehearsal, rehearsal.work / UPGRADE_CASE, sdk)
+    world.root.mkdir()
+    try:
+        return run_upgrade(world, old, new)
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
+    finally:
+        world.stop_everything()
+
+
+def background_node(world, task, title, version, known):
+    """A task whose node's turn ended behind a command it left running: its session and the
+    command's PID."""
+    world.request(task, title)
+
+    def started():
+        found = new_sessions(world.runtime, known)
+        return (found[0] if len(found) == 1 else None, found)
+    session = until(f'{version} starts the node of {task} on its own Agent SDK host', started, within=PATIENCE * 2)
+    until(f'the first turn of {task} ends', lambda: (turns_ended(rows(world.home, 'interactions'), task) >= 1, None))
+    world.press(f'task:{task}', 'msg:', BACKGROUND_COMMAND)
+    written = world.runtime / f'capture-{session}.background'
+
+    def left_running():
+        text = written.read_text().strip() if written.is_file() else ''
+        return (int(text) if text.isdigit() else None, {'pid': text})
+    return session, until(f'the node of {task} leaves a command running in the background', left_running)
+
+
+def check_kept(world, sessions, commands, before, after_what):
+    problems = [problem for task in sessions for problem in kept(task, before[task], host_facts(world, sessions[task], commands[task]))]
+    if problems:
+        raise Failed(f'after {after_what}: {"; ".join(problems)}')
+
+
+def move_at_rest(world, task, session, command, before):
+    """The command ends, the node rests, and the new daemon puts a host of its release in the old
+    one's place. The new host, as `identity` shows it."""
+    release_command(world.runtime / f'capture-{session}')
+
+    def probe():
+        now = host_facts(world, session, command)
+        old_host_runs = identity(before['host'][0]) == before['host']
+        return (now['host'] if moved(before, now, old_host_runs) else None,
+                {'old host runs': old_host_runs, **{key: now[key] for key in ('command', 'host', 'release', 'ended')}})
+    return until(f'once the node of {task} rests, a host of the new release takes the place of its old one', probe)
+
+
+def resume_after_move(world, task, session, host):
+    """A message reaches the node: Claude starts again once, resuming the same session under the
+    host the move launched."""
+    world.press(f'task:{task}', 'msg:', AFTER_MOVE)
+    recorded = world.runtime / f'capture-{session}.starts'
+    until(f'the message to {task} resumes its Claude session', lambda: (len(read_lines(recorded)) > 1, read_lines(recorded)))
+    starts = read_lines(recorded)
+    start = starts[1]
+    if len(starts) != 2 or start['resume'] != session or not start['history']:
+        raise Failed(f'the native Claude of {task} did not resume its session once: {starts}')
+    if parent(start['pid']) != host[0]:
+        raise Failed(f'the resumed Claude of {task} does not run under the host the move launched ({host[0]})')
+    now = host_facts(world, session, None)
+    if now['host'] != host or now['ended'] != 1:
+        raise Failed(f'the host of {task} changed again after its move: {now["host"]}, {now["ended"]} retired folders')
+
+
+def run_upgrade(world, old, new):
+    world.lay_out(old, new['keg'], new['make_keg'])
+    install_router(world)
+    fresh_previous(world.rehearsal, world.home, old)
+    world.provision()
+    world.start(old['version'])
+    world.tool('phone', '--mac', '1', 'pair', '--direct')
+    sessions, commands = {}, {}
+    for task, title in UPGRADE_SEEDED.items():
+        sessions[task], commands[task] = background_node(world, task, title, old['version'], sessions.values())
+    before = {task: host_facts(world, sessions[task], commands[task]) for task in UPGRADE_SEEDED}
+    for task, facts in before.items():
+        if None in (facts['command'], facts['host']) or facts['ended'] or len(facts['starts']) != 1:
+            raise Failed(f'{old["version"]} did not leave {task} with one host and its command running: {facts}')
+    restart_into(world, old, new)
+    shutil.rmtree(world.root / 'Cellar/alondra' / old['version'])
+    world.start(new['version'])
+    check_kept(world, sessions, commands, before, f'the update to {new["version"]}')
+    world.crash()
+    world.start(new['version'])
+    check_kept(world, sessions, commands, before, 'the new daemon was killed and came back')
+    crashed = ['adopted']
+    hosts = {KEEPS: move_at_rest(world, KEEPS, sessions[KEEPS], commands[KEEPS], before[KEEPS])}
+    resume_after_move(world, KEEPS, sessions[KEEPS], hosts[KEEPS])
+    hosts[CRASHES] = move_at_rest(world, CRASHES, sessions[CRASHES], commands[CRASHES], before[CRASHES])
+    world.crash()
+    world.start(new['version'])
+    crashed.append('moved')
+    resume_after_move(world, CRASHES, sessions[CRASHES], hosts[CRASHES])
+    asked = {task: move_cards(rows(world.home, 'interactions'), task) for task in UPGRADE_SEEDED}
+    if any(asked.values()):
+        raise Failed(f'the update or a move asked the user about a host: {asked}')
+    return {'tasks': {task: {'session': sessions[task], 'command': commands[task]} for task in UPGRADE_SEEDED},
+            'host_release': {'before': before[KEEPS]['release'], 'after': host_facts(world, sessions[KEEPS], None)['release']},
+            'crashed_after': crashed}
+
+
+def sdk_cases(previous):
+    """A release before the Agent SDK leaves claude --bg nodes to move; one after it, SDK hosts to
+    keep. Every release also installs fresh."""
+    return (UPGRADE_CASE if has_sdk_backend(previous) else SDK_CASE, FRESH_SDK_CASE)
+
+
+ALL_CASES = (*CASES, SDK_CASE, UPGRADE_CASE, FRESH_SDK_CASE)
+
+
+def chosen_cases(previous, sdk, only=None):
+    """The cases an upgrade from `previous` runs, in order, or only those of `only`; naming one that
+    does not run from `previous` is an error."""
+    planned = (*CASES, *(sdk_cases(previous) if sdk else ()))
+    if only:
+        missing = sorted(set(only) - set(planned))
+        if missing:
+            raise Failed(f'{", ".join(missing)} does not run when upgrading from {previous}')
+    return [case for case in planned if not only or case in only]
+
+
+def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg=None, sdk=None, only=None):
     protected = pathlib.Path.home().resolve()
     if not inside(live_home, protected):
         raise Failed(f'The live HOME {live_home} must be inside {protected}, which the sandbox keeps read-only')
@@ -1096,12 +1393,15 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
     if new['version'] == old_version:
         raise Failed(f'The new build reports {old_version}, the version it should replace')
     result = {'schema': 1, 'from': old_version, 'to': new['version'], 'cases': {}}
-    try:
-        result['live_preflight_ms'] = rehearsal.preflight(new_binary, live_home)
-    except Failed as error:
-        raise Failed(f'live HOME {live_home}: {error}') from None
-    print(f'live HOME: {new["version"]} preflight passes ({result["live_preflight_ms"]} ms)')
-    for case in CASES:
+    chosen = chosen_cases(old_version, sdk, only)
+    generic = [case for case in CASES if case in chosen]
+    if generic:
+        try:
+            result['live_preflight_ms'] = rehearsal.preflight(new_binary, live_home)
+        except Failed as error:
+            raise Failed(f'live HOME {live_home}: {error}') from None
+        print(f'live HOME: {new["version"]} preflight passes ({result["live_preflight_ms"]} ms)')
+    for case in generic:
         home = work / case / 'home'
         (work / case).mkdir()
         mutate = MUTATIONS.get(case)
@@ -1128,7 +1428,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         result['cases'][case] = timings
         print(f'{case}: {old_version} → {new["version"]} restarted {timings["exited_after_swap_ms"]} ms after '
               f'the swap and answered in {timings["answered_ms"]} ms')
-    if sdk and not has_sdk_backend(old['version']):
+    if SDK_CASE in chosen:
         keg = work / SDK_CASE / 'Cellar/alondra' / new['version']
         try:
             result['cases'][SDK_CASE] = sdk_handover(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
@@ -1137,7 +1437,17 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         moved = result['cases'][SDK_CASE]
         print(f'{SDK_CASE}: {len(moved["moved"])} claude --bg nodes moved to the Agent SDK with their sessions, '
               f'the daemon killed after {", ".join(moved["crashed_after"])}')
-    if sdk:
+    if UPGRADE_CASE in chosen:
+        keg = work / UPGRADE_CASE / 'Cellar/alondra' / new['version']
+        try:
+            result['cases'][UPGRADE_CASE] = sdk_upgrade(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
+        except Failed as error:
+            raise Failed(f'case {UPGRADE_CASE}: {error}') from None
+        kept_running = result['cases'][UPGRADE_CASE]
+        print(f'{UPGRADE_CASE}: {len(kept_running["tasks"])} commands in the background outlived the update on the hosts of '
+              f'{old_version}; each node moved to a host of {new["version"]} once it rested, resuming its session, '
+              f'the daemon killed after {", ".join(kept_running["crashed_after"])}')
+    if FRESH_SDK_CASE in chosen:
         keg = work / FRESH_SDK_CASE / 'Cellar/alondra' / new['version']
         try:
             result['cases'][FRESH_SDK_CASE] = fresh_sdk(rehearsal, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
@@ -1153,8 +1463,17 @@ def keep_alive_in_plist():
         raise Failed(f'{plist} no longer restarts the daemon on every exit (KeepAlive true)')
 
 
+EPILOG = '''Only one case, for local iteration: what `make upgrade-rehearsal` runs, after its build, with --case:
+  files() { bazelisk cquery --output=files "$1" 2>/dev/null | grep -v '\\.ok$'; }
+  python3 deploy/brew/upgrade-rehearsal.py --new "$(files //crates/alondrad)" --cli "$(files //crates/alondra)" \\
+    --host "$(files //agent-host:release_host | grep 'alondra-host$')" --sdk-fixtures agent-host \\
+    --sandbox-tool "$(files //tools/sandbox:alondra-sandbox)" --from latest --case sdk-upgrade
+sdk-handover runs from a release before 0.3.0, sdk-upgrade from 0.3.0 on.'''
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], epilog=EPILOG,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--new', type=pathlib.Path, help='Release archive, or an alondrad binary')
     parser.add_argument('--cli', type=pathlib.Path, help='The alondra CLI built with an alondrad binary given as --new')
     parser.add_argument('--host', type=pathlib.Path, help='The release host built with an alondrad binary given as --new (Bazel //agent-host:release_host)')
@@ -1165,6 +1484,8 @@ def main():
     parser.add_argument('--previous-archive', type=pathlib.Path, help='Use this archive of --from instead of downloading it')
     parser.add_argument('--home', type=pathlib.Path, default=pathlib.Path.home() / '.alondra')
     parser.add_argument('--output', type=pathlib.Path, help='Where to write the result as JSON')
+    parser.add_argument('--case', action='append', choices=ALL_CASES,
+                        help='Run only this case (repeatable), for local iteration; writes no result')
     parser.add_argument('--copy-home', nargs=2, type=pathlib.Path, help=argparse.SUPPRESS)
     parser.add_argument('--supervise', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -1176,6 +1497,8 @@ def main():
         return
     if args.new is None:
         parser.error('--new is required')
+    if args.case and args.output:
+        parser.error('--case runs part of the rehearsal and writes no result: leave out --output')
     keep_alive_in_plist()
     work = pathlib.Path(tempfile.mkdtemp(prefix='alondra-ur-', dir='/private/tmp'))
     try:
@@ -1194,7 +1517,7 @@ def main():
         old_version = args.previous if args.previous not in (None, 'latest') else \
             previous_version(args.previous or new_version, published_tags())
         previous = args.previous_archive.resolve() if args.previous_archive else fetch_previous(old_version, work)
-        result = rehearse(new_binary, previous, args.home.expanduser().resolve(), work, old_version, new_keg, sdk)
+        result = rehearse(new_binary, previous, args.home.expanduser().resolve(), work, old_version, new_keg, sdk, args.case)
         if archive:
             result['archive'] = {'name': archive.name, 'sha256': release.sha(archive)}
         if args.output:
