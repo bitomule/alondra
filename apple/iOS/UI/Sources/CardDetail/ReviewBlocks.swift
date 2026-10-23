@@ -9,47 +9,58 @@ struct BlockRow: View {
     let tint: Color
     let onTap: () -> Void
 
+    private var hint: String {
+        comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment")
+    }
+
     var body: some View {
-        if block.isCommentable {
-            Button(action: onTap) {
-                VStack(alignment: .leading, spacing: 10) {
-                    MarkdownBlockView(block: block)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if let comment {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "text.bubble.fill")
-                                .foregroundStyle(tint)
-                            Text(comment)
-                                .font(.subheadline)
-                                .foregroundStyle(Palette.ink)
-                        }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(tint.opacity(0.14), in: .rect(cornerRadius: 12))
-                        .transition(.asymmetric(insertion: .scale(scale: 0.9, anchor: .top).combined(with: .opacity), removal: .opacity))
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background {
-                    if comment != nil {
-                        HStack(spacing: 0) {
-                            Capsule().fill(tint).frame(width: 3)
-                            Spacer()
-                        }
-                        .padding(.vertical, 4)
-                        .transition(.opacity)
-                    }
-                }
-                .contentShape(.rect(cornerRadius: 12))
-            }
-            .buttonStyle(BlockButtonStyle(tint: tint))
-            .foregroundStyle(Palette.ink)
-            .padding(.horizontal, -12)
-            .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
-        } else {
+        if !block.isCommentable {
             MarkdownBlockView(block: block)
+        } else if block.opensLinks {
+            row
+                .onTapGesture(perform: onTap)
+                .accessibilityAction(named: Text(hint), onTap)
+        } else {
+            Button(action: onTap) { row }
+                .buttonStyle(BlockButtonStyle(tint: tint))
+                .accessibilityHint(hint)
         }
+    }
+
+    /// A block with links is not a button, so a tap on a link opens it and a tap elsewhere comments.
+    private var row: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            MarkdownBlockView(block: block)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let comment {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "text.bubble.fill")
+                        .foregroundStyle(tint)
+                    Text(comment)
+                        .font(.subheadline)
+                        .foregroundStyle(Palette.ink)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(tint.opacity(0.14), in: .rect(cornerRadius: 12))
+                .transition(.asymmetric(insertion: .scale(scale: 0.9, anchor: .top).combined(with: .opacity), removal: .opacity))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background {
+            if comment != nil {
+                HStack(spacing: 0) {
+                    Capsule().fill(tint).frame(width: 3)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+                .transition(.opacity)
+            }
+        }
+        .contentShape(.rect(cornerRadius: 12))
+        .foregroundStyle(Palette.ink)
+        .padding(.horizontal, -12)
     }
 }
 
@@ -62,13 +73,20 @@ struct TableRows: View {
     var body: some View {
         TableBlock(rows: rows) { block, cell in
             let comment = comments[block.anchor]
-            Button { onTap(block) } label: {
-                cell
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .background(comment == nil ? .clear : tint.opacity(0.14))
+            let hint = comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment")
+            let label = cell
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(comment == nil ? .clear : tint.opacity(0.14))
+            if cell.text.runs[\.link].contains(where: { link, _ in link != nil }) {
+                label
+                    .contentShape(.rect)
+                    .onTapGesture { onTap(block) }
+                    .accessibilityAction(named: Text(hint)) { onTap(block) }
+            } else {
+                Button { onTap(block) } label: { label }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(hint)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
         } below: { block in
             if let comment = comments[block.anchor] {
                 bubble(comment)

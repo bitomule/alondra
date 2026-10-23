@@ -325,6 +325,7 @@ private struct MarkdownLine: View {
             case .code(let language): CodeBlock(source: block.plainText, language: language) { HighlightedCode(code: block.plainText, language: language).font(.system(.callout, design: .monospaced)) }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(ViewPalette.night.opacity(0.7), in: .rect(cornerRadius: 12))
             case .tableRow: EmptyView()
             case .rule: Rectangle().fill(ViewPalette.hairline).frame(height: 1)
+            case let .image(url, alt): MarkdownImage(url: url, alt: alt)
             }
         }.padding(.leading, CGFloat(block.depth) * 18)
     }

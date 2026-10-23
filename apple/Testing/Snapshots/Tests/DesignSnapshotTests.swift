@@ -49,6 +49,12 @@ final class DesignSnapshotTests: XCTestCase {
         }
     }
 
+    func test_markdownReadme() {
+        assertVariants {
+            ReadmeSample().padding()
+        }
+    }
+
     func test_diffFile() {
         assertVariants {
             DiffSample().padding()
@@ -98,6 +104,30 @@ private struct MarkdownSample: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(segments) { MarkdownSegmentView(segment: $0) }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ReadmeSample: View {
+    private let segments = MarkdownParser.segments(from: """
+    <h1 align=center>Alondra</h1>
+
+    <p align="center">
+      <a href="https://alondra.dev/docs">Docs</a> ·
+      <a href='https://github.com/example/alondra'>Code</a><br>
+      Made for <b>people</b> &amp; agents
+    </p>
+
+    Read [the install guide](https://alondra.dev/install) first.
+
+    <img src="docs/shot.png" alt="Local shot">
+    """)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(segments) { MarkdownSegmentView(segment: $0) }
+        }
+        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

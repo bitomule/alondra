@@ -35,6 +35,7 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         case quote
         case tableRow(TableRow)
         case rule
+        case image(url: URL, alt: String)
     }
 
     public let id: Int
@@ -54,6 +55,10 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         return true
     }
 
+    public var opensLinks: Bool {
+        content.runs[\.link].contains { link, _ in link != nil }
+    }
+
     public var tableRow: TableRow? {
         if case .tableRow(let row) = kind { return row }
         return nil
@@ -68,6 +73,7 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         case .quote: "quote"
         case .tableRow: "row"
         case .rule: "rule"
+        case .image: "image"
         }
     }
 }
@@ -91,7 +97,8 @@ public enum MarkdownParser {
         cache.blocks(for: source)
     }
 
-    static func parse(_ source: String) -> [MarkdownBlock] {
+    static func parse(_ markdown: String) -> [MarkdownBlock] {
+        let source = InlineHTML.markdown(from: markdown)
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
         guard let document = try? AttributedString(markdown: source, options: options) else {
             var builder = Builder()
@@ -141,6 +148,55 @@ public enum MarkdownParser {
         return (done, rest)
     }
 
+    static let imageMark = "📷 "
+
+    static func loneImage(_ content: AttributedString) -> (url: URL, alt: String)? {
+        var found: (url: URL, alt: String)?
+        for (url, range) in content.runs[\.imageURL] {
+            let text = String(content[range].characters)
+            guard let url else {
+                guard text.allSatisfy(\.isWhitespace) else { return nil }
+                continue
+            }
+            guard found == nil else { return nil }
+            found = (url, withoutPlaceholder(text))
+        }
+        return found
+    }
+
+    /// Images inside a sentence read as links behind a camera mark; the mark is never part of the text.
+    static func markingImages(_ content: AttributedString) -> AttributedString {
+        var marked = content
+        for (url, range) in content.runs[\.imageURL].reversed() {
+            guard let url else { continue }
+            let offset = content.characters.distance(from: content.startIndex, to: range.lowerBound)
+            let length = content.characters.distance(from: range.lowerBound, to: range.upperBound)
+            let start = marked.index(marked.startIndex, offsetByCharacters: offset)
+            var end = marked.index(start, offsetByCharacters: length)
+            if withoutPlaceholder(String(marked[start..<end].characters)).isEmpty {
+                let attributes = marked[start..<end].runs.first?.attributes ?? AttributeContainer()
+                marked.replaceSubrange(start..<end, with: AttributedString(url.lastPathComponent, attributes: attributes))
+                end = marked.index(start, offsetByCharacters: url.lastPathComponent.count)
+            }
+            if isWeb(url), !marked[start..<end].runs[\.link].contains(where: { link, _ in link != nil }) {
+                marked[start..<end].link = url
+            }
+            marked[start..<end].imageURL = nil
+            let attributes = marked[start..<end].runs.first?.attributes ?? AttributeContainer()
+            marked.insert(AttributedString(imageMark, attributes: attributes), at: start)
+        }
+        return marked
+    }
+
+    /// What Foundation leaves for an image without alt text.
+    static func withoutPlaceholder(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespaces)
+    }
+
+    public static func isWeb(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+    }
+
     static func hash(_ text: String) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in text.utf8 {
@@ -165,8 +221,8 @@ public enum MarkdownParser {
         var header: [AttributedString] = []
         var row: PendingRow?
 
-        mutating func append(_ kind: MarkdownBlock.Kind, depth: Int, content: AttributedString) {
-            let plainText = String(content.characters)
+        mutating func append(_ kind: MarkdownBlock.Kind, depth: Int, content: AttributedString, plainText: String? = nil) {
+            let plainText = plainText ?? String(content.characters)
             let base = "\(MarkdownBlock.name(of: kind)):\(MarkdownParser.hash(plainText))"
             let occurrence = occurrences[base, default: 0]
             occurrences[base] = occurrence + 1
@@ -205,7 +261,11 @@ public enum MarkdownParser {
                     append(.quote, depth: depth - 1, content: content)
                 } else {
                     markItemSeen(containers.first)
-                    append(.paragraph, depth: depth, content: content)
+                    if let image = MarkdownParser.loneImage(content) {
+                        append(.image(url: image.url, alt: image.alt), depth: depth, content: AttributedString(image.alt))
+                    } else {
+                        append(.paragraph, depth: depth, content: MarkdownParser.markingImages(content), plainText: MarkdownParser.withoutPlaceholder(String(content.characters)))
+                    }
                 }
             case .header(let level):
                 markItemSeen(containers.first)

@@ -73,6 +73,8 @@ public struct MarkdownBlockView: View {
             TableBlock(rows: [block])
         case .rule:
             Rectangle().fill(Palette.hairline).frame(height: 1).padding(.vertical, 6)
+        case .image(let url, let alt):
+            MarkdownImage(url: url, alt: alt)
         }
     }
 
