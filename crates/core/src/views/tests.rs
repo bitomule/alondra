@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -4633,6 +4633,77 @@ fn a_permission_card_without_allow_always_says_why_in_one_line() {
     assert!(serde_json::to_string(&view).unwrap().contains("Claude Code no guardó estas reglas"));
 }
 
+fn held_for_task(offer: crate::allow_for_task::AllowForTask) -> DomainState {
+    use crate::domain::{CardKind, Hold};
+    let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow the reset", ""));
+    state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/repo/.claude/worktrees/t-1".into(), crate::domain::TaskWorktree {
+        origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: Hold::Permission.permission_offering(false, offer.offered()), answer: None };
+    interaction.card.allow_for_task = Some(offer);
+    state
+}
+
+#[test]
+fn a_permission_card_offers_allow_in_this_task_saying_exactly_what_stays_allowed_and_where() {
+    use crate::allow_for_task::AllowForTask;
+    use crate::domain::Hold;
+    let exact = held_for_task(AllowForTask::Exact { command: "git reset --hard origin/main".into(), cwd: "/repo/.claude/worktrees/t-1".into() });
+    let view = render(&exact, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!(answers(card).iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str())).collect::<Vec<_>>(),
+        [("allow", "Permitir"), ("task", "Permitir en esta tarea"), ("deny", "Denegar")]);
+    assert_eq!(answers(card)[1].description.as_deref(), Some("Solo `git reset --hard origin/main`, lanzado desde el worktree de la tarea, \
+        hasta que cierre la tarea. Otro comando, ruta o rama vuelve a preguntar."));
+    let option = QuestionOption { id: Hold::FOR_TASK.into(), label: "Allow in this task".into(), description: None };
+    assert_eq!(answer_label(&exact, &exact.interactions[&"i-1".into()], &option, Lang::Es), "Permitido en esta tarea: `git reset --hard origin/main`");
+    let inside = held_for_task(AllowForTask::Exact { command: "rm -rf out".into(), cwd: "/repo/.claude/worktrees/t-1/crates/core".into() });
+    let view = render(&inside, &LiveSnapshot::default(), Client::Mac, Lang::En, "card:i-1", "");
+    assert!(answers(card_of(&view))[1].description.as_deref().unwrap().contains("run from `crates/core` in the task's worktree,"));
+    let shape = held_for_task(AllowForTask::Shape { command: "bazelisk test //x".into(), cwd: "/repo/.claude/worktrees/t-1".into(), shape: vec!["bazelisk".into(), "test".into()] });
+    let view = render(&shape, &LiveSnapshot::default(), Client::Mac, Lang::En, "card:i-1", "");
+    assert_eq!(answers(card_of(&view))[1].description.as_deref(), Some("`bazelisk test …` with any arguments, \
+        inside the task's worktree and Alondra's folders, until the task ends. Outside them it asks again."));
+}
+
+#[test]
+fn a_permission_card_without_allow_in_this_task_says_why_in_one_line() {
+    use crate::allow_for_task::{AllowForTask, NotForTask};
+    let state = held_for_task(AllowForTask::Refused { why: NotForTask::Outside, part: "/Users/me/Desktop/app".into() });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    assert_eq!(answers(card_of(&view)).iter().map(|a| a.option_id.as_deref().unwrap()).collect::<Vec<_>>(), ["allow", "deny"]);
+    let text = serde_json::to_string(&view).unwrap();
+    assert!(text.contains("No se puede permitir en esta tarea: `/Users/me/Desktop/app` está fuera del worktree de la tarea."), "{text}");
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "card:i-1", "");
+    assert!(serde_json::to_string(&view).unwrap().contains("Can't allow in this task: `/Users/me/Desktop/app` is outside the task's worktree."));
+}
+
+#[test]
+fn the_task_screen_lists_what_was_allowed_in_the_task_with_a_revoke_button() {
+    use crate::allow_for_task::AllowForTask;
+    use crate::domain::TaskGrant;
+    let mut state = held_for_task(AllowForTask::Refused { why: crate::allow_for_task::NotForTask::NoFolder, part: String::new() });
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.allowed.insert("decision-t-1-1-1".into(), TaskGrant {
+        allows: AllowForTask::Exact { command: "git branch -D scratch".into(), cwd: "/repo/.claude/worktrees/t-1".into() }, uses: 3 });
+    task.allowed.insert("decision-t-1-1-2".into(), TaskGrant {
+        allows: AllowForTask::Shape { command: "cargo test".into(), cwd: "/repo/.claude/worktrees/t-1".into(), shape: vec!["cargo".into(), "test".into()] }, uses: 0 });
+    state.revision = state.revision.max(state.tasks[&"t-1".into()].revision);
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:t-1", "");
+    let section = view.sections.iter().find(|section| section.id == "allowed_in_task").expect("listed");
+    assert_eq!(section.title.as_deref(), Some("Permitido en esta tarea"));
+    let rows: Vec<&Row> = section.items.iter().filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+    assert_eq!(rows.iter().map(|row| (row.title.as_str(), row.subtitle.as_deref().unwrap())).collect::<Vec<_>>(), [
+        ("git branch -D scratch", "comando exacto, desde el worktree de la tarea · usado 3 veces"),
+        ("cargo test …", "cualquier argumento, dentro de las carpetas de la tarea · aún sin usar"),
+    ]);
+    let revoke = &rows[0].actions[0];
+    assert_eq!((revoke.label.as_str(), revoke.id.as_str()), ("Revocar", format!("revoke_grant:t-1@{}~decision-t-1-1-1", state.revision).as_str()));
+    state.tasks.get_mut(&"t-1".into()).unwrap().allowed.clear();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "");
+    assert!(view.sections.iter().all(|section| section.id != "allowed_in_task"), "nothing allowed, no section");
+}
+
 #[test]
 fn a_question_card_never_shows_an_allow_always_a_node_slipped_into_it() {
     use crate::allow_always::AllowAlways;
@@ -5719,6 +5790,55 @@ fn a_body_that_only_repeats_the_card_or_holds_alondras_own_data_is_not_shown_aga
     state.interactions.get_mut(&"i-4".into()).unwrap().author = Author::System;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     assert!(markdown_items(&view).is_empty());
+}
+
+const ALLOWED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
+const ALLOWED_WORKTREE: &str = "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15";
+const ALLOWED_CASES: [(&str, &str, Lang); 4] = [
+    ("card-permission-task-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Lang::En),
+    ("card-permission-task-es-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Lang::Es),
+    ("task-allowed-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Lang::En),
+    ("task-allowed-es-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Lang::Es),
+];
+
+/// A node of the demo task asks to reset its worktree, offered «allow in this task», and the task
+/// already allows a branch deletion and its tests.
+fn allowed_state() -> DomainState {
+    use crate::allow_for_task::AllowForTask;
+    use crate::domain::{CardKind, ContentKind as Content, Hold, TaskGrant, TaskWorktree, WorktreeOrigin};
+    let mut state = golden_fixture();
+    let task = state.tasks.get_mut(&ALLOWED_TASK.into()).unwrap();
+    task.worktrees.insert(ALLOWED_WORKTREE.into(), TaskWorktree { origin: WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    task.allowed.insert("decision-t-651c-1-3".into(), TaskGrant {
+        allows: AllowForTask::Exact { command: "git branch -D scratch/empty-state".into(), cwd: ALLOWED_WORKTREE.into() }, uses: 2 });
+    task.allowed.insert("decision-t-651c-1-4".into(), TaskGrant {
+        allows: AllowForTask::Shape { command: "bazelisk test //apple:AlondraiOSTests".into(), cwd: ALLOWED_WORKTREE.into(),
+            shape: vec!["bazelisk".into(), "test".into()] }, uses: 5 });
+    let reset = AllowForTask::Exact { command: "git reset --hard origin/main".into(), cwd: ALLOWED_WORKTREE.into() };
+    let interaction = state.interactions.get_mut(&KNOW_COMMAND_CARD.into()).unwrap();
+    interaction.card = spec(CardKind::Authorize, "Run `git reset --hard origin/main`", "").content(Content::Command, "git reset --hard origin/main");
+    interaction.card.allow_for_task = Some(reset);
+    interaction.body = "Run `git reset --hard origin/main`".into();
+    interaction.blocking = true;
+    interaction.payload = InteractionPayload::Question { options: Hold::Permission.permission_offering(false, true), answer: None };
+    state.holds.insert(KNOW_COMMAND_CARD.into(), Hold::Permission);
+    state.revision = state.revision.max(state.tasks[&ALLOWED_TASK.into()].revision);
+    state
+}
+
+#[test]
+fn allowed_in_task_screens_match_goldens() {
+    let state = allowed_state();
+    let differ: Vec<&str> = ALLOWED_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/card-permission-task-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-permission-task-es-mac.json"),
+        include_str!("../../../../fixtures/views/cards/task-allowed-mac.json"),
+        include_str!("../../../../fixtures/views/cards/task-allowed-es-mac.json"),
+    ]).filter_map(|((filename, key, lang), expected)| {
+        let actual = render(&state, &golden_live(), Client::Mac, lang, key, "2026-09-30T10:00:00Z");
+        std::panic::catch_unwind(|| assert_golden(filename, &actual, expected)).is_err().then_some(filename)
+    }).collect();
+    assert!(differ.is_empty(), "{differ:?} differ from their goldens");
 }
 
 const KNOW_COMMAND_CARD: &str = "cc2d034b-249e-4487-a89b-57de38c26372";

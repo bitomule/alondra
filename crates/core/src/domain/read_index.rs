@@ -190,6 +190,9 @@ impl ReadIndex {
     pub fn task_actions(&self, state: &DomainState, task: &TaskId) -> Option<Vec<AvailableAction>> {
         state.task_actions_given(task, self)
     }
+    pub fn grant_actions(&self, state: &DomainState, task: &TaskId) -> Vec<(InteractionId, AvailableAction)> {
+        state.grant_actions_given(task, self)
+    }
     /// A card that waits for the user's answer belongs to no task: the orchestrator asks it.
     pub fn asks_outside_tasks(&self) -> bool {
         self.asks_outside_tasks
@@ -826,6 +829,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         let prs: Vec<PrId> = state.pull_requests.values().filter(|pr| pr.task_id == t.id).map(|pr| pr.id.clone()).collect();
         assert_eq!(index.prs_of_task(&t.id), prs.as_slice());
         assert_eq!(index.task_actions(state, &t.id), state.task_actions(&t.id), "the buttons of {}", t.id);
+        assert_eq!(index.grant_actions(state, &t.id), state.grant_actions(&t.id), "the Revoke buttons of {}", t.id);
         let runs = || state.schedule.runs.values().filter(|run| run.task_id.as_ref() == Some(&t.id));
         assert_eq!(index.scheduled(&t.id), runs().next().is_some());
         let failed = runs().filter(|run| run.state == ScheduleRunState::Failed).max_by_key(|run| run.finished_at)

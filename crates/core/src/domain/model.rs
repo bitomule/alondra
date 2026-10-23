@@ -154,6 +154,20 @@ pub struct Task {
     /// was recorded, which run on the provider's own sign-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<crate::accounts::AccountId>,
+    /// What the user allowed for the rest of the task from its permission cards, by the card each
+    /// was allowed on. It is forgotten when the task ends.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub allowed: BTreeMap<InteractionId, TaskGrant>,
+}
+/// A command the user allowed for the rest of a task, and how many prompts it answered since.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskGrant {
+    pub allows: crate::allow_for_task::AllowForTask,
+    #[serde(default, skip_serializing_if = "is_zero_uses")]
+    pub uses: u32,
+}
+fn is_zero_uses(uses: &u32) -> bool {
+    *uses == 0
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskWorktree {
@@ -746,6 +760,10 @@ pub struct CardSpec {
     /// the daemon sets it, and only a held permission shows it or acts on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_always: Option<crate::allow_always::AllowAlways>,
+    /// A command permission's «allow in this task»: what it keeps allowing until the task ends, or
+    /// why it is not offered. Only the daemon sets it, and only a held permission acts on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_for_task: Option<crate::allow_for_task::AllowForTask>,
     /// The work a final result proposes, as a plan with checklist lines: the user approves it,
     /// which starts its implementation as a new Task, or only archives the result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -843,6 +861,7 @@ impl CardSpec {
             group: None,
             cause: None,
             allow_always: None,
+            allow_for_task: None,
             plan: None,
             kept_at: None,
         }
@@ -1010,6 +1029,7 @@ impl Hold {
     pub const ALLOW: &'static str = "allow";
     pub const DENY: &'static str = "deny";
     pub const ALWAYS: &'static str = "always";
+    pub const FOR_TASK: &'static str = "task";
     pub const APPROVE: &'static str = "approve";
     pub const REQUEST_CHANGES: &'static str = "request_changes";
     pub const ACCEPT: &'static str = "accept";
@@ -1024,10 +1044,19 @@ impl Hold {
 
     /// `always` adds a permission's «allow always» between its yes and its no.
     pub fn options_offering(self, always: bool) -> Vec<QuestionOption> {
+        self.permission_offering(always, false)
+    }
+
+    /// A permission's options with «allow in this task» after its yes when `for_task`, and «allow
+    /// always» after that when `always`.
+    pub fn permission_offering(self, always: bool, for_task: bool) -> Vec<QuestionOption> {
         let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         match self {
             Hold::Permission => {
                 let mut options = vec![option(Self::ALLOW, "Allow")];
+                if for_task {
+                    options.push(option(Self::FOR_TASK, "Allow in this task"));
+                }
                 if always {
                     options.push(option(Self::ALWAYS, "Allow always"));
                 }

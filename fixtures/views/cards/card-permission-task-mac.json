@@ -1,0 +1,218 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
+  "client": "mac",
+  "version": "vbb0361b04658566a",
+  "cursor": "cursor-1",
+  "title": "Run `git reset --hard origin/main`",
+  "status": {
+    "version": "v0fc8bdd5258c1239",
+    "summary": "3 questions · 2 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "kind": "authorize",
+          "need": "Run `git reset --hard origin/main`",
+          "meta": "Alondra · iOS · Demo Garden",
+          "content_row": {
+            "kind": "command",
+            "icon": "action",
+            "label": "Command",
+            "summary": "git reset --hard origin/main"
+          },
+          "reply": {
+            "id": "reply:cc2d034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Deny it with a reason…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "You answered",
+            "key": "r",
+            "resolves_card": true
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "warning",
+          "eyebrow": {
+            "text": "Authorize",
+            "tone": "warning"
+          },
+          "title": "Run `git reset --hard origin/main`",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Alondra · iOS",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "ans:cc2d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Allow",
+              "style": "destructive",
+              "role": "risk",
+              "option_id": "allow",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:cc2d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Allow in this task",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "task",
+              "description": "Only `git reset --hard origin/main`, run from the task's worktree, until the task ends. Any other command, path or branch asks again.",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "2",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:cc2d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Deny",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "deny",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "3",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "```\ngit reset --hard origin/main\n```",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Restore the native review experience · Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -803,6 +803,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordDecisionSettled { task_id, .. }
         | Command::RecordDecisionAborted { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
+        | Command::RevokeTaskGrant { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }
         | Command::SettlePlanReview { task_id, .. } => Some(task_id.clone()),

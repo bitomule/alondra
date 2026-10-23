@@ -109,6 +109,17 @@ impl DomainState {
     pub fn clear_completed_action(&self) -> AvailableAction {
         self.action("clear_completed", Command::ClearCompleted { seen: self.revision }, None, None, self)
     }
+    /// The Revoke button of each thing the user allowed in the task, by the card it was allowed on.
+    pub fn grant_actions(&self, task_id: &TaskId) -> Vec<(InteractionId, AvailableAction)> {
+        self.grant_actions_given(task_id, self)
+    }
+    pub(super) fn grant_actions_given(&self, task_id: &TaskId, holds: &dyn Holds) -> Vec<(InteractionId, AvailableAction)> {
+        let Some(task) = self.tasks.get(task_id) else { return vec![] };
+        task.allowed.keys().map(|card| {
+            let revoke = Command::RevokeTaskGrant { task_id: task_id.clone(), card: card.clone() };
+            (card.clone(), self.action("revoke_task_grant", revoke, None, None, holds))
+        }).collect()
+    }
     /// The button that makes `method` this Mac's way of merging PRs, judged by the rule setting it runs.
     pub fn set_merge_method_action(&self, method: MergeMethod) -> AvailableAction {
         self.action("set_merge_method", Command::SetMergeMethod { method }, None, None, self)

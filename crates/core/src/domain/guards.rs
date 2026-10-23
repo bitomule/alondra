@@ -30,6 +30,7 @@ impl DomainState {
             Command::CancelTask { task_id } => self.cancel_guard(actor, task_id),
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
+            Command::RevokeTaskGrant { task_id, card } => self.revoke_grant_guard(actor, task_id, card),
             Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
             Command::SetMergeMethod { .. } => user(actor).map(drop),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
@@ -399,6 +400,14 @@ impl DomainState {
                 "task_id",
                 "The task this one reviewed is already over, so there is nothing left to review: create a new task if you want another review",
             );
+        }
+        Ok(())
+    }
+
+    pub(super) fn revoke_grant_guard(&self, actor: &Actor, task_id: &TaskId, card: &InteractionId) -> Result<()> {
+        user(actor)?;
+        if !self.task(task_id)?.allowed.contains_key(card) {
+            return fail("not_found", "That permission is no longer allowed in this task");
         }
         Ok(())
     }

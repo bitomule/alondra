@@ -307,15 +307,19 @@ impl<'connection> OwnerTransaction<'connection> {
                     let kept = alondra_store::DecisionRequest::new(request.clone(), tool_use.clone(), *kind, payload.clone())?;
                     self.journal.put_decision_request(&execution, *epoch, &kept)?;
                     let conn = self.conn;
-                    let (payload, worktree) = self.journal.inspect(|| {
+                    let (payload, worktree, worktrees) = self.journal.inspect(|| {
                         let payload: serde_json::Value = serde_json::from_slice(payload).map_err(|error| StoreError::Storage(error.into()))?;
                         let worktree = conn
                             .query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task_id.0], |row| row.get::<_, String>(0))
                             .optional()
                             .map_err(|error| StoreError::Storage(error.into()))?;
-                        Ok::<_, StoreError>((payload, worktree))
+                        let worktrees = conn
+                            .prepare("SELECT path FROM task_worktree_records WHERE task_id=?1 AND \"end\" IS NULL ORDER BY path")
+                            .and_then(|mut open| open.query_map(rusqlite::params![task_id.0], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
+                            .map_err(|error| StoreError::Storage(error.into()))?;
+                        Ok::<_, StoreError>((payload, worktree, worktrees))
                     })?;
-                    let asked = crate::domain_holds::sdk_decision(*kind, &payload, worktree.as_deref(), home);
+                    let asked = crate::domain_holds::sdk_decision(*kind, &payload, worktree.as_deref(), &worktrees, home);
                     commands.push(Command::RecordDecisionRequest {
                         task_id: task_id.clone(),
                         generation,

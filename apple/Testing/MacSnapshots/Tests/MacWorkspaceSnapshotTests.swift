@@ -395,6 +395,26 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 460, height: 460)) { MacViewActionSheet(presentation: store) }
     }
 
+    func test_card_permissionAllowedInTask() throws {
+        let store = try presentation(detail: "card-permission-task-mac")
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_permissionAllowedInTask_spanish() throws {
+        let store = try presentation(detail: "card-permission-task-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_allowedInTask() throws {
+        let store = try presentation(detail: "task-allowed-mac")
+        assertWindow(size: CGSize(width: 900, height: 2900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_allowedInTask_spanish() throws {
+        let store = try presentation(detail: "task-allowed-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 2900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_pullRequest_detail() throws {
         let store = try presentation(detail: "pull-request-mac")
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }

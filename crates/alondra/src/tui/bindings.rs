@@ -22,6 +22,7 @@ pub(super) enum Act {
     CloseSchedules,
     NewSchedule,
     Rules,
+    TaskRules(String),
     CloseRules,
     RemoveRule,
     McpServers,
@@ -409,7 +410,11 @@ impl App {
         if let Some(action) = rules.selected().and_then(super::rules::remove_action) {
             t.add(vec![char('x'), plain(KeyCode::Delete), plain(KeyCode::Backspace)], "x", action.label.clone(), Act::RemoveRule);
         }
-        t.add(vec![plain(KeyCode::Esc), char('a')], "Esc", tr!("back", "volver"), Act::CloseRules);
+        let toggle = match rules.source {
+            super::rules::Source::Always => 'a',
+            super::rules::Source::Task(_) => 'v',
+        };
+        t.add(vec![plain(KeyCode::Esc), char(toggle)], "Esc", tr!("back", "volver"), Act::CloseRules);
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
     }
 
@@ -501,6 +506,11 @@ impl App {
                 t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules);
                 t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search);
                 t.add(vec![char('a')], "a", tr!("allowed always", "permitidos siempre"), Act::Rules);
+                if let Some(task) = self.card_view.as_ref().filter(|view| super::rules::allows_something(view))
+                    .and_then(|view| view.key.strip_prefix("task:"))
+                {
+                    t.add(vec![char('v')], "v", tr!("allowed in this task", "permitido en esta tarea"), Act::TaskRules(task.to_owned()));
+                }
             }
         }
         t.add(vec![char(',')], ",", tr!("settings", "ajustes"), Act::McpServers);
@@ -573,7 +583,8 @@ impl App {
                 self.reload_schedules();
             }
             Act::NewSchedule => self.compose(Target::Form { view: "schedule:new".into() }, ""),
-            Act::Rules => self.open_rules(),
+            Act::Rules => self.open_rules(super::rules::Source::Always),
+            Act::TaskRules(task) => self.open_rules(super::rules::Source::Task(task)),
             Act::CloseRules => self.close_rules(),
             Act::RemoveRule => self.remove_rule(),
             Act::McpServers => self.open_mcp_servers(),

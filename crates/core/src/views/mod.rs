@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod action_id;
 pub mod allow_always;
+pub mod allow_for_task;
 mod card;
 mod common;
 pub mod components;

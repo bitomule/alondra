@@ -2942,7 +2942,7 @@ fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_cla
             assert!(*kept == 1 && *visible, "acknowledged before its request was kept and its card published: {acknowledged:?}");
         }
     }
-    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::DENY], "no «allow always» outside a repo");
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::FOR_TASK, Hold::DENY], "no «allow always» outside a repo");
     assert!(slice.decisions().is_empty(), "Claude waits for the user");
     assert!(slice.answer(&card, Hold::ALLOW, None).unwrap().changed);
     assert_eq!(slice.control_rows()[0].0, "respond", "the answer commits its response");
@@ -2983,7 +2983,7 @@ fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
     let slice = Slice::new();
     repo(&slice);
     let (mut driver, card) = slice.asked("decide:bash make build");
-    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::ALWAYS, Hold::DENY]);
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::FOR_TASK, Hold::ALWAYS, Hold::DENY]);
     slice.answer(&card, Hold::ALWAYS, None).unwrap();
     let settings = std::fs::canonicalize(&slice.worktree).unwrap().join(crate::allow_always::SETTINGS);
     assert_eq!(crate::allow_always::allowed(&settings).unwrap(), ["Bash(make build *)"]);
@@ -2992,6 +2992,81 @@ fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
     slice.rest(&mut driver);
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make build"}}));
     driver.stop().unwrap();
+}
+
+/// Tells the node to ask for `command` run from `cwd` and runs the owner until Claude has its
+/// answer or the user is asked: the card, or `None` when nobody was asked.
+fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> Option<String> {
+    let answered = slice.decisions().len();
+    slice.run(&Actor::System, &format!("tell-{answered}"), Command::TellNode {
+        task_id: TASK.into(), text: format!("[From David · 09:00] decide:bash@{cwd} {command}"),
+    });
+    driver.step(&|| false).unwrap();
+    slice.until(driver, |slice| slice.decisions().len() > answered || !Slice::open_decision_cards(&slice.domain).is_empty());
+    let card = Slice::open_decision_cards(&slice.domain).pop();
+    if card.is_none() {
+        let last = slice.decisions().pop().unwrap();
+        assert_eq!((&last["response"]["behavior"], &last["response"]["updatedInput"]["command"]), (&serde_json::json!("allow"), &serde_json::json!(command)), "{last}");
+        slice.rest(driver);
+    }
+    card
+}
+
+fn allowed_in_task(slice: &Slice) -> Vec<(String, u32)> {
+    slice.domain.state().unwrap().tasks[&TaskId(TASK.into())].allowed.iter().map(|(card, grant)| (card.0.clone(), grant.uses)).collect()
+}
+
+// D3b: «Permitir en esta tarea» on a reset inside the task's worktree: the same command from the
+// same folder runs again without a card, and nothing else does: another target, another folder,
+// another branch or a path outside the worktree asks again. Revoked, it asks again; once the task
+// ends, nothing it allowed is left.
+#[test]
+fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
+    let slice = Slice::new();
+    let worktree = slice.worktree.to_str().unwrap().to_owned();
+    let reset = "git reset --hard origin/main";
+    let (mut driver, card) = slice.asked(&format!("decide:bash@{worktree} {reset}"));
+    assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::FOR_TASK, Hold::DENY], "no «allow always» outside a repo, «allow in this task» inside the worktree");
+    slice.answer(&card, Hold::FOR_TASK, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice)["behavior"], "allow");
+    assert_eq!(allowed_in_task(&slice), [(card.clone(), 0)]);
+    assert_eq!(asks_again(&slice, &mut driver, &worktree, reset), None, "the same command from the same folder is not asked again");
+    assert_eq!(allowed_in_task(&slice), [(card.clone(), 1)]);
+    let observer = slice.observer();
+    let stored: (String, i64) = observer.query_row("SELECT card,uses FROM task_permission_grants WHERE task_id=?1", [TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(stored, (card.clone(), 1), "what the user allowed is kept with the task");
+    for (cwd, command, why) in [
+        (worktree.clone(), "git reset --hard HEAD~1", "another target"),
+        (format!("{worktree}/crates"), reset, "another folder"),
+    ] {
+        let card = asks_again(&slice, &mut driver, &cwd, command).unwrap_or_else(|| panic!("{why} asks again"));
+        slice.answer(&card, Hold::DENY, None).unwrap();
+        slice.rest(&mut driver);
+    }
+    let branch = asks_again(&slice, &mut driver, &worktree, "git branch -D scratch-a").unwrap();
+    slice.answer(&branch, Hold::FOR_TASK, None).unwrap();
+    slice.rest(&mut driver);
+    let other = asks_again(&slice, &mut driver, &worktree, "git branch -D scratch-b").expect("another branch asks again");
+    slice.answer(&other, Hold::DENY, None).unwrap();
+    slice.rest(&mut driver);
+    let outside = asks_again(&slice, &mut driver, &worktree, "cp build/app /Users/someone/Desktop/app").expect("outside the worktree it asks");
+    assert_eq!(slice.options(&outside), [Hold::ALLOW, Hold::DENY], "and cannot be allowed in the task");
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.interactions[&InteractionId(outside.clone())].card.allow_for_task,
+        Some(alondra_core::allow_for_task::AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::Outside, part: "/Users/someone/Desktop/app".into() }));
+    slice.answer(&outside, Hold::DENY, None).unwrap();
+    slice.rest(&mut driver);
+    slice.run(&user(), "revoke", Command::RevokeTaskGrant { task_id: TASK.into(), card: card.as_str().into() });
+    let revoked = asks_again(&slice, &mut driver, &worktree, reset).expect("revoked, it asks again");
+    slice.answer(&revoked, Hold::ALLOW, None).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(allowed_in_task(&slice), [(branch, 0)]);
+    driver.stop().unwrap();
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    assert!(allowed_in_task(&slice).is_empty(), "nothing stays allowed once the task ends");
+    let left: i64 = slice.observer().query_row("SELECT count(*) FROM task_permission_grants", [], |row| row.get(0)).unwrap();
+    assert_eq!(left, 0);
 }
 
 // D4: Claude asks one question: the option the user chose reaches Claude under the question's text.

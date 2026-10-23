@@ -457,6 +457,12 @@ pub enum Command {
         task_id: TaskId,
         archived: bool,
     },
+    /// The user takes back what they allowed in the task from the permission card `card`: the
+    /// next prompt it covered asks again.
+    RevokeTaskGrant {
+        task_id: TaskId,
+        card: InteractionId,
+    },
     /// The user clears the completed work off the lists: every ended Task the user saw at
     /// revision `seen`, and every closed Request that made none.
     ClearCompleted {

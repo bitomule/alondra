@@ -1499,6 +1499,11 @@ fn map_action(
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
             Some((Command::ArchiveTask { task_id: task.id.clone(), archived: action.verb == Verb::Archive }, stamp("Updated", "Actualizada")))
         }
+        Verb::RevokeGrant => {
+            let task = state.tasks.get(&TaskId(action.subject.clone()))?;
+            let card = InteractionId(action.extra.clone()?);
+            task.allowed.contains_key(&card).then(|| (Command::RevokeTaskGrant { task_id: task.id.clone(), card }, stamp("Revoked", "Revocado")))
+        }
         _ => None,
     }
 }
@@ -1746,6 +1751,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::Conflicts => Outcome::done(say("Asked its node to resolve the conflicts.", "Pedido a su nodo que resuelva los conflictos.")),
         Verb::Archive => Outcome::done(say("Task archived.", "Tarea archivada.")),
         Verb::Unarchive => Outcome::done(say("Task restored.", "Tarea restaurada.")),
+        Verb::RevokeGrant => Outcome::done(say("Revoked: the next time the node needs it, it asks again.", "Revocado: la próxima vez que el nodo lo necesite, volverá a preguntar.")),
         Verb::SchedRun => Outcome::started(say("Run started: its task appears in Tasks.", "Ejecución iniciada: su tarea aparece en Tareas."), None),
         Verb::SchedToggle => Outcome::done(say("Scheduled task updated.", "Tarea programada actualizada.")),
         Verb::SchedDelete => Outcome::done(say("Scheduled task deleted.", "Tarea programada eliminada.")),

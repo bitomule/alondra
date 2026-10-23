@@ -1,6 +1,7 @@
 //! The decisions Claude asks for through a task's SDK execution: the rules Alondra decides some by
 //! itself, the cards the user decides the rest on, and how their answers become the decision.
 use super::*;
+use crate::allow_for_task::AllowForTask;
 use crate::node_guard::forbidden_for_nodes;
 
 /// The MCP server the Alondra plugin registers in a node's Claude Code.
@@ -75,6 +76,9 @@ impl DomainState {
         if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
         }
+        if hold == Hold::Permission && self.allowed_in_task(task, prompt) {
+            return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow });
+        }
         let node = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.node().clone()).ok_or_else(|| DomainError::new("stale_execution", "The task has no execution"))?;
         let winding_down = self.tasks.get(task).is_some_and(|t| Self::winding_down(t) && t.agent_id.as_ref() == Some(&node));
         let asker = Actor::Agent { agent_id: node };
@@ -108,6 +112,21 @@ impl DomainState {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card_id });
         }
         self.decide(lifecycles, task, LifecycleRecord::DecisionAsked { card: held, epoch, reason: reason_of(hold) })
+    }
+
+    /// Whether something the user allowed in the open task covers this prompt; the grant that
+    /// covers it counts the use.
+    fn allowed_in_task(&mut self, task: &TaskId, prompt: &DecisionPrompt) -> bool {
+        let DecisionPrompt::Card { card, .. } = prompt else { return false };
+        let Some(asked) = &card.allow_for_task else { return false };
+        let Some(open) = self.tasks.get_mut(task).filter(|t| !t.over()) else { return false };
+        match open.allowed.values_mut().find(|grant| grant.allows.covers(asked)) {
+            Some(grant) => {
+                grant.uses = grant.uses.saturating_add(1);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Alondra could not put the request at `epoch` in front of the user: Claude is denied it with
@@ -219,8 +238,15 @@ impl DomainState {
             return fail("conflict", "The decision has no answer");
         };
         let note = note(answer);
+        if hold == Hold::Permission && answer.option_id == Hold::FOR_TASK {
+            let allows = members[0].card.allow_for_task.clone().filter(AllowForTask::offered)
+                .ok_or_else(|| DomainError::new("invalid_input", "This permission cannot be allowed in its task"))?;
+            let open = self.tasks.get_mut(&task_id).filter(|t| !t.over())
+                .ok_or_else(|| DomainError::new("task_not_active", "The task is over: there is nothing left to allow in it"))?;
+            open.allowed.insert(asked.clone(), TaskGrant { allows, uses: 0 });
+        }
         let decision = match (hold, answer.option_id.as_str()) {
-            (Hold::Permission, Hold::ALLOW | Hold::ALWAYS) | (Hold::Plan, Hold::APPROVE) => DecisionRecord::Allow,
+            (Hold::Permission, Hold::ALLOW | Hold::ALWAYS | Hold::FOR_TASK) | (Hold::Plan, Hold::APPROVE) => DecisionRecord::Allow,
             (Hold::Permission, Hold::DENY) => DecisionRecord::Deny {
                 message: note.map_or_else(|| USER_DENIED.to_owned(), |note| format!("{USER_DENIED}: {note}")),
             },

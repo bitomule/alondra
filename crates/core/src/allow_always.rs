@@ -278,7 +278,7 @@ fn rule_of(words: &[Word]) -> Option<String> {
     (plain_program(&program.text) && !sub.glob && subcommand(&sub.text)).then(|| format!("{} {} *", program.text, sub.text))
 }
 
-fn plain_program(text: &str) -> bool {
+pub(crate) fn plain_program(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+')) && !text.starts_with(['-', '.'])
 }
 
@@ -291,9 +291,9 @@ fn subcommand(text: &str) -> bool {
 // Reading the command.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Word {
-    text: String,
-    glob: bool,
+pub(crate) struct Word {
+    pub(crate) text: String,
+    pub(crate) glob: bool,
 }
 impl Word {
     fn plain(text: &str) -> Word {
@@ -302,18 +302,18 @@ impl Word {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
+pub(crate) enum Direction {
     Read,
     Write,
 }
 
 #[derive(Debug, Default)]
-struct Part {
-    words: Vec<Word>,
-    redirects: Vec<(Direction, Word)>,
+pub(crate) struct Part {
+    pub(crate) words: Vec<Word>,
+    pub(crate) redirects: Vec<(Direction, Word)>,
 }
 impl Part {
-    fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
     }
 }
@@ -322,7 +322,7 @@ impl Part {
 /// redirections from the words. `None` for anything whose effect the words do not show:
 /// expansions, substitutions, subshells, groups, background jobs, here-documents, comments, a
 /// `~` path or a dangling operator.
-fn parse(command: &str) -> Option<Vec<Part>> {
+pub(crate) fn parse(command: &str) -> Option<Vec<Part>> {
     let mut parts = vec![];
     let mut part = Part::default();
     let mut word: Option<Word> = None;
@@ -483,7 +483,7 @@ const HARMLESS_VARIABLES: &[&str] = &[
 /// The words Claude Code matches a rule against: without harmless variables in front and without
 /// the wrappers it strips (`timeout 60`, `time`, `nice`, `nohup`, `stdbuf`, `command`, `builtin`,
 /// `noglob`).
-fn strip(words: &[Word]) -> Result<&[Word], Why> {
+pub(crate) fn strip(words: &[Word]) -> Result<&[Word], Why> {
     let mut words = words;
     while let Some(name) = words.first().and_then(|w| assignment(&w.text)) {
         if !HARMLESS_VARIABLES.contains(&name) || words[0].glob {
@@ -590,7 +590,7 @@ const SHELL_KEYWORDS: &[&str] = &[
 /// Commands Claude Code treats as read-only: they need no rule.
 const READ_ONLY: &[&str] = &["ls", "cat", "echo", "pwd", "head", "tail", "grep", "find", "wc", "which", "diff", "stat", "du"];
 const READ_ONLY_GIT: &[&str] = &["status", "log", "diff", "show", "rev-parse"];
-const FIND_ACTIONS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
+pub(crate) const FIND_ACTIONS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"];
 
 fn base_name(program: &str) -> &str {
     program.rsplit('/').next().unwrap_or(program)
@@ -664,7 +664,7 @@ fn read_only(words: &[Word]) -> bool {
 // Paths.
 
 /// `path` resolved against `base` without touching the disk: `..` climbs, `.` stays.
-fn lexical(base: &Path, path: &str) -> PathBuf {
+pub(crate) fn lexical(base: &Path, path: &str) -> PathBuf {
     let joined = if Path::new(path).is_absolute() { PathBuf::from(path) } else { base.join(path) };
     let mut out = PathBuf::new();
     for component in joined.components() {

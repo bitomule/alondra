@@ -1212,6 +1212,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             documents,
         ));
     }
+    let revokes = context.index.grant_actions(context.domain, &task.id);
+    view.sections.extend(super::allow_for_task::section(task, &revokes, context.lang));
     let mut actions = vec![];
     if let Some(agent_id) = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id)) {
         if let Some(mut message) = common::action(

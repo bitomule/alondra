@@ -14,7 +14,7 @@ use super::{
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip, fit_title,
+    InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -572,9 +572,9 @@ fn claudes_worded_options(interaction: &Interaction, domain: &DomainState) -> Ve
 }
 
 /// How a card's button reads is settled here, once, for every client: red only when its style is
-/// destructive, and words under it only for «Allow always», which says exactly what stops asking,
-/// for the options of Claude's question that Claude explained, and for a merge whose repository
-/// does not allow the method set in Settings.
+/// destructive, and words under it only for «Allow always» and «Allow in this task», which say
+/// exactly what stops asking, for the options of Claude's question that Claude explained, and for
+/// a merge whose repository does not allow the method set in Settings.
 fn painted(mut action: Action, worded: &[String]) -> Action {
     action.role = Some(match (action.style, action.role) {
         (Style::Destructive, _) => Role::Risk,
@@ -582,7 +582,7 @@ fn painted(mut action: Action, worded: &[String]) -> Action {
         _ => Role::Neutral,
     });
     let merge = ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Merge);
-    if !merge && !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || worded.iter().any(|worded| worded == id)) {
+    if !merge && !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || id == Hold::FOR_TASK || worded.iter().any(|worded| worded == id)) {
         action.description = None;
     }
     action
@@ -776,11 +776,19 @@ fn mark_read(
     vec![with_availability(action, available, lang)]
 }
 
+fn task_of<'a>(context: &'a RenderContext<'_>, interaction: &Interaction) -> Option<&'a Task> {
+    match &interaction.scope {
+        Scope::Task { task_id } => context.domain.tasks.get(task_id),
+        Scope::Orchestrator { .. } => None,
+    }
+}
+
 /// What an option reads in the user's language; Claude Code's own prompts keep their fixed answers.
 fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> String {
     let label = match (hold, hold.approves(&option.id)) {
         (Hold::Permission, true) => t!(lang, "Allow", "Permitir"),
         (Hold::Permission, false) if option.id == Hold::ALWAYS => t!(lang, "Allow always", "Permitir siempre"),
+        (Hold::Permission, false) if option.id == Hold::FOR_TASK => t!(lang, "Allow in this task", "Permitir en esta tarea"),
         (Hold::Permission, false) => t!(lang, "Deny", "Denegar"),
         (Hold::Plan, true) => t!(lang, "Approve", "Aprobar"),
         (Hold::Plan, false) => t!(lang, "Request changes", "Pedir cambios"),
@@ -797,6 +805,9 @@ pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &Que
     match state.holds.get(&interaction.id).copied().filter(|hold| *hold != Hold::Question) {
         Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
             .and_then(|offer| super::allow_always::chosen(offer, lang))
+            .unwrap_or_else(|| held_option(Hold::Permission, option, lang)),
+        Some(Hold::Permission) if option.id == Hold::FOR_TASK => interaction.card.allow_for_task.as_ref()
+            .and_then(|offer| super::allow_for_task::chosen(offer, lang))
             .unwrap_or_else(|| held_option(Hold::Permission, option, lang)),
         Some(hold) => held_option(hold, option, lang),
         None => fixed_option_text(interaction, option, lang).0,
@@ -1358,6 +1369,8 @@ fn answer_actions(
             None | Some(Hold::Question) => fixed_description,
             Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
                 .and_then(|offer| super::allow_always::description(offer, lang)),
+            Some(Hold::Permission) if option.id == Hold::FOR_TASK => interaction.card.allow_for_task.as_ref()
+                .and_then(|offer| super::allow_for_task::description(offer, task_of(context, interaction), lang)),
             Some(_) => None,
         };
         action.stamp = Some(t!(lang, "Answered", "Respondida").into());
@@ -1770,6 +1783,9 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     out.extend(proposed_plan(interaction, lang));
     out.extend(kept_at(interaction, lang));
     if domain.holds.get(&interaction.id) == Some(&Hold::Permission) {
+        if let Some(line) = interaction.card.allow_for_task.as_ref().and_then(|offer| super::allow_for_task::refusal(offer, lang)) {
+            out.push(markdown(line));
+        }
         if let Some(line) = interaction.card.allow_always.as_ref().and_then(|offer| super::allow_always::refusal(offer, lang)) {
             out.push(markdown(line));
         }

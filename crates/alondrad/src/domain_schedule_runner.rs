@@ -257,7 +257,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
     };
     (request, task)
 }

@@ -1945,7 +1945,7 @@ impl App {
                 key,
                 result: Ok(view),
             } => {
-                if key == rules::VIEW {
+                if self.rules_read(&key) {
                     self.rules_loaded(Ok(&view));
                 }
                 if key == mcp_servers::VIEW {
@@ -1989,7 +1989,7 @@ impl App {
                 key,
                 result: Err(error),
             } => {
-                if key == rules::VIEW {
+                if self.rules_read(&key) {
                     self.rules_loaded(Err(&error));
                 }
                 if key == mcp_servers::VIEW {

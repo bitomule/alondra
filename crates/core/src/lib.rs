@@ -10,6 +10,7 @@ pub mod delivery;
 pub mod activity;
 pub mod operation_id;
 pub mod allow_always;
+pub mod allow_for_task;
 pub mod cited_file;
 pub mod artifact;
 pub mod automerge;

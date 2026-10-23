@@ -375,6 +375,47 @@ fn remove_hides_the_rule_at_once_and_a_refusal_brings_it_back_with_its_message()
     assert_eq!(app.spawned.borrow().len(), asked + 1, "the list is asked again once it is gone");
 }
 
+fn grant(card: &str, title: &str, subtitle: &str) -> Value {
+    json!({"type": "row", "id": format!("grant-{card}"), "icon": "check", "title": title, "subtitle": subtitle, "depth": 0, "struck": false,
+        "actions": [{"id": format!("revoke_grant:t-7@9~{card}"), "label": "Revoke", "style": "destructive", "presentation": "button",
+            "input": {"kind": "none"}, "attachments": false, "enabled": true, "stamp": "Revoked", "resolves_card": false}]})
+}
+
+fn task_allowing(grants: Vec<Value>) -> ViewDocument {
+    let mut view = super::parity::view_fixture("machine-ios.json");
+    view["key"] = json!("task:t-7");
+    view["sections"] = json!([{"id": "allowed_in_task", "title": "Allowed in this task", "collapsed": false, "items": grants}]);
+    serde_json::from_value(view).unwrap()
+}
+
+#[test]
+fn v_on_a_task_that_allowed_something_lists_it_and_revoke_takes_it_back_at_once() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.screen = Screen::Tasks;
+    press(&mut app, KeyCode::Char('v'));
+    assert!(app.rules.is_none(), "a task that allowed nothing has no list to open");
+    let grants = vec![
+        grant("decision-t-7-1-3", "git reset --hard origin/main", "exact command, from the task's worktree · used once"),
+        grant("decision-t-7-1-4", "bazelisk test …", "any arguments, inside the task's folders · not used yet"),
+    ];
+    app.card_view = Some(task_allowing(grants.clone()));
+    press(&mut app, KeyCode::Char('v'));
+    assert!(app.rules.as_ref().is_some_and(|rules| rules.source == super::rules::Source::Task("t-7".into())));
+    app.on_msg(Msg::ViewCard { key: "task:t-7".into(), result: Ok(task_allowing(grants)) });
+    let screen = drawn(&mut app, 120, 30);
+    assert!(screen.contains("Allowed in this task"), "{screen}");
+    assert!(screen.contains("git reset --hard origin/main"), "{screen}");
+    assert!(screen.contains("exact command, from the task's worktree · used once"), "{screen}");
+    assert!(screen.contains("x Revoke"), "{screen}");
+    press(&mut app, KeyCode::Char('x'));
+    let request = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(request.1["action_id"], "revoke_grant:t-7@9~decision-t-7-1-3");
+    assert_eq!(shown_rules(&app), ["grant-decision-t-7-1-4"], "it leaves before the Mac answers");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.rules.is_none());
+}
+
 fn sign_in_page(returns_to_claude: bool) -> Result<Value, String> {
     Ok(json!({"server": "linear", "url": "https://linear.app/oauth/authorize?state=s1", "returns_to_claude": returns_to_claude}))
 }

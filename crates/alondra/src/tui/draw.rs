@@ -794,7 +794,10 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(rules) = app.rules.as_mut() else { return };
     let title = rules
         .title()
-        .unwrap_or(tr!("Permissions allowed always", "Permisos permitidos siempre"))
+        .unwrap_or(match rules.source {
+            super::rules::Source::Always => tr!("Permissions allowed always", "Permisos permitidos siempre"),
+            super::rules::Source::Task(_) => tr!("Allowed in this task", "Permitido en esta tarea"),
+        })
         .to_owned();
     let block = panel(Line::from(format!(" {title} ").bold()), true);
     let inner = block.inner(area);
@@ -814,7 +817,11 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
     }
     if lines.is_empty() {
         let message = match (&rules.view, &rules.failed) {
-            (Some(_), _) => tr!("No command is allowed always yet", "Ningún comando se permite siempre todavía").to_owned(),
+            (Some(_), _) => match rules.source {
+                super::rules::Source::Always => tr!("No command is allowed always yet", "Ningún comando se permite siempre todavía"),
+                super::rules::Source::Task(_) => tr!("Nothing is allowed in this task", "No hay nada permitido en esta tarea"),
+            }
+            .to_owned(),
             (None, Some(error)) => error.clone(),
             (None, None) => tr!("Loading…", "Cargando…").to_owned(),
         };

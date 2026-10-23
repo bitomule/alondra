@@ -36,6 +36,9 @@ pending = []
 # Each decision Claude asked for and still waits on, by request id.
 asked = {}
 decisions = 0
+# The SDK's hook callbacks by event, from its initialize request; and the tool calls each waits on.
+hooks = {}
+hooked = {}
 # Message uuids are unique across processes, as the native ones are: a resumed session never repeats them.
 serial = (os.getpid() % 100000) * 1000000
 # The API refuses every prompt, with a 401 for an expired sign-in or a 529 when it is overloaded,
@@ -259,6 +262,10 @@ SECOND_QUESTION = dict(question='Which fixture sizes?', header='Sizes', multiSel
 def decide(message, scenario, argument):
     global decisions
     model_input = None
+    folder = os.getcwd()
+    if scenario.startswith('bash@'):
+        # Like a native Claude whose shell moved: `decide:bash@<folder> <command>` runs from <folder>.
+        scenario, folder = 'bash', scenario[len('bash@'):]
     if scenario == 'bash':
         tool, tool_input, extra = 'Bash', dict(command=argument or 'echo fixture'), {}
     elif scenario == 'huge-bash':
@@ -291,11 +298,23 @@ def decide(message, scenario, argument):
     else:
         request = dict(subtype='can_use_tool', tool_name=tool, input=tool_input, tool_use_id=tool_use_id, **extra)
     asked[request_id] = dict(message=message, tool_name=tool, tool_use_id=tool_use_id, cancelled=False)
+    # Like the native Claude: a call's PreToolUse hooks run, and are answered, before it asks.
+    callbacks = [callback for matcher in hooks.get('PreToolUse', []) if matcher.get('matcher') in (None, tool) for callback in matcher.get('hookCallbackIds', [])]
+    if tool is not None and callbacks:
+        hook_id = 'hook-' + str(decisions)
+        hooked[hook_id] = dict(type='control_request', request_id=request_id, request=request)
+        send(dict(type='control_request', request_id=hook_id, request=dict(subtype='hook_callback', callback_id=callbacks[0], tool_use_id=tool_use_id,
+                  input=dict(session_id=session_id, transcript_path='', cwd=folder, hook_event_name='PreToolUse', tool_name=tool, tool_input=tool_input, tool_use_id=tool_use_id))))
+        return
     send(dict(type='control_request', request_id=request_id, request=request))
 
 def decided(message):
     global serial
     response = message['response']
+    waiting = hooked.pop(response['request_id'], None)
+    if waiting is not None:
+        send(waiting)
+        return
     entry = asked.pop(response['request_id'], None)
     if entry is None:
         raise RuntimeError('Response to a request the fixture never sent')
@@ -330,6 +349,7 @@ for raw in sys.stdin:
     if message['type'] == 'control_request':
         subtype = message['request']['subtype']
         if subtype == 'initialize':
+            hooks = message['request'].get('hooks') or {}
             descriptors = {}
             for fd in (0, 3, 4, 5):
                 try:
@@ -513,8 +533,10 @@ for raw in sys.stdin:
             # taken into that same turn, which then ends.
             consume(message)
             result(message)
-        elif text.startswith('decide:'):
-            scenario, _, argument = text[len('decide:'):].partition(' ')
+        elif text.startswith('decide:') or (text.startswith('[From ') and text.partition('] ')[2].startswith('decide:')):
+            # What the user tells the node arrives as `[From David · 09:00] decide:…`.
+            said = text if text.startswith('decide:') else text.partition('] ')[2]
+            scenario, _, argument = said[len('decide:'):].partition(' ')
             decide(message, scenario, argument)
         elif text in ('foreground-command', 'foreground-command-hold'):
             foreground_started(message)

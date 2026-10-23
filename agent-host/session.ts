@@ -1,4 +1,4 @@
-import { query, type CanUseTool, type ElicitationResult, type OnElicitation, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
+import { query, type CanUseTool, type ElicitationResult, type HookCallback, type OnElicitation, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -102,6 +102,8 @@ function safeDiagnostic(text: string): string {
 }
 
 const MAX_PENDING_DECISIONS = 32;
+/** How many tool calls' folders the host remembers while it waits to know whether they ask. */
+const MAX_FOLDERS = 64;
 /** How long a force stop gives Claude's process to exit after each step before it takes the next. */
 const STOP_GRACE_MS = 2_000;
 const DECISION_TOO_LARGE = 'The request is too large for Alondra to show; split it into smaller steps';
@@ -128,12 +130,27 @@ type Pending = { kind: DecisionKind; toolUseId: string | null; asked: unknown; e
 
 export class PermissionCallbacks {
   private pending = new Map<string, Pending>();
+  private folders = new Map<string, string>();
   private closed = false;
   constructor(private observe: Configuration['observe']) {}
+  /** Claude Code's folder before each command, which follows its `cd`s: a prompt says where its command runs. */
+  folder: HookCallback = async (input) => {
+    if (input.hook_event_name === 'PreToolUse' && typeof input.cwd === 'string') {
+      this.folders.delete(input.tool_use_id);
+      this.folders.set(input.tool_use_id, input.cwd);
+      for (const oldest of this.folders.keys()) {
+        if (this.folders.size <= MAX_FOLDERS) break;
+        this.folders.delete(oldest);
+      }
+    }
+    return {};
+  };
   request: CanUseTool = (tool, input, options) => {
     const { signal, ...request } = options;
     const kind = decisionKind(tool);
-    return this.ask(options.requestId, kind, options.toolUseID, signal, { tool, input, request: defined(request) }, kind === 'plan' ? planResult : permissionResult);
+    const cwd = this.folders.get(options.toolUseID);
+    this.folders.delete(options.toolUseID);
+    return this.ask(options.requestId, kind, options.toolUseID, signal, defined({ tool, input, request: defined(request), cwd }), kind === 'plan' ? planResult : permissionResult);
   };
   elicitation: OnElicitation = (request, { signal, requestId }) => this.ask(requestId, 'elicitation', null, signal, defined({
     serverName: request.serverName, message: request.message, mode: request.mode, url: request.url, elicitationId: request.elicitationId,
@@ -233,6 +250,7 @@ export class Session {
           permissionPrompts: 'host',
           canUseTool: this.permissions.request,
           onElicitation: this.permissions.elicitation,
+          hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [this.permissions.folder] }] },
           ...(config.worker && {
             plugins: config.worker.plugins.map((path) => ({ type: 'local' as const, path })),
             settings: config.worker.settings as Options['settings'],

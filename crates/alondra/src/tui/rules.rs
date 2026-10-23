@@ -1,5 +1,7 @@
-//! This Mac's «Permissions allowed always»: the `allowed_rules` rows of the machine view, each
-//! with its Remove. A removed rule leaves the list at once and comes back if the Mac refuses.
+//! A list of permissions, each with the one button that takes it back: this Mac's «Permissions
+//! allowed always» (the `allowed_rules` rows of the machine view, with Remove) or what a task
+//! allowed (the `allowed_in_task` rows of its view, with Revoke). One taken back leaves the list
+//! at once and comes back if the Mac refuses.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -12,12 +14,41 @@ use serde_json::json;
 use super::keys::Motion;
 use super::{Acting, App, Client, Key, Msg};
 
-pub const VIEW: &str = "machine";
-const SECTION: &str = "allowed_rules";
+const ALWAYS_VIEW: &str = "machine";
+const ALWAYS_SECTION: &str = "allowed_rules";
+const TASK_SECTION: &str = "allowed_in_task";
 const ACCENT: Color = Color::LightYellow;
 
-#[derive(Default)]
+/// Which list: what this Mac allows always, or what one task allowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Always,
+    Task(String),
+}
+
+impl Source {
+    pub fn view(&self) -> String {
+        match self {
+            Source::Always => ALWAYS_VIEW.into(),
+            Source::Task(task) => format!("task:{task}"),
+        }
+    }
+
+    fn section(&self) -> &'static str {
+        match self {
+            Source::Always => ALWAYS_SECTION,
+            Source::Task(_) => TASK_SECTION,
+        }
+    }
+}
+
+/// Whether a task's view lists something it allowed.
+pub fn allows_something(view: &View) -> bool {
+    view.sections.iter().any(|section| section.id == TASK_SECTION && !section.items.is_empty())
+}
+
 pub struct Rules {
+    pub source: Source,
     pub view: Option<View>,
     pub failed: Option<String>,
     pub sel: usize,
@@ -28,15 +59,19 @@ pub struct Rules {
 }
 
 impl Rules {
+    pub fn new(source: Source) -> Self {
+        Rules { source, view: None, failed: None, sel: 0, scroll: 0, hidden: HashSet::new(), removing: HashMap::new() }
+    }
+
     pub fn title(&self) -> Option<&str> {
-        self.view.as_ref()?.sections.iter().find(|section| section.id == SECTION)?.title.as_deref()
+        self.view.as_ref()?.sections.iter().find(|section| section.id == self.source.section())?.title.as_deref()
     }
 
     pub fn rows(&self) -> Vec<&Row> {
         self.view
             .iter()
             .flat_map(|view| &view.sections)
-            .filter(|section| section.id == SECTION)
+            .filter(|section| section.id == self.source.section())
             .flat_map(|section| &section.items)
             .filter_map(|item| match item {
                 Item::Row(row) if !self.hidden.contains(&row.id) => Some(row),
@@ -98,8 +133,8 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
 }
 
 impl App {
-    pub(super) fn open_rules(&mut self) {
-        self.rules = Some(Rules::default());
+    pub(super) fn open_rules(&mut self, source: Source) {
+        self.rules = Some(Rules::new(source));
         self.load_rules();
     }
 
@@ -109,12 +144,18 @@ impl App {
     }
 
     fn load_rules(&mut self) {
-        self.spawn(|tx, target| {
+        let Some(key) = self.rules.as_ref().map(|rules| rules.source.view()) else { return };
+        self.spawn(move |tx, target| {
             let result = Client::for_target(target, Duration::from_secs(25))
-                .views(VIEW, None)
+                .views(&key, None)
                 .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::ViewCard { key: VIEW.into(), result });
+            let _ = tx.send(Msg::ViewCard { key, result });
         });
+    }
+
+    /// Whether `key` is the view the open list reads.
+    pub(super) fn rules_read(&self, key: &str) -> bool {
+        self.rules.as_ref().is_some_and(|rules| rules.source.view() == key)
     }
 
     pub(super) fn rules_loaded(&mut self, result: Result<&View, &str>) {

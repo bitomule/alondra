@@ -40,9 +40,10 @@ try {
     assert(owner.hello.capabilities.includes('exact_decisions'));
     assert.deepEqual((await owner.respond({ request_id: 'decision-1', epoch: 1, kind: 'permission', tool_use_id: 'toolu_fixture_1', asked: {} }, { behavior: 'allow', updated_input: {} })).outcome, stale, 'nothing pending: an answer reaches nothing');
 
-    const bash = await owner.ask('decide:bash git status');
+    const bash = await owner.ask('decide:bash@/fixture/folder git status');
     assert.deepEqual([bash.identity.request_id, bash.identity.kind, bash.identity.tool_use_id], ['decision-1', 'permission', 'toolu_fixture_1']);
     assert.equal(bash.payload.tool, 'Bash');
+    assert.equal(bash.payload.cwd, '/fixture/folder', 'the folder Claude Code runs the command from, as its PreToolUse hook saw it');
     assert.deepEqual(bash.payload.input, { command: 'git status' });
     assert.equal(bash.payload.request.toolUseID, 'toolu_fixture_1');
     for (const [why, identity, decision] of [

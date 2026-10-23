@@ -275,7 +275,7 @@ impl App {
             self.load_screen_view();
         }
         if r.rules_open {
-            self.open_rules();
+            self.open_rules(super::rules::Source::Always);
         }
         if r.detail_focused {
             self.focus = Pane::Detail;

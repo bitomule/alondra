@@ -339,8 +339,18 @@ fn text_of(message: &Value) -> String {
 /// closes its input.
 /// The permission requests the session waits on, by request id: each gets the host's answer.
 type Asked = Arc<Mutex<std::collections::BTreeMap<String, mpsc::Sender<Value>>>>;
+/// The host's PreToolUse hook callbacks for Bash, from its initialize request.
+type Hooks = Arc<Mutex<Vec<String>>>;
 
-fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, servers: &Arc<super::oauth::Servers>, log: &Path) -> Result<()> {
+/// The callbacks an initialize request registers for Bash's PreToolUse.
+fn bash_hooks(request: &Value) -> Vec<String> {
+    request["hooks"]["PreToolUse"].as_array().into_iter().flatten()
+        .filter(|matcher| matcher["matcher"].is_null() || matcher["matcher"] == "Bash")
+        .flat_map(|matcher| matcher["hookCallbackIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, hooks: &Hooks, servers: &Arc<super::oauth::Servers>, log: &Path) -> Result<()> {
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -351,7 +361,10 @@ fn read_input(out: &Out, events: &mpsc::Sender<Event>, asked: &Asked, servers: &
             Some("control_request") => {
                 let request = message["request_id"].as_str().unwrap_or_default();
                 match message["request"]["subtype"].as_str() {
-                    Some("initialize") => out.control(request, initialized())?,
+                    Some("initialize") => {
+                        *hooks.lock().map_err(|_| anyhow!("hooks poisoned"))? = bash_hooks(&message["request"]);
+                        out.control(request, initialized())?;
+                    }
                     Some("interrupt") => {
                         out.control(request, json!({"still_queued": []}))?;
                         let _ = events.send(Event::Interrupt);
@@ -466,11 +479,12 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let out = Out(Arc::new(Mutex::new(std::io::stdout())));
     let (events, inbox) = mpsc::channel();
     let asked = Asked::default();
+    let hooks = Hooks::default();
     let servers = super::oauth::Servers::load(fakes);
     {
-        let (out, events, asked, servers, log) = (out.clone(), events.clone(), asked.clone(), servers.clone(), log.clone());
+        let (out, events, asked, hooks, servers, log) = (out.clone(), events.clone(), asked.clone(), hooks.clone(), servers.clone(), log.clone());
         std::thread::spawn(move || {
-            if let Err(error) = read_input(&out, &events, &asked, &servers, &log) {
+            if let Err(error) = read_input(&out, &events, &asked, &hooks, &servers, &log) {
                 note(&log, &format!("input: {error:#}"));
                 let _ = events.send(Event::Closed);
             }
@@ -487,7 +501,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         Some(task) => fakes.task_script(task)?,
         None => None,
     };
-    let mut native = Native { fakes, out, session, script, turn: None, own: None, background: None, unheard: None, fresh: history == 0, asked, servers, dir, log };
+    let mut native = Native { fakes, out, session, script, turn: None, own: None, background: None, unheard: None, fresh: history == 0, asked, hooks, servers, dir, log };
     let ended = native.live(inbox);
     let _ = fs::remove_file(&socket);
     if native.session.state == State::Running {
@@ -528,6 +542,7 @@ struct Native<'a> {
     /// Its next input is the mission of a session that never ran before.
     fresh: bool,
     asked: Asked,
+    hooks: Hooks,
     servers: Arc<super::oauth::Servers>,
     dir: PathBuf,
     log: PathBuf,
@@ -836,6 +851,7 @@ impl Native<'_> {
             append(&self.dir.join("permissions.jsonl"), &json!({"at": now_ms(), "command": command, "asked": false}))?;
             return Ok(None);
         }
+        self.pre_tool_use(tool_use, command)?;
         let request = format!("permission-{}", hex(&random::<6>()?));
         let (answer, answered) = mpsc::channel();
         self.asked.lock().map_err(|_| anyhow!("asked poisoned"))?.insert(request.clone(), answer);
@@ -852,6 +868,25 @@ impl Native<'_> {
             return Ok(None);
         }
         Ok(Some(decision["message"].as_str().unwrap_or("The user did not allow the command").to_owned()))
+    }
+
+    /// Runs the host's PreToolUse hooks for `command`, as Claude Code does before it asks, from
+    /// the folder the session runs in, and waits for each to answer.
+    fn pre_tool_use(&mut self, tool_use: &str, command: &str) -> Result<()> {
+        let callbacks = self.hooks.lock().map_err(|_| anyhow!("hooks poisoned"))?.clone();
+        for callback in callbacks {
+            let request = format!("hook-{}", hex(&random::<6>()?));
+            let (answer, answered) = mpsc::channel();
+            self.asked.lock().map_err(|_| anyhow!("asked poisoned"))?.insert(request.clone(), answer);
+            self.send(json!({
+                "type": "control_request", "request_id": request,
+                "request": {"subtype": "hook_callback", "callback_id": callback, "tool_use_id": tool_use, "input": {
+                    "session_id": self.session.session_id, "transcript_path": "", "cwd": self.session.cwd, "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": tool_use}},
+            }))?;
+            let _ = answered.recv();
+        }
+        Ok(())
     }
 
     /// A root message of the turn Claude started by itself: it answers no input of Alondra's.

@@ -344,3 +344,115 @@ fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wake
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "the task waits on the user, not on a turn that never comes");
     assert_aggregate_rules(&s);
 }
+
+const WORKTREE: &str = "/repo/.claude/worktrees/t";
+
+/// A command Claude Code runs from `cwd`, carded as the daemon cards it: «allow in this task»
+/// offered for what stays in the task's worktree.
+fn bash_in(epoch: u64, command: &str, cwd: &str) -> Command {
+    let input = json!({"command": command});
+    let prompt = crate::allow_for_task::Prompt { tool: Some("Bash"), input: &input, cwd: Some(cwd), persistent_refused: false, ask_rule: false };
+    let offer = crate::allow_for_task::assess(&prompt, &[std::path::PathBuf::from(WORKTREE)]);
+    let options = Hold::Permission.permission_offering(false, offer.offered());
+    let mut card = CardSpec::new(CardKind::Authorize, format!("Run {command}"));
+    card.allow_for_task = Some(offer);
+    request(epoch, Hold::Permission, Some("Bash"), input, None, DecisionPrompt::Card { body: format!("Run {command}"), options, card })
+}
+fn settle(s: &mut DomainState, epoch: u64) {
+    must(s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch });
+}
+/// Asks at `epoch`: the card the user is shown, or `None` when Alondra allowed it by itself.
+fn ask(s: &mut DomainState, epoch: u64, command: &str, cwd: &str) -> Option<String> {
+    let outcome = must(s, Actor::System, bash_in(epoch, command, cwd));
+    if outcome.created_ids.is_empty() {
+        assert_eq!(last(s, "t"), LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow }, "{command}");
+        settle(s, epoch);
+        return None;
+    }
+    Some(outcome.created_ids[0].clone())
+}
+fn decide(s: &mut DomainState, epoch: u64, card: &str, option: &str) {
+    must(s, user(), answer(card, option, None));
+    assert_eq!(last(s, "t"), LifecycleRecord::Decided { card: card.into(), epoch, decision: DecisionRecord::Allow });
+    settle(s, epoch);
+}
+fn allowed(s: &DomainState) -> Vec<(String, u32)> {
+    s.tasks[&TaskId::from("t")].allowed.iter().map(|(card, grant)| (card.0.clone(), grant.uses)).collect()
+}
+
+#[test]
+fn a_deletion_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let reset = "git reset --hard origin/main";
+    let card = ask(&mut s, 1, reset, WORKTREE).expect("the first time it asks");
+    let options: Vec<String> = match &s.interactions[&InteractionId::from(card.as_str())].payload {
+        InteractionPayload::Question { options, .. } => options.iter().map(|option| option.id.clone()).collect(),
+        _ => panic!("a question"),
+    };
+    assert_eq!(options, [Hold::ALLOW, Hold::FOR_TASK, Hold::DENY]);
+    decide(&mut s, 1, &card, Hold::FOR_TASK);
+    assert_eq!(allowed(&s), [(card.clone(), 0)]);
+    assert_eq!(ask(&mut s, 2, reset, WORKTREE), None, "the same command from the same folder is allowed");
+    assert_eq!(allowed(&s), [(card.clone(), 1)]);
+    let other = ask(&mut s, 3, "git reset --hard HEAD~1", WORKTREE).expect("another target asks again");
+    decide(&mut s, 3, &other, Hold::ALLOW);
+    let elsewhere = ask(&mut s, 4, reset, &format!("{WORKTREE}/crates")).expect("the same command from another folder asks again");
+    decide(&mut s, 4, &elsewhere, Hold::ALLOW);
+    let branch = ask(&mut s, 5, "git branch -D scratch-a", WORKTREE).unwrap();
+    decide(&mut s, 5, &branch, Hold::FOR_TASK);
+    let next = ask(&mut s, 6, "git branch -D scratch-b", WORKTREE).expect("another branch asks again");
+    decide(&mut s, 6, &next, Hold::ALLOW);
+    let rm = ask(&mut s, 7, "rm -rf build/a", WORKTREE).unwrap();
+    decide(&mut s, 7, &rm, Hold::FOR_TASK);
+    let next = ask(&mut s, 8, "rm -rf build/b", WORKTREE).expect("a deletion never covers another");
+    decide(&mut s, 8, &next, Hold::ALLOW);
+    assert_eq!(allowed(&s).len(), 3);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_test_allowed_in_the_task_runs_again_with_other_arguments_but_not_another_subcommand() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let card = ask(&mut s, 1, "bazelisk test //crates/core:alondra_core_test", WORKTREE).unwrap();
+    decide(&mut s, 1, &card, Hold::FOR_TASK);
+    assert_eq!(ask(&mut s, 2, "bazelisk test --test_output=errors //crates/alondrad:alondrad_test", WORKTREE), None);
+    assert_eq!(ask(&mut s, 3, "bazelisk test //crates/...", &format!("{WORKTREE}/crates")), None, "anywhere in the worktree");
+    let run = ask(&mut s, 4, "bazelisk run //tools:release", WORKTREE).expect("another subcommand asks again");
+    decide(&mut s, 4, &run, Hold::ALLOW);
+    let outside = ask(&mut s, 5, "bazelisk test //x", "/elsewhere").expect("outside the task's folders it asks again");
+    decide(&mut s, 5, &outside, Hold::ALLOW);
+    assert_eq!(allowed(&s), [(card, 2)]);
+}
+
+#[test]
+fn a_command_outside_the_worktree_cannot_be_allowed_in_the_task() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let card = ask(&mut s, 1, "rm -rf /Users/me/Downloads/old", WORKTREE).unwrap();
+    let InteractionPayload::Question { options, .. } = &s.interactions[&InteractionId::from(card.as_str())].payload else { panic!("a question") };
+    assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), [Hold::ALLOW, Hold::DENY]);
+    assert_eq!(refused_unchanged(&mut s, user(), answer(&card, Hold::FOR_TASK, None)), "invalid_input");
+}
+
+#[test]
+fn a_revoked_grant_asks_again_and_a_task_that_ends_forgets_what_it_allowed() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let reset = "git reset --hard origin/main";
+    let card = ask(&mut s, 1, reset, WORKTREE).unwrap();
+    decide(&mut s, 1, &card, Hold::FOR_TASK);
+    let revoke = Command::RevokeTaskGrant { task_id: "t".into(), card: card.as_str().into() };
+    assert_eq!(refused_unchanged(&mut s, node("a"), revoke.clone()), "forbidden", "only the user takes it back");
+    must(&mut s, user(), revoke.clone());
+    assert!(allowed(&s).is_empty());
+    assert_eq!(refused_unchanged(&mut s, user(), revoke), "not_found", "it is revoked once");
+    let again = ask(&mut s, 2, reset, WORKTREE).expect("revoked, it asks again");
+    decide(&mut s, 2, &again, Hold::FOR_TASK);
+    assert_eq!(allowed(&s).len(), 1);
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    assert!(s.tasks[&TaskId::from("t")].over());
+    assert!(allowed(&s).is_empty(), "nothing stays allowed once the task ends");
+    assert_aggregate_rules(&s);
+}

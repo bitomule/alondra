@@ -20,7 +20,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use alondra_core::cited_file::read_cited_file;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) struct Held {
     pub id: InteractionId,
@@ -302,10 +302,12 @@ pub(crate) struct SdkDecision {
     pub prompt: DecisionPrompt,
 }
 
-/// The decision the host persisted with `payload`, for a task that works in `worktree`: a tool call
-/// is `{tool, input, request}` with the SDK's options in `request`; an MCP server's request for
-/// input is its form. «Allow always» is offered as for a held permission prompt.
-pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option<&str>, home: &Path) -> SdkDecision {
+/// The decision the host persisted with `payload`, for a task that works in `worktree` and whose
+/// open worktrees are `worktrees`: a tool call is `{tool, input, request, cwd}` with the SDK's
+/// options in `request` and the folder Claude Code runs it from in `cwd`; an MCP server's request
+/// for input is its form. «Allow always» is offered as for a held permission prompt, and «allow in
+/// this task» for a command that stays in the task's folders.
+pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
     let hold = match kind {
         DecisionKind::Permission => Hold::Permission,
         DecisionKind::Question => Hold::Question,
@@ -331,10 +333,22 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
     let prompt = match hold {
         Hold::Permission => {
             let allow = crate::allow_always::assess(tool.as_deref(), &input, worktree, None, request.get("suggestions").unwrap_or(&Value::Null), home);
+            let for_task = alondra_core::allow_for_task::assess(&alondra_core::allow_for_task::Prompt {
+                tool: tool.as_deref(),
+                input: &input,
+                cwd: payload.get("cwd").and_then(Value::as_str),
+                persistent_refused: request.get("suppressAlwaysAllowRule").and_then(Value::as_bool).unwrap_or(false),
+                ask_rule: request.get("matchedAskRule").is_some_and(|rule| !rule.is_null()),
+            }, &task_folders(worktree.into_iter().chain(worktrees.iter().map(String::as_str)), home));
             let summary = tool_summary(tool.as_deref(), Some(&input));
             let need = permission_title(tool.as_deref(), &input, summary.as_deref());
             let body = titled(need.clone(), permission_detail(&input, summary.as_deref()));
-            card(body, hold.options_offering(allow.as_ref().is_some_and(|allow| allow.rules().is_some())), None, Some(&need), allow)
+            let options = hold.permission_offering(allow.as_ref().is_some_and(|allow| allow.rules().is_some()), for_task.offered());
+            let mut prompt = card(body, options, None, Some(&need), allow);
+            if let DecisionPrompt::Card { card, .. } = &mut prompt {
+                card.allow_for_task = Some(for_task);
+            }
+            prompt
         }
         Hold::Plan => {
             let plan = str_field(&input, "plan").unwrap_or_default();
@@ -365,6 +379,21 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
         }
     };
     SdkDecision { hold, tool, input, mcp_server, prompt }
+}
+
+/// The folders a task's commands may stay in for «allow in this task»: its worktrees and Alondra's
+/// files folder, each as written and as the disk resolves it.
+fn task_folders<'a>(worktrees: impl Iterator<Item = &'a str>, home: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![];
+    for folder in worktrees.map(PathBuf::from).chain([home.join("files")]) {
+        if let Ok(real) = std::fs::canonicalize(&folder) {
+            folders.push(real);
+        }
+        folders.push(folder);
+    }
+    folders.sort();
+    folders.dedup();
+    folders
 }
 
 /// A card Alondra itself puts to the user about the session's open task, with the options it

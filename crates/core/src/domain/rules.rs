@@ -1853,6 +1853,12 @@ impl DomainState {
     /// asked to approve a plan or document for work that is already done. What the node of a
     /// cancelled task asks while it still winds down is about that ending, such as work it cannot
     /// leave as it is: it stays with the user until the node is gone.
+    /// What the user allowed in a task lasts only while it is open.
+    fn forget_what_ended_tasks_allowed(&mut self) {
+        for task in self.tasks.values_mut().filter(|t| t.over()) {
+            task.allowed.clear();
+        }
+    }
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
             .filter(|t| t.state.terminal() && !Self::winding_down(t))
@@ -2143,6 +2149,7 @@ impl DomainState {
             | Command::RecordDecisionSettled { task_id, .. }
             | Command::RecordDecisionAborted { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
+            | Command::RevokeTaskGrant { task_id, .. }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
             | Command::SettlePlanReview { task_id, .. } => task(task_id),
@@ -2245,6 +2252,7 @@ impl DomainState {
             next.derive_states();
         }
         next.retire_cards_of_ended_tasks(&mut effects);
+        next.forget_what_ended_tasks_allowed();
         next.close_finished_messages();
         let ended_before = self.open_requests_with_every_task_over();
         for request_id in next.open_requests_with_every_task_over().into_iter().filter(|id| !ended_before.contains(id)) {
@@ -2767,7 +2775,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
                     },
                 );
                 self.dependency_graph()?;
@@ -4495,6 +4503,10 @@ impl DomainState {
                 self.archive_guard(actor, task_id, *archived)?;
                 self.tasks.get_mut(task_id).unwrap().archived = *archived;
             }
+            Command::RevokeTaskGrant { task_id, card } => {
+                self.revoke_grant_guard(actor, task_id, card)?;
+                self.tasks.get_mut(task_id).unwrap().allowed.remove(card);
+            }
             Command::ClearCompleted { seen } => {
                 let (tasks, requests) = self.clear_guard(actor, *seen)?;
                 for id in tasks {
@@ -4650,6 +4662,9 @@ impl DomainState {
         self.validate_plan_reviews()?;
         if let Some(t) = self.tasks.values().find(|t| t.state.terminal() && t.open_worktrees().next().is_some()) {
             return fail("invalid_input", &format!("Task {} ended with a worktree of its own still there", t.id));
+        }
+        if let Some(t) = self.tasks.values().find(|t| t.over() && !t.allowed.is_empty()) {
+            return fail("invalid_input", &format!("Task {} ended with what was allowed in it still allowed", t.id));
         }
         for run in self.schedule.runs.values() {
             if let (Some(request_id), Some(task_id)) = (&run.request_id, &run.task_id) {

@@ -160,7 +160,7 @@ def main():
 
         first = world.node()
         card = world.run(command, answer="always", node=first)
-        assert card and card["options"] == ["allow", "always", "deny"], card
+        assert card and card["options"] == ["allow", "task", "always", "deny"], card
         assert "Permite esto ahora y en `repo` deja de preguntar por" in card["text"], card["text"]
         assert world.rules() == [RULE], world.rules()
         worktree = first[1]["cwd"]
@@ -177,7 +177,7 @@ def main():
         for destructive in ("rm -rf out", "make build; rm -rf out"):
             for _ in range(2):
                 card = world.run(destructive)
-                assert card and card["options"] == ["allow", "deny"], card
+                assert card and card["options"] == ["allow", "task", "deny"], card
                 assert "No se puede permitir siempre" in card["text"], card["text"]
         ok("3. a destructive command offers no allow always and asks again after being allowed once")
 
@@ -189,14 +189,14 @@ def main():
 
         before = open(world.settings_file).read()
         card = world.run("make build && rm -rf out")
-        assert card and card["options"] == ["allow", "deny"], card
+        assert card and card["options"] == ["allow", "task", "deny"], card
         assert open(world.settings_file).read() == before, "the rules file did not change"
         ok("5. Claude Code's own suggestion to allow `rm -rf out` is never offered")
 
         writer = world.node()
         os.makedirs(os.path.join(writer[1]["cwd"], "out"), exist_ok=True)
         card = world.run("make build > out/log.txt", node=writer)
-        assert card and card["options"] == ["allow", "deny"], card
+        assert card and card["options"] == ["allow", "task", "deny"], card
         shutil.rmtree(os.path.join(writer[1]["cwd"], "out"))
         world.cancel(writer[0])
         ok("6. a command that writes a file through a redirection offers no allow always")

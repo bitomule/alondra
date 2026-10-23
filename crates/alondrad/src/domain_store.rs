@@ -258,6 +258,13 @@ const TASK_WORKTREE_RECORDS: &str = "CREATE TABLE IF NOT EXISTS task_worktree_re
  discard INTEGER NOT NULL CHECK(discard IN(0,1)),\
  end TEXT CHECK(end IS NULL OR end IN('removed','kept_by_user','users_own')),\
  PRIMARY KEY(task_id,path));";
+/// What the user allowed for the rest of each open task, by the permission card it was allowed on.
+const TASK_GRANTS: &str = "CREATE TABLE IF NOT EXISTS task_permission_grants(\
+ task_id TEXT NOT NULL REFERENCES tasks(id),\
+ card TEXT NOT NULL,\
+ allows TEXT NOT NULL CHECK(json_valid(allows)),\
+ uses INTEGER NOT NULL CHECK(uses>=0),\
+ PRIMARY KEY(task_id,card));";
 const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
  task_id TEXT PRIMARY KEY CHECK(length(task_id)>0),\
  dir TEXT NOT NULL CHECK(length(dir)>0),\
@@ -609,6 +616,7 @@ impl DomainStore {
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
+        tx.execute_batch(TASK_GRANTS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(account_move::ACCOUNT_MOVE_STEPS)?;
         tx.execute_batch(EVENTS_VIEW)?;

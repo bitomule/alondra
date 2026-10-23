@@ -1,0 +1,530 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
+  "client": "mac",
+  "version": "vff43107294f47e6e",
+  "cursor": "cursor-1",
+  "title": "Restore the native review experience",
+  "status": {
+    "version": "v9c42046765dcc564",
+    "summary": "3 preguntas · 2 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Te necesita · 5 preguntas abiertas",
+              "tone": "warning"
+            },
+            {
+              "label": "Solicitud",
+              "value": "Polish the Alondra beta",
+              "link": {
+                "kind": "view",
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Desde",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "now",
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "history",
+          "title": "pregunta: Restore the native review experience",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "title": "Historial",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T08:00:00Z",
+          "icon": "history",
+          "title": "Trabajando",
+          "subtitle": "Started",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T08:00:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "Te necesita",
+          "subtitle": "Waiting for a decision",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "waiting",
+      "title": "Te espera",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Choose the welcome copy",
+          "why": "The new empty state is ready; the beta ships with the copy you pick.",
+          "meta": "Alondra · iOS · Demo Garden",
+          "content_row": {
+            "kind": "options",
+            "icon": "notice",
+            "label": "Por qué cada opción",
+            "summary": "2 opciones"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decidir",
+            "tone": "accent"
+          },
+          "title": "Choose the welcome copy",
+          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Te necesita",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Bloquea a Alondra · iOS",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Ship the compact schedule editor with this beta?",
+          "why": "The review of the pull request waits for your answer.",
+          "meta": "Alondra",
+          "link": {
+            "kind": "view",
+            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decidir",
+            "tone": "accent"
+          },
+          "title": "Ship the compact schedule editor with this beta?",
+          "subtitle": "The review of the pull request waits for your answer.",
+          "state": {
+            "text": "Bloquea a este nodo",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "kind": "authorize",
+          "need": "Run `git reset --hard origin/main`",
+          "meta": "Alondra · iOS · Demo Garden",
+          "content_row": {
+            "kind": "command",
+            "icon": "action",
+            "label": "Comando",
+            "summary": "git reset --hard origin/main"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "warning",
+          "eyebrow": {
+            "text": "Autorizar",
+            "tone": "warning"
+          },
+          "title": "Run `git reset --hard origin/main`",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Te necesita",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Bloquea a Alondra · iOS",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Review the beta candidate",
+          "why": "All required checks passed and the branch is up to date with main.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Cambios",
+            "summary": "4 archivos · +120 −30"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Revisar · PR #12",
+            "tone": "accent"
+          },
+          "title": "Review the beta candidate",
+          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "state": {
+            "text": "+120 −30 · ✓",
+            "tone": "success"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "The simulator pass is clean",
+          "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Informe",
+            "summary": "3 puntos"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Info",
+            "tone": "neutral"
+          },
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "state": {
+            "text": "No bloquea",
+            "tone": "neutral"
+          },
+          "detail": "reference"
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Solicitud",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "title": "Solicitudes de cambios",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "github.com/example/repo#12",
+          "link": {
+            "kind": "view",
+            "key": "pull_request:github.com/example/repo#12"
+          },
+          "icon": "pull_request",
+          "title": "1 · Add the compact schedule editor",
+          "subtitle": "feature/compact-schedule-editor → main",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Opciones",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "Merge automático: Alondra hace el merge al pasar los checks"
+            },
+            {
+              "label": "Cuenta de Claude",
+              "value": "Trabajo"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "allowed_in_task",
+      "title": "Permitido en esta tarea",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "grant-decision-t-651c-1-3",
+          "icon": "check",
+          "title": "git branch -D scratch/empty-state",
+          "subtitle": "comando exacto, desde el worktree de la tarea · usado 2 veces",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "revoke_grant:t-651c38484cd2f34e74d5107ba05f7f15@6~decision-t-651c-1-3",
+              "label": "Revocar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Revocado",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "grant-decision-t-651c-1-4",
+          "icon": "check",
+          "title": "bazelisk test …",
+          "subtitle": "cualquier argumento, dentro de las carpetas de la tarea · usado 5 veces",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "revoke_grant:t-651c38484cd2f34e74d5107ba05f7f15@6~decision-t-651c-1-4",
+              "label": "Revocar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Revocado",
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Prioridad",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "Alta",
+                  "description": "Arranca antes que Normal y Baja",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · ahora",
+                  "description": "La de siempre",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Baja",
+                  "description": "Arranca cuando no espera nada más",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Cancelar tarea",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "button": "Cancelar tarea"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

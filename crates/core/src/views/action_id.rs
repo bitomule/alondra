@@ -44,6 +44,8 @@ pub enum Verb {
     SetPriority,
     /// Remove a rule «allow always» added to a repo's local settings on this Mac.
     RemoveRule,
+    /// Take back what the user allowed in a task from one of its permission cards, named in extra.
+    RevokeGrant,
     /// End Claude's process for a node whose turn stayed open after Claude accepted its interrupt.
     ForceStop,
     /// Have Claude forget, and revoke, its sign-in to an MCP server, named by its target.
@@ -67,7 +69,7 @@ pub enum Verb {
     AccountMoves,
 }
 impl Verb {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -103,6 +105,7 @@ impl Verb {
         Self::SetLimit,
         Self::SetPriority,
         Self::RemoveRule,
+        Self::RevokeGrant,
         Self::ForceStop,
         Self::McpSignOut,
         Self::McpCheck,
@@ -153,6 +156,7 @@ impl Verb {
             Self::SetLimit => "set_limit",
             Self::SetPriority => "set_priority",
             Self::RemoveRule => "remove_rule",
+            Self::RevokeGrant => "revoke_grant",
             Self::ForceStop => "force_stop",
             Self::McpSignOut => "mcp_sign_out",
             Self::McpCheck => "mcp_check",

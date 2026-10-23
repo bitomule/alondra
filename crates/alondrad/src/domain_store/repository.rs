@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "allowed"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -366,6 +366,17 @@ fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
         None => {
             exec(c, "DELETE FROM task_post_merge_work WHERE task_id=?1", [&t.id.0])?;
         }
+    }
+    Ok(())
+}
+fn save_grants(c: &Connection, t: &Task) -> Result<()> {
+    exec(c, "DELETE FROM task_permission_grants WHERE task_id=?1", [&t.id.0])?;
+    for (card, grant) in &t.allowed {
+        exec(
+            c,
+            "INSERT INTO task_permission_grants(task_id,card,allows,uses) VALUES(?1,?2,?3,?4)",
+            params![t.id.0, card.0, serde_json::to_string(&grant.allows)?, grant.uses as i64],
+        )?;
     }
     Ok(())
 }
@@ -791,6 +802,9 @@ pub(super) fn save_changes(
         }
         if prior.map_or(!x.worktrees.is_empty(), |p| p.worktrees != x.worktrees) {
             save_worktrees(c, x)?;
+        }
+        if prior.map_or(!x.allowed.is_empty(), |p| p.allowed != x.allowed) {
+            save_grants(c, x)?;
         }
         if prior.map_or(
             !x.delivered_dependencies.is_empty() || !x.blocks.is_empty() || x.verdict.is_some() || x.review_rounds != 0,
@@ -1303,6 +1317,15 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             end: end.map(|end| decode(Value::String(end))).transpose()?,
         };
         state.tasks.get_mut(&TaskId::from(id)).context("worktree task missing")?.worktrees.insert(row.get(1)?, worktree);
+    }
+    drop(stored);
+    let mut grants = c.prepare("SELECT task_id, card, allows, uses FROM task_permission_grants")?;
+    let mut stored = grants.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let allows: String = row.get(2)?;
+        let grant = TaskGrant { allows: serde_json::from_str(&allows)?, uses: u32::try_from(row.get::<_, i64>(3)?)? };
+        state.tasks.get_mut(&TaskId::from(id)).context("grant task missing")?.allowed.insert(InteractionId(row.get(1)?), grant);
     }
     drop(stored);
     let mut post_merge = c.prepare(

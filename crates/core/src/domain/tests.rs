@@ -144,7 +144,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
     };
     (request, task)
 }
@@ -3041,9 +3041,10 @@ fn variant_index(c: &Command) -> usize {
         Command::SetMergeMethod { .. } => 99,
         Command::RecordDistribution { .. } => 100,
         Command::ChangeAccounts { .. } => 101,
+        Command::RevokeTaskGrant { .. } => 102,
     }
 }
-const COMMAND_KINDS: usize = 102;
+const COMMAND_KINDS: usize = 103;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3141,6 +3142,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CancelTask { task_id: ids.task.into() }, false),
         (Command::ReopenTask { task_id: ids.task.into() }, false),
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
+        (Command::RevokeTaskGrant { task_id: ids.task.into(), card: ids.interaction.into() }, false),
         (Command::HoldHook { interaction_id: "fresh-hold".into(), task_id: ids.task.into(),
             agent_id: ids.agent.into(), hold: Hold::Permission, body: "Bash: ls".into(),
             options: Hold::Permission.options(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Authorize, "Allow the call") }, false),
@@ -4468,6 +4470,15 @@ fn guards_refuse_what_the_commands_refuse() {
     let mut decided = asking.clone();
     exec(&mut decided, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"sdk".into(), 1, 1),
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
+    let mut granted = sdk.clone();
+    let mut offering = CardSpec::new(CardKind::Authorize, "Run make");
+    offering.allow_for_task = Some(crate::allow_for_task::AllowForTask::Exact { command: "make".into(), cwd: "/tmp".into() });
+    exec(&mut granted, Actor::System, Command::RecordDecisionRequest { task_id: "sdk".into(), generation: 1, epoch: 1, hold: Hold::Permission,
+        tool: Some("Bash".into()), input: serde_json::json!({"command": "make"}), mcp_server: None,
+        prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.permission_offering(false, true), card: offering } }).unwrap();
+    exec(&mut granted, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"sdk".into(), 1, 1),
+        option_id: Hold::FOR_TASK.into(), inputs: BTreeMap::new() }).unwrap();
+    assert_eq!(granted.tasks[&TaskId::from("sdk")].allowed.len(), 1);
     let mut mcp = sdk.clone();
     exec(&mut mcp, Actor::System, Command::RecordMcpServers { task_id: "sdk".into(), generation: 1, servers: vec![
         McpServerState { name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: None, transport: None, url: None, traits: Default::default() },
@@ -4480,6 +4491,9 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::WaitForMcp { task_id: "sdk".into(), server: "files".into() },
         Command::WaitForMcp { task_id: "sdk".into(), server: "missing".into() },
         Command::WaitForMcp { task_id: "t".into(), server: "linear".into() },
+        Command::RevokeTaskGrant { task_id: "sdk".into(), card: decision_card_id(&"sdk".into(), 1, 1) },
+        Command::RevokeTaskGrant { task_id: "sdk".into(), card: "missing".into() },
+        Command::RevokeTaskGrant { task_id: "missing".into(), card: decision_card_id(&"sdk".into(), 1, 1) },
     ]).collect();
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
@@ -4522,7 +4536,7 @@ fn guards_refuse_what_the_commands_refuse() {
         change(AccountChange::SetMoveWhenExhausted { on: false }),
     ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &mcp, &waiting_mcp,
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
         &accounts, &work_busy, &alone] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
