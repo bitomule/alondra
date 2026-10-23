@@ -339,6 +339,36 @@ async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_
     assert_eq!(launches(&f), 5);
 }
 
+/// The orchestrator cancels a task after the gate let it through, while its start is under way: the
+/// start did not fail, so nothing is tried again or put to the user, and the next task starts.
+#[tokio::test]
+async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_the_next_one_starts() {
+    let f = world();
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    create(&f, "a", &[], Some(&plan(&f, "app/a")));
+    create(&f, "b", &[], Some(&plan(&f, "app/b")));
+    let now = alondra_core::now_millis();
+    let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
+        resuming: false, since: 0 };
+    assert_eq!(f.domain.live.gate.ask(&f.domain, waiting, now), Ok(()));
+    assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
+    assert!(f.domain.live.begin_launch("a"));
+    let domain = f.domain.clone();
+    let cancel: Box<dyn FnOnce() + Send> = Box::new(move || command(&domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "a".into() }));
+    let launched = crate::domain_orchestrator_tools::launch_guarded(&f.domain, &f.home, LaunchBody::from_plan("a".into(), &plan(&f, "app/a")), |_| None,
+        Origin::Auto, Some(cancel)).await;
+    f.domain.live.end_launch("a");
+    assert!(launched.as_ref().is_err_and(|error| error.message.contains("Task is terminal")), "cancelled before its admission: {launched:?}");
+    settle(&f.domain, &"a".into(), f.project.to_str().unwrap(), launched, now).unwrap();
+    assert!(!f.domain.store.lock().unwrap().start_retries().unwrap().contains_key(&TaskId::from("a")), "no retry");
+    assert!(problem(&f, "a").is_none(), "no card");
+    assert!(auto(&f, "a").is_none());
+    pass(&f.domain, &f.home).await.unwrap();
+    pass(&f.domain, &f.home).await.unwrap();
+    assert!(agent_of(&f, "b").is_some(), "the slot goes to the next task");
+    assert!(agent_of(&f, "a").is_none());
+}
+
 fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
     f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
 }

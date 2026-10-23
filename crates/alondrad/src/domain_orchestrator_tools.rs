@@ -175,6 +175,9 @@ pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: Launc
     } else {
         launch_guarded(domain, home, body, choices, origin, None).await
     };
+    if launched.is_err() && crate::start_failures::ended(domain, &task).unwrap_or(false) {
+        return launched;
+    }
     match &launched {
         Ok(_) => remember_refusal(domain, &task, None),
         Err(error) if error.code == "launch_failed" => remember_refusal(domain, &task, Some(("launch_failed", Some(&error.message)))),
@@ -277,7 +280,7 @@ fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainErro
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin,
     checked: Option<Box<dyn FnOnce() + Send>>) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);

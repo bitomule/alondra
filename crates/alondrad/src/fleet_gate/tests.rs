@@ -549,3 +549,16 @@ fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_ad
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert_eq!(gate.ask(&domain, t2, now), Ok(()), "its slot goes to the queue");
 }
+
+#[test]
+fn a_task_cancelled_after_the_gate_let_it_through_is_not_let_through_again_and_leaves_its_slot() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    create(&domain, "t1");
+    create(&domain, "t2");
+    let now = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into() });
+    assert!(ask(&domain, "t1", now).is_err(), "a cancelled task is never let through");
+    assert_eq!(ask(&domain, "t2", now), Ok(()), "its slot goes to the next");
+}

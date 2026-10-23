@@ -14,6 +14,9 @@ use std::path::Path;
 
 /// A start of the task failed: Alondra tries again later, or asks the user.
 pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now: i64) -> Result<()> {
+    if ended(domain, task)? {
+        return Ok(());
+    }
     let attempts = domain.store.lock().expect("domain store poisoned").start_retries()?.get(task).map_or(0, |(attempts, _)| *attempts);
     match after_failure(attempts, problem, now) {
         AfterFailure::Retry { attempt, at } => {
@@ -37,6 +40,27 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
         }
     }
     Ok(())
+}
+
+/// Whether the task ended (cancelled, done or archived) while it was starting: then its start did
+/// not fail, it no longer waits. It leaves without a retry or a card, and its slot at the gate goes
+/// to the next one at once.
+pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
+    let state = domain.state()?;
+    if state.tasks.get(task).is_some_and(|task| !task.over() && !task.archived) {
+        return Ok(false);
+    }
+    {
+        let mut store = domain.store.lock().expect("domain store poisoned");
+        store.set_start_retry(task, None)?;
+        store.forget_auto_launch(task)?;
+        store.dequeue_launch(task)?;
+    }
+    let key = crate::fleet_gate::Key::Task(task.clone());
+    domain.live.gate.forget(&key);
+    domain.live.gate.not_started(&key);
+    domain.live.gate.poke();
+    Ok(true)
 }
 
 /// The problem a refused launch is, by the code it was refused with; none for refusals that clear

@@ -7,7 +7,7 @@
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{DomainState, Task, TaskState};
+use alondra_core::domain::{DomainError, DomainState, Task, TaskId, TaskState};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -158,28 +158,39 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
         let launched = launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), &plan), choices, Origin::Auto).await;
         domain.live.end_launch(&task.id.0);
-        match launched {
-            Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(&task.id, None)?,
-            Err(error) => match error.code.as_str() {
-                "usage_exhausted" => block(AutoLaunchReason::UsageExhausted, None)?,
-                "disk_low" | "plan_review_pending" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?,
-                "conflict" => {
-                    let taken = domain.state()?.tasks.get(&task.id).is_some_and(|task| task.agent_id.is_some());
-                    let mut store = domain.store.lock().expect("domain store poisoned");
-                    if taken {
-                        store.set_auto_launch(&task.id, AutoLaunchState::Launched, None, None, now)?;
-                    } else {
-                        store.forget_auto_launch(&task.id)?;
-                    }
+        settle(domain, &task.id, &plan.cwd, launched, now)?;
+    }
+    Ok(())
+}
+
+/// What an automatic launch leaves behind: a refusal that clears by itself waits for a later pass,
+/// a task that ended while it started just leaves, and any other refusal is a failed start.
+fn settle(domain: &DomainRuntime, task: &TaskId, cwd: &str, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
+    let block = |reason: AutoLaunchReason| -> Result<()> {
+        domain.store.lock().expect("domain store poisoned").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
+    };
+    match launched {
+        Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(task, None)?,
+        Err(_) if crate::start_failures::ended(domain, task)? => {}
+        Err(error) => match error.code.as_str() {
+            "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
+            "disk_low" | "plan_review_pending" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(task)?,
+            "conflict" => {
+                let taken = domain.state()?.tasks.get(task).is_some_and(|task| task.agent_id.is_some());
+                let mut store = domain.store.lock().expect("domain store poisoned");
+                if taken {
+                    store.set_auto_launch(task, AutoLaunchState::Launched, None, None, now)?;
+                } else {
+                    store.forget_auto_launch(task)?;
                 }
-                code => {
-                    if let Some(problem) = crate::start_failures::problem_of(code, &error.message, Some(&plan.cwd)) {
-                        crate::start_failures::failed(domain, &task.id, problem, now)?;
-                    }
-                    log!("could not start {} by itself: {}", task.id, error.message);
+            }
+            code => {
+                if let Some(problem) = crate::start_failures::problem_of(code, &error.message, Some(cwd)) {
+                    crate::start_failures::failed(domain, task, problem, now)?;
                 }
-            },
-        }
+                log!("could not start {task} by itself: {}", error.message);
+            }
+        },
     }
     Ok(())
 }

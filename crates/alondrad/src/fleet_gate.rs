@@ -370,7 +370,8 @@ impl FleetGate {
         let queued = queued_launches(domain, &state, now);
         let mut inner = self.lock_with(domain);
         let key = waiting.key.clone();
-        if inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
+        let ended = matches!(&key, Key::Task(task) if state.tasks.get(task).is_none_or(|task| task.over() || task.archived));
+        if !ended && inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
             return Ok(());
         }
         let waiting = inner.asking.get(&key).map_or(waiting.clone(), |known| Waiting { since: known.since, ..waiting });
@@ -408,7 +409,7 @@ impl FleetGate {
     }
 
     /// A start the gate let through that did not start: no node comes up, so it holds no slot.
-    fn not_started(&self, key: &Key) {
+    pub(crate) fn not_started(&self, key: &Key) {
         self.lock().admitted.retain(|(admitted, _)| admitted != key);
     }
 
@@ -1007,6 +1008,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
             store.dequeue_launch(&task)?;
             store.set_start_retry(&task, None)?;
         }
+        Err(_) if crate::start_failures::ended(domain, &task)? => {}
         Err(error) => {
             log!("the fleet gate could not start {task}: {}", error.message);
             refused(domain, &task, &error, now)?;
