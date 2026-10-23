@@ -16,9 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The card of a task Claude's expired sign-in holds.
 pub const SIGNED_OUT_PREFIX: &str = "claude-signed-out-";
 /// The card of a task the failing API holds.
-pub const OUTAGE_PREFIX: &str = "claude-outage-";
+pub const OUTAGE_PREFIX: &str = alondra_domain::CLAUDE_OUTAGE_CARD_PREFIX;
 /// The card of a task the usage limit holds; with its reset, in Unix seconds, after `USAGE_UNTIL`.
-pub const USAGE_PREFIX: &str = "claude-usage-limit-";
+pub const USAGE_PREFIX: &str = alondra_domain::CLAUDE_USAGE_CARD_PREFIX;
 const USAGE_UNTIL: &str = "claude-usage-limit-until-";
 /// The answers that send the task on as the probe of whether Claude works again.
 pub const SIGNED_IN: &str = "signed_in";
@@ -45,6 +45,15 @@ impl ClaudeHold {
             SdkFailureKind::Outage => Some(Self::Outage),
             SdkFailureKind::Usage => Some(Self::Usage),
             SdkFailureKind::NeedsUser => None,
+        }
+    }
+    /// Who a task this hold pauses waits on: the user signs in; Alondra waits out the API and the limit.
+    pub fn owner(self) -> alondra_domain::Owner {
+        use alondra_domain::{Capacity, Owner};
+        match self {
+            Self::SignedOut => Owner::User,
+            Self::Outage => Owner::Capacity(Capacity::ClaudeApi),
+            Self::Usage => Owner::Capacity(Capacity::Usage),
         }
     }
     pub fn of(card: &InteractionId) -> Option<Self> {
@@ -116,7 +125,7 @@ fn last_hold(journal: &Journal) -> Option<(&InteractionId, bool, bool)> {
     for record in journal.iter().rev() {
         match record {
             LifecycleRecord::TurnEnded { .. } => ended_since = true,
-            LifecycleRecord::Paused { card } if ClaudeHold::of(card).is_some() => return Some((card, true, ended_since)),
+            LifecycleRecord::Paused { card, .. } if ClaudeHold::of(card).is_some() => return Some((card, true, ended_since)),
             LifecycleRecord::Resumed { card, .. } if ClaudeHold::of(card).is_some() => return Some((card, false, ended_since)),
             _ => {}
         }
@@ -225,7 +234,7 @@ impl DomainState {
         if announce {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: id.clone() });
         }
-        self.decide(lifecycles, task, LifecycleRecord::Paused { card: id })
+        self.decide(lifecycles, task, LifecycleRecord::Paused { card: id, owner: Some(hold.owner().into()) })
     }
 
     /// The daemon's schedule: the task of the oldest card of `hold` goes on, to probe whether

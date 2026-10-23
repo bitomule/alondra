@@ -124,14 +124,14 @@ impl DomainState {
             return fail("conflict", "Your task already waits for an MCP server: end your turn");
         }
         let card = InteractionId(format!("{MCP_WAIT_PREFIX}{task_id}-{}", self.revision + 1));
-        let record = self.judged(task_id, lifecycle, LifecycleRecord::Paused { card })?;
+        let record = self.judged(task_id, lifecycle, LifecycleRecord::Paused { card, owner: Some(PauseOwner::User) })?;
         Ok((McpServerKey::of(reported), record))
     }
 
     /// The user hears of a server only when no other task waits for it.
     pub(super) fn wait_for_mcp(&mut self, actor: &Actor, task_id: &TaskId, server: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let (key, record) = self.mcp_wait_guard(actor, task_id, server)?;
-        let LifecycleRecord::Paused { card } = &record else { unreachable!("the guard pauses the task") };
+        let LifecycleRecord::Paused { card, .. } = &record else { unreachable!("the guard pauses the task") };
         let card = card.clone();
         let announce = self.mcp_waiting_for(&key).is_empty();
         let revision = self.revision + 1;

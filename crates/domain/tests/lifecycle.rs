@@ -818,6 +818,7 @@ fn pause_blocks_new_admission_and_cannot_be_answered_as_an_ordinary_question() {
         &mut task,
         Event::Pause {
             card: "pause".into(),
+            owner: Owner::User,
         },
     );
     assert_eq!(
@@ -852,6 +853,82 @@ fn pause_blocks_new_admission_and_cannot_be_answered_as_an_ordinary_question() {
     admit(&mut task, "instance");
 }
 
+#[test]
+fn a_turn_that_ends_with_nothing_running_waits_on_the_user_who_is_asked_how_it_goes_on() {
+    let mut task = running();
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Turn)));
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
+    assert_eq!(task.live(), Several::new([InteractionId::from("unheard")]).map(LiveState::WaitingUser));
+}
+
+#[test]
+fn a_pause_waits_on_who_it_names() {
+    for (owner, live) in [
+        (Owner::User, Several::new([InteractionId::from("pause")]).map(LiveState::WaitingUser)),
+        (Owner::Capacity(Capacity::Usage), Some(LiveState::WaitingCapacity(Capacity::Usage))),
+        (Owner::Capacity(Capacity::ClaudeApi), Some(LiveState::WaitingCapacity(Capacity::ClaudeApi))),
+    ] {
+        let mut task = running();
+        apply(&mut task, Event::Pause { card: "pause".into(), owner });
+        assert_eq!(task.live(), live, "{owner:?}");
+    }
+    let mut task = running();
+    assert_eq!(task.apply(task.revision(), Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Gate) }), Err(Refusal::InvalidState), "the gate holds a task only before it starts");
+}
+
+/// One step of an arbitrary history: an event the task may or may not accept.
+fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
+    let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
+    match action {
+        0 => Some(Event::Admit { node: "node".into(), conversation: ConversationId::new("conversation").unwrap(), instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap() }),
+        1 => runtime(RuntimeFact::ResourceAvailable),
+        2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(input("initial")) }),
+        3 => runtime(RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") }),
+        4 => runtime(RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") }),
+        5 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() }),
+        6 => runtime(RuntimeFact::Ask { card: "first".into(), callback: CallbackId::new("first").unwrap(), reason: WaitReason::Permission }),
+        7 => Some(Event::Decide { card: "first".into(), decision: Decision::Allow }),
+        8 => Some(Event::Present { delivery: "result".into() }),
+        9 => Some(Event::Accept { delivery: "result".into(), merge: None }),
+        10 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
+        11 => task.drain().next().cloned().map(|obligation| Event::DrainObserved { obligation }),
+        12 => Some(Event::Reopen { input: input("initial") }),
+        13 => runtime(RuntimeFact::ResourceReleased { problem_card: "recovery".into() }),
+        14 => runtime(RuntimeFact::ConnectionLost { problem_card: "recovery".into() }),
+        15 => runtime(RuntimeFact::Ask { card: "second".into(), callback: CallbackId::new("second").unwrap(), reason: WaitReason::Permission }),
+        16 => runtime(RuntimeFact::CallbackAborted { callback: CallbackId::new("first").unwrap(), unheard_card: "unheard".into() }),
+        17 => runtime(RuntimeFact::CallbackSettled { callback: CallbackId::new("first").unwrap(), continuation: continuation("callback-wake") }),
+        18 => Some(Event::PlanApproved),
+        19 => Some(Event::WaitForDependencies { dependencies: vec![TaskId::from("dependency")] }),
+        20 => Some(Event::DependenciesResolved { input: input("dependencies") }),
+        21 => Some(Event::Pause { card: "pause".into(), owner: Owner::User }),
+        39 => Some(Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Usage) }),
+        40 => Some(Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::ClaudeApi) }),
+        41 => Some(Event::Accept { delivery: "result".into(), merge: Some(operation("merge")) }),
+        42 => Some(Event::Finish { intent: FinishIntent::Complete, cleanup: operation("cleanup"), post_merge: Some(operation("after-merge")) }),
+        43 => Some(Event::PostMergeDeclared { operation: operation("after-merge") }),
+        44 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
+        45 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(input("resumed")) }),
+        22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
+        23 => runtime(RuntimeFact::Notification),
+        24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
+        25 => Some(Event::RequestControl { control: operation("interrupt"), kind: Control::Interrupt { turn: task.turn().cloned() } }),
+        26 => Some(Event::RequestControl { control: operation("model"), kind: Control::SetModel { model: "claude-sonnet".into() } }),
+        27 => Some(Event::RequestControl { control: operation("mcp"), kind: Control::ReadMcpStatus }),
+        28 => Some(Event::Compact { input: input("compact") }),
+        29 => runtime(RuntimeFact::AnsweredByPolicy { callback: CallbackId::new("policy").unwrap(), decision: Decision::Deny { message: "Nodes cannot act as the user".into() } }),
+        30 => Some(Event::Decide { card: "second".into(), decision: Decision::Deny { message: "No".into() } }),
+        31 => Some(Event::MoveCard { from: "first".into(), to: "moved".into() }),
+        32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
+        34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
+        35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
+        36 => Some(Event::Tell { input: input("told") }),
+        37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
+        38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
+        _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
+    }
+}
+
 use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -861,53 +938,43 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..41, 1..160)) {
+    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..46, 1..160)) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        for action in actions {
+            let Some(event) = arbitrary_event(&task, action) else { continue };
+            let _ = task.apply(task.revision(), event);
+            let live = task.live();
+            if matches!(task.phase(), TaskPhase::Unstarted | TaskPhase::Completed | TaskPhase::Cancelled) {
+                prop_assert_eq!(live, None, "only a live task has a state: {:?}", task);
+                continue;
+            }
+            let Some(live) = live else {
+                return Err(TestCaseError::fail(format!("a live task waits on nobody: {task:?}")));
+            };
+            let cards: Vec<(InteractionId, WaitReason)> = task.cards().into_iter().map(|(card, reason)| (card.clone(), reason)).collect();
+            match live {
+                LiveState::WaitingUser(waiting) => for card in waiting.iter() {
+                    prop_assert!(task.delivery() == Some(card) || cards.iter().any(|(held, _)| held == card),
+                        "the user is asked by a card the task holds: {:?} in {:?}", card, task);
+                },
+                LiveState::WaitingTask(tasks) => for dependency in tasks.iter() {
+                    prop_assert!(task.dependencies().contains(&dependency), "it waits on a task it depends on: {:?}", task);
+                },
+                LiveState::WaitingCapacity(Capacity::Gate) => prop_assert!(task.execution().is_none() && !task.pending_inputs().is_empty(), "the gate holds a task that waits to start: {:?}", task),
+                LiveState::WaitingCapacity(_) => prop_assert!(cards.iter().any(|(_, reason)| *reason == WaitReason::Pause), "capacity holds it through a pause: {:?}", task),
+                LiveState::Working(Worker::Turn) => prop_assert!(task.turn().is_some(), "a turn runs: {:?}", task),
+                LiveState::Working(Worker::OwnWork) => prop_assert!(task.activity() == ActivityView::OwnWork || task.drain().any(|o| matches!(o, DrainObligation::Work(_))), "its own work runs: {:?}", task),
+                LiveState::Working(Worker::AfterMerge) => prop_assert!(task.post_merge().is_some(), "it runs what it declared for after the merge: {:?}", task),
+                LiveState::Working(Worker::Alondra(_)) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(actions in prop::collection::vec(0u8..46, 1..160)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for action in actions {
-            let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
-            let event = match action {
-                0 => Some(Event::Admit { node: "node".into(), conversation: ConversationId::new("conversation").unwrap(), instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap() }),
-                1 => runtime(RuntimeFact::ResourceAvailable),
-                2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(input("initial")) }),
-                3 => runtime(RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") }),
-                4 => runtime(RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") }),
-                5 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() }),
-                6 => runtime(RuntimeFact::Ask { card: "first".into(), callback: CallbackId::new("first").unwrap(), reason: WaitReason::Permission }),
-                7 => Some(Event::Decide { card: "first".into(), decision: Decision::Allow }),
-                8 => Some(Event::Present { delivery: "result".into() }),
-                9 => Some(Event::Accept { delivery: "result".into(), merge: None }),
-                10 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
-                11 => task.drain().next().cloned().map(|obligation| Event::DrainObserved { obligation }),
-                12 => Some(Event::Reopen { input: input("initial") }),
-                13 => runtime(RuntimeFact::ResourceReleased { problem_card: "recovery".into() }),
-                14 => runtime(RuntimeFact::ConnectionLost { problem_card: "recovery".into() }),
-                15 => runtime(RuntimeFact::Ask { card: "second".into(), callback: CallbackId::new("second").unwrap(), reason: WaitReason::Permission }),
-                16 => runtime(RuntimeFact::CallbackAborted { callback: CallbackId::new("first").unwrap(), unheard_card: "unheard".into() }),
-                17 => runtime(RuntimeFact::CallbackSettled { callback: CallbackId::new("first").unwrap(), continuation: continuation("callback-wake") }),
-                18 => Some(Event::PlanApproved),
-                19 => Some(Event::WaitForDependencies { dependencies: vec![TaskId::from("dependency")] }),
-                20 => Some(Event::DependenciesResolved { input: input("dependencies") }),
-                21 => Some(Event::Pause { card: "pause".into() }),
-                22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
-                23 => runtime(RuntimeFact::Notification),
-                24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
-                25 => Some(Event::RequestControl { control: operation("interrupt"), kind: Control::Interrupt { turn: task.turn().cloned() } }),
-                26 => Some(Event::RequestControl { control: operation("model"), kind: Control::SetModel { model: "claude-sonnet".into() } }),
-                27 => Some(Event::RequestControl { control: operation("mcp"), kind: Control::ReadMcpStatus }),
-                28 => Some(Event::Compact { input: input("compact") }),
-                29 => runtime(RuntimeFact::AnsweredByPolicy { callback: CallbackId::new("policy").unwrap(), decision: Decision::Deny { message: "Nodes cannot act as the user".into() } }),
-                30 => Some(Event::Decide { card: "second".into(), decision: Decision::Deny { message: "No".into() } }),
-                31 => Some(Event::MoveCard { from: "first".into(), to: "moved".into() }),
-                32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
-                34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
-                35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
-                36 => Some(Event::Tell { input: input("told") }),
-                37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
-                38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
-                39 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
-                40 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(input("resumed")) }),
-                _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
-            };
+            let event = arbitrary_event(&task, action);
             let Some(event) = event else { continue };
             let host_ended = matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { .. }, .. });
             let open = matches!(task.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
@@ -1283,13 +1350,15 @@ fn repeated_pause_cannot_create_two_mutually_blocking_resume_cards() {
         &mut task,
         Event::Pause {
             card: "pause-a".into(),
+            owner: Owner::User,
         },
     );
     assert_eq!(
         task.apply(
             task.revision(),
             Event::Pause {
-                card: "pause-b".into()
+                card: "pause-b".into(),
+                owner: Owner::Capacity(Capacity::Usage),
             }
         ),
         Err(Refusal::DuplicateObligation)
@@ -1828,7 +1897,7 @@ proptest! {
                 8 => Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None },
                 9 => match task.drain().next().cloned() { Some(obligation) => Event::DrainObserved { obligation }, None => continue },
                 10 => Event::Reopen { input: input("again") },
-                _ => Event::Pause { card: "pause".into() },
+                _ => Event::Pause { card: "pause".into(), owner: Owner::User },
             };
             let before = format!("{task:?}");
             let held: Vec<InteractionId> = task.plan_reviews().into_iter().map(|(review, _)| review.clone()).collect();
@@ -2125,7 +2194,7 @@ fn compacting_queues_its_input_on_a_resting_execution_and_keeps_every_card() {
 
     let mut paused = running();
     fact(&mut paused, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into() });
-    apply(&mut paused, Event::Pause { card: "pause".into() });
+    apply(&mut paused, Event::Pause { card: "pause".into(), owner: Owner::User });
     assert_eq!(paused.apply(paused.revision(), Event::Compact { input: input("compact") }), Err(Refusal::InvalidState));
     let mut unstarted = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
     apply(&mut unstarted, Event::Ask { card: "question".into() });
@@ -2505,7 +2574,7 @@ proptest! {
                 16 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: named }),
                 17 => Some(Event::WaitForDependencies { dependencies: vec![TaskId::from("dependency")] }),
                 18 => Some(Event::DependenciesResolved { input: named }),
-                19 => Some(Event::Pause { card: "pause".into() }),
+                19 => Some(Event::Pause { card: "pause".into(), owner: Owner::User }),
                 20 => Some(Event::Resume { card: "pause".into(), input: named }),
                 21 => Some(Event::Present { delivery: "result".into() }),
                 22 => Some(Event::HandBack { delivery: "result".into(), input: named }),

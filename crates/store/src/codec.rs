@@ -160,6 +160,35 @@ impl From<PostMergeFactRecord> for PostMergeFact {
     }
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum OwnerRecord {
+    User,
+    Gate,
+    Usage,
+    ClaudeApi,
+}
+impl From<Owner> for OwnerRecord {
+    fn from(owner: Owner) -> Self {
+        match owner {
+            Owner::User => Self::User,
+            Owner::Capacity(Capacity::Gate) => Self::Gate,
+            Owner::Capacity(Capacity::Usage) => Self::Usage,
+            Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
+        }
+    }
+}
+impl From<OwnerRecord> for Owner {
+    fn from(record: OwnerRecord) -> Self {
+        match record {
+            OwnerRecord::User => Self::User,
+            OwnerRecord::Gate => Self::Capacity(Capacity::Gate),
+            OwnerRecord::Usage => Self::Capacity(Capacity::Usage),
+            OwnerRecord::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -708,6 +737,8 @@ pub(super) enum EventRecord {
     },
     Pause {
         card: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<OwnerRecord>,
     },
     Resume {
         card: String,
@@ -847,8 +878,9 @@ impl From<&Event> for EventRecord {
             Event::Tell { input } => Self::Tell {
                 input: input.as_str().to_owned(),
             },
-            Event::Pause { card } => Self::Pause {
+            Event::Pause { card, owner } => Self::Pause {
                 card: card.0.clone(),
+                owner: Some((*owner).into()),
             },
             Event::Resume { card, input } => Self::Resume {
                 card: card.0.clone(),
@@ -1007,9 +1039,13 @@ impl EventRecord {
             EventRecord::Tell { input } => Event::Tell {
                 input: InputId::new(input).map_err(Error::from)?,
             },
-            EventRecord::Pause { card } => Event::Pause {
-                card: InteractionId(card),
-            },
+            EventRecord::Pause { card, owner } => {
+                let card = InteractionId(card);
+                Event::Pause {
+                    owner: owner.map_or_else(|| Owner::of_unnamed_pause(&card), Owner::from),
+                    card,
+                }
+            }
             EventRecord::Resume { card, input } => Event::Resume {
                 card: InteractionId(card),
                 input: InputId::new(input).map_err(Error::from)?,
@@ -1155,6 +1191,17 @@ mod tests {
             .unwrap();
         aggregate
     }
+    #[test]
+    fn a_pause_journaled_before_pauses_named_their_owner_reads_it_from_its_card() {
+        let decode = |card: &str| {
+            let record: EventRecord = serde_json::from_str(&format!(r#"{{"kind":"pause","data":{{"card":"{card}"}}}}"#)).unwrap();
+            record.decode(&aggregate()).unwrap()
+        };
+        let pause = |card: &str, owner| Event::Pause { card: card.into(), owner };
+        assert_eq!(decode("claude-usage-limit-t-1"), pause("claude-usage-limit-t-1", Owner::Capacity(Capacity::Usage)));
+        assert_eq!(decode("claude-outage-t-1"), pause("claude-outage-t-1", Owner::Capacity(Capacity::ClaudeApi)));
+        assert_eq!(decode("host-lost-t-1"), pause("host-lost-t-1", Owner::User));
+    }
     fn roundtrip(current: &TaskLifecycle, event: Event) {
         let encoded = serde_json::to_vec(&EventRecord::from(&event)).unwrap();
         let decoded: EventRecord = serde_json::from_slice(&encoded).unwrap();
@@ -1255,6 +1302,7 @@ mod tests {
             &current,
             Event::Pause {
                 card: "card".into(),
+                owner: Owner::Capacity(Capacity::Usage),
             },
         );
         roundtrip(

@@ -98,9 +98,12 @@ impl TaskLifecycle {
             } => self.runtime_fact(stamp, cursor, fact)?,
             Event::Ask { card } => {
                 valid_id(&card.0)?;
-                self.wait_on_card(card, WaitReason::Question)?;
+                self.wait_on_card(card, WaitReason::Question, Owner::User)?;
             }
-            Event::Pause { card } => {
+            Event::Pause { card, owner } => {
+                if owner == Owner::Capacity(Capacity::Gate) {
+                    return Err(Refusal::InvalidState);
+                }
                 if self
                     .cards()
                     .iter()
@@ -109,7 +112,7 @@ impl TaskLifecycle {
                     return Err(Refusal::DuplicateObligation);
                 }
                 valid_id(&card.0)?;
-                self.wait_on_card(card, WaitReason::Pause)?;
+                self.wait_on_card(card, WaitReason::Pause, owner)?;
             }
             Event::DoubtHandoff { card, input } => {
                 valid_id(&card.0)?;
@@ -119,7 +122,7 @@ impl TaskLifecycle {
                 if self.session().is_none() || !self.is_pending(&input) {
                     return Err(Refusal::UnknownObligation);
                 }
-                self.wait_on_card(card.clone(), WaitReason::Doubt)?;
+                self.wait_on_card(card.clone(), WaitReason::Doubt, Owner::User)?;
                 self.doubts.insert(card, input);
             }
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
@@ -600,10 +603,11 @@ impl TaskLifecycle {
         Ok(())
     }
 
-    fn wait_on_card(&mut self, id: InteractionId, reason: WaitReason) -> Result<(), Refusal> {
+    fn wait_on_card(&mut self, id: InteractionId, reason: WaitReason, owner: Owner) -> Result<(), Refusal> {
         let card = Card {
             id,
             reason,
+            owner,
             callback: None,
         };
         let (stage, mut cards, session) = match &self.state {
@@ -881,7 +885,7 @@ impl TaskLifecycle {
                 }
                 Session::Present(execution) if matches!(execution.activity, Activity::Resting) => State::InProgress(Progress::Waiting {
                     stage,
-                    cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, callback: None }),
+                    cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::User, callback: None }),
                     session: Session::Present(execution),
                 }),
                 Session::Present(execution) => State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? }),

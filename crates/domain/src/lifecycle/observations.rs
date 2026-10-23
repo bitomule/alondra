@@ -63,6 +63,7 @@ impl TaskLifecycle {
                 requested_card = Some(Card {
                     id: card,
                     reason,
+                    owner: Owner::User,
                     callback: Some(callback),
                 });
             }
@@ -122,6 +123,7 @@ impl TaskLifecycle {
                 requested_card = Some(Card {
                     id: card,
                     reason: WaitReason::Dropped,
+                    owner: Owner::User,
                     callback: None,
                 });
             }
@@ -283,6 +285,7 @@ impl TaskLifecycle {
                 forced_card = Some(Card {
                     id: problem_card,
                     reason: WaitReason::Recovery,
+                    owner: Owner::User,
                     callback: None,
                 });
             }
@@ -292,6 +295,7 @@ impl TaskLifecycle {
                 forced_card = Some(Card {
                     id: problem_card,
                     reason: WaitReason::Recovery,
+                    owner: Owner::User,
                     callback: None,
                 });
             }
@@ -446,6 +450,7 @@ impl TaskLifecycle {
                 forced_card = Some(Card {
                     id,
                     reason: WaitReason::Unheard,
+                    owner: Owner::User,
                     callback: None,
                 });
             }
@@ -507,6 +512,7 @@ impl TaskLifecycle {
                             Card {
                                 id,
                                 reason: WaitReason::Unheard,
+                                owner: Owner::User,
                                 callback: None,
                             },
                         );
@@ -594,6 +600,7 @@ impl TaskLifecycle {
                                 Card {
                                     id,
                                     reason: WaitReason::Unheard,
+                                    owner: Owner::User,
                                     callback: None,
                                 },
                             );

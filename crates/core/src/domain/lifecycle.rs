@@ -5,7 +5,7 @@
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
 use alondra_domain::{
-    ActivityView, CLAUDE_BG_HOST, CallbackId, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
+    ActivityView, CLAUDE_BG_HOST, CallbackId, Capacity, LiveState, Owner, Several, Step, Worker, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
     FinishIntent, HostId, InputId, InstanceId, OperationId, PermissionMode, PlanReviewOutcome as ReviewSettlement,
     PostMergeFact, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle, TaskPhase, Trigger, TurnId, WaitReason, WorkId,
     decision_callback, decision_continuation, decision_epoch,
@@ -208,6 +208,36 @@ pub enum RuntimeObservation {
     ModelAnswered,
 }
 
+/// Who a pause waits on, as the journal keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseOwner {
+    User,
+    Gate,
+    Usage,
+    ClaudeApi,
+}
+impl From<Owner> for PauseOwner {
+    fn from(owner: Owner) -> Self {
+        match owner {
+            Owner::User => Self::User,
+            Owner::Capacity(Capacity::Gate) => Self::Gate,
+            Owner::Capacity(Capacity::Usage) => Self::Usage,
+            Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
+        }
+    }
+}
+impl From<PauseOwner> for Owner {
+    fn from(owner: PauseOwner) -> Self {
+        match owner {
+            PauseOwner::User => Self::User,
+            PauseOwner::Gate => Self::Capacity(Capacity::Gate),
+            PauseOwner::Usage => Self::Capacity(Capacity::Usage),
+            PauseOwner::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LifecycleRecord {
@@ -268,7 +298,12 @@ pub enum LifecycleRecord {
     HeldForPlanReview { review: InteractionId },
     PlanReviewSettled { review: InteractionId, plan_revision: u64, outcome: ReviewOutcome },
     /// Held by `card` until something outside the task changes: Claude's sign-in or the API.
-    Paused { card: InteractionId },
+    Paused {
+        card: InteractionId,
+        /// Who the pause waits on; a pause recorded before this was named reads it from its card.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<PauseOwner>,
+    },
     /// The hold `card` ended: the task goes on with `input`, whose text is what it is told.
     Resumed {
         card: InteractionId,
@@ -485,7 +520,10 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             resend: resent.as_deref().map(|input| input_id(task, input)).transpose()?,
             unheard_card: unheard_card.clone(),
         },
-        LifecycleRecord::Paused { card } => Event::Pause { card: card.clone() },
+        LifecycleRecord::Paused { card, owner } => Event::Pause {
+            card: card.clone(),
+            owner: owner.map_or_else(|| Owner::of_unnamed_pause(card), Owner::from),
+        },
         LifecycleRecord::Resumed { card, input, .. } => Event::Resume { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::WorkEnded { work, continuation } => runtime(RuntimeFact::WorkEnded {
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -742,7 +780,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             input: input.as_str().into(),
             text: texts.get(input).cloned(),
         },
-        Event::Pause { card } => LifecycleRecord::Paused { card: card.clone() },
+        Event::Pause { card, owner } => LifecycleRecord::Paused { card: card.clone(), owner: Some((*owner).into()) },
         Event::Runtime { fact: RuntimeFact::HostEnded { unheard_card, resume }, .. } => LifecycleRecord::HostEnded {
             unheard_card: unheard_card.clone(),
             resume: resume.as_ref().map(|input| input.as_str().into()),
@@ -1276,6 +1314,29 @@ impl DomainState {
             && self.recorded_wait(task_id, card.revision).is_some()
     }
 
+    /// What a live task is doing, or who it waits on, from its lifecycle alone. A card that only
+    /// says a turn ended stays out of sight while what Alondra recorded explains the wait: the task
+    /// is in that wait instead.
+    pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
+        let live = self.lifecycle_of(task).ok()?.live()?;
+        let LiveState::WaitingUser(cards) = &live else { return Some(live) };
+        let covered = cards.iter().map(|card| self.interactions.get(card).filter(|i| self.covered_by_recorded_wait(i))).collect::<Option<Vec<_>>>();
+        let Some(revision) = covered.and_then(|covered| covered.iter().map(|i| i.revision).max()) else { return Some(live) };
+        Some(match self.recorded_wait(task, revision) {
+            Some(RecordedWait::User) => match self.open_user_card(task) {
+                Some(card) => LiveState::WaitingUser(Several::new([card.id.clone()]).expect("one card")),
+                None => live,
+            },
+            Some(RecordedWait::Machine) => LiveState::WaitingCapacity(Capacity::Gate),
+            Some(RecordedWait::Orchestrator) => LiveState::Working(Worker::Alondra(Step::Answering)),
+            Some(RecordedWait::Tasks) => {
+                let unmet = self.tasks.get(task).map(|t| self.unmet_dependencies(t)).unwrap_or_default();
+                Several::new(unmet.into_iter().map(TaskId::from)).map_or(LiveState::Working(Worker::Alondra(Step::Delivering)), LiveState::WaitingTask)
+            }
+            None => live,
+        })
+    }
+
     /// What the node of `task` waits for, as Alondra recorded it, for a turn that ended at
     /// `revision`: a question or request of its own to the user or the orchestrator (a message
     /// or a suggestion too) still open, or answered after `revision` so the answer is on its way
@@ -1480,7 +1541,7 @@ impl DomainState {
             return Ok(());
         }
         let card = InteractionId(format!("{HOST_LOST_PREFIX}{task}-{}", self.revision + 1));
-        self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone() })?;
+        self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone(), owner: Some(PauseOwner::User) })?;
         self.interactions.insert(card.clone(), host_lost_card(card.clone(), task, &title, reason, self.revision + 1));
         effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         Ok(())

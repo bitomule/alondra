@@ -191,6 +191,90 @@ pub enum ActivityView {
     Resting,
 }
 
+/// Card ids of the holds recorded before a pause named who it waits on. Only a hold on Claude's
+/// API or on its usage limit waits on capacity; every other card waits on the user.
+pub const CLAUDE_OUTAGE_CARD_PREFIX: &str = "claude-outage-";
+pub const CLAUDE_USAGE_CARD_PREFIX: &str = "claude-usage-limit-";
+
+/// Who a card waits on. Every card but a pause waits on the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Owner {
+    User,
+    Capacity(Capacity),
+}
+impl Owner {
+    /// Who a pause recorded before pauses named it waits on, read from the card it was recorded with.
+    pub fn of_unnamed_pause(card: &InteractionId) -> Self {
+        if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {
+            Self::Capacity(Capacity::ClaudeApi)
+        } else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {
+            Self::Capacity(Capacity::Usage)
+        } else {
+            Self::User
+        }
+    }
+}
+
+/// What Alondra holds a task back for until there is room: a place in the gate, the subscription's
+/// usage, or Claude's API answering again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Capacity {
+    Gate,
+    Usage,
+    ClaudeApi,
+}
+
+/// Who does the work of a task that is working.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Worker {
+    /// The node's turn runs.
+    Turn,
+    /// Work the node started in the background runs, outside a turn.
+    OwnWork,
+    /// The node runs the work it declared for after its PR merged.
+    AfterMerge,
+    Alondra(Step),
+}
+
+/// What Alondra itself is doing for a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Starting,
+    /// Handing the node an input it has yet to read.
+    Delivering,
+    /// Waking the node because work it waited on ended.
+    Waking,
+    /// The orchestrator answers what the node asked it.
+    Answering,
+    Merging,
+    Finishing,
+}
+
+/// A set that holds at least one value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Several<T: Ord>(NonEmpty<T>);
+impl<T: Ord> Several<T> {
+    pub fn new(values: impl IntoIterator<Item = T>) -> Option<Self> {
+        NonEmpty::new(values).ok().map(Self)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter()
+    }
+    pub fn first(&self) -> &T {
+        &self.0.first
+    }
+}
+
+/// What a live task is doing, and who it waits on when it waits. Every live task is in exactly
+/// one of these; none says that nobody owns its next step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiveState {
+    Working(Worker),
+    WaitingUser(Several<InteractionId>),
+    WaitingCapacity(Capacity),
+    WaitingTask(Several<TaskId>),
+}
+
 /// How far stopping the root turn went. Only a turn that stays open after Claude accepted its
 /// interrupt can be force-stopped, once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,6 +542,7 @@ pub enum Event {
     },
     Pause {
         card: InteractionId,
+        owner: Owner,
     },
     Resume {
         card: InteractionId,
@@ -678,6 +763,7 @@ pub enum RuntimeFact {
 struct Card {
     id: InteractionId,
     reason: WaitReason,
+    owner: Owner,
     callback: Option<CallbackId>,
 }
 
@@ -787,6 +873,33 @@ impl Execution {
 }
 
 // Startup has a reservation; subsequent activity requires an observed running execution.
+impl Execution {
+    /// Who works for an execution that is not resting.
+    fn worker(&self) -> Option<Worker> {
+        match &self.activity {
+            Activity::Launching(_) => Some(Worker::Alondra(Step::Starting)),
+            Activity::InputPending(_) => Some(Worker::Alondra(Step::Delivering)),
+            Activity::Turn { .. } => Some(Worker::Turn),
+            Activity::OwnWork { .. } => Some(Worker::OwnWork),
+            Activity::Continuation(_) => Some(Worker::Alondra(Step::Waking)),
+            Activity::Resting => None,
+        }
+    }
+}
+
+/// The user, when a card waits on them; else the capacity a pause waits on.
+fn waits_on<'a>(cards: impl Iterator<Item = &'a Card>) -> Option<LiveState> {
+    let mut capacity = None;
+    let mut users = vec![];
+    for card in cards {
+        match card.owner {
+            Owner::User => users.push(card.id.clone()),
+            Owner::Capacity(held) => capacity = Some(capacity.map_or(held, |kept: Capacity| kept.min(held))),
+        }
+    }
+    Several::new(users).map(LiveState::WaitingUser).or(capacity.map(LiveState::WaitingCapacity))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ActiveExecution(Execution);
 impl ActiveExecution {
@@ -1065,6 +1178,40 @@ impl TaskLifecycle {
                 .map(|card| (&card.id, card.reason))
                 .collect(),
             _ => vec![],
+        }
+    }
+    /// What the task is doing, or who it waits on. `None` only before it starts and once it ended.
+    pub fn live(&self) -> Option<LiveState> {
+        match &self.state {
+            State::Unstarted(_) | State::Completed | State::Cancelled => None,
+            State::InProgress(Progress::Queued { .. }) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
+            State::InProgress(Progress::Executing { execution, .. }) => execution.0.worker().map(LiveState::Working),
+            State::InProgress(Progress::Waiting { cards, .. }) => waits_on(cards.iter()),
+            State::InProgress(Progress::Dependency { tasks, decisions, .. }) => {
+                waits_on(decisions.values()).or_else(|| Several::new(tasks.iter().cloned()).map(LiveState::WaitingTask))
+            }
+            State::Delivered(delivered) => match &delivered.gate {
+                DeliveryGate::Review => {
+                    let users = delivered.decisions.values().filter(|card| card.owner == Owner::User).map(|card| card.id.clone());
+                    Several::new(std::iter::once(delivered.delivery.clone()).chain(users)).map(LiveState::WaitingUser)
+                }
+                gate => waits_on(delivered.decisions.values()).or_else(|| match gate {
+                    DeliveryGate::Blocked(tasks) => Several::new(tasks.iter().cloned()).map(LiveState::WaitingTask),
+                    DeliveryGate::AwaitingMerge(_) => Some(LiveState::Working(Worker::Alondra(Step::Merging))),
+                    DeliveryGate::Accepted | DeliveryGate::Review => Some(LiveState::Working(Worker::Alondra(Step::Finishing))),
+                }),
+            },
+            State::Finishing(finishing) => Some(LiveState::Working(
+                if finishing.session.execution().is_some_and(|execution| matches!(execution.activity, Activity::Turn { .. })) {
+                    Worker::Turn
+                } else if finishing.remaining.iter().any(|obligation| matches!(obligation, DrainObligation::PostMerge(_))) {
+                    Worker::AfterMerge
+                } else if finishing.remaining.iter().any(|obligation| matches!(obligation, DrainObligation::Work(_))) {
+                    Worker::OwnWork
+                } else {
+                    Worker::Alondra(Step::Finishing)
+                },
+            )),
         }
     }
     pub fn stage(&self) -> Option<WorkStage> {

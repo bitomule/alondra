@@ -389,6 +389,7 @@ fn pause_after_claim_in_same_transaction_cannot_issue_attempt() {
         "pause",
         Event::Pause {
             card: "pause".into(),
+            owner: Owner::User,
         },
     )
     .unwrap();

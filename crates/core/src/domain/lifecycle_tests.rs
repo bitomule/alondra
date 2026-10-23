@@ -1793,3 +1793,31 @@ fn a_host_that_crashes_during_the_work_after_the_merge_resumes_it_or_asks() {
     assert_eq!(options(&s, &card), [CARRY_ON, CLOSE_TASK]);
     assert_aggregate_rules(&s);
 }
+
+#[test]
+fn a_pause_recorded_before_pauses_named_their_owner_waits_on_who_its_card_names() {
+    let task = TaskId::from("t");
+    let paused = |card: &str| -> alondra_domain::TaskLifecycle {
+        let journal: Vec<LifecycleRecord> = [r#"{"kind":"planned","input":"Start"}"#.to_owned(), format!(r#"{{"kind":"paused","card":"{card}"}}"#)]
+            .iter()
+            .map(|json| serde_json::from_str(json).expect("a journal of an earlier build decodes"))
+            .collect();
+        replay(&task, &journal).expect("it replays")
+    };
+    let waits = |card: &str| paused(card).live();
+    assert_eq!(waits("claude-usage-limit-t-3"), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+    assert_eq!(waits("claude-usage-limit-until-1767225600-t-3"), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+    assert_eq!(waits("claude-outage-t-3"), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::ClaudeApi)));
+    for card in ["claude-signed-out-t-3", "host-lost-t-3", "mcp-sign-in-t-3"] {
+        assert_eq!(waits(card), alondra_domain::Several::new([InteractionId(card.into())]).map(alondra_domain::LiveState::WaitingUser), "{card} waits on the user");
+    }
+}
+
+#[test]
+fn a_pause_keeps_its_owner_in_the_journal() {
+    let record = LifecycleRecord::Paused { card: "claude-signed-out-t-3".into(), owner: Some(PauseOwner::Usage) };
+    let json = serde_json::to_string(&record).unwrap();
+    assert_eq!(json, r#"{"kind":"paused","card":"claude-signed-out-t-3","owner":"usage"}"#);
+    let journal = [LifecycleRecord::Planned { input: "Start".into() }, serde_json::from_str(&json).unwrap()];
+    assert_eq!(replay(&TaskId::from("t"), &journal).unwrap().live(), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)), "the owner it names wins over its card");
+}

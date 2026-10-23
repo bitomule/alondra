@@ -13,6 +13,9 @@ use std::sync::Arc;
 pub struct TaskReading {
     pub attention: Attention,
     pub activity: Option<TaskActivity>,
+    /// What it is doing, or who it waits on, as its lifecycle says; `None` before it starts and
+    /// once it ended.
+    pub live: Option<alondra_domain::LiveState>,
     pub handed_back: Option<Instruction>,
     pub merge_failure: Option<(u64, String)>,
     /// The open tasks that hold it back, by id.
@@ -408,6 +411,7 @@ impl<'a> Builder<'a> {
             let facts = TaskReading {
                 attention: attention[&t.id].clone(),
                 activity: state.task_activity(t),
+                live: state.live_state(&t.id),
                 handed_back: state.task_handed_back(&t.id),
                 merge_failure: state.task_merge_failure(&t.id),
                 open_blockers: self.open_blockers.get(&t.id).cloned().unwrap_or_default(),
@@ -695,6 +699,11 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     if let Err(divergence) = state.kept_lifecycles_agree_with_journals() {
         panic!("the lifecycles the domain keeps are the ones its journals replay to: {divergence}");
     }
+    for (task, _) in state.lifecycle_journal.iter() {
+        let lifecycle = state.lifecycle_of(task).expect("a journal replays");
+        let live = !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Unstarted | alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled);
+        assert_eq!(state.live_state(task).is_some(), live, "every live task, and only a live one, is working or waits on someone: {task} in {:?}", lifecycle.phase());
+    }
     for task in state.tasks.values() {
         let owed = state.lifecycle_journal.get(&task.id)
             .and_then(|journal| super::replay(&task.id, journal).ok())
@@ -779,6 +788,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         assert_eq!(read.attention, state.attention(t), "the attention of {}", t.id);
         assert_eq!(read.open_blockers, state.open_blockers(&t.id), "what holds {} back", t.id);
         assert_eq!(read.activity, state.task_activity(t));
+        assert_eq!(read.live, state.live_state(&t.id), "what {} is doing", t.id);
         assert_eq!(read.handed_back, state.task_handed_back(&t.id));
         assert_eq!(read.merge_failure, state.task_merge_failure(&t.id));
         let on_task: Vec<InboxItem> = waiting.iter().filter(|item| item.task_id.as_ref() == Some(&t.id)).cloned().collect();
