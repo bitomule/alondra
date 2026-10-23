@@ -28,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(u16::from(usage.is_some())),
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(1),
+        Constraint::Length(foot_height(app, f.area().width)),
     ])
     .areas(f.area());
     if let Some(usage) = &usage {
@@ -865,13 +865,6 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw(" "),
         Span::styled(format!("{glyph} {}", r.kind), Style::new().fg(color).bold()),
         Span::styled(who, Style::new().fg(SOFT)),
-        Span::styled(
-            truncate(
-                &md::one_line(&r.title),
-                (area.width as usize).saturating_sub(40).max(10),
-            ),
-            Style::new().bold(),
-        ),
         Span::raw(" "),
     ];
     let n_comments = review.map(|rv| rv.count()).unwrap_or(0);
@@ -892,6 +885,14 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
             _ => tr!(" no longer in the inbox ", " ya no está en la bandeja ").to_owned(),
         };
         title.push(Span::styled(gone, Style::new().fg(Color::Black).bg(Color::LightRed)));
+    }
+    let heading = md::one_line(&r.title);
+    let around: usize = title.iter().map(Span::width).sum();
+    if around + md::str_width(&heading) + 2 <= area.width as usize {
+        title.insert(3, Span::styled(heading, Style::new().bold()));
+    } else {
+        let who = title[2].content.trim_end_matches(" · ").to_owned();
+        title[2].content = who.into();
     }
     let status = if n_comments == 0 {
         tr!(" no comments ", " sin comentarios ").to_string()
@@ -1095,7 +1096,7 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
     let mut lines: Vec<Line> = vec![];
     let key = |k: &str, d: &str| {
         Line::from(vec![
-            Span::styled(format!("{k:<6}"), Style::new().fg(ACCENT).bold()),
+            Span::styled(format!("{k:<6} "), Style::new().fg(ACCENT).bold()),
             Span::styled(d.to_string(), Style::new().fg(DIM)),
         ])
     };
@@ -1733,15 +1734,22 @@ fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
         });
         return;
     }
-    let width = area.width as usize;
-    let help = vec![
-        Span::styled("?", Style::new().fg(ACCENT).bold()),
-        Span::styled(tr!(" help", " ayuda"), Style::new().fg(DIM)),
-    ];
-    let help_w: usize = help.iter().map(Span::width).sum();
-    let mut spans = vec![Span::raw(" ")];
-    let mut w = 1;
-    let pieces: Vec<Vec<Span<'static>>> = footer_keys(app)
+    f.render_widget(Paragraph::new(foot_lines(app, area.width as usize)), area);
+}
+
+const FOOT_ROWS: usize = 3;
+
+fn foot_height(app: &App, width: u16) -> u16 {
+    if app.cmdline.is_some() {
+        return 1;
+    }
+    foot_lines(app, width as usize).len() as u16
+}
+
+/// The key bar, on up to three lines so no label is cut. When even three are not enough, the
+/// screen's own keys go from the end; the last three (tasks, new, quit) and help always stay.
+fn foot_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut pieces: Vec<Vec<Span<'static>>> = footer_keys(app)
         .into_iter()
         .map(|(key, desc)| {
             vec![
@@ -1750,31 +1758,45 @@ fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
             ]
         })
         .collect();
-    let widths: Vec<usize> = pieces
-        .iter()
-        .map(|piece| piece.iter().map(Span::width).sum())
-        .collect();
     let tail = if app.composer.is_none() && app.reader.is_none() {
         pieces.len().saturating_sub(3)
     } else {
-        pieces.len()
+        0
     };
-    let tail_w: usize = widths[tail..].iter().sum();
-    for (at, piece) in pieces.into_iter().enumerate() {
-        let reserved = if at < tail { tail_w } else { 0 };
-        if w + widths[at] + reserved + help_w > width {
-            if at < tail {
-                continue;
-            }
-            break;
-        }
-        w += widths[at];
-        spans.extend(piece);
-    }
     if app.composer.is_none() {
-        spans.extend(help);
+        pieces.push(vec![
+            Span::styled("?", Style::new().fg(ACCENT).bold()),
+            Span::styled(tr!(" help", " ayuda"), Style::new().fg(DIM)),
+        ]);
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let mut shown: Vec<&[Span<'static>]> = pieces.iter().map(Vec::as_slice).collect();
+    let mut droppable = tail;
+    loop {
+        let rows = packed(&shown, width);
+        if rows.len() <= FOOT_ROWS || droppable == 0 {
+            return rows.into_iter().take(FOOT_ROWS).collect();
+        }
+        droppable -= 1;
+        shown.remove(droppable);
+    }
+}
+
+fn packed(pieces: &[&[Span<'static>]], width: usize) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    let mut row = vec![Span::raw(" ")];
+    let mut used = 1;
+    for piece in pieces {
+        let full: usize = piece.iter().map(Span::width).sum();
+        let trailing = piece.last().map_or(0, |span| span.content.len() - span.content.trim_end().len());
+        if used > 1 && used + full - trailing > width {
+            rows.push(Line::from(std::mem::replace(&mut row, vec![Span::raw(" ")])));
+            used = 1;
+        }
+        row.extend(piece.iter().cloned());
+        used += full;
+    }
+    rows.push(Line::from(row));
+    rows
 }
 
 /// The help screen: every key of the screen behind it, from the same table the key bar and the

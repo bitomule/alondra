@@ -503,7 +503,8 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
     dump("inbox: one row per card", &screen);
     assert!(screen.contains("WAITING FOR YOU 5"), "{screen}");
     let welcome = lines_with(&screen, "Choose the welcome copy");
-    assert!(welcome[0].contains("▌? Choose the welcome copy") && welcome[0].contains("Alondra"), "{welcome:?}");
+    assert!(welcome[0].contains("▌? Choose the welcome copy"), "{welcome:?}");
+    assert!(screen.contains("▌  Alondra · iOS · Demo Garden"), "meta that does not fit beside goes whole below: {screen}");
     assert!(screen.contains("◎ Review the beta candidate"), "{screen}");
     assert!(screen.contains("· The simulator pass is clean"), "{screen}");
     assert!(!screen.contains("Merge") && !screen.contains("Reply"), "the list has no buttons: {screen}");
@@ -1073,5 +1074,87 @@ fn a_chain_starts_folded_and_its_key_unfolds_and_folds_it() {
     let again = rendered(&mut app, 120, 34);
     for member in MEMBERS {
         assert!(!again.contains(member), "{member} is hidden once folded again: {again}");
+    }
+}
+
+const SIGN_IN_EN: &str = "Sign in to the Claude account Trabajo on the Mac";
+const SIGN_IN_ES: &str = "Inicia sesión en la cuenta de Claude Trabajo en el Mac";
+const SIGNED_IN_EN: &str = "I signed in";
+const SIGNED_IN_ES: &str = "Ya he iniciado sesión";
+
+fn sign_in_card(need: &str, signed_in: &str) -> views::View {
+    let mut value = super::parity::view_fixture("card-question.json");
+    value["title"] = need.into();
+    let card = &mut value["sections"][0]["items"][0];
+    card["need"] = need.into();
+    card["title"] = need.into();
+    card["actions"][0]["label"] = signed_in.into();
+    serde_json::from_value(value).unwrap()
+}
+
+fn sign_in_inbox(lang: crate::i18n::Lang, need: &str) -> App {
+    let mut home = super::parity::view_fixture("home-tui.json");
+    home["sections"][0]["items"][0]["need"] = need.into();
+    home["sections"][0]["items"][0]["title"] = need.into();
+    let (tx, _rx) = std::sync::mpsc::sync_channel(64);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    app.reconcile();
+    crate::i18n::set_for_this_thread(lang);
+    app.sel = Some(Key("a98d034b-249e-4487-a89b-57de38c26372".into()));
+    app
+}
+
+fn joined(screen: &str) -> String {
+    screen.lines().map(|line| line.trim_matches(|c: char| c == '▌' || c == '│' || c.is_whitespace())).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn inbox_wraps_a_long_card_title_instead_of_cutting_it() {
+    for (lang, need) in [(crate::i18n::Lang::En, SIGN_IN_EN), (crate::i18n::Lang::Es, SIGN_IN_ES)] {
+        for width in [80, 120] {
+            let mut app = sign_in_inbox(lang, need);
+            let screen = rendered(&mut app, width, 24);
+            dump(&format!("inbox {lang:?} {width}"), &screen);
+            assert!(joined(&screen).contains(need), "{width} columns: {screen}");
+        }
+    }
+}
+
+#[test]
+fn the_footer_shows_a_long_button_label_whole() {
+    for (lang, need, signed_in) in [
+        (crate::i18n::Lang::En, SIGN_IN_EN, SIGNED_IN_EN),
+        (crate::i18n::Lang::Es, SIGN_IN_ES, SIGNED_IN_ES),
+    ] {
+        for width in [80, 120] {
+            let mut app = sign_in_inbox(lang, need);
+            let card = sign_in_card(need, signed_in);
+            app.view_navigation.push(card.key.clone());
+            app.card_view = Some(card);
+            let screen = rendered(&mut app, width, 24);
+            dump(&format!("card {lang:?} {width}"), &screen);
+            let footer: Vec<&str> = screen.lines().skip_while(|line| !line.starts_with('╰')).skip(1).collect();
+            assert!(footer.iter().any(|line| line.contains(&format!("1 {signed_in}"))), "{width} columns: {footer:?}\n{screen}");
+            assert!(joined(&screen).contains(need), "{width} columns: {screen}");
+        }
+    }
+}
+
+#[test]
+fn the_reader_border_names_the_card_whole_or_leaves_it_to_the_page() {
+    for (lang, need, signed_in) in [
+        (crate::i18n::Lang::En, SIGN_IN_EN, SIGNED_IN_EN),
+        (crate::i18n::Lang::Es, SIGN_IN_ES, SIGNED_IN_ES),
+    ] {
+        for width in [80, 120] {
+            let mut app = card_screen(sign_in_card(need, signed_in), lang);
+            app.open_reader();
+            let screen = rendered(&mut app, width, 24);
+            dump(&format!("reader {lang:?} {width}"), &screen);
+            let border = screen.lines().nth(1).unwrap();
+            assert!(border.contains(need) || !border.contains(&need[..10]), "{width} columns: {border:?}");
+            assert!(joined(&screen).contains(need), "{width} columns: {screen}");
+        }
     }
 }

@@ -166,8 +166,8 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
 }
 
 /// One list item: glyph and title, and on the right its state and since when, the way 8ccd131
-/// laid rows out. What does not fit beside the title goes on the line below; a subtitle (what a
-/// node runs now) goes under it.
+/// laid rows out. A title wider than the list goes on as many lines as it takes; what does not fit
+/// beside it goes on the line below; a subtitle (what a node runs now) goes under it.
 pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<Line<'static>> {
     let bar = Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT));
     let mut title_style = Style::default();
@@ -227,9 +227,9 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     let meta_width: usize = meta.iter().map(Span::width).sum();
     let title_width = super::md::str_width(&row.title);
     let under = if nested { format!("{indent}    ") } else { "  ".to_owned() };
-    first.push(Span::styled(row.title.clone(), title_style));
     let mut lines = Vec::new();
     if meta.is_empty() || lead_width + title_width + 2 + meta_width <= width {
+        first.push(Span::styled(row.title.clone(), title_style));
         if !meta.is_empty() {
             first.push(Span::raw(
                 " ".repeat(width - lead_width - title_width - meta_width),
@@ -238,7 +238,12 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         }
         lines.push(fit(first, width));
     } else {
-        lines.push(fit(first, width));
+        let wrapped = vec![bar.clone(), Span::raw(" ".repeat(lead_width.saturating_sub(1)))];
+        lines.extend(
+            super::md::wrap(vec![Span::styled(row.title.clone(), title_style)], width, first, wrapped)
+                .into_iter()
+                .map(|line| fit(line.spans, width)),
+        );
         let mut second = vec![bar.clone(), Span::raw(under.clone())];
         second.extend(meta);
         lines.push(fit(second, width));
@@ -308,8 +313,9 @@ fn card_age(card: &Card) -> Option<String> {
         .map(|stamp| format_time(&stamp.at, alondra_core::views::TimeFormat::Relative))
 }
 
-/// One list item per card: its type's glyph, what it needs, and on the right who sent it and how
-/// long ago. A card another one holds back says by what, dim, on the line below.
+/// One list item per card: its type's glyph, what it needs over as many lines as it takes, and on
+/// the right who sent it and how long ago, or below when that does not fit beside it. A card
+/// another one holds back says by what, dim, on the line below.
 pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'static>> {
     let bar = Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT));
     let (glyph, color) = card_glyph(card);
@@ -325,27 +331,36 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
-    let right = super::md::truncate(&right, super::md::str_width(&right).min(budget / 3));
-    let gap = if right.is_empty() { 0 } else { 2 };
+    let right_width = super::md::str_width(&right);
+    let right_beside = right_width <= budget / 3;
+    let column = if right_beside && right_width > 0 { budget.saturating_sub(right_width + 2) } else { budget };
     let need = card.need.as_deref().unwrap_or(&card.title);
-    let need = super::md::truncate(need, budget.saturating_sub(super::md::str_width(&right) + gap));
-    let padding = budget.saturating_sub(super::md::str_width(&need) + super::md::str_width(&right));
     let mut need_style = Style::default();
     if selected {
         need_style = need_style.add_modifier(Modifier::BOLD);
     }
-    let mut first = lead;
-    first.push(Span::styled(need, need_style));
-    first.push(Span::raw(" ".repeat(padding)));
-    first.push(Span::styled(right, Style::new().fg(DIM)));
-    let mut lines = vec![fit(first, width)];
+    let under = vec![bar.clone(), Span::raw("  ")];
+    let mut lines =
+        super::md::wrap(vec![Span::styled(need.to_owned(), need_style)], lead_width + column, lead, under.clone());
+    if right_beside {
+        let first = &mut lines[0];
+        let padding = width.saturating_sub(first.width() + right_width);
+        first.spans.push(Span::raw(" ".repeat(padding)));
+        first.spans.push(Span::styled(right, Style::new().fg(DIM)));
+    } else {
+        let mut line = under;
+        line.push(Span::styled(right, Style::new().fg(DIM)));
+        lines.push(Line::from(line));
+    }
     for chip in &card.blocked_by {
-        lines.push(fit(
-            vec![bar.clone(), Span::raw("  "), Span::styled(chip.label.clone(), Style::new().fg(DIM))],
+        lines.extend(super::md::wrap(
+            vec![Span::styled(chip.label.clone(), Style::new().fg(DIM))],
             width,
+            vec![bar.clone(), Span::raw("  ")],
+            vec![bar.clone(), Span::raw("  ")],
         ));
     }
-    lines
+    lines.into_iter().map(|line| fit(line.spans, width)).collect()
 }
 
 /// The task or node a card came from, the way its header names it.

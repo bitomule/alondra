@@ -322,7 +322,7 @@ impl App {
                 if action.enabled && let Some(key) = digit(index)
                     && (!reading || self.takes_the_comments(view, key))
                 {
-                    t.add(vec![key], "", super::md::truncate(&action.label, 18), answer.clone());
+                    t.add(vec![key], "", action.label.clone(), answer.clone());
                 }
             }
             if !card.more.is_empty() && !reading {
