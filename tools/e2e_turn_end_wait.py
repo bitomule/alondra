@@ -47,8 +47,8 @@ def start_node(sandbox, phone):
     scripts = os.path.join(sandbox.dir, "fakes", "scripts")
     os.makedirs(scripts, exist_ok=True)
     with open(os.path.join(scripts, f"{REQUEST}.json"), "w") as script:
-        json.dump({"request_id": REQUEST, "tasks": [{"task_id": TASK, "title": "Remove the Fleet"}]}, script)
-    phone.request("POST", "/requests", {"request_id": REQUEST, "text": "Remove the Fleet"})
+        json.dump({"request_id": REQUEST, "tasks": [{"task_id": TASK, "title": "Rename the queue"}]}, script)
+    phone.request("POST", "/requests", {"request_id": REQUEST, "text": "Rename the queue"})
     deadline = time.time() + TIMEOUT
     while not session(sandbox):
         assert time.time() < deadline, f"Alondra started no node for {TASK}"
@@ -131,7 +131,7 @@ def main():
         tui.keys(":")
         tui.type("tasks")
         tui.keys("Enter")
-        tui.until(lambda s: "Remove the Fleet" in s, "the task never showed in the tasks screen")
+        tui.until(lambda s: "Rename the queue" in s, "the task never showed in the tasks screen")
         tui.until(lambda s: "Estado: " + WAITING in s, f"the task's detail never read «{WAITING}»")
         screen = tui.screen()
         assert not any(claim in screen for claim in CLAIMS), f"the tasks screen says the user is needed:\n{screen}"

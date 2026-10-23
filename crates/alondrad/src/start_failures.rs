@@ -56,7 +56,7 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
         store.forget_auto_launch(task)?;
         store.dequeue_launch(task)?;
     }
-    let key = crate::fleet_gate::Key::Task(task.clone());
+    let key = crate::admission::Key::Task(task.clone());
     domain.live.gate.forget(&key);
     domain.live.gate.not_started(&key);
     domain.live.gate.poke();

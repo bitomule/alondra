@@ -146,7 +146,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/machine", get(orchestrator_machine))
         .route("/orchestrator/log", get(orchestrator_log))
         .route("/orchestrator/schedules", post(orchestrator_schedule))
-        .route("/orchestrator/fleet", get(orchestrator_fleet))
+        .route("/orchestrator/tasks_in_progress", get(orchestrator_tasks_in_progress))
         .route("/orchestrator/node", get(orchestrator_node))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .route("/cards/open", get(open_cards))
@@ -970,7 +970,7 @@ fn gauges_json(state: &DomainDaemon) -> (Value, Value) {
     }
 }
 
-async fn orchestrator_fleet(
+async fn orchestrator_tasks_in_progress(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -979,7 +979,7 @@ async fn orchestrator_fleet(
         return refused;
     }
     let (machine, usage) = gauges_json(&state);
-    tool_answer(crate::domain_orchestrator_reads::fleet(
+    tool_answer(crate::domain_orchestrator_reads::tasks_in_progress(
         &state.domain,
         machine,
         usage,
@@ -1012,8 +1012,8 @@ struct WaitingBody {
 }
 
 /// An Agent declares it is stopped waiting for the machine, as 8ccd131's `wait_for_machine` did:
-/// its live state says so until its next turn, the machine watch tells the user, and the fleet
-/// gate brings it back in its turn.
+/// its live state says so until its next turn, the machine watch tells the user, and the
+/// admission gate brings it back in its turn.
 async fn agent_waiting_machine(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -1047,7 +1047,7 @@ async fn agent_waiting_machine(
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
     live.machine_watch.declare(&session_id, &body.reason, turn, now);
-    live.gate.hold_back(&state.domain, &session_id, crate::fleet_pause::Reason::Declared { reason: body.reason.clone() }, now);
+    live.gate.hold_back(&state.domain, &session_id, crate::pauses::Reason::Declared { reason: body.reason.clone() }, now);
     live.apply(&alondra_core::Event::WaitingMachine {
         session_id,
         reason: body.reason,
@@ -1814,7 +1814,7 @@ mod tests {
         };
         assert_eq!(
             client
-                .get(format!("{base}/orchestrator/fleet"))
+                .get(format!("{base}/orchestrator/tasks_in_progress"))
                 .bearer_auth(&bearer)
                 .send()
                 .await
@@ -1822,9 +1822,9 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
-        let fleet = orchestrator_get("/orchestrator/fleet").await.unwrap();
-        assert_eq!(fleet.status(), StatusCode::OK);
-        assert!(fleet.json::<serde_json::Value>().await.unwrap()["nodes"].is_array());
+        let tasks_in_progress = orchestrator_get("/orchestrator/tasks_in_progress").await.unwrap();
+        assert_eq!(tasks_in_progress.status(), StatusCode::OK);
+        assert!(tasks_in_progress.json::<serde_json::Value>().await.unwrap()["nodes"].is_array());
         assert_eq!(
             orchestrator_get("/orchestrator/node?node=nobody")
                 .await

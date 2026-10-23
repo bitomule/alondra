@@ -14,7 +14,7 @@ pub const RUNTIME: &str = "/runtime";
 
 /// A Claude session as the daemon sees it; `session_id` is the domain's AgentId.
 #[derive(Deserialize, Clone)]
-pub struct FleetNode {
+pub struct RuntimeNode {
     #[serde(default)]
     pub orchestrator_runtime: Option<OrchestratorRuntime>,
     #[serde(flatten)]
@@ -23,18 +23,18 @@ pub struct FleetNode {
     pub project: Option<String>,
 }
 
-impl std::ops::Deref for FleetNode {
+impl std::ops::Deref for RuntimeNode {
     type Target = Node;
     fn deref(&self) -> &Node {
         &self.node
     }
 }
 
-impl FleetNode {
+impl RuntimeNode {
     pub fn status_label(&self) -> &'static str {
         match self.orchestrator_runtime.as_ref() {
             Some(runtime) => runtime.status_label(),
-            None => crate::i18n::fleet_state(&self.node),
+            None => crate::i18n::occupancy_label(&self.node),
         }
     }
 }
@@ -152,7 +152,7 @@ pub struct Runtime {
     #[serde(default, deserialize_with = "lenient_one")]
     pub update: Option<alondra_core::update::Status>,
     #[serde(default, deserialize_with = "lenient")]
-    pub nodes: Vec<FleetNode>,
+    pub nodes: Vec<RuntimeNode>,
     #[serde(default, deserialize_with = "lenient_one")]
     pub orchestrator: Option<OrchestratorRuntime>,
     #[serde(default, deserialize_with = "lenient_map")]
@@ -166,11 +166,11 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn node(&self, id: &AgentId) -> Option<&FleetNode> {
+    pub fn node(&self, id: &AgentId) -> Option<&RuntimeNode> {
         self.nodes.iter().find(|n| n.session_id == id.0)
     }
 
-    pub fn orchestrator_node(&self) -> Option<&FleetNode> {
+    pub fn orchestrator_node(&self) -> Option<&RuntimeNode> {
         self.nodes.iter().find(|n| n.is_orchestrator)
     }
 

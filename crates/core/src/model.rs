@@ -46,7 +46,7 @@ impl<'de> Deserialize<'de> for NodeState {
 }
 
 /// What the orchestrator is doing. It is not a node like the others, so it has its own states
-/// and its own place in the fleet; `state` still carries the closest node state for older clients.
+/// and its own place among the nodes; `state` still carries the closest node state for older clients.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum OrchestratorState {
@@ -233,7 +233,7 @@ pub struct Node {
     pub in_daemon: bool,
     pub is_orchestrator: bool,
     pub has_plugin: bool,
-    /// When the node first appeared. Fixed for the node's lifetime: the fleet view sorts by
+    /// When the node first appeared. Fixed for the node's lifetime: the node lists sort by
     /// this, not by state, so a node keeps its place as its state changes. Snapshots taken
     /// before this field existed default it to 0; the hub backfills those from `state_since`
     /// on load.
@@ -594,7 +594,7 @@ pub struct Report {
     #[serde(default)]
     pub read: bool,
     /// A handoff for the orchestrator, not a decision for the user: excluded from the user's
-    /// inbox, delivered through the fleet digest instead.
+    /// inbox, delivered through the orchestrator's digest instead.
     #[serde(default)]
     pub to_orchestrator: bool,
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.

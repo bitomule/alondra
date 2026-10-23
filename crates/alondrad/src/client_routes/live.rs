@@ -44,7 +44,7 @@ pub(crate) struct Live {
     pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
-    pub(crate) gate: crate::fleet_gate::FleetGate,
+    pub(crate) gate: crate::admission::Admission,
     watching: Mutex<std::collections::HashSet<String>>,
     launching: Mutex<std::collections::HashSet<String>>,
     /// When Alondra last cut the turn of a session it has to close, by session.
@@ -72,14 +72,14 @@ impl Live {
             closed_tasks_file: Some(closed_tasks_file),
             usage_pause: crate::usage_pause::UsagePause::default(),
             machine_watch: crate::machine_watch::MachineWatch::persisted_in(home),
-            gate: crate::fleet_gate::FleetGate::persisted_in(home),
+            gate: crate::admission::Admission::persisted_in(home),
             closed: Mutex::new(closed),
             closed_file: Some(file),
             ..Self::default()
         }
     }
 
-    /// The user closed the session: it is not brought back and leaves Fleet, also after a restart.
+    /// The user closed the session: it is not brought back and closes, also after a restart.
     pub(crate) fn mark_closed(&self, session_id: &str) {
         let mut closed = self.closed.lock().expect("revivals poisoned");
         closed.insert(session_id.to_owned());

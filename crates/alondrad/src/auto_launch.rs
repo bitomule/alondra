@@ -1,5 +1,5 @@
 //! Starting a task as soon as it is ready: every task not started yet is launched by Alondra itself
-//! with the launch plan it was created with, when the fleet gate has room for it, by priority then
+//! with the launch plan it was created with, when the admission gate has room for it, by priority then
 //! by how long it has had its plan; the mission of a task that waited on others carries what they
 //! delivered. One automatic launch per task, ever: the claim is a durable row written before
 //! `claude` runs, so a restart or a second pass never starts it twice. A start that fails is tried
@@ -110,7 +110,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        if domain.live.closed_task(&task.id.0).is_some() || crate::fleet_gate::held_by_user(domain, &task.id) || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
+        if domain.live.closed_task(&task.id.0).is_some() || crate::admission::held_by_user(domain, &task.id) || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
             continue;
         }
         let (row, plan) = {
@@ -143,7 +143,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if disk_low {
             continue;
         }
-        let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
+        let waiting = crate::admission::Waiting { key: crate::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
             since: planned.get(&task.id).copied().unwrap_or(now) };
         if domain.live.gate.ask(domain, waiting, now).is_err() {
             continue;

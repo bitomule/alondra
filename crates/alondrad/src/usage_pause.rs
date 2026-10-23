@@ -449,12 +449,12 @@ fn jitter(max_ms: u64) -> u64 {
     u64::from_str_radix(&crate::auth::random_hex(4), 16).unwrap_or_default().checked_rem(max_ms).unwrap_or(0)
 }
 
-/// Puts every node the limit stopped in the fleet gate's queue, which tells them to carry on one
+/// Puts every node the limit stopped in the admission gate's queue, which tells them to carry on one
 /// at a time, and brings back the ones whose connection was lost meanwhile.
 pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
     let now = now_millis();
     for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
-        if !domain.live.gate.hold_back(domain, &node.session_id, crate::fleet_pause::Reason::Usage, now)
+        if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now)
             && crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err()
         {
             domain.live.losses.report(&node.session_id);

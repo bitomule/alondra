@@ -1,7 +1,7 @@
 //! A command copies no task's journal: it adds its new records to the journals it decides on,
 //! the tasks it touched are found by their journals' length, and the store's writes for those
 //! records are replayed from the lifecycle the state before it kept, never from the whole journal.
-use super::lifecycle_cache_tests::{fleet, run, step};
+use super::lifecycle_cache_tests::{three_tasks, run, step};
 use super::lifecycle_tests::{must, task};
 use super::*;
 use proptest::prelude::*;
@@ -31,7 +31,7 @@ proptest! {
 
     #[test]
     fn a_command_adds_only_its_new_records_and_the_store_replays_only_those(steps in prop::collection::vec(step(), 1..40)) {
-        let mut s = fleet();
+        let mut s = three_tasks();
         for (n, step) in steps.iter().enumerate() {
             let before = s.clone();
             let _ = run(&mut s, step, n);
@@ -56,7 +56,7 @@ proptest! {
 
 #[test]
 fn among_many_tasks_a_command_touches_and_copies_only_the_ones_it_moves() {
-    let mut s = fleet();
+    let mut s = three_tasks();
     let many: Vec<String> = (0..50).map(|n| format!("many-{n:02}")).collect();
     for id in &many {
         task(&mut s, id, None);
@@ -77,7 +77,7 @@ fn among_many_tasks_a_command_touches_and_copies_only_the_ones_it_moves() {
 
 #[test]
 fn a_journal_serializes_as_the_list_of_its_records() {
-    let mut s = fleet();
+    let mut s = three_tasks();
     must(&mut s, Actor::System, Command::TellNode { task_id: "s-task".into(), text: "Notice".into() });
     let journal = &s.lifecycle_journal[&TaskId::from("s-task")];
     let records: Vec<LifecycleRecord> = journal.iter().cloned().collect();

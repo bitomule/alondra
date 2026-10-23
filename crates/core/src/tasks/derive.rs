@@ -91,7 +91,7 @@ fn title_from_text(line: &str) -> String {
 /// for its request if it gave one, else — when David wrote that request himself, not one made up
 /// to hold a bare session — the first line of what he asked, else the node's own name, which is
 /// the dead end t-47118 got stuck with (a task titled after its node, indistinguishable from it
-/// in the Fleet view).
+/// in the list of nodes).
 fn fallback_title(request: Option<&Request>, node_name: &str) -> String {
     let Some(r) = request else { return node_name.to_string() };
     if let Some(title) = &r.title {
@@ -1309,7 +1309,7 @@ mod tests {
         assert_eq!(run.task().state, NeedsYou);
     }
 
-    /// Fleet showed a task titled "alondra/estados-por-tarea" — its own node's name — next to
+    /// The node list showed a task titled "alondra/estados-por-tarea" — its own node's name — next to
     /// real titled tasks: a session with no request behind it falls back to its node's display
     /// name, and nothing renamed it afterwards. `TaskTitled` fixes the "nothing" part.
     #[test]

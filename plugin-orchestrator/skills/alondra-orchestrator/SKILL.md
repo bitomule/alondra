@@ -1,11 +1,11 @@
 ---
 name: alondra-orchestrator
-description: How the orchestrator works when it is connected to Alondra. Use it when starting as the orchestrator with the Alondra plugin, when Alondra hands you a batch of its inbox, or when the user asks for new work, fleet status or machine capacity.
+description: How the orchestrator works when it is connected to Alondra. Use it when starting as the orchestrator with the Alondra plugin, when Alondra hands you a batch of its inbox, or when the user asks for new work, work status or machine capacity.
 ---
 
 # Orchestrator with Alondra
 
-The user supervises the fleet; the Alondra MCP instructions give their name and the language to
+The user supervises the nodes; the Alondra MCP instructions give their name and the language to
 write to them in. Their requests, answers and decisions are kept by Alondra, not in this
 conversation.
 
@@ -21,14 +21,14 @@ finishes a task. Every request in the batch leaves it with its tasks, an answer 
 nobody. A request left with none of the three comes back to you once, and then reaches the user
 as a problem.
 
-Call `fleet` or `node` only for what the prompt does not say. Requests, tasks, questions and
+Call `tasks_in_progress` or `node` only for what the prompt does not say. Requests, tasks, questions and
 results are durable; a new conversation does not mean they need repeating. Keep material
 decisions, constraints and next steps in task titles, missions and questions, where they can be
 read outside this conversation. End each batch with a short note of what the next batch needs and
 Alondra does not already hold: it reaches the next batch and nobody else.
 
 Alondra gives you:
-- eyes: `fleet` (the nodes running, dormant or owing the user something, open questions and the
+- eyes: `tasks_in_progress` (the nodes running, dormant or owing the user something, open questions and the
   machine; `all: true` adds finished ones), `node` (one node in detail),
   `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
 - hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `set_relations`, `set_priority`, `retitle_task`, `launch`, `set_launch_plan`, `send`,
@@ -41,7 +41,7 @@ Alondra gives you:
   informed mission. You cannot change files or run commands; investigation that needs either is
   a node's work.
 
-Only sessions Alondra launched are in the fleet: the nodes `launch` starts, and you. The user's
+Only sessions Alondra launched are nodes: the nodes `launch` starts, and you. The user's
 own terminals, crons and other Claude sessions cannot take a task or a message.
 
 ## Requests and tasks
@@ -103,7 +103,7 @@ user follows tasks, not nodes.
   user yourself only for a decision that is theirs.
 - One task, one node. Every task gets a new node of its own; a node is never given a second task, and it is closed with its task, worktree included. When
   a new task touches what another node is doing (the same screen, file or PR), say in its
-  mission which node works on what (`fleet` shows them), so they do not step on each other.
+  mission which node works on what (`tasks_in_progress` shows them), so they do not step on each other.
 - `launch` with `task` starts a node for it with its mission: your `prompt`, or the task title
   and the request. Write the mission as the work itself: what to build or find, what evidence to
   leave, what has been ruled out. Alondra adds the task id, how the node asks and delivers
@@ -120,7 +120,7 @@ user follows tasks, not nodes.
   `cancel_task` drops a task that should not go on (Alondra tells its node to stop and closes it).
   A finished task's node is closed: more work on it is a new task with `dependencies` on the
   finished one, so its node starts from that result.
-- Alondra paces the fleet: only so many nodes work at once on this Mac, none start while it is
+- Alondra paces the nodes: only so many nodes work at once on this Mac, none start while it is
   short of memory, and no new one while its CPU is overloaded. `launch` always works: when there
   is no room, its result says `queued: true` with the task's place and why it waits, and Alondra
   starts it by itself when its turn comes. Do not launch it again, and never hold launches back or

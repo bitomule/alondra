@@ -1,6 +1,6 @@
 //! Alondra's card for a machine that stops nodes: the disk nearly full, or a node that declared it
 //! waits for the machine. One card per incident; its body holds the numbers so every client words
-//! it in its own language. Memory never raises one: Alondra paces the fleet by itself.
+//! it in its own language. Memory never raises one: Alondra paces the nodes by itself.
 
 use serde::{Deserialize, Serialize};
 

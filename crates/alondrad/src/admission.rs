@@ -4,15 +4,15 @@
 //! overloaded. Memory only ever holds starts and resumes: it never pauses a working node. The
 //! limit is the user's number, or in automatic the most this Mac's hardware takes. What does not
 //! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
-//! docs/fleet-pacing.md.
+//! docs/pacing.md.
 //!
 //! Launches the orchestrator or the user asked for wait in the durable `launch_queue` and this
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
 //! their own durable claims and only ask the gate, which wakes them when their turn comes. Nodes
-//! paused for the machine (`fleet_pause`) wait here too and the gate tells them to carry on.
+//! paused for the machine (`pauses`) wait here too and the gate tells them to carry on.
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
-use crate::fleet_pause::{Pauses, Paused, Reason};
+use crate::pauses::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
@@ -26,7 +26,9 @@ use std::sync::Arc;
 use crate::runtime_mutex::RuntimeMutex as Mutex;
 use std::time::Duration;
 
-const FILE: &str = "fleet-gate.json";
+pub(crate) const FILE: &str = "admission.json";
+/// The gate's file before it was renamed; startup moves it to `FILE`.
+pub(crate) const PREVIOUS_FILE: &str = "fleet-gate.json";
 pub(crate) const SPACING: Millis = 60_000;
 /// A node admitted this recently counts as working even before its mod reports a turn, and its
 /// memory, which does not show yet, is reserved before one more starts.
@@ -184,7 +186,7 @@ impl Told {
     }
 }
 
-pub(crate) struct FleetGate {
+pub(crate) struct Admission {
     inner: Mutex<Inner>,
     file: Option<PathBuf>,
     /// Bumped whenever a waiting start may go: the callers that ask the gate wait on it.
@@ -192,7 +194,7 @@ pub(crate) struct FleetGate {
     changed: tokio::sync::Notify,
 }
 
-impl Default for FleetGate {
+impl Default for Admission {
     fn default() -> Self {
         Self { inner: Mutex::default(), file: None, turn: tokio::sync::watch::Sender::new(0), changed: tokio::sync::Notify::new() }
     }
@@ -212,16 +214,17 @@ pub(crate) struct Snapshot {
     pub disk_low: bool,
 }
 
-impl FleetGate {
+impl Admission {
     pub(crate) fn persisted_in(home: &Path) -> Self {
         let file = home.join(FILE);
-        let mut saved: Saved = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let read = |path: &Path| std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok());
+        let mut saved = read(&file).or_else(|| read(&home.join(PREVIOUS_FILE))).unwrap_or_default();
         let legacy = std::mem::take(&mut saved.pauses.paused);
         Self { inner: Mutex::new(Inner { saved, legacy, ..Inner::default() }), file: Some(file), ..Self::default() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("fleet gate poisoned")
+        self.inner.lock().expect("admission poisoned")
     }
 
     /// The gate with the pauses the node machine holds now: the only place they live.
@@ -289,7 +292,7 @@ impl FleetGate {
         }
         let turn_since = domain.live.mods.session(session).and_then(|reported| reported.working_since);
         inner.saved.pauses.paused.insert(session.to_owned(), Paused {
-            task, reason, since: now, cut: None, turn_since, cleanup: crate::fleet_pause::Cleanup::Done, released: false,
+            task, reason, since: now, cut: None, turn_since, cleanup: crate::pauses::Cleanup::Done, released: false,
         });
         self.save_with(domain, &inner);
         drop(inner);
@@ -301,12 +304,12 @@ impl FleetGate {
     pub(crate) fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
         let mut inner = self.lock_with(domain);
-        crate::fleet_pause::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
+        crate::pauses::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
         self.save_with(domain, &inner);
         let paused = inner.saved.pauses.paused.get(session).cloned();
         drop(inner);
-        if let Some(paused) = paused.filter(|_| crate::fleet_pause::through_sdk(domain, session)) {
-            crate::fleet_pause::hold_sdk_turn(domain, session, &paused);
+        if let Some(paused) = paused.filter(|_| crate::pauses::through_sdk(domain, session)) {
+            crate::pauses::hold_sdk_turn(domain, session, &paused);
         }
         Ok(())
     }
@@ -382,7 +385,7 @@ impl FleetGate {
             return Err(snapshot.hold.unwrap_or(Hold::Slots { working: snapshot.working, limit: snapshot.limit }));
         };
         hold_of(&inner, head, &snapshot, now)?;
-        log!("the fleet gate lets {} start", key_text(&state, &key));
+        log!("the admission gate lets {} start", key_text(&state, &key));
         inner.asking.remove(&key);
         if let Key::Resume(session) = &key {
             resume_locked(domain, &mut inner, session, now);
@@ -521,19 +524,19 @@ fn pause_reason(reason: &Reason) -> PauseReason {
     }
 }
 
-fn cleanup_of(cleanup: PauseCleanup) -> crate::fleet_pause::Cleanup {
+fn cleanup_of(cleanup: PauseCleanup) -> crate::pauses::Cleanup {
     match cleanup {
-        PauseCleanup::Pending => crate::fleet_pause::Cleanup::Pending,
-        PauseCleanup::Terminated => crate::fleet_pause::Cleanup::Terminated,
-        PauseCleanup::Done => crate::fleet_pause::Cleanup::Done,
+        PauseCleanup::Pending => crate::pauses::Cleanup::Pending,
+        PauseCleanup::Terminated => crate::pauses::Cleanup::Terminated,
+        PauseCleanup::Done => crate::pauses::Cleanup::Done,
     }
 }
 
-fn pause_cleanup(cleanup: crate::fleet_pause::Cleanup) -> PauseCleanup {
+fn pause_cleanup(cleanup: crate::pauses::Cleanup) -> PauseCleanup {
     match cleanup {
-        crate::fleet_pause::Cleanup::Pending => PauseCleanup::Pending,
-        crate::fleet_pause::Cleanup::Terminated => PauseCleanup::Terminated,
-        crate::fleet_pause::Cleanup::Done => PauseCleanup::Done,
+        crate::pauses::Cleanup::Pending => PauseCleanup::Pending,
+        crate::pauses::Cleanup::Terminated => PauseCleanup::Terminated,
+        crate::pauses::Cleanup::Done => PauseCleanup::Done,
     }
 }
 
@@ -593,7 +596,7 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
         domain.live.api_watch.probed(now);
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
-    let text = crate::fleet_pause::resume_text(&paused, now);
+    let text = crate::pauses::resume_text(&paused, now);
     if !tell_to_go_on(domain, session, &text) {
         inner.saved.pauses.owed.insert(session.to_owned(), text);
         domain.live.losses.report(session);
@@ -603,7 +606,7 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
 /// Tells a node it goes on: as an input of its Agent SDK task, which its host takes once the pause
 /// ends, or down the connection of a `claude --bg` node.
 fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
-    if crate::fleet_pause::through_sdk(domain, session) {
+    if crate::pauses::through_sdk(domain, session) {
         let Some(task) = domain.state().ok().and_then(|state| open_task_of(&state, session)) else { return true };
         if waiting_input(domain, &task) {
             return true;
@@ -670,7 +673,7 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
         Hold::Disk => "the disk is nearly full".into(),
     };
     let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
-    Some(format!("the fleet gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
+    Some(format!("the admission gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
 }
 
 fn task_of(state: &DomainState, key: &Key) -> Option<TaskId> {
@@ -714,7 +717,7 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
     }
 }
 
-/// The tasks whose node takes a slot, as the node machine says: the one count the gate, Fleet, the
+/// The tasks whose node takes a slot, as the node machine says: the one count the gate, the
 /// Tasks list and the header share. A paused node, one that waits on the user and one whose session
 /// was lost and waits for the gate hold none, whatever their session still reports; one the gate let
 /// back and Alondra is restarting holds one.
@@ -795,7 +798,7 @@ fn machine_size() -> (usize, u64) {
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
     let busy = working_tasks(state);
-    let paused = |task: &TaskId| crate::fleet_pause::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
+    let paused = |task: &TaskId| crate::pauses::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let waiting_again: BTreeSet<&Key> = queued.iter()
         .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live.is_launching(&task.0)))
         .map(|waiting| &waiting.key).collect();
@@ -869,7 +872,7 @@ pub(crate) fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) ->
     let gate = &domain.live.gate;
     let mut inner = gate.lock();
     inner.asking.remove(&Key::Task(task.clone()));
-    inner.saved.pauses.held.insert(task.clone(), crate::fleet_pause::Held { body, origin, since: now });
+    inner.saved.pauses.held.insert(task.clone(), crate::pauses::Held { body, origin, since: now });
     gate.save(&inner);
     drop(inner);
     gate.poke();
@@ -933,7 +936,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     let mut changes = domain.subscribe();
     loop {
         if let Err(error) = pass(&domain, &home).await {
-            log!("the fleet gate could not start a queued launch: {error:#}");
+            log!("the admission gate could not start a queued launch: {error:#}");
         }
         tokio::select! {
             () = tokio::time::sleep(TICK) => {}
@@ -961,7 +964,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         let queued = queued_launches(domain, &state, now);
         let mut inner = gate.lock_with(domain);
         inner.asking.retain(|key, _| still_waits(&state, key));
-        crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, now);
+        crate::pauses::look(domain, &state, &mut inner.saved.pauses, now);
         deliver_owed(domain, &mut inner);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         gate.save_with(domain, &inner);
@@ -1001,7 +1004,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     };
     let body = LaunchBody::from_queue(&row.body)?;
     let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
-    log!("the fleet gate starts {task}, queued since {}", row.enqueued_at);
+    log!("the admission gate starts {task}, queued since {}", row.enqueued_at);
     match launch_from(domain, home, body, choices, Origin::Admitted).await {
         Ok(_) => {
             let mut store = domain.store.lock().expect("domain store poisoned");
@@ -1010,7 +1013,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         }
         Err(_) if crate::start_failures::ended(domain, &task)? => {}
         Err(error) => {
-            log!("the fleet gate could not start {task}: {}", error.message);
+            log!("the admission gate could not start {task}: {}", error.message);
             refused(domain, &task, &error, now)?;
         }
     }

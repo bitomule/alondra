@@ -53,7 +53,7 @@ fn world() -> Fixture {
 }
 
 #[test]
-fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
+fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() {
     let f = world();
     let task_scope = Scope::Task { task_id: "t1".into() };
     ask(&f.1, "q-open", Recipient::User, task_scope.clone(), agent_a());
@@ -62,26 +62,26 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     ask(&f.1, "q-orch", Recipient::Orchestrator, task_scope.clone(), agent_a());
     run(&f.1, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
         recipient: Recipient::User, body: "Found the colour table".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update") });
-    let fleet = fleet(&f.1, json!({"cpus": 10}), json!(null)).unwrap();
-    let nodes = fleet["nodes"].as_array().unwrap();
+    let answer = tasks_in_progress(&f.1, json!({"cpus": 10}), json!(null)).unwrap();
+    let nodes = answer["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "only sessions the domain knows as Agents: {nodes:?}");
     assert_eq!((nodes[0]["name"].as_str(), nodes[0]["project"].as_str()), (Some("Instance A"), Some("App")));
     assert_eq!(nodes[0]["model"], "claude-sonnet-5-5");
-    let open: Vec<&str> = fleet["open_questions"].as_array().unwrap().iter().map(|q| q["id"].as_str().unwrap()).collect();
+    let open: Vec<&str> = answer["open_questions"].as_array().unwrap().iter().map(|q| q["id"].as_str().unwrap()).collect();
     assert_eq!(open, ["q-open", "q-orch"], "a withdrawn question waits on nobody");
-    assert_eq!(fleet["open_questions"][1]["to_orchestrator"], true);
-    assert_eq!(fleet["open_questions"][0]["title"], "Question q-open");
-    let report = &fleet["reports"][0];
+    assert_eq!(answer["open_questions"][1]["to_orchestrator"], true);
+    assert_eq!(answer["open_questions"][0]["title"], "Question q-open");
+    let report = &answer["reports"][0];
     assert_eq!((report["id"].as_str(), report["read"].as_bool(), report["node_name"].as_str()), (Some("info"), Some(false), Some("Alondra")));
-    assert_eq!(fleet["orchestrator_messages"].as_array().unwrap().len(), 2, "the new request and the question for the orchestrator are on their way");
-    assert_eq!(fleet["requests"][0]["state"], "working");
-    let t2 = fleet["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t2").unwrap();
+    assert_eq!(answer["orchestrator_messages"].as_array().unwrap().len(), 2, "the new request and the question for the orchestrator are on their way");
+    assert_eq!(answer["requests"][0]["state"], "working");
+    let t2 = answer["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t2").unwrap();
     assert_eq!((t2["depends_on"].clone(), t2["assignee"].clone()), (json!(["t1"]), Value::Null));
-    assert_eq!(fleet["machine"]["cpus"], 10);
+    assert_eq!(answer["machine"]["cpus"], 10);
 }
 
 #[test]
-fn the_fleet_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_each_task() {
+fn tasks_in_progress_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_each_task() {
     let f = world();
     run(&f.1, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
@@ -89,8 +89,8 @@ fn the_fleet_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_
     run(&f.1, user(), Command::SetRelations {
         task_id: "t3".into(), delivered_dependencies: BTreeSet::from(["t1".into()]), blocks: BTreeSet::from(["t1".into()]),
     });
-    let fleet = fleet(&f.1, json!({}), json!(null)).unwrap();
-    let find = |id: &str| fleet["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
+    let answer = tasks_in_progress(&f.1, json!({}), json!(null)).unwrap();
+    let find = |id: &str| answer["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
     let (reviewer, reviewed) = (find("t3"), find("t1"));
     assert_eq!((reviewer["delivered_dependencies"].clone(), reviewer["blocks"].clone()), (json!(["t1"]), json!(["t1"])));
     assert_eq!((reviewed["blocked_by"].clone(), reviewed["review_rounds"].clone(), reviewed["verdict"].clone()), (json!(["t3"]), json!(0), Value::Null));
@@ -122,7 +122,7 @@ fn the_orchestrator_reads_the_node_machine_s_state_never_an_older_guess() {
     let f = world();
     let work = alondra_core::domain::Background { work: alondra_core::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 1, others: 0, gone: None };
     run(&f.1, Actor::System, Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnEndedBehind { work }, at: 2 });
-    let waiting = fleet(&f.1, json!({}), json!(null)).unwrap();
+    let waiting = tasks_in_progress(&f.1, json!({}), json!(null)).unwrap();
     let node = &waiting["nodes"][0];
     assert_eq!(node["state"], "waiting_background");
     assert!(node["evidence"].as_str().unwrap().contains("`./deploy/brew/release.sh 0.2.67`"), "{node}");
@@ -132,7 +132,7 @@ fn the_orchestrator_reads_the_node_machine_s_state_never_an_older_guess() {
     let pause = alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::Declared { reason: "The build queue is full".into() },
         since: 3, cut: None, turn_since: None, cleanup: Default::default(), released: false };
     run(&f.1, Actor::System, Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::Paused { pause }, at: 3 });
-    let paused = fleet(&f.1, json!({}), json!(null)).unwrap();
+    let paused = tasks_in_progress(&f.1, json!({}), json!(null)).unwrap();
     assert_eq!(paused["nodes"][0]["state"], "paused");
     let t1 = paused["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t1").unwrap().clone();
     assert_eq!(t1["activity"], "paused_by_machine");
@@ -145,11 +145,11 @@ fn apply(state: &mut DomainState, actor: Actor, command: Command) {
 }
 
 /// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
-/// and ended its turn. Its turn-ended card stayed out of David's sight, but the fleet the
+/// and ended its turn. Its turn-ended card stayed out of David's sight, but the tasks_in_progress answer the
 /// orchestrator and Claude read listed it as an open question, “…” stopped without del…. A card
 /// the node's wait covers waits on nobody; once nothing covers it, it does.
 #[test]
-fn the_fleet_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_nothing_explains_the_stop() {
+fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_nothing_explains_the_stop() {
     use alondra_core::domain::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX};
     let mut state = DomainState::new("epoch");
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });

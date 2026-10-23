@@ -1,6 +1,6 @@
 //! Closing a session the way `claude rm` does, which keeps a worktree with work not yet saved
 //! elsewhere, and refusing while the session still has something pending. An interactive
-//! session is not a job `claude rm` knows: it only leaves the fleet and its terminal stays open.
+//! session is not a job `claude rm` knows: it only closes and its terminal stays open.
 //! Shared by the close route and by Alondra closing the node of a finished task.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::AgentId;
@@ -87,7 +87,7 @@ fn failed(status: StatusCode, message: impl Into<String>) -> CloseOutcome {
 }
 
 /// Closes the session of `agent`. A session `claude agents` does not list is left alone, and
-/// leaves the fleet only when `leave_if_not_listed` says so.
+/// closes only when `leave_if_not_listed` says so.
 pub(crate) async fn close_node(
     domain: &DomainRuntime,
     sessions: &dyn Sessions,

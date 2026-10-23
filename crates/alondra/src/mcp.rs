@@ -31,7 +31,7 @@ fn instructions(role: Role, user: &str) -> String {
             "{common} A node works on one Task for its whole life: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra doctor --fix or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}, only a real decision whose options change what you do next: never to announce that your work is ready, show a report or point at a file; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Never send the same card twice: before a card about something you already asked, read open_cards and replace your open one with `replaces`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. A plan states its scope as Markdown checklist lines (`- [ ] …`), one per thing you will deliver, or it goes back to you; once {user} approves it, your final result marks every point done with its evidence in checklist, and a point that no longer applies goes out only with a revised plan {user} approves. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true, the whole report or answer written in content.body, never a path to the file that holds it: a file, a final message left in this session or a question saying the work is ready never reaches {user} as a delivery. When the result needs {user} to choose anything (a design's open decisions, a default to pick), ask it with ask before you deliver, each question with the option you recommend: accepting a result never answers a choice left in its content. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, the full commit sha it is at as head (never a branch name) and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. When Alondra tells you the task is closing, delete what you generated for it that git does not track (build outputs, caches, temporary files) with the project's own tools, change nothing else, and call cleanup_done with the task_id: Alondra then closes your session and its worktree. While something you started for the Task still runs after its PR merged (a deploy, a release script), say so with post_merge_work and the reason, so Alondra does not close the session under it, and call it again without reason when it ends. Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your Task: declare it with post_merge_work before you present the PR as final, so accepting and merging the PR does not close the Task; Alondra tells you to do it once the PR merges. If after the merge that work has to wait for another task or pull request to land, call post_merge_work with waits_for naming it and end your turn: Alondra wakes you when it lands; a wait written only in reason wakes nobody. When Alondra tells you the task was cancelled, stop: do not commit, push or deliver anything. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. To wait for another Task to be done, ask the orchestrator (recipient orchestrator) to make yours depend on it and end your turn: Alondra tells you when it is done; never ask {user} to tell you. Every message typed into this session starts with who sent it and when; the most recent instruction from whoever directs you ({user}, Claude for {user}, the orchestrator) replaces earlier ones that contradict it. Technical permission requests remain separate from task questions. When you stop only because the Mac lacks resources (memory, a full disk, the CPU), say so with wait_for_machine and end your turn; the subscription's usage is never a reason to wait or stop: Alondra paces usage itself and {user} decides whether to keep going, so keep working; waiting in a build queue such as the build queue is normal and never a reason to call it; if something you ran died for lack of memory, call wait_for_machine with that reason and never ask {user} whether to run it again: Alondra tells you to carry on when the Mac has room, and then you run again what was cut. When you need an MCP server that is not connected, call wait_for_mcp with its name and end your turn; never call its mcp__<server>__authenticate tool yourself or ask {user} to sign in with a card: Alondra shows {user} one card to sign in and tells you when it is connected or that you go on without it. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
-            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. A node works on one Task for its whole life and closes with it: start every Task with launch (a new node), never by sending a Task to another node. Every Task is created with its launch plan in create_task (launch: name, cwd, and with auto effort model and reason; for a Request a schedule made, the schedule's model and effort), or create_task refuses it: Alondra starts it by itself when the node limit has room, by priority then age, and a Task that depends on others once they are done, with their results in its mission. You never launch Tasks to keep nodes busy; use launch only for a Task whose start failed or whose node is gone, or to replace a node. When the Request's effort is auto, launch needs model: the lowest that can reliably finish; tell a new node in its mission what other nodes are doing when their work touches (fleet shows them); to move a live Task to another model or effort, launch it again with replace: true, which stops its node and starts the new one in the same worktree (it answers at once with replacing: true and you are told how it ended: do not launch the task again meanwhile); interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, and node one node in detail. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another. A plan approved in phases is one Task per phase, each taking its points with plan_items and depending only on the phases it truly needs. When a Task's work goes on after its PR merges (publish, install, deploy, verify), say so in its mission: its node declares that work before delivering, so merging the PR does not close the Task."
+            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. A node works on one Task for its whole life and closes with it: start every Task with launch (a new node), never by sending a Task to another node. Every Task is created with its launch plan in create_task (launch: name, cwd, and with auto effort model and reason; for a Request a schedule made, the schedule's model and effort), or create_task refuses it: Alondra starts it by itself when the node limit has room, by priority then age, and a Task that depends on others once they are done, with their results in its mission. You never launch Tasks to keep nodes busy; use launch only for a Task whose start failed or whose node is gone, or to replace a node. When the Request's effort is auto, launch needs model: the lowest that can reliably finish; tell a new node in its mission what other nodes are doing when their work touches (tasks_in_progress shows them); to move a live Task to another model or effort, launch it again with replace: true, which stops its node and starts the new one in the same worktree (it answers at once with replacing: true and you are told how it ended: do not launch the task again meanwhile); interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. tasks_in_progress shows the live nodes and what waits on someone, and node one node in detail. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another. A plan approved in phases is one Task per phase, each taking its points with plan_items and depending only on the phases it truly needs. When a Task's work goes on after its PR merges (publish, install, deploy, verify), say so in its mission: its node declares that work before delivering, so merging the PR does not close the Task."
         ),
     }
 }
@@ -66,7 +66,7 @@ fn tools(role: Role, user: &str) -> Value {
     }
     if role == Role::Orchestrator {
         list.extend([
-            json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells, each since when it runs); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
+            json!({"name": "tasks_in_progress", "description": format!("Work in progress: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells, each since when it runs); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
@@ -620,7 +620,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "machine"
         | "daemon_log"
         | "schedule_create"
-        | "fleet"
+        | "tasks_in_progress"
         | "open_cards"
         | "node" => execute_tool(client, name, args),
         _ => {
@@ -699,10 +699,10 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
                 args,
             )?)?
         }
-        "fleet" => {
+        "tasks_in_progress" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&fleet_summary(
-                &client.domain_get("/orchestrator/fleet", &bearer)?,
+            serde_json::to_string_pretty(&tasks_in_progress_summary(
+                &client.domain_get("/orchestrator/tasks_in_progress", &bearer)?,
                 flag(args, "all"),
             ))?
         }
@@ -1288,9 +1288,9 @@ fn list(v: &Value, key: &str) -> Vec<Value> {
     v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
-/// The fleet the orchestrator acts on: unfinished nodes that are running, dormant, or still owe
+/// What the orchestrator acts on: unfinished nodes that are running, dormant, or still owe
 /// the user something. `all` adds finished nodes and the ones whose session is gone.
-fn fleet_summary(o: &Value, all: bool) -> Value {
+fn tasks_in_progress_summary(o: &Value, all: bool) -> Value {
     let open = list(o, "open_questions");
     let unread: Vec<Value> = list(o, "reports").into_iter().filter(|r| r.get("read") == Some(&Value::Bool(false))).collect();
     let owes = |session: Option<&str>| open.iter().chain(&unread).any(|x| x.get("session_id").and_then(Value::as_str) == session);
@@ -1326,7 +1326,7 @@ fn fleet_summary(o: &Value, all: bool) -> Value {
                 hidden.insert(k.into(), json!(n));
             }
         }
-        hidden.insert("see_them_with".into(), json!("fleet with all: true"));
+        hidden.insert("see_them_with".into(), json!("tasks_in_progress with all: true"));
         out["hidden"] = Value::Object(hidden);
     }
     out
@@ -1807,7 +1807,7 @@ mod tests {
         for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
         for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }
         for n in ["present_result","complete_task","register_pr","claim_merge_authorization"] { assert!(!orchestrator.contains(n),"{n}"); }
-        for n in ["launch","send","interrupt","machine","daemon_log","schedule_create","fleet","node"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
+        for n in ["launch","send","interrupt","machine","daemon_log","schedule_create","tasks_in_progress","node"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
         assert!(node.contains("wait_for_machine")); assert!(!orchestrator.contains("wait_for_machine"));
         let open_cards=|role| tools(role,"Ana").as_array().unwrap().iter().find(|t|t["name"]=="open_cards").cloned().expect("open_cards");
         assert_eq!(open_cards(Role::Node)["inputSchema"]["required"],json!(["task_id"]));
@@ -1839,8 +1839,8 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
-        let fleet = json!({
+    fn the_tasks_in_progress_and_node_answers_read_through_the_8ccd131_summaries() {
+        let answer = json!({
             "nodes": [{"session_id": "agent-a", "name": "Instance A", "short_id": "", "project": "App", "state": "working", "alive": true, "in_daemon": false}],
             "open_questions": [{"id": "q", "title": "Ship?", "node_name": "Instance A", "to_orchestrator": false, "action": false, "session_id": "agent-a"}],
             "reports": [{"id": "info", "title": "Found it", "kind": "notice", "read": false, "node_name": "Instance A", "session_id": "agent-a"}],
@@ -1849,7 +1849,7 @@ mod tests {
             "tasks": [{"id": "t1", "title": "Colours", "state": "running", "request": "r", "depends_on": [], "assignee": {"session_id": "agent-a"}}],
             "machine": {"cpus": 10}, "usage": null,
         });
-        let summary = fleet_summary(&fleet, false);
+        let summary = tasks_in_progress_summary(&answer, false);
         assert_eq!(summary["nodes"][0]["name"], "Instance A");
         assert_eq!(summary["open_questions"][0]["id"], "q");
         assert_eq!(summary["unread_reports"][0]["id"], "info");
@@ -1964,9 +1964,9 @@ mod tests {
         }
         let node_names = names(&node);
         let orchestrator_names = names(&orchestrator);
-        assert!(!node_names.contains("fleet"));
+        assert!(!node_names.contains("tasks_in_progress"));
         assert!(!node_names.contains("launch"));
-        assert!(orchestrator_names.contains("fleet"));
+        assert!(orchestrator_names.contains("tasks_in_progress"));
         assert!(orchestrator_names.contains("launch"));
     }
 
@@ -2141,25 +2141,25 @@ mod tests {
     }
 
     #[test]
-    fn fleet_lists_the_nodes_that_matter_and_counts_the_rest() {
-        let v = fleet_summary(&overview(), false);
+    fn tasks_in_progress_lists_the_nodes_that_matter_and_counts_the_rest() {
+        let v = tasks_in_progress_summary(&overview(), false);
         let names: Vec<&str> = v["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["running", "dormant", "gone-owing"], "a gone node that still owes the user an answer stays");
-        assert_eq!(v["hidden"], json!({"done_nodes": 1, "gone_nodes": 2, "see_them_with": "fleet with all: true"}));
+        assert_eq!(v["hidden"], json!({"done_nodes": 1, "gone_nodes": 2, "see_them_with": "tasks_in_progress with all: true"}));
         assert_eq!(v["orchestrator_messages"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2], "already typed in: not again");
-        assert!(!v.to_string().contains(SAID), "fleet carries titles, not bodies: {v:#}");
+        assert!(!v.to_string().contains(SAID), "tasks_in_progress carries titles, not bodies: {v:#}");
     }
 
     #[test]
-    fn fleet_with_all_lists_every_node_and_message() {
-        let v = fleet_summary(&overview(), true);
+    fn tasks_in_progress_with_all_lists_every_node_and_message() {
+        let v = tasks_in_progress_summary(&overview(), true);
         assert_eq!(v["nodes"].as_array().unwrap().len(), 6);
         assert_eq!(v["orchestrator_messages"].as_array().unwrap().len(), 2);
         assert!(v.get("hidden").is_none());
     }
 
     #[test]
-    fn the_fleet_lists_open_requests_with_their_task_trees() {
+    fn tasks_in_progress_lists_open_requests_with_their_task_trees() {
         let o = json!({
             "nodes": [{"session_id": "s1", "name": "app/model", "state": "working", "alive": true}],
             "requests": [
@@ -2173,7 +2173,7 @@ mod tests {
                 {"id": "t-6", "request": "r-2", "title": "UI", "state": "waiting_dependency", "depends_on": ["t-5"], "assignee": null},
             ]
         });
-        let f = fleet_summary(&o, false);
+        let f = tasks_in_progress_summary(&o, false);
         assert_eq!(f["requests"][0], json!({"id": "r-1", "state": "defining", "text": "Menu by sections", "tasks": []}), "a request to define");
         assert_eq!(f["requests"][1]["tasks"], json!([
             {"id": "t-5", "title": "Model", "state": "in_review", "node": "app/model"},
@@ -2181,17 +2181,17 @@ mod tests {
         ]));
         assert_eq!(f["requests"][1]["text"].as_str().unwrap().chars().count(), 161);
         assert_eq!(f["requests"].as_array().unwrap().len(), 2, "done and made-up requests are left out");
-        assert_eq!(f["hidden"], json!({"done_requests": 1, "see_them_with": "fleet with all: true"}));
-        assert_eq!(fleet_summary(&o, true)["requests"].as_array().unwrap().len(), 3);
+        assert_eq!(f["hidden"], json!({"done_requests": 1, "see_them_with": "tasks_in_progress with all: true"}));
+        assert_eq!(tasks_in_progress_summary(&o, true)["requests"].as_array().unwrap().len(), 3);
     }
 
     #[test]
-    fn the_fleet_lists_what_a_node_runs_only_when_it_runs_something() {
+    fn tasks_in_progress_lists_what_a_node_runs_only_when_it_runs_something() {
         let o = json!({"nodes": [
             {"name": "a", "state": "working", "alive": true, "background": [{"kind": "shell", "label": "until pgrep", "started_at": 1}]},
             {"name": "b", "state": "working", "alive": true, "background": []}
         ]});
-        let f = fleet_summary(&o, false);
+        let f = tasks_in_progress_summary(&o, false);
         assert_eq!(f["nodes"][0]["background"][0]["label"], "until pgrep");
         assert!(f["nodes"][1].get("background").is_none());
     }

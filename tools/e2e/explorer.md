@@ -29,14 +29,14 @@ The message that starts you gives the paths. In short:
   - `die`: the session crashes, and Alondra should bring it back.
 - The views the iPhone and Mac apps draw, through a synthetic phone:
   `<tool> phone --name seed --mac 1 request GET '/views/home?protocol=1&client=ios&lang=es'`.
-  The keys are `home`, `tasks`, `fleet`, `card:<id>`, `task:<id>` and `node:<id>`.
+  The keys are `home`, `tasks`, `card:<id>` and `task:<id>`.
 
 ## What to do
 
 Use Alondra as a person would. For each journey: what you expected, what you did (keys or
 commands), what you saw (a capture), and whether it worked.
 
-1. **Look around.** Go through Inbox, Tasks and Fleet with Tab, and open the help with `?`.
+1. **Look around.** Go through Inbox and Tasks with Tab, and open the help with `?`.
 2. **New request.** Press `n`, write one, send it. Does the TUI say it went? No task appears,
    since no orchestrator script covers it: say whether the TUI explains what happens next.
 3. **Answer** the question with `1`/`2`. Does the card leave, and does the task go back to working?

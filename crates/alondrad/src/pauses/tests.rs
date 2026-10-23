@@ -1,5 +1,5 @@
 use super::*;
-use crate::fleet_gate::{Hold, Key, Limit, SPACING, Tuning, Waiting};
+use crate::admission::{Hold, Key, Limit, SPACING, Tuning, Waiting};
 use crate::machine_state::NoRoom;
 use crate::node_push::testing::Node;
 use crate::node_reports::{Envelope, Report};
@@ -55,9 +55,9 @@ fn user() -> Actor {
     Actor::User { user_id: "u".into() }
 }
 
-/// A fleet of nodes on one Mac, each connected through a mod that acts like the real one: an
+/// Nodes on one Mac, each connected through a mod that acts like the real one: an
 /// interrupt ends its turn, a message starts a new one.
-struct Fleet {
+struct Bench {
     home: Home,
     domain: Arc<DomainRuntime>,
     nodes: Vec<(String, Node, usize)>,
@@ -67,7 +67,7 @@ struct Fleet {
     notices: usize,
 }
 
-impl Fleet {
+impl Bench {
     fn new(tasks: &[(&str, TaskPriority)], limit: Limit, started: Millis) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
@@ -97,7 +97,7 @@ impl Fleet {
     }
 
     fn working(&self, now: Millis) -> usize {
-        crate::fleet_gate::working_tasks(&self.domain.state().unwrap()).len()
+        crate::admission::working_tasks(&self.domain.state().unwrap()).len()
     }
 
     /// The node's turn ends, as its mod and the Stop hook say.
@@ -127,7 +127,7 @@ impl Fleet {
         let before = self.orchestrator_inbox();
         crate::machine_watch::pace(&self.domain, &machine);
         self.notices += self.orchestrator_inbox() - before;
-        crate::fleet_gate::pass_at(&self.domain, &self.home.0, now).await.unwrap();
+        crate::admission::pass_at(&self.domain, &self.home.0, now).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         for (session, node, seen) in &mut self.nodes {
             let lines: Vec<serde_json::Value> = node.lines.lock().unwrap().clone();
@@ -181,38 +181,38 @@ fn building(now: Millis, margin_gib: f64, pressure: MemoryPressure) -> Machine {
 }
 
 /// Asks the gate to start a task without a node yet, created on the first ask.
-fn ask_new(fleet: &Fleet, now: Millis) -> Result<(), Hold> {
-    if !fleet.domain.state().unwrap().tasks.contains_key(&TaskId::from("t-new")) {
-        run(&fleet.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+fn ask_new(bench: &Bench, now: Millis) -> Result<(), Hold> {
+    if !bench.domain.state().unwrap().tasks.contains_key(&TaskId::from("t-new")) {
+        run(&bench.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
             task_id: "t-new".into(), request_id: "r".into(), title: "Task t-new".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
     }
     let waiting = Waiting { key: Key::Task("t-new".into()), priority: TaskPriority::High, resuming: false, since: now };
-    fleet.domain.live.gate.ask(&fleet.domain, waiting, now)
+    bench.domain.live.gate.ask(&bench.domain, waiting, now)
 }
 
 /// 13 October: Alondra paused working nodes whenever the Mac reached its limit, and each cut build
-/// ran again later, so the fleet worked one task at a time all day. An hour at critical pressure
+/// ran again later, so the Mac worked one task at a time all day. An hour at critical pressure
 /// with three nodes building now pauses none of them; memory only holds what has not started yet.
 #[tokio::test]
 async fn an_hour_at_critical_pressure_pauses_no_working_node_and_only_holds_new_starts() {
     use TaskPriority::{High, Low, Normal};
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", High), ("t2", Normal), ("t3", Low)], Limit::Fixed(6), base - 10 * MIN);
+    let mut bench = Bench::new(&[("t1", High), ("t2", Normal), ("t3", Low)], Limit::Fixed(6), base - 10 * MIN);
     let mut now = base;
     while now < base + 60 * MIN {
-        fleet.tick_with(building(now, -2.0, MemoryPressure::Critical)).await;
+        bench.tick_with(building(now, -2.0, MemoryPressure::Critical)).await;
         now += SAMPLE;
     }
-    assert!(fleet.events("pause").is_empty(), "{:?}", fleet.log);
-    assert_eq!(fleet.working(now), 3);
+    assert!(bench.events("pause").is_empty(), "{:?}", bench.log);
+    assert_eq!(bench.working(now), 3);
     for task in ["t1", "t2", "t3"] {
-        assert_eq!(phase(&fleet, task), NodePhase::Working, "{task}");
+        assert_eq!(phase(&bench, task), NodePhase::Working, "{task}");
     }
-    assert!(fleet.domain.live.gate.pauses(&fleet.domain).paused.is_empty());
-    assert!(matches!(ask_new(&fleet, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Critical), .. })), "a new start waits for memory");
-    assert_eq!(fleet.notices, 0, "the orchestrator has nothing to do about memory");
+    assert!(bench.domain.live.gate.pauses(&bench.domain).paused.is_empty());
+    assert!(matches!(ask_new(&bench, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Critical), .. })), "a new start waits for memory");
+    assert_eq!(bench.notices, 0, "the orchestrator has nothing to do about memory");
 }
 
 /// A build that brings macOS to warning: the nodes at work go on unpaused, no new node starts
@@ -221,25 +221,25 @@ async fn an_hour_at_critical_pressure_pauses_no_working_node_and_only_holds_new_
 async fn a_build_that_brings_macos_to_warning_holds_new_starts_while_the_running_nodes_keep_working() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     let mut now = base;
     while now < base + 10 * MIN {
         let (margin, pressure) = if now - base < 2 * MIN { (0.5, MemoryPressure::Normal) } else { (-1.5, MemoryPressure::Warning) };
-        fleet.tick_with(building(now, margin, pressure)).await;
+        bench.tick_with(building(now, margin, pressure)).await;
         now += SAMPLE;
     }
-    assert!(fleet.events("pause").is_empty(), "{:?}", fleet.log);
+    assert!(bench.events("pause").is_empty(), "{:?}", bench.log);
     for task in ["t1", "t2", "t3"] {
-        assert_eq!(phase(&fleet, task), NodePhase::Working, "{task}");
+        assert_eq!(phase(&bench, task), NodePhase::Working, "{task}");
     }
-    assert!(matches!(ask_new(&fleet, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Warning), .. })));
+    assert!(matches!(ask_new(&bench, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Warning), .. })));
     let cleared = now;
     while now < cleared + MIN {
-        fleet.tick_with(building(now, 3.0, MemoryPressure::Normal)).await;
+        bench.tick_with(building(now, 3.0, MemoryPressure::Normal)).await;
         now += SAMPLE;
     }
-    assert_eq!(ask_new(&fleet, now), Ok(()), "a minute of room after the build");
-    assert!(fleet.events("pause").is_empty());
+    assert_eq!(ask_new(&bench, now), Ok(()), "a minute of room after the build");
+    assert!(bench.events("pause").is_empty());
 }
 
 /// Nodes an older daemon paused for memory return on the first look after the upgrade and come
@@ -248,18 +248,18 @@ async fn a_build_that_brings_macos_to_warning_holds_new_starts_while_the_running
 async fn nodes_an_older_daemon_paused_for_memory_come_back_through_the_gate_a_start_apart() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.paused_for_memory_before("t2", base);
-    fleet.paused_for_memory_before("t3", base);
-    let now = fleet.hold(50, base, 5 * MIN).await;
-    let resumes = fleet.events("resume");
-    assert_eq!(tasks(&resumes), ["t2", "t3"], "{:?}", fleet.log);
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.paused_for_memory_before("t2", base);
+    bench.paused_for_memory_before("t3", base);
+    let now = bench.hold(50, base, 5 * MIN).await;
+    let resumes = bench.events("resume");
+    assert_eq!(tasks(&resumes), ["t2", "t3"], "{:?}", bench.log);
     assert_eq!(resumes[0].0, base, "on the first look");
     assert_eq!(resumes[1].0 - resumes[0].0, SPACING, "{resumes:?}");
-    let told = fleet.nodes[1].1.lines.lock().unwrap().iter().filter_map(|line| line["text"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let told = bench.nodes[1].1.lines.lock().unwrap().iter().filter_map(|line| line["text"].as_str().map(str::to_owned)).collect::<Vec<_>>();
     assert!(told.iter().any(|text| text.contains("The Mac has room again: carry on with your task")), "{told:?}");
-    assert_eq!(fleet.working(now), 3);
-    assert!(fleet.events("pause").is_empty());
+    assert_eq!(bench.working(now), 3);
+    assert!(bench.events("pause").is_empty());
 }
 
 /// D3: the user's Resume goes through at once, even over the limit, and holds the next slot; a
@@ -268,20 +268,20 @@ async fn nodes_an_older_daemon_paused_for_memory_come_back_through_the_gate_a_st
 async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_returns_by_itself() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(2), base - 10 * MIN);
-    fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t3", base).unwrap();
-    let now = fleet.hold(50, base, 20 * MIN).await;
-    assert_eq!(tasks(&fleet.events("pause")), ["t3"]);
-    assert!(fleet.events("resume").is_empty(), "a pause by the user waits for the user");
-    let pacing = fleet.domain.live.gate.live(&fleet.domain, now).unwrap();
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(2), base - 10 * MIN);
+    bench.domain.live.gate.pause_by_user(&bench.domain, "agent-t3", base).unwrap();
+    let now = bench.hold(50, base, 20 * MIN).await;
+    assert_eq!(tasks(&bench.events("pause")), ["t3"]);
+    assert!(bench.events("resume").is_empty(), "a pause by the user waits for the user");
+    let pacing = bench.domain.live.gate.live(&bench.domain, now).unwrap();
     assert_eq!(pacing.paused[0].reason, alondra_core::views::LivePauseReason::User);
 
-    assert!(fleet.domain.live.gate.resume_now(&fleet.domain, "agent-t3", now));
-    fleet.tick(50, now).await;
-    assert_eq!(tasks(&fleet.events("resume")), ["t3"]);
-    assert_eq!(fleet.working(now), 3, "over the limit of 2");
+    assert!(bench.domain.live.gate.resume_now(&bench.domain, "agent-t3", now));
+    bench.tick(50, now).await;
+    assert_eq!(tasks(&bench.events("resume")), ["t3"]);
+    assert_eq!(bench.working(now), 3, "over the limit of 2");
     let waiting = Waiting { key: Key::Task("t-new".into()), priority: Normal, resuming: false, since: now };
-    assert!(fleet.domain.live.gate.ask(&fleet.domain, waiting, now + 5 * MIN).is_err(), "it counts toward the limit");
+    assert!(bench.domain.live.gate.ask(&bench.domain, waiting, now + 5 * MIN).is_err(), "it counts toward the limit");
 }
 
 /// The orchestrator cannot message a paused node: that would start it again past the limit.
@@ -289,10 +289,10 @@ async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_retu
 async fn the_orchestrator_is_told_a_paused_node_resumes_by_itself() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.paused_for_memory_before("t2", base);
+    let bench = Bench::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.paused_for_memory_before("t2", base);
     let body = serde_json::from_value(serde_json::json!({"node": "agent-t2", "text": "carry on"})).unwrap();
-    let refused = crate::domain_orchestrator_tools::send(&fleet.domain, &fleet.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
+    let refused = crate::domain_orchestrator_tools::send(&bench.domain, &bench.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
     assert_eq!(refused.code, "node_paused");
     assert!(refused.message.contains("Alondra paused it for the machine and resumes it by itself"), "{}", refused.message);
 }
@@ -303,17 +303,17 @@ async fn the_orchestrator_is_told_a_paused_node_resumes_by_itself() {
 async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_time_at_once() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.waits_for_machine("t1", base);
-    fleet.waits_for_machine("t2", base + SAMPLE);
-    fleet.hold(50, base, 12 * MIN).await;
-    let resumes = fleet.events("resume");
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.waits_for_machine("t1", base);
+    bench.waits_for_machine("t2", base + SAMPLE);
+    bench.hold(50, base, 12 * MIN).await;
+    let resumes = bench.events("resume");
     assert_eq!(tasks(&resumes), ["t1", "t2"]);
     assert!(resumes[0].0 < base + MIN, "the measures say there is room: no grace to wait out {resumes:?}");
     assert!(resumes[1].0 - resumes[0].0 >= SPACING, "{resumes:?}");
-    let cards = fleet.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
+    let cards = bench.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
     assert_eq!(cards, 0);
-    assert!(fleet.events("pause").is_empty(), "a node that waits by itself is never interrupted");
+    assert!(bench.events("pause").is_empty(), "a node that waits by itself is never interrupted");
 }
 
 /// A node waits for the machine while the Mac has no room: hours pass with nothing new measured,
@@ -323,18 +323,18 @@ async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_
 async fn a_declared_wait_without_room_stays_for_hours_and_returns_once_the_measures_say_there_is_room() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.waits_for_machine("t1", base);
+    let mut bench = Bench::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.waits_for_machine("t1", base);
     let mut now = base;
     for _ in 0..36 {
-        fleet.tick(3, now).await;
+        bench.tick(3, now).await;
         now += 10 * MIN;
     }
-    assert!(fleet.events("resume").is_empty(), "six hours without room: it still waits");
-    let cards = fleet.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
-    assert_eq!((cards, fleet.notices), (0, 0));
-    fleet.hold(50, now, 3 * MIN).await;
-    assert_eq!(tasks(&fleet.events("resume")), ["t1"]);
+    assert!(bench.events("resume").is_empty(), "six hours without room: it still waits");
+    let cards = bench.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
+    assert_eq!((cards, bench.notices), (0, 0));
+    bench.hold(50, now, 3 * MIN).await;
+    assert_eq!(tasks(&bench.events("resume")), ["t1"]);
 }
 
 /// A node that declared its wait is left alone: no interrupt and nothing of its own stopped, even
@@ -343,13 +343,13 @@ async fn a_declared_wait_without_room_stays_for_hours_and_returns_once_the_measu
 async fn a_declared_wait_is_never_interrupted_nor_cleaned_up_and_shows_the_nodes_reason() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.domain.live.gate.hold_back(&fleet.domain, "agent-t1", Reason::Declared { reason: "cola de compilación".into() }, base);
-    fleet.hold(3, base, 2 * MIN).await;
-    assert!(fleet.events("pause").is_empty());
-    let paused = fleet.domain.live.gate.paused(&fleet.domain, "agent-t1").unwrap();
+    let mut bench = Bench::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.domain.live.gate.hold_back(&bench.domain, "agent-t1", Reason::Declared { reason: "cola de compilación".into() }, base);
+    bench.hold(3, base, 2 * MIN).await;
+    assert!(bench.events("pause").is_empty());
+    let paused = bench.domain.live.gate.paused(&bench.domain, "agent-t1").unwrap();
     assert_eq!(paused.cleanup, Cleanup::Done, "nothing of its own is stopped");
-    let pacing = fleet.domain.live.gate.live(&fleet.domain, base + 2 * MIN).unwrap();
+    let pacing = bench.domain.live.gate.live(&bench.domain, base + 2 * MIN).unwrap();
     assert_eq!(pacing.paused[0].waits_for.as_deref(), Some("cola de compilación"));
 }
 
@@ -358,13 +358,13 @@ async fn a_declared_wait_is_never_interrupted_nor_cleaned_up_and_shows_the_nodes
 async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     for task in ["t1", "t2", "t3"] {
-        fleet.domain.live.gate.hold_back(&fleet.domain, &format!("agent-{task}"), Reason::Usage, base);
-        fleet.end_turn(task, base);
+        bench.domain.live.gate.hold_back(&bench.domain, &format!("agent-{task}"), Reason::Usage, base);
+        bench.end_turn(task, base);
     }
-    fleet.hold(50, base, 10 * MIN).await;
-    let resumes = fleet.events("resume");
+    bench.hold(50, base, 10 * MIN).await;
+    let resumes = bench.events("resume");
     assert_eq!(resumes.len(), 3);
     assert!(resumes.windows(2).all(|pair| pair[1].0 - pair[0].0 >= SPACING), "{resumes:?}");
 }
@@ -376,20 +376,20 @@ async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
 async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_and_stays_paused() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
-    fleet.tick(50, base).await;
-    assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.domain.live.gate.pause_by_user(&bench.domain, "agent-t2", base).unwrap();
+    bench.tick(50, base).await;
+    assert_eq!(tasks(&bench.events("pause")), ["t2"]);
 
-    fleet.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
-    fleet.tick(50, base + 20_000).await;
-    assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "its new turn is cut");
-    assert_eq!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::ByUser));
+    bench.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    bench.tick(50, base + 20_000).await;
+    assert_eq!(tasks(&bench.events("pause")), ["t2", "t2"], "its new turn is cut");
+    assert_eq!(bench.domain.live.gate.paused(&bench.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::ByUser));
 
-    fleet.hold(50, base + 30_000, 20 * MIN).await;
-    assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "a turn already cut is not cut again");
-    assert!(fleet.events("resume").is_empty(), "only the user resumes it");
-    assert!(fleet.domain.live.gate.paused_by_user(&fleet.domain, "agent-t2"));
+    bench.hold(50, base + 30_000, 20 * MIN).await;
+    assert_eq!(tasks(&bench.events("pause")), ["t2", "t2"], "a turn already cut is not cut again");
+    assert!(bench.events("resume").is_empty(), "only the user resumes it");
+    assert!(bench.domain.live.gate.paused_by_user(&bench.domain, "agent-t2"));
 }
 
 /// A node an older daemon paused for memory that starts a turn by itself while memory has no room
@@ -398,15 +398,15 @@ async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_an
 async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_stopped_again_and_stays_paused() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.paused_for_memory_before("t2", base);
-    fleet.tick(3, base).await;
-    fleet.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
-    fleet.tick(3, base + 20_000).await;
-    assert_eq!(tasks(&fleet.events("pause")), ["t2"], "its new turn is cut");
-    assert_eq!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::Memory));
-    assert_eq!(phase(&fleet, "t2").key(), "paused");
-    assert!(fleet.events("resume").is_empty());
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.paused_for_memory_before("t2", base);
+    bench.tick(3, base).await;
+    bench.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    bench.tick(3, base + 20_000).await;
+    assert_eq!(tasks(&bench.events("pause")), ["t2"], "its new turn is cut");
+    assert_eq!(bench.domain.live.gate.paused(&bench.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::Memory));
+    assert_eq!(phase(&bench, "t2").key(), "paused");
+    assert!(bench.events("resume").is_empty());
 }
 
 /// The loop of 13 October: memory ran out with two nodes building, Alondra paused the newer one
@@ -417,16 +417,16 @@ async fn two_builds_that_exhaust_memory_both_finish_without_a_cut() {
     use TaskPriority::Normal;
     const BUILD: Millis = 8 * MIN;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("long", Normal), ("rerun", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    let mut bench = Bench::new(&[("long", Normal), ("rerun", Normal)], Limit::Fixed(6), base - 10 * MIN);
     let mut now = base;
     while now < base + BUILD {
         let pressure = if now - base < BUILD / 2 { alondra_core::MemoryPressure::Warning } else { alondra_core::MemoryPressure::Critical };
-        fleet.tick_with(Machine { at: now, memory_free_percent: Some(4), memory_pressure: Some(pressure), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
+        bench.tick_with(Machine { at: now, memory_free_percent: Some(4), memory_pressure: Some(pressure), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
         now += SAMPLE;
     }
-    assert!(fleet.events("pause").is_empty(), "{:?}", fleet.log);
-    assert_eq!(phase(&fleet, "long"), NodePhase::Working);
-    assert_eq!(phase(&fleet, "rerun"), NodePhase::Working);
+    assert!(bench.events("pause").is_empty(), "{:?}", bench.log);
+    assert_eq!(phase(&bench, "long"), NodePhase::Working);
+    assert_eq!(phase(&bench, "rerun"), NodePhase::Working);
 }
 
 /// The user's own message ends their pause, since it is what the node goes on with; the
@@ -435,41 +435,41 @@ async fn two_builds_that_exhaust_memory_both_finish_without_a_cut() {
 async fn the_users_message_ends_their_pause_and_the_orchestrators_does_not() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
-    fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
-    fleet.tick(50, base).await;
+    let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    bench.domain.live.gate.pause_by_user(&bench.domain, "agent-t2", base).unwrap();
+    bench.tick(50, base).await;
 
     let body = serde_json::from_value(serde_json::json!({"node": "agent-t2", "text": "carry on"})).unwrap();
-    let refused = crate::domain_orchestrator_tools::send(&fleet.domain, &fleet.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
+    let refused = crate::domain_orchestrator_tools::send(&bench.domain, &bench.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
     assert_eq!(refused.code, "node_paused");
-    assert!(fleet.domain.live.gate.paused_by_user(&fleet.domain, "agent-t2"));
+    assert!(bench.domain.live.gate.paused_by_user(&bench.domain, "agent-t2"));
 
     let body = serde_json::from_value(serde_json::json!({"text": "Use the new API"})).unwrap();
-    crate::domain_messages::deliver(&fleet.domain, &fleet.home.0, &user(), "The user", &AgentId("agent-t2".into()), body, true).await.unwrap();
-    assert!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").is_none());
+    crate::domain_messages::deliver(&bench.domain, &bench.home.0, &user(), "The user", &AgentId("agent-t2".into()), body, true).await.unwrap();
+    assert!(bench.domain.live.gate.paused(&bench.domain, "agent-t2").is_none());
 }
 
 /// What Claude Code's `StopFailure` hook carries, handed to the daemon as its hook path does.
-fn api_error(fleet: &Fleet, task: &str, error: &str, now: Millis) {
+fn api_error(bench: &Bench, task: &str, error: &str, now: Millis) {
     let session = format!("agent-{task}");
     let payload = serde_json::json!({"session_id": session, "hook_event_name": "StopFailure", "error_type": error,
         "error_details": "API Error: Connection lost mid-response. The response above may be incomplete."});
-    fleet.domain.live.observe(&payload);
-    crate::api_failures::turn_failed(&fleet.domain, &AgentId(session), &payload, now).unwrap();
+    bench.domain.live.observe(&payload);
+    crate::api_failures::turn_failed(&bench.domain, &AgentId(session), &payload, now).unwrap();
 }
 
-fn phase(fleet: &Fleet, task: &str) -> alondra_core::domain::NodePhase {
-    fleet.domain.state().unwrap().node_phase(&AgentId(format!("agent-{task}"))).unwrap().clone()
+fn phase(bench: &Bench, task: &str) -> alondra_core::domain::NodePhase {
+    bench.domain.state().unwrap().node_phase(&AgentId(format!("agent-{task}"))).unwrap().clone()
 }
 
-fn api_cards(fleet: &Fleet) -> Vec<alondra_core::domain::Interaction> {
-    let state = fleet.domain.state().unwrap();
+fn api_cards(bench: &Bench) -> Vec<alondra_core::domain::Interaction> {
+    let state = bench.domain.state().unwrap();
     state.interactions.values().filter(|card| state.open(card) && card.body.contains("api_failed")).cloned().collect()
 }
 
-fn answer(fleet: &Fleet, card: &alondra_core::domain::Interaction, option: &str) {
-    run(&fleet.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(), inputs: Default::default() });
-    crate::api_failures::settle_cards(&fleet.domain).unwrap();
+fn answer(bench: &Bench, card: &alondra_core::domain::Interaction, option: &str) {
+    run(&bench.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(), inputs: Default::default() });
+    crate::api_failures::settle_cards(&bench.domain).unwrap();
 }
 
 /// The case of 9 October: "API Error: Connection lost mid-response" ended a node's turn and it
@@ -477,22 +477,22 @@ fn answer(fleet: &Fleet, card: &alondra_core::domain::Interaction, option: &str)
 #[tokio::test]
 async fn a_turn_an_api_error_cut_is_sent_back_by_itself_and_its_node_works_again() {
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
-    api_error(&fleet, "t1", "server_error", base);
-    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, outage: false, .. }), .. })));
-    assert_eq!(fleet.working(base), 0, "a node waiting out an API error holds no slot");
-    let pacing = fleet.domain.live.gate.live(&fleet.domain, base).unwrap();
+    let mut bench = Bench::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&bench, "t1", "server_error", base);
+    assert!(matches!(phase(&bench, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, outage: false, .. }), .. })));
+    assert_eq!(bench.working(base), 0, "a node waiting out an API error holds no slot");
+    let pacing = bench.domain.live.gate.live(&bench.domain, base).unwrap();
     assert_eq!(pacing.paused[0].reason, alondra_core::views::LivePauseReason::ApiError);
     assert_eq!(pacing.paused[0].retry.as_ref().map(|retry| retry.attempt), Some(1));
-    fleet.hold(50, base, 30_000 - 1).await;
-    assert!(fleet.events("resume").is_empty(), "not before its retry");
-    fleet.tick(50, base + 30_000).await;
-    assert_eq!(tasks(&fleet.events("resume")), ["t1"]);
-    assert_eq!(phase(&fleet, "t1"), NodePhase::Working);
-    let line = fleet.nodes[0].1.lines.lock().unwrap().last().cloned().unwrap();
+    bench.hold(50, base, 30_000 - 1).await;
+    assert!(bench.events("resume").is_empty(), "not before its retry");
+    bench.tick(50, base + 30_000).await;
+    assert_eq!(tasks(&bench.events("resume")), ["t1"]);
+    assert_eq!(phase(&bench, "t1"), NodePhase::Working);
+    let line = bench.nodes[0].1.lines.lock().unwrap().last().cloned().unwrap();
     let text = line["text"].as_str().unwrap();
     assert!(text.contains("Claude API error (API Error: Connection lost mid-response.") && text.contains("Carry on where you left off"), "{text}");
-    assert!(api_cards(&fleet).is_empty());
+    assert!(api_cards(&bench).is_empty());
 }
 
 /// Every node failing at once is the API down: they wait for it with no card and no new start,
@@ -500,32 +500,32 @@ async fn a_turn_an_api_error_cut_is_sent_back_by_itself_and_its_node_works_again
 #[tokio::test]
 async fn while_the_api_is_down_for_every_node_they_wait_without_a_card_and_come_back_with_it() {
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal), ("t3", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
-    api_error(&fleet, "t1", "overloaded", base);
-    api_error(&fleet, "t2", "overloaded", base + 1_000);
-    api_error(&fleet, "t3", "overloaded", base + 2_000);
-    assert!(fleet.domain.live.api_watch.down(base + 2_000), "no new node starts while it is down");
+    let mut bench = Bench::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal), ("t3", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&bench, "t1", "overloaded", base);
+    api_error(&bench, "t2", "overloaded", base + 1_000);
+    api_error(&bench, "t3", "overloaded", base + 2_000);
+    assert!(bench.domain.live.api_watch.down(base + 2_000), "no new node starts while it is down");
     for task in ["t2", "t3"] {
-        assert!(matches!(phase(&fleet, task), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { outage: true, .. }), .. })), "{task}");
+        assert!(matches!(phase(&bench, task), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { outage: true, .. }), .. })), "{task}");
     }
     let mut now = base + 2_000;
     for _ in 0..30 {
-        now = fleet.hold(50, now, OUTAGE_PROBE).await;
-        let back: Vec<String> = fleet.events("resume").into_iter().map(|(_, task)| task).collect();
+        now = bench.hold(50, now, OUTAGE_PROBE).await;
+        let back: Vec<String> = bench.events("resume").into_iter().map(|(_, task)| task).collect();
         let last = back.last().cloned();
-        if let Some(task) = last.filter(|task| phase(&fleet, task) == NodePhase::Working) {
-            api_error(&fleet, &task, "overloaded", now);
+        if let Some(task) = last.filter(|task| phase(&bench, task) == NodePhase::Working) {
+            api_error(&bench, &task, "overloaded", now);
         }
-        assert!(fleet.working(now) <= 1, "one node at a time probes the API");
+        assert!(bench.working(now) <= 1, "one node at a time probes the API");
     }
-    assert!(api_cards(&fleet).is_empty(), "an outage of an hour raises no card");
-    assert!(fleet.events("resume").len() >= 25, "it kept probing: {:?}", fleet.events("resume"));
+    assert!(api_cards(&bench).is_empty(), "an outage of an hour raises no card");
+    assert!(bench.events("resume").len() >= 25, "it kept probing: {:?}", bench.events("resume"));
 
-    let probe = fleet.events("resume").last().unwrap().1.clone();
-    fleet.domain.live.api_watch.answered(&format!("agent-{probe}"), now + 1);
-    let now = fleet.hold(50, now + 2, 5 * MIN).await;
-    assert_eq!(fleet.working(now), 3, "the model answered: everyone came back");
-    assert!(!fleet.domain.live.api_watch.down(now));
+    let probe = bench.events("resume").last().unwrap().1.clone();
+    bench.domain.live.api_watch.answered(&format!("agent-{probe}"), now + 1);
+    let now = bench.hold(50, now + 2, 5 * MIN).await;
+    assert_eq!(bench.working(now), 3, "the model answered: everyone came back");
+    assert!(!bench.domain.live.api_watch.down(now));
 }
 
 /// One node failing while another gets answers is not an outage: after 30 s, 2 min and 10 min
@@ -533,20 +533,20 @@ async fn while_the_api_is_down_for_every_node_they_wait_without_a_card_and_come_
 #[tokio::test]
 async fn a_node_the_api_keeps_failing_while_others_work_asks_the_user_after_its_retries() {
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    let mut bench = Bench::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
     let mut now = base;
     for attempt in 1..=API_RETRIES.len() {
-        api_error(&fleet, "t1", "server_error", now);
-        fleet.domain.live.api_watch.answered("agent-t2", now + 1);
+        api_error(&bench, "t1", "server_error", now);
+        bench.domain.live.api_watch.answered("agent-t2", now + 1);
         let wait = API_RETRIES[attempt - 1];
-        now = fleet.hold(50, now + 1, wait + 1).await;
-        assert_eq!(fleet.events("resume").len(), attempt, "attempt {attempt} came back after {wait} ms");
-        assert!(api_cards(&fleet).is_empty());
+        now = bench.hold(50, now + 1, wait + 1).await;
+        assert_eq!(bench.events("resume").len(), attempt, "attempt {attempt} came back after {wait} ms");
+        assert!(api_cards(&bench).is_empty());
     }
-    api_error(&fleet, "t1", "server_error", now);
-    let cards = api_cards(&fleet);
+    api_error(&bench, "t1", "server_error", now);
+    let cards = api_cards(&bench);
     assert_eq!(cards.len(), 1, "the fourth failure in a row asks the user");
-    assert_eq!(phase(&fleet, "t1"), NodePhase::WaitingUser { in_turn: false }, "the user holds it now, not a slot");
+    assert_eq!(phase(&bench, "t1"), NodePhase::WaitingUser { in_turn: false }, "the user holds it now, not a slot");
     let es = alondra_core::start_problem::card("Task t1", &serde_json::from_str(&cards[0].body).unwrap(), None, alondra_core::views::Lang::Es);
     assert_eq!(es.need, "Los errores de la API de Claude cortan una y otra vez «Task t1»");
     let options: Vec<&str> = match &cards[0].payload {
@@ -555,43 +555,43 @@ async fn a_node_the_api_keeps_failing_while_others_work_asks_the_user_after_its_
     };
     assert_eq!(options, [alondra_core::domain::START_RETRY, alondra_core::domain::START_CANCEL]);
 
-    let resumes = fleet.events("resume").len();
-    answer(&fleet, &cards[0], alondra_core::domain::START_RETRY);
-    fleet.tick(50, now + SAMPLE).await;
-    assert_eq!(fleet.events("resume").len(), resumes + 1, "\"try again now\" sends it back at once");
-    assert_eq!(phase(&fleet, "t1"), NodePhase::Working);
+    let resumes = bench.events("resume").len();
+    answer(&bench, &cards[0], alondra_core::domain::START_RETRY);
+    bench.tick(50, now + SAMPLE).await;
+    assert_eq!(bench.events("resume").len(), resumes + 1, "\"try again now\" sends it back at once");
+    assert_eq!(phase(&bench, "t1"), NodePhase::Working);
 
-    api_error(&fleet, "t1", "server_error", now + MIN);
-    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, .. }), .. })),
+    api_error(&bench, "t1", "server_error", now + MIN);
+    assert!(matches!(phase(&bench, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, .. }), .. })),
         "after the user's retry Alondra counts again from the first wait");
 }
 
 #[tokio::test]
 async fn cancelling_on_the_card_closes_the_task_and_an_error_retrying_cannot_fix_asks_at_once() {
     let base = alondra_core::now_millis();
-    let fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
-    api_error(&fleet, "t1", "authentication_failed", base);
-    let cards = api_cards(&fleet);
+    let bench = Bench::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&bench, "t1", "authentication_failed", base);
+    let cards = api_cards(&bench);
     assert_eq!(cards.len(), 1, "signing in again is the user's to do: no retry");
     let es = alondra_core::start_problem::card("Task t1", &serde_json::from_str(&cards[0].body).unwrap(), None, alondra_core::views::Lang::Es);
     assert!(es.why.contains("inicia sesión"), "{es:?}");
-    answer(&fleet, &cards[0], alondra_core::domain::START_CANCEL);
-    let state = fleet.domain.state().unwrap();
+    answer(&bench, &cards[0], alondra_core::domain::START_CANCEL);
+    let state = bench.domain.state().unwrap();
     assert!(state.tasks[&TaskId::from("t1")].cancelled(), "{:?}", state.tasks[&TaskId::from("t1")].state);
-    assert!(matches!(phase(&fleet, "t1"), NodePhase::Closing | NodePhase::Closed));
+    assert!(matches!(phase(&bench, "t1"), NodePhase::Closing | NodePhase::Closed));
 }
 
 /// The usage limit waits for its reset, without a slot and without a card.
 #[tokio::test]
 async fn a_usage_limit_pauses_the_node_until_it_resets() {
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
-    api_error(&fleet, "t1", "rate_limit", base);
-    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::Usage, .. })));
-    assert_eq!(fleet.working(base), 0);
-    fleet.hold(50, base, 10 * MIN).await;
-    assert!(fleet.events("resume").is_empty(), "the limit has not reset");
-    assert!(api_cards(&fleet).is_empty());
+    let mut bench = Bench::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&bench, "t1", "rate_limit", base);
+    assert!(matches!(phase(&bench, "t1"), NodePhase::Paused(Pause { reason: PauseReason::Usage, .. })));
+    assert_eq!(bench.working(base), 0);
+    bench.hold(50, base, 10 * MIN).await;
+    assert!(bench.events("resume").is_empty(), "the limit has not reset");
+    assert!(api_cards(&bench).is_empty());
 }
 
 /// Only a turn an API error cut is sent back: a turn that ended normally, or one that waits on
@@ -599,9 +599,9 @@ async fn a_usage_limit_pauses_the_node_until_it_resets() {
 #[tokio::test]
 async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
-    fleet.end_turn("t1", base);
-    run(&fleet.domain, Actor::Agent { agent_id: AgentId("agent-t2".into()) }, Command::AskQuestion {
+    let mut bench = Bench::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    bench.end_turn("t1", base);
+    run(&bench.domain, Actor::Agent { agent_id: AgentId("agent-t2".into()) }, Command::AskQuestion {
         attachments: vec![], interaction_id: "q-t2".into(), scope: alondra_core::domain::Scope::Task { task_id: "t2".into() },
         recipient: alondra_core::domain::Recipient::User, body: "Which name?".into(), blocking: false,
         options: vec![
@@ -610,11 +610,11 @@ async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
         ],
         card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Choose the release name").why("The name goes on the release"),
     });
-    api_error(&fleet, "t2", "server_error", base + 1_000);
-    assert_eq!(phase(&fleet, "t2"), NodePhase::WaitingUser { in_turn: false });
-    fleet.hold(50, base + 2_000, 15 * MIN).await;
-    assert!(fleet.events("resume").is_empty(), "{:?}", fleet.events("resume"));
-    assert!(api_cards(&fleet).is_empty());
+    api_error(&bench, "t2", "server_error", base + 1_000);
+    assert_eq!(phase(&bench, "t2"), NodePhase::WaitingUser { in_turn: false });
+    bench.hold(50, base + 2_000, 15 * MIN).await;
+    assert!(bench.events("resume").is_empty(), "{:?}", bench.events("resume"));
+    assert!(api_cards(&bench).is_empty());
 }
 
 const SDK_TASK: &str = "t-sdk-paused";
@@ -706,7 +706,7 @@ impl SdkNode {
             .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnEnded { .. }))
     }
 
-    /// The user pauses the node from Fleet; its turn is interrupted and ends.
+    /// The user pauses the node from its task; its turn is interrupted and ends.
     fn pause(&mut self) {
         self.domain.live.gate.pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
         self.step_until(Self::turn_ended);

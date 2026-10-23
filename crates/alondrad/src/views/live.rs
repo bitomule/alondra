@@ -42,7 +42,7 @@ pub(crate) struct LiveSnapshots {
 }
 
 /// What a snapshot was read from: the domain revision, every row written to the store, hooks,
-/// node reports, the SDK tasks' measured contexts, the usage pause, the fleet gate, pull request
+/// node reports, the SDK tasks' measured contexts, the usage pause, the admission gate, pull request
 /// details, and what only the live sampler sees by looking (clocks, files, gauges), which it
 /// announces on the feeds' clock.
 #[derive(Clone)]
@@ -1260,13 +1260,13 @@ mod cache_tests {
     }
 
     #[tokio::test]
-    async fn the_gate_fleet_and_tasks_list_count_the_same_nodes_working() {
+    async fn the_gate_and_tasks_list_count_the_same_nodes_working() {
         use alondra_core::views::{Client, Transport};
         use crate::node_reports::{Envelope, Report};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(2)) });
+        domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1287,7 +1287,7 @@ mod cache_tests {
             execute(&domain, Actor::Agent { agent_id: agent.as_str().into() }, &format!("start-{id}"), Command::StartTask { task_id: id.into() });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
-        assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::fleet_pause::Reason::Declared {
+        assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
             reason: "The build ran out of memory".into(),
         }, now));
 
@@ -1298,12 +1298,12 @@ mod cache_tests {
         let mut listed = vec![];
         rows_with(&serde_json::to_value(&tasks).unwrap(), "Working", &mut listed);
         listed.sort();
-        let fleet: Vec<&str> = live.nodes.iter().filter(|node| node.working).map(|node| node.agent_id.as_str()).collect();
+        let live_working: Vec<&str> = live.nodes.iter().filter(|node| node.working).map(|node| node.agent_id.as_str()).collect();
 
         assert_eq!(gate.working_tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["build", "docs"]);
         assert_eq!(live.pacing.as_ref().map(|pacing| pacing.working), Some(2));
         assert_eq!(listed, ["build", "docs"], "the Tasks list says Working of the same tasks");
-        assert_eq!(fleet, ["agent-build", "agent-docs"], "Fleet does not show the node waiting for the machine as working");
+        assert_eq!(live_working, ["agent-build", "agent-docs"], "the live nodes do not count the node waiting for the machine as working");
     }
 
     #[test]

@@ -45,7 +45,7 @@ through the Agent SDK host with the node and orchestrator plugins, as a new conv
 gets what it needs from Alondra in its prompt, and the host ends with the batch. An idle
 orchestrator runs nothing.
 
-The plugins provide `fleet`, `node`, `machine`, `send`, `interrupt`, `launch`, `set_launch_plan`, `define`,
+The plugins provide `tasks_in_progress`, `node`, `machine`, `send`, `interrupt`, `launch`, `set_launch_plan`, `define`,
 `cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
 and question prompts are disabled. Auto mode can deny an operation, which becomes a visible
 failure instead of an invisible prompt.

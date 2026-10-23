@@ -237,7 +237,7 @@ fn a_macos_warning_with_31_percent_free_and_6_nodes_working_holds_new_starts_and
     assert!(domain.live.gate.live(&domain, now).unwrap().tight, "no room for new starts");
 }
 
-/// A rehearsal's daemon (`ALONDRA_IGNORE_MAC_LOAD=1`) shares the Mac with the user's fleet and
+/// A rehearsal's daemon (`ALONDRA_IGNORE_MAC_LOAD=1`) shares the Mac with the user's nodes and
 /// builds: their memory pressure and load never hold its starts, which the same samples hold for
 /// a daemon that reads the Mac.
 #[test]
@@ -296,12 +296,12 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let on_user: Vec<TaskId> = vec!["t-c".into()];
     let slots = Hold::Slots { working: 3, limit: 3 };
     assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
-        "the fleet gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
+        "the admission gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
     let margin = Hold::Memory { why: NoRoom::Margin { margin: GIB / 2, needed: 1_230_000_000, nodes: 3, cost: 410_000_000 }, free: Some(42) };
     assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &margin, &[], &[], 2).unwrap(),
-        "the fleet gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 1.1 GiB needed for 3 node(s) at 0.38 GiB each (42% free); 2 node(s) paused");
+        "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 1.1 GiB needed for 3 node(s) at 0.38 GiB each (42% free); 2 node(s) paused");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
-        "the fleet gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
+        "the admission gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
@@ -561,4 +561,35 @@ fn a_task_cancelled_after_the_gate_let_it_through_is_not_let_through_again_and_l
     run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into() });
     assert!(ask(&domain, "t1", now).is_err(), "a cancelled task is never let through");
     assert_eq!(ask(&domain, "t2", now), Ok(()), "its slot goes to the next");
+}
+
+fn home_with_previous_gate_file() -> crate::test_support::Directory {
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let mut saved = Saved::default();
+    saved.pauses.held.insert("t-held".into(), crate::pauses::Held { body: serde_json::json!({}), origin: "orchestrator".into(), since: 1 });
+    std::fs::write(home.join(PREVIOUS_FILE), serde_json::to_vec(&saved).unwrap()).unwrap();
+    std::fs::write(home.join("fleet-gate.next"), "{").unwrap();
+    home
+}
+
+#[test]
+fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name() {
+    let home = home_with_previous_gate_file();
+
+    crate::home_renames::apply(&home).unwrap();
+
+    assert!(!home.join(PREVIOUS_FILE).exists() && !home.join("fleet-gate.next").exists());
+    assert!(home.join(FILE).exists());
+    let domain = crate::domain_runtime::DomainRuntime::open(&home).unwrap();
+    assert!(held_by_user(&domain, &"t-held".into()), "the task the user paused in the queue stays paused");
+}
+
+#[test]
+fn the_previous_gate_file_is_read_when_it_could_not_move() {
+    let home = home_with_previous_gate_file();
+
+    let gate = Admission::persisted_in(&home);
+
+    assert!(gate.lock().saved.pauses.held.contains_key(&TaskId::from("t-held")));
 }

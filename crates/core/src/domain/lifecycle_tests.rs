@@ -110,7 +110,7 @@ fn cancelling_a_task_without_a_node_ends_only_with_the_cleanup_receipt() {
     assert_eq!(lifecycle(&s, "t"), (TaskState::Closing, false, None, Some(TaskEnding::Cancelling)));
     assert_eq!(kinds(&s, "t"), ["planned", "finished"]);
     let t = &s.tasks[&"t".into()];
-    assert!(t.over() && t.cancelled() && !t.state.terminal(), "over for the fleet, not yet terminal");
+    assert!(t.over() && t.cancelled() && !t.state.terminal(), "over for the queue, not yet terminal");
     assert_aggregate_rules(&s);
 
     let refused = |s: &mut DomainState, actor: Actor, command: Command| exec(s, actor, command).unwrap_err().code;

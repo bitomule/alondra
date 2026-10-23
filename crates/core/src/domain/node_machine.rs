@@ -1,7 +1,7 @@
 //! The one state of every node. A node is in exactly one `NodePhase`, and only `next` moves it:
 //! what Claude Code reports, the hooks, the gate, the listing of real sessions and the domain's own
-//! commands are events it accepts or refuses. The gate, Fleet, Tasks, the header and the TUI read
-//! the phase; none keeps a state of its own. See docs/fleet-pacing.md §11.
+//! commands are events it accepts or refuses. The gate, Tasks, the header and the TUI read
+//! the phase; none keeps a state of its own. See docs/pacing.md §11.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -696,7 +696,7 @@ impl DomainState {
         }
     }
 
-    /// The nodes that take a slot: the one count the gate, Fleet, Tasks and the header share.
+    /// The nodes that take a slot: the one count the gate, Tasks and the header share.
     pub fn slots(&self) -> Vec<&Agent> {
         self.agents.values().filter(|a| Some(&a.id) != self.orchestrator_session.as_ref() && self.holds_slot(a)).collect()
     }

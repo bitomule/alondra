@@ -1,5 +1,5 @@
 //! Whether the Mac has room for one more node. Memory never stops what already runs: it only
-//! answers, for the fleet gate, whether one more node may start or a paused one resume.
+//! answers, for the admission gate, whether one more node may start or a paused one resume.
 //!
 //! There is room when every sample of the last `ROOM_WINDOW` has macOS at normal pressure and a
 //! margin to macOS's warning that fits what one node costs, measured (`node_cost`), for the node
@@ -12,7 +12,7 @@
 //! 42 %; a start it lets through by mistake costs at most one macOS warning, since nothing is paused.
 //!
 //! The window must be covered: a daemon that just started measures for a minute before it admits.
-//! The CPU load only holds new starts. See docs/fleet-pacing.md §1.
+//! The CPU load only holds new starts. See docs/pacing.md §1.
 use std::collections::VecDeque;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};

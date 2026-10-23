@@ -14,13 +14,13 @@ fn a_server_one_node_connected_is_connected_again_on_the_nodes_that_report_it_si
     let connected = [server("linear", McpStatus::Connected, LINEAR)];
     let signed_out = [server("linear", McpStatus::NeedsAuth, LINEAR), server("files", McpStatus::NeedsAuth, "https://files.example.com")];
     let elsewhere = [server("linear", McpStatus::NeedsAuth, "https://linear.internal.example.com/mcp")];
-    let fleet = |second: &[McpServerState]| -> Vec<(TaskId, Vec<McpServerState>)> {
+    let servers_by_task = |second: &[McpServerState]| -> Vec<(TaskId, Vec<McpServerState>)> {
         vec![("t".into(), connected.to_vec()), ("u".into(), second.to_vec()), ("w".into(), elsewhere.to_vec())]
     };
     let mut reconnects = Reconnects::default();
     let mut due = |second: &[McpServerState], now: Millis| {
-        let fleet = fleet(second);
-        let nodes: Vec<(TaskId, &[McpServerState])> = fleet.iter().map(|(task, servers)| (task.clone(), servers.as_slice())).collect();
+        let servers = servers_by_task(second);
+        let nodes: Vec<(TaskId, &[McpServerState])> = servers.iter().map(|(task, servers)| (task.clone(), servers.as_slice())).collect();
         reconnects.due(&nodes, now)
     };
     let owed = vec![(TaskId::from("u"), "linear".to_owned())];

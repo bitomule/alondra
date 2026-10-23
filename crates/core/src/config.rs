@@ -131,7 +131,7 @@ pub struct Config {
     /// spacing between node starts take seconds instead of minutes, and the Mac never holds a start,
     /// so an end-to-end run sees them happen on a busy Mac.
     pub fast_timing: bool,
-    /// `ALONDRA_IGNORE_MAC_LOAD=1`: the fleet gate starts nodes whatever the Mac's memory and load,
+    /// `ALONDRA_IGNORE_MAC_LOAD=1`: the admission gate starts nodes whatever the Mac's memory and load,
     /// as the upgrade rehearsal needs on a Mac other builds keep busy.
     pub ignore_mac_load: bool,
     /// Restart a node whose process ended while it still had work. Only with `wake`.

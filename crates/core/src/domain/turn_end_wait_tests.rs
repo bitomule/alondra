@@ -9,7 +9,7 @@ use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
-const PLAN: &str = "# Remove the Fleet\n\n- [ ] Phase 1: the task unit\n- [ ] Phases 2-7: one task each\n";
+const PLAN: &str = "# Rename the queue\n\n- [ ] Phase 1: the task unit\n- [ ] Phases 2-7: one task each\n";
 
 fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
@@ -51,7 +51,7 @@ fn approve_plan(s: &mut DomainState) {
         task_id: "t".into(), generation: 1, epoch: 3, hold: Hold::Plan, tool: Some("ExitPlanMode".into()), input: json!({}), mcp_server: None,
         prompt: DecisionPrompt::Card {
             body: PLAN.into(), options: Hold::Plan.options(),
-            card: CardSpec::new(CardKind::Review, "Remove the Fleet").content(ContentKind::Plan, PLAN),
+            card: CardSpec::new(CardKind::Review, "Rename the queue").content(ContentKind::Plan, PLAN),
         },
     });
     let card = decision_card_id(&"t".into(), 1, 3);
@@ -83,7 +83,7 @@ fn resumes(s: &mut DomainState, card: &InteractionId) {
     assert_aggregate_rules(s);
 }
 
-/// 21 October: David approved the plan of “Remove the Fleet's task unit”, its node told the
+/// 21 October: David approved a seven-phase plan, its node told the
 /// orchestrator, without blocking, to create one task per phase 2-7, and ended its turn. David got
 /// «paró sin entregar ni preguntar» while the node waited for the orchestrator.
 #[test]
@@ -91,14 +91,14 @@ fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it(
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     approve_plan(&mut s);
-    ask_orchestrator(&mut s, "t-remove-fleet-phases-1", false);
+    ask_orchestrator(&mut s, "t-rename-queue-1", false);
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card), "David hears of nothing");
     assert!(pending(&s).is_empty(), "nothing waits for David: {:?}", pending(&s));
     shows_waiting(&s, "Esperando al orquestador");
     assert_aggregate_rules(&s);
 
-    let answered = answer_as_orchestrator(&mut s, "t-remove-fleet-phases-1");
+    let answered = answer_as_orchestrator(&mut s, "t-rename-queue-1");
     assert!(told(&answered), "the answer goes to the node");
     assert!(pending(&s).is_empty(), "the answer is on its way: still nothing for David");
     resumes(&mut s, &card);
@@ -362,7 +362,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
 #[test]
 fn a_turn_that_ends_behind_an_open_plan_or_permission_creates_no_card() {
     for (hold, tool, body, spec) in [
-        (Hold::Plan, "ExitPlanMode", PLAN, CardSpec::new(CardKind::Review, "Remove the Fleet").content(ContentKind::Plan, PLAN)),
+        (Hold::Plan, "ExitPlanMode", PLAN, CardSpec::new(CardKind::Review, "Rename the queue").content(ContentKind::Plan, PLAN)),
         (Hold::Permission, "Bash", "Run make", CardSpec::new(CardKind::Authorize, "Run make")),
     ] {
         let mut s = world();

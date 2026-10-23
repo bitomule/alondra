@@ -486,7 +486,7 @@ pub enum Event {
     },
     /// The execution is gone and left nothing behind, and no card tells the user: the task waits
     /// for its next execution with `input`, or with what it had not consumed. The silent form of
-    /// `RetireReleasedExecution`, for a fleet that queues the task again on its own; an execution
+    /// `RetireReleasedExecution`, for a scheduler that queues the task again on its own; an execution
     /// that still owns work, callbacks or accepted effects cannot be released this way.
     ExecutionReleased {
         input: InputId,

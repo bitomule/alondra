@@ -222,7 +222,7 @@ fn billing() -> impl Strategy<Value = AccountBilling> {
 }
 
 /// Up to four accounts in the user's order, each measured or not.
-fn fleet() -> impl Strategy<Value = (Vec<AccountStatus>, Vec<AccountUsage>)> {
+fn accounts_with_usage() -> impl Strategy<Value = (Vec<AccountStatus>, Vec<AccountUsage>)> {
     let account = (any_state(), billing(), proptest::option::of(proptest::collection::vec(arbitrary_reading(), 1..4)));
     proptest::collection::vec(account, 1..5).prop_map(|accounts| {
         let mut statuses = vec![];
@@ -256,7 +256,7 @@ fn absolute(account: &AccountStatus, usage: &[AccountUsage], reserve: Share, now
 
 proptest! {
     #[test]
-    fn the_chosen_account_can_work_and_one_is_chosen_whenever_any_can((accounts, usage) in fleet(), policy in policy(), reserve in 0.5..=1.0f64, later in 0..6 * 86_400_000i64) {
+    fn the_chosen_account_can_work_and_one_is_chosen_whenever_any_can((accounts, usage) in accounts_with_usage(), policy in policy(), reserve in 0.5..=1.0f64, later in 0..6 * 86_400_000i64) {
         let (reserve, now) = (Share::of(reserve), NOW + later);
         let chosen = choose_account(policy, Provider::Claude, &accounts, &usage, reserve, now, TODAY);
         let any = accounts.iter().any(|account| usable(account, &usage, now));
@@ -271,7 +271,7 @@ proptest! {
     }
 
     #[test]
-    fn by_margin_the_most_absolute_margin_wins_and_the_first_of_equals((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+    fn by_margin_the_most_absolute_margin_wins_and_the_first_of_equals((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
         let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY) else { return Ok(()) };
         let position = accounts.iter().position(|account| account.id == chosen).unwrap();
@@ -286,7 +286,7 @@ proptest! {
     }
 
     #[test]
-    fn in_a_chain_the_first_account_with_margin_wins((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+    fn in_a_chain_the_first_account_with_margin_wins((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
         let chosen = choose_account(Policy::Chain, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY);
         let with_margin = accounts.iter().find(|account| usable(account, &usage, NOW) && absolute(account, &usage, reserve, NOW) > 0.0);
@@ -295,7 +295,7 @@ proptest! {
     }
 
     #[test]
-    fn when_no_account_can_work_one_can_once_its_limits_reset((accounts, usage) in fleet(), reserve in 0.5..=1.0f64) {
+    fn when_no_account_can_work_one_can_once_its_limits_reset((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
         if choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY).is_some() {
             return Ok(());

@@ -20,7 +20,7 @@ use super::{
 use crate::sandbox::{hex, now_ms, random};
 
 const SERVER: &str = "alondra-orchestrator";
-const TOOLS: [&str; 6] = ["fleet", "ask", "create_task", "launch", "close_request", "settle_suggestion"];
+const TOOLS: [&str; 6] = ["tasks_in_progress", "ask", "create_task", "launch", "close_request", "settle_suggestion"];
 
 pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let session = flag_value(args, "--session-id").or_else(|| flag_value(args, "--resume")).context("no session id")?.to_owned();

@@ -147,7 +147,7 @@ impl Occupancy {
 }
 
 /// The orchestrator keeps its own states; every other node is free or busy.
-pub fn fleet_state(n: &Node) -> &'static str {
+pub fn occupancy_label(n: &Node) -> &'static str {
     n.orchestrator_state.map_or_else(|| Occupancy::of(n).label(), orchestrator)
 }
 
@@ -358,9 +358,9 @@ mod tests {
         assert_eq!(request_state(RequestState::Defining), "definiendo");
         let mut n = Node::new("s", 0);
         n.state = NodeState::Working;
-        assert_eq!(fleet_state(&n), "ocupado");
+        assert_eq!(occupancy_label(&n), "ocupado");
         n.state = NodeState::WaitingMerge;
-        assert_eq!(fleet_state(&n), "libre");
+        assert_eq!(occupancy_label(&n), "libre");
         set_for_this_thread(Lang::En);
         assert_eq!(task_state(TaskState::WaitingDependency), "running");
         assert_eq!(task_state(TaskState::Done), "finished");

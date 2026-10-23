@@ -45,7 +45,7 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
             continue;
         }
         report.setup(&format!("Before {name}: the tasks earlier journeys left open are cancelled and no node works"), |report| {
-            clear_fleet(report, sandbox, &fakes)
+            cancel_open_tasks(report, sandbox, &fakes)
         });
         match name {
             "task-cycle" => task_cycle::run(&mut report, sandbox, &fakes),
@@ -78,7 +78,7 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
 
 /// Cancels on every Mac each scripted task still open and waits until no node works, so a journey
 /// starts with every slot free whatever the ones before it left behind.
-fn clear_fleet(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) -> Result<()> {
+fn cancel_open_tasks(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) -> Result<()> {
     let tasks: Vec<String> = fakes.request_scripts()?.into_iter().flat_map(|script| script.tasks).map(|task| task.task_id).collect();
     for number in 1..=sandbox.mac_count() {
         let user = report.step(&format!("a phone pairs directly with Mac {number} to tidy it"), || User::paired(sandbox, "tidy", number, true))?;

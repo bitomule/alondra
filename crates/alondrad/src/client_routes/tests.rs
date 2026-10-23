@@ -431,7 +431,7 @@ impl Sessions for FakeSessions {
 }
 
 #[tokio::test]
-async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fleet() {
+async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
@@ -501,7 +501,7 @@ async fn a_node_closed_with_alondra_close_is_never_revived_while_or_after_it_is_
 }
 
 #[tokio::test]
-async fn closing_an_interactive_session_only_leaves_the_fleet() {
+async fn closing_an_interactive_session_only_closes_it() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
@@ -1142,8 +1142,8 @@ fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64])
     }
 }
 
-/// 13 October: quill's (1d6d53c5) session ended and its restart waited at the fleet gate for
-/// memory ("waits at the fleet gate to come back: Pressure(Warning)", every 30 s), while its task
+/// 13 October: quill's (1d6d53c5) session ended and its restart waited at the admission gate for
+/// memory ("waits at the admission gate to come back: Pressure(Warning)", every 30 s), while its task
 /// and its screen said «Reconectando». A lost node held by the gate waits for the machine, queued
 /// with what holds it, and is brought back only once the gate lets it.
 #[tokio::test]
@@ -1180,7 +1180,7 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_b
     assert!(held.contains("En cola · 1.º de 1") && held.contains("El Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
 
     memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
-    crate::fleet_gate::pass(&fixture.domain, &fixture.home).await.unwrap();
+    crate::admission::pass(&fixture.domain, &fixture.home).await.unwrap();
     revival.await.unwrap();
     assert!(!queued().iter().any(|queued| queued.task_id == "task-1"), "the gate let it back");
 }

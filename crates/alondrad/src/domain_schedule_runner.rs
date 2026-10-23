@@ -369,9 +369,9 @@ async fn dispatch_pending(
     if crate::accounts::choose_for_launch(domain, home, now).is_none() || domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
         return Ok(());
     }
-    let waiting = crate::fleet_gate::Waiting {
-        key: crate::fleet_gate::Key::Run(run_id.0.clone()),
-        priority: crate::fleet_gate::run_priority(&state, run),
+    let waiting = crate::admission::Waiting {
+        key: crate::admission::Key::Run(run_id.0.clone()),
+        priority: crate::admission::run_priority(&state, run),
         resuming: false,
         since: run.claimed_at.unwrap_or(now),
     };

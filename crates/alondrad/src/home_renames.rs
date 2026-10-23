@@ -1,7 +1,7 @@
 //! Startup moves of HOME files to their current names, removal of the copies earlier migrations
 //! left under the old ones once they are no longer a way back, and of files no reader uses any
 //! more.
-use crate::{domain_cutover, domain_database_migration as database, domain_orchestrator};
+use crate::{admission, domain_cutover, domain_database_migration as database, domain_orchestrator};
 use anyhow::Result;
 use std::fs;
 use std::io::ErrorKind;
@@ -25,6 +25,8 @@ pub(crate) fn apply(home: &Path) -> Result<()> {
     };
     rename(home, domain_orchestrator::PREVIOUS_FILE, domain_orchestrator::FILE)?;
     rename(home, domain_cutover::PREVIOUS_MARKER, domain_cutover::MARKER)?;
+    remove(&home.join(admission::PREVIOUS_FILE).with_extension("next"))?;
+    rename(home, admission::PREVIOUS_FILE, admission::FILE)?;
     for name in RETIRED {
         remove(&home.join(name))?;
     }

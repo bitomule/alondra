@@ -1,11 +1,11 @@
 //! Brings back a `claude --bg` node of an earlier release whose connection is gone, or that
 //! stopped processing in the middle of a turn, while its task is still open: it moves to the Agent
-//! SDK with its same session once the fleet gate lets it back. The node machine has it lost while
+//! SDK with its same session once the admission gate lets it back. The node machine has it lost while
 //! it waits for the gate.
 //!
 //! A session the user stops, kills or deletes in Claude agents is not a crash: Claude Code writes
 //! the state `stopped` into its job file (`crashed` for a signal), or removes the job folder, and
-//! restarting it would undo what the user chose. Such a node leaves Fleet and its task goes back
+//! restarting it would undo what the user chose. Such a node closes and its task goes back
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainState, NodeEvent, NodePhase, TaskId, TaskState, PROTOCOL_VERSION};
@@ -201,10 +201,10 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str) {
     domain.live.end_watch(session);
 }
 
-/// Waits for the fleet gate to let the session back to work, as work that resumes, so nodes come
+/// Waits for the admission gate to let the session back to work, as work that resumes, so nodes come
 /// back one at a time within the limit; false once `still` says it no longer has to come back.
 async fn until_admitted(domain: &DomainRuntime, session: &str, still: impl Fn() -> bool) -> bool {
-    use crate::fleet_gate::{Key, Waiting};
+    use crate::admission::{Key, Waiting};
     let gate = &domain.live.gate;
     let mut turn = gate.subscribe();
     let key = Key::Resume(session.to_owned());
@@ -215,11 +215,11 @@ async fn until_admitted(domain: &DomainRuntime, session: &str, still: impl Fn() 
             return false;
         }
         let priority = domain.state().ok()
-            .and_then(|state| crate::fleet_gate::open_task_of(&state, session).and_then(|task| state.tasks.get(&task).map(|task| task.priority)))
+            .and_then(|state| crate::admission::open_task_of(&state, session).and_then(|task| state.tasks.get(&task).map(|task| task.priority)))
             .unwrap_or_default();
         match gate.ask(domain, Waiting { key: key.clone(), priority, resuming: true, since }, alondra_core::now_millis()) {
             Ok(()) => return true,
-            Err(hold) => log!("{session} waits at the fleet gate to come back: {hold:?}"),
+            Err(hold) => log!("{session} waits at the admission gate to come back: {hold:?}"),
         }
         tokio::select! {
             _ = turn.changed() => {}
@@ -236,7 +236,7 @@ fn bring_back_through_sdk(domain: &DomainRuntime, session: &str, text: Option<St
         move_node(domain, session, NodeEvent::Listed { listed: alondra_core::domain::Listed::Done });
         return;
     };
-    let Some(task) = domain.state().ok().and_then(|state| crate::fleet_gate::open_task_of(&state, session)) else { return };
+    let Some(task) = domain.state().ok().and_then(|state| crate::admission::open_task_of(&state, session)) else { return };
     let stamped = crate::node_push::stamped(crate::node_push::ALONDRA, alondra_core::now_millis(), &text);
     if let Err(error) = crate::sdk_handover::plan(domain, &agent, &task, stamped, None, true) {
         log!("{session} was not brought back through the Agent SDK: {error:#}");
@@ -289,7 +289,7 @@ pub(crate) async fn revive(domain: &DomainRuntime, session: &str, timing: &Timin
 }
 
 /// Once the usage limit clears the node moves to the SDK; with something to be told it waits for
-/// the fleet gate first, as work that resumes. A session the user stopped is not brought back.
+/// the admission gate first, as work that resumes. A session the user stopped is not brought back.
 async fn bring_back(domain: &DomainRuntime, session: &str) {
     if closed_by_user(domain, session) || !until_usage_clear(domain, session).await {
         return;
@@ -313,8 +313,8 @@ fn move_node(domain: &DomainRuntime, session: &str, event: NodeEvent) {
     }
 }
 
-/// A session the user stopped or deleted is never waited for: it leaves the fleet and frees its
-/// task at once, whatever the usage limit or the fleet gate say.
+/// A session the user stopped or deleted is never waited for: it closes and frees its
+/// task at once, whatever the usage limit or the admission gate say.
 fn closed_by_user(domain: &DomainRuntime, session: &str) -> bool {
     if !session_ended(domain, session) {
         return false;
@@ -339,7 +339,7 @@ async fn until_usage_clear(domain: &DomainRuntime, session: &str) -> bool {
     }
 }
 
-/// The user closed the session: the node leaves Fleet, is not brought back, and the tasks it had
+/// The user closed the session: the node closes, is not brought back, and the tasks it had
 /// open go back to not started with no node, to be relaunched. What a relaunch needs of the node
 /// is kept.
 /// A session whose replacement stopped short because it could not be stopped ends for that
@@ -603,7 +603,7 @@ mod tests {
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "blocked on the user, not stalled");
     }
 
-    /// 13 October: db23219f, paused and without a session, logged "waits at the fleet gate to come
+    /// 13 October: db23219f, paused and without a session, logged "waits at the admission gate to come
     /// back" 4154 times since 9 October, asking the gate under the key the gate itself resumes it by.
     #[tokio::test]
     async fn a_paused_node_whose_session_is_gone_is_left_to_the_gate() {
@@ -679,7 +679,7 @@ mod tests {
         let state = domain.state().unwrap();
         let task = &state.tasks[&"t".into()];
         assert_eq!((task.state, task.agent_id.clone(), task.started), (alondra_core::domain::TaskState::NotStarted, None, false), "the task waits for a new node");
-        assert!(domain.live.is_closed(SESSION) && domain.live.closed_sessions() == [SESSION], "the node leaves Fleet");
+        assert!(domain.live.is_closed(SESSION) && domain.live.closed_sessions() == [SESSION], "the node closes");
         let closed = domain.live.closed_task("t").expect("the relaunch knows the node that was closed");
         assert_eq!(closed.name, "alondra/probe");
         assert!(state.interactions.is_empty(), "no card asks whether to retry");

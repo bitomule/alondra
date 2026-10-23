@@ -1,7 +1,7 @@
 //! Which sessions really exist, as `claude agents` lists them: every node Alondra launched takes
 //! what the listing says of it, absent included, through the node machine. It runs when the daemon
 //! starts, before the gate admits anything, and every minute after, so a session that ended without
-//! a word (killed, removed, the daemon down meanwhile) never keeps a slot or a place in Fleet.
+//! a word (killed, removed, the daemon down meanwhile) never keeps a slot.
 use crate::domain_runtime::DomainRuntime;
 use crate::node_close::Sessions;
 use alondra_core::domain::{AgentId, Listed};
@@ -147,7 +147,7 @@ mod tests {
     /// 9 October: 10 nodes read as connected, 3 sessions existed, and the ghosts held the slots
     /// until the daemon was restarted by hand.
     #[tokio::test]
-    async fn a_restart_frees_the_slots_and_fleet_of_sessions_that_ended_while_nobody_watched() {
+    async fn a_restart_frees_the_slots_of_sessions_that_ended_while_nobody_watched() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = open(&home);
@@ -164,7 +164,7 @@ mod tests {
         let state = domain.state().unwrap();
         assert_eq!(state.slots().iter().map(|agent| agent.id.0.as_str()).collect::<Vec<_>>(), ["alive"], "only the session that exists works");
         assert_eq!(phase(&domain, "vanished"), NodePhase::Lost, "its task is open: it waits for the gate to be brought back, holding no slot");
-        assert_eq!(phase(&domain, "finished"), NodePhase::Closed, "its task is over and its session gone: it leaves Fleet");
+        assert_eq!(phase(&domain, "finished"), NodePhase::Closed, "its task is over and its session gone: it closes");
 
         let revision = state.revision;
         assert!(once(&domain, &claude).await);
@@ -172,7 +172,7 @@ mod tests {
     }
 
     /// 12 October: a scheduled run whose task was cancelled before its session started never
-    /// linked the node to its launch, so the listing skipped it and it worked in Fleet for days.
+    /// linked the node to its launch, so the listing skipped it and it counted as working for days.
     #[tokio::test]
     async fn a_node_alondra_cannot_tell_it_launched_closes_once_its_session_is_gone() {
         let home = crate::test_support::Directory::new();
@@ -375,7 +375,7 @@ mod tests {
 
         crate::node_revival::revive(&domain, NODE, &QUICK).await;
         assert!(moves(&domain, NODE).is_empty(), "a paused node comes back through the gate, not revival");
-        crate::fleet_gate::pass(&domain, &home).await.unwrap();
+        crate::admission::pass(&domain, &home).await.unwrap();
         assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "the gate resumed it");
         crate::node_revival::revive(&domain, NODE, &QUICK).await;
         let moves = moves(&domain, NODE);

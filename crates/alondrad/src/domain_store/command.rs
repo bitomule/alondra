@@ -364,7 +364,7 @@ pub(super) fn stage(
 #[path = "command_tests.rs"]
 mod tests;
 
-/// A task that was over, or was left in progress with no node, and now waits for one: the fleet
+/// A task that was over, or was left in progress with no node, and now waits for one: the queue
 /// must start it, so it goes back to its queue.
 fn needs_a_node_again(before: &Task, after: &Task) -> bool {
     (before.state.terminal() || before.started_without_node())
@@ -397,7 +397,7 @@ fn stored_plan(conn: &Connection, task: &TaskId) -> Result<Option<LaunchPlan>> {
     Ok(plan.map(|plan| serde_json::from_str(&plan)).transpose()?)
 }
 
-/// Puts the task in the fleet's queue with its launch plan, in the transaction that reopened it,
+/// Puts the task in the queue with its launch plan, in the transaction that reopened it,
 /// at the place its plan gave it, so being cancelled and reopened costs it no seniority. What its
 /// previous starts left (an automatic launch, a retry, a refusal) belongs to that life and goes.
 /// A reopened task with no plan could never start again, so its reopening is refused.

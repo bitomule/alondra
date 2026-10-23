@@ -1,7 +1,7 @@
 //! A node is never stopped and working at once. Every forbidden transition of the node machine is
 //! refused, and generated runs of launches, turns (some reported late), cards, deliveries, pauses,
 //! resumes, sessions that vanish or close, daemon restarts and listings of the real sessions keep
-//! one state per node that the gate, Fleet, the Tasks list and the header all count alike.
+//! one state per node that the gate, the Tasks list and the header all count alike.
 use super::*;
 use crate::views::{Client, Item, Lang, LiveSnapshot, RenderContext, Transport, View};
 use proptest::prelude::*;
@@ -335,7 +335,7 @@ fn an_open_card_takes_the_node_out_of_the_slots_even_inside_a_turn() {
 }
 
 /// t-stale-delivery-retract delivered at 11:53, its node went on with final checks and the gate
-/// gave its slot to t-release-0259: Fleet showed 7 of 6 working.
+/// gave its slot to t-release-0259: the apps showed 7 of 6 working.
 #[test]
 fn a_node_that_delivers_keeps_its_slot_until_its_turn_ends() {
     let delivered = TaskFacts { delivered: true, ..OPEN };
@@ -433,7 +433,7 @@ fn a_listing_that_says_working_never_puts_a_node_waiting_for_other_tasks_back_to
         "the start of its own turn does");
 }
 
-/// 13 October: quill's session ended and its restart waited at the fleet gate for memory, every
+/// 13 October: quill's session ended and its restart waited at the admission gate for memory, every
 /// 30 s, while its task said «Reconectando». A lost node waits for the gate holding no slot; only
 /// once the gate lets it back is it restarted, and only then does it hold one.
 #[test]

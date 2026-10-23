@@ -1,4 +1,4 @@
-//! A task cancelled and reopened goes back through the fleet: with every slot taken it waits in the
+//! A task cancelled and reopened goes back through the queue: with every slot taken it waits in the
 //! queue saying why, never in progress with no node, and starts with a new node once there is room
 //! (t-fastconn-5-remove-mailbox, 15 October).
 use anyhow::{Context, bail};
@@ -46,7 +46,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             bail!("the queued task still says it stopped: {queued}");
         }
         limit(report, &user, &two)?;
-        let second = wait(report, "with a free slot the fleet starts it with a new node", || {
+        let second = wait(report, "with a free slot the queue starts it with a new node", || {
             let session = fakes.session_of("t-r2")?;
             let seen = format!("{:?}", session.as_ref().map(|session| (&session.short, &session.state)));
             Ok((session.filter(|session| session.short != first.short && session.running()), seen))

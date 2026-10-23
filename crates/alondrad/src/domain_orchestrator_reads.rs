@@ -1,4 +1,4 @@
-//! The orchestrator's reads, as 8ccd131's `fleet` and `node` gave them: the live
+//! The orchestrator's reads, as the `tasks_in_progress` and `node` tools give them: the live
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
@@ -131,8 +131,8 @@ fn open_questions(state: &DomainState) -> Vec<Value> {
         .filter(|q| q["status"] == "open").collect()
 }
 
-/// `fleet`: the live Agents and everything that waits on someone, in the legacy overview's shape.
-pub(crate) fn fleet(domain: &DomainRuntime, machine: Value, usage: Value) -> Result<Value, DomainError> {
+/// `tasks_in_progress`: the live Agents and everything that waits on someone, in the legacy overview's shape.
+pub(crate) fn tasks_in_progress(domain: &DomainRuntime, machine: Value, usage: Value) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let nodes: Vec<Value> = domain.live.nodes().iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))

@@ -13,7 +13,7 @@ use ratatui::widgets::{
 use super::md::{self, str_width, truncate, wrap};
 use super::{App, FlashKind, Key, Pane, Screen, Target, View, unavailable};
 use crate::i18n::{self, Occupancy};
-use crate::runtime::FleetNode;
+use crate::runtime::RuntimeNode;
 use alondra_core::NodeState;
 
 const ACCENT: Color = Color::LightYellow;
@@ -232,7 +232,7 @@ pub(super) fn state_color(s: NodeState) -> Color {
 }
 
 /// The orchestrator keeps its node state's colour; every other session is busy, free or waiting.
-pub(super) fn node_color(n: &FleetNode) -> Color {
+pub(super) fn node_color(n: &RuntimeNode) -> Color {
     if n.is_orchestrator {
         return state_color(n.state);
     }

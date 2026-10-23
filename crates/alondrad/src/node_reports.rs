@@ -260,7 +260,7 @@ impl Reported {
     }
 
     /// The mod loaded and its session has not ended, yet its connection is closed: what brings
-    /// the node back (`node_revival`), never something Fleet shows as the node's state.
+    /// the node back (`node_revival`), never something the task shows as the node's state.
     pub(crate) fn connection_lost(&self) -> bool {
         self.started_at.is_some() && !self.ended && self.connection.is_none()
     }

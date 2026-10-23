@@ -236,7 +236,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         on_account(report, &session(fakes, "t-acc5")?, "t-acc5", WORK)
     });
     report.setup("After accounts: every task is cancelled, Trabajo is removed and the API refuses nothing", |report| {
-        super::clear_fleet(report, sandbox, fakes)?;
+        super::cancel_open_tasks(report, sandbox, fakes)?;
         report.step("the API refuses nothing and the usage endpoint says what it says by default", || {
             for path in [fakes.dir.join(REFUSE), fakes.dir.join("usage").join(format!("{WORK}.json")), fakes.dir.join("usage").join(format!("{DEFAULT}.json"))] {
                 let removed = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };

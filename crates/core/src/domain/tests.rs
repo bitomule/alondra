@@ -3854,10 +3854,10 @@ fn reopening_a_task_whose_node_was_closed_leaves_it_without_a_node() {
     assert!(t.wrap_up.is_default());
 }
 /// 15 October: t-fastconn-5-remove-mailbox was cancelled, its node closed, and it was reopened.
-/// It was left in progress with no node, which the fleet could never assign ("Task already has a
-/// node"). Reopened without a node, it is not started, and the fleet's assignment takes it.
+/// It was left in progress with no node, which could never be assigned ("Task already has a
+/// node"). Reopened without a node, it is not started, and the next assignment takes it.
 #[test]
-fn a_task_reopened_after_its_node_closed_is_not_started_and_the_fleet_can_assign_it() {
+fn a_task_reopened_after_its_node_closed_is_not_started_and_can_be_assigned() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
@@ -3865,13 +3865,13 @@ fn a_task_reopened_after_its_node_closed_is_not_started_and_the_fleet_can_assign
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
     assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
-    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "fleet".into(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "b".into(), at: 0 }).unwrap();
     exec(&mut s, Actor::System, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
 }
 /// Cancelled, with its node's session already closed but its end not yet recorded: the task is
 /// still cancelling, so it cannot be reopened until Alondra records that end; then it has no node
-/// and waits for the fleet.
+/// and waits for a node.
 #[test]
 fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_recorded() {
     let mut s = fixture();

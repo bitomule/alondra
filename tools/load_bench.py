@@ -1,4 +1,4 @@
-"""Latency and CPU of alondrad under a busy fleet.
+"""Latency and CPU of alondrad under many busy nodes.
 
 Seeds a throwaway HOME with a production-shaped domain (115 tasks, 669 interactions with long
 bodies, one agent per simulated node), starts that alondrad on its own port with no Claude and no

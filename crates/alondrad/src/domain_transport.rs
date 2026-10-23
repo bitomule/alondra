@@ -129,10 +129,10 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
     }
 }
 
-/// A PreToolUse answered without recording the hook: a node the fleet holds, and Alondra's own tools.
+/// A PreToolUse answered without recording the hook: a node the gate holds, and Alondra's own tools.
 fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
     if let Some(reason) = domain.live.gate.holding(domain, session_id) {
-        let why = if reason == crate::fleet_pause::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
+        let why = if reason == crate::pauses::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Some(pre_tool_use_denied(why));
     }
     tool.is_some_and(|t| t.starts_with("mcp__plugin_alondra")).then(|| json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -1934,7 +1934,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        assert!(domain.live.gate.hold_back(&domain, "agent-a", crate::fleet_pause::Reason::Memory, alondra_core::now_millis()));
+        assert!(domain.live.gate.hold_back(&domain, "agent-a", crate::pauses::Reason::Memory, alondra_core::now_millis()));
         for tool in ["Bash", "mcp__plugin_alondra_alondra__wait_for_machine"] {
             let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
             result.unwrap();
@@ -2276,7 +2276,7 @@ mod tests {
     /// and the live view's signal.
     fn waits_for_machine(domain: &Arc<DomainRuntime>, now: alondra_core::Millis) {
         let reason = "Memory: the Bazel tests are cut for lack of memory".to_owned();
-        assert!(domain.live.gate.hold_back(domain, "agent-a", crate::fleet_pause::Reason::Declared { reason: reason.clone() }, now));
+        assert!(domain.live.gate.hold_back(domain, "agent-a", crate::pauses::Reason::Declared { reason: reason.clone() }, now));
         domain.live.apply(&alondra_core::Event::WaitingMachine { session_id: "agent-a".into(), reason });
         assert!(matches!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(NodePhase::Paused(_))));
     }

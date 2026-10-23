@@ -39,7 +39,7 @@ pub struct BatchProblem {
 
 /// Whether an orchestrator tool changes anything; the ones that only read never do.
 pub fn changes_something(tool: &str) -> bool {
-    !matches!(tool, "fleet" | "node" | "machine")
+    !matches!(tool, "tasks_in_progress" | "node" | "machine")
 }
 
 fn call_text(tool: &str, lang: Lang) -> &'static str {
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn reading_tools_change_nothing() {
-        assert!(!changes_something("fleet") && !changes_something("node") && !changes_something("machine"));
+        assert!(!changes_something("tasks_in_progress") && !changes_something("node") && !changes_something("machine"));
         assert!(changes_something("create_task") && changes_something("ask"));
     }
 }

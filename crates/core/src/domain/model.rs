@@ -55,7 +55,7 @@ pub struct Request {
     /// without waiting for their acceptance.
     #[serde(default)]
     pub auto_merge: bool,
-    /// Sent with `alondra send` to keep the fleet running, not to get an answer: closing it
+    /// Sent with `alondra send` to keep the nodes running, not to get an answer: closing it
     /// tells the user nothing, and no card answers it.
     #[serde(default)]
     pub maintenance: bool,

@@ -1,4 +1,4 @@
-//! Local word matching for the fleet search.
+//! Local word matching for the search.
 
 fn words(text: &str) -> Vec<String> {
     text.to_lowercase()
@@ -8,7 +8,7 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Local word matching across node details. Results retain fleet order.
+/// Local word matching across node details. Results keep their given order.
 pub fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
     let terms = words(query);
     if terms.is_empty() {

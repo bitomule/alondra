@@ -1,5 +1,5 @@
-//! The user's hands on the fleet's pace: the working-node limit, Pause, Resume and a task's
-//! priority. The daemon's gate does the rest (`docs/fleet-pacing.md`).
+//! The user's hands on the pace of the nodes: the working-node limit, Pause, Resume and a task's
+//! priority. The daemon's gate does the rest (`docs/pacing.md`).
 
 use super::{
     ActionOption, Confirm, Input, LivePacing, LivePaused, Presentation, RenderContext, Style, action_id::Verb, common,
@@ -23,7 +23,7 @@ pub(super) fn limit_text(pacing: &LivePacing, lang: super::Lang) -> String {
 }
 
 /// "Nodes at once": automatic or a fixed number from 1 to 12, written to `options.toml`. It lives
-/// in this Mac's settings, never in the fleet header.
+/// in this Mac's settings, never in the Tasks header.
 pub(super) fn limit_action(pacing: &LivePacing, context: &RenderContext<'_>) -> Option<super::Action> {
     let lang = context.lang;
     let mut action = common::action(Verb::SetLimit, "limit", context.domain.revision,
@@ -97,7 +97,7 @@ pub(super) fn resume_action(paused: &LivePaused, context: &RenderContext<'_>) ->
     Some(action)
 }
 
-/// Pause or Resume, whichever the task's place in the fleet allows.
+/// Pause or Resume, whichever the task's place in the queue allows.
 pub(super) fn task_actions(task: &Task, context: &RenderContext<'_>) -> Vec<super::Action> {
     if task.state.terminal() {
         return vec![];

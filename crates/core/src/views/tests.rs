@@ -1655,7 +1655,7 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
 }
 
-/// 13 October: quill's session ended and its restart waited at the fleet gate for memory while
+/// 13 October: quill's session ended and its restart waited at the admission gate for memory while
 /// its task said «Reconectando». A lost node waits at the gate like any start: queued, with what
 /// holds it, and «Reconectando» only once the gate let it back.
 #[test]
@@ -1683,7 +1683,7 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
 }
 
 /// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
-/// entregara» while it waited for its turn. Reopened, it waits in the fleet's queue: every client
+/// entregara» while it waited for its turn. Reopened, it waits in the queue: every client
 /// says it is queued, its place and what holds it, even though its old node was closed.
 #[test]
 fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_stopped() {
@@ -5954,7 +5954,7 @@ const PACING_GOLDENS: [(&str, &str, Client, Lang); 5] = [
     ("machine-settings-mac.json", "machine", Client::Mac, Lang::En),
 ];
 
-/// The fleet at its limit: 6 of 6 working with the Mac short of memory, two tasks queued, a node
+/// The nodes at their limit: 6 of 6 working with the Mac short of memory, two tasks queued, a node
 /// paused for memory and a queued task the user paused.
 fn pacing_fixture() -> (DomainState, LiveSnapshot) {
     let (mut state, mut live) = nodes_fixture();
@@ -6833,7 +6833,7 @@ fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() 
     }
 }
 
-// The phase `claude --bg` reports never moves for a node that runs through the SDK: Fleet reads its
+// The phase `claude --bg` reports never moves for a node that runs through the SDK: the task reads its
 // state from its task and execution, never «Starting» while its turn runs.
 fn mcp_card(client: Client, lang: Lang) -> (DomainState, Card) {
     let state = crate::domain::mcp_wait_tests::waiting_for_linear();

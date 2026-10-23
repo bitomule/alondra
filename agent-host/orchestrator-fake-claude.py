@@ -37,7 +37,7 @@ def flag(name):
 session_id = flag('--session-id')
 serial = 0
 server = 'alondra-orchestrator'
-tools = ['Skill', 'Read', 'Glob', 'Grep'] + ['mcp__%s__%s' % (server, name) for name in ('fleet', 'ask', 'create_task', 'close_request', 'settle_suggestion')]
+tools = ['Skill', 'Read', 'Glob', 'Grep'] + ['mcp__%s__%s' % (server, name) for name in ('tasks_in_progress', 'ask', 'create_task', 'close_request', 'settle_suggestion')]
 
 
 def uuid():

@@ -5,7 +5,7 @@ description: How a node works on its Alondra task — asking the user, deliverin
 
 # Alondra
 
-The user supervises the fleet; the Alondra MCP instructions give their name and the language to
+The user supervises the nodes; the Alondra MCP instructions give their name and the language to
 write to them in. Your terminal does not reach the user: only Alondra's tools do, and the user's
 answers are typed into this session. Alondra sees on its own that you are working.
 
@@ -262,7 +262,7 @@ Pick the tool by what you need:
 - Alondra may pause you when the Mac runs out of memory: your turn is interrupted, and later a
   message says when and what was cut. Carry on from there and run again what was cut.
 - Never stop on your own for the subscription's usage, and never ask the user or the orchestrator
-  whether to stop or wait for it: only the user (on the usage card) and Alondra (pacing the fleet)
+  whether to stop or wait for it: only the user (on the usage card) and Alondra (pacing the nodes)
   decide that, and Alondra refuses such a question. If Alondra pauses you for usage, Alondra
   resumes you.
 

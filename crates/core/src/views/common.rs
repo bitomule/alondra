@@ -446,7 +446,7 @@ pub(super) fn orchestrator_state(context: &RenderContext<'_>) -> OrchestratorSta
 
 
 /// A node whose turn is under way yet stopped processing, or whose session Claude Code says
-/// failed: Fleet and the node's task say it alike.
+/// failed: the node's task says it.
 pub(super) fn halted(agent: &crate::domain::AgentId, context: &RenderContext<'_>) -> Option<super::Label> {
     use super::Tone;
     let lang = context.lang;

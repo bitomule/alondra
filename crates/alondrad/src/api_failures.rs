@@ -6,7 +6,7 @@
 //! nodes and this one still fails after every retry. The hook itself cannot make Claude go on
 //! (code.claude.com/docs/en/hooks), so going on is always a message to the node.
 use crate::domain_runtime::DomainRuntime;
-use crate::fleet_pause::{Paused, Reason};
+use crate::pauses::{Paused, Reason};
 use alondra_core::domain::{
     AfterApiFailure, AgentId, ApiErrorKind, ApiHealth, FRESH_TURN, OUTAGE_PROBE, InteractionId, InteractionPayload, NodeEvent, NodePhase,
     START_RETRY, StartProblem, after_api_failure, classify,
@@ -133,7 +133,7 @@ pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Val
     let state = domain.state()?;
     let Some(phase) = state.node_phase(agent).cloned() else { return Ok(()) };
     let in_turn = matches!(phase, NodePhase::Working | NodePhase::Starting { .. });
-    let task = crate::fleet_gate::open_task_of(&state, &agent.0);
+    let task = crate::admission::open_task_of(&state, &agent.0);
     if !in_turn || task.is_none() {
         crate::domain_agent_lifecycle::node_event_at(domain, agent, NodeEvent::TurnFailed, now)?;
         return Ok(());
@@ -191,7 +191,7 @@ pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
             continue;
         }
         let retried = !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == START_RETRY);
-        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && crate::fleet_gate::open_task_of(&state, &agent.0).is_some();
+        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && crate::admission::open_task_of(&state, &agent.0).is_some();
         if retried && live {
             let text = match serde_json::from_str::<StartProblem>(&card.body) {
                 Ok(StartProblem::ApiFailed { error, detail, .. }) => resume_text(&error, detail.as_deref()),

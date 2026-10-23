@@ -47,7 +47,7 @@ pub(super) fn step() -> impl Strategy<Value = Step> {
 }
 
 /// Two `claude --bg` tasks with their nodes and one task whose SDK execution runs a turn.
-pub(super) fn fleet() -> DomainState {
+pub(super) fn three_tasks() -> DomainState {
     let mut s = world();
     task(&mut s, TASKS[0], Some("a"));
     task(&mut s, TASKS[1], Some("b"));
@@ -139,7 +139,7 @@ proptest! {
 
     #[test]
     fn the_kept_lifecycle_of_every_task_is_its_journals_replay(steps in prop::collection::vec(step(), 1..40)) {
-        let mut s = fleet();
+        let mut s = three_tasks();
         prop_assert_eq!(s.kept_lifecycles_match_journals(), Ok(()));
         for (n, step) in steps.iter().enumerate() {
             let before = kept(&s);
@@ -156,7 +156,7 @@ proptest! {
 
 #[test]
 fn a_state_read_without_its_kept_lifecycles_reads_its_journals() {
-    let mut s = fleet();
+    let mut s = three_tasks();
     must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into() });
     let read: DomainState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
     assert!(read.kept_lifecycles_match_journals().is_err(), "nothing is restored from the DTO");
@@ -167,7 +167,7 @@ fn a_state_read_without_its_kept_lifecycles_reads_its_journals() {
 
 #[test]
 fn a_journal_moved_by_hand_is_replayed_rather_than_read_from_what_was_kept() {
-    let mut s = fleet();
+    let mut s = three_tasks();
     let task = TaskId::from(SDK);
     let kept = s.lifecycle_of(&task).unwrap();
     s.lifecycle_journal.get_mut(&task).unwrap().push(LifecycleRecord::Told { input: "input:by-hand".into(), text: Some("By hand".into()) });

@@ -59,8 +59,8 @@ mod mcp_sign_in;
 mod mcp_waits;
 mod machine_state;
 mod machine_watch;
-mod fleet_gate;
-mod fleet_pause;
+mod admission;
+mod pauses;
 mod claude_check;
 mod auto_launch;
 mod launch_plans;
@@ -583,11 +583,11 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
     tokio::spawn(retention::run(domain.clone()));
-    tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone()));
+    tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     tokio::spawn(claude_check::run(plugins::node()));
     if config.fast_timing {
-        domain.live.gate.tune(fleet_gate::Tuning { spacing: 1_000, limit: Some(fleet_gate::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });
+        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });
         domain.live.gate.ignore_mac();
     }
     if config.ignore_mac_load {

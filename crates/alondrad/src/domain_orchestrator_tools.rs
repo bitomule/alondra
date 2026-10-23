@@ -250,7 +250,7 @@ pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
                 }
             });
             let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
-                "the replacement stopped unexpectedly ({failure}); check the task with fleet before launching it again"))));
+                "the replacement stopped unexpectedly ({failure}); check the task with tasks_in_progress before launching it again"))));
             if let (true, Err(error)) = (reached.load(std::sync::atomic::Ordering::SeqCst), &outcome) {
                 tell_replace_failed(&domain, &task, error);
             }
@@ -262,7 +262,7 @@ pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
     }
     Ok(json!({"task": task, "replacing": true, "message": format!(
         "Replacing the node of “{}”: Alondra waits for its turn to end (interrupting it if it takes too long), stops it and \
-         starts the new node in its folder. This can take a few minutes; fleet shows the new node once it works on the task, and you \
+         starts the new node in its folder. This can take a few minutes; tasks_in_progress shows the new node once it works on the task, and you \
          are told only if it did not start.", task_title(&domain, &task))}))
 }
 
@@ -270,7 +270,7 @@ fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
     domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
 }
 
-/// Only a replacement that did not finish is told: one that did shows in fleet and the task.
+/// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the task.
 fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
     let title = task_title(domain, task);
     let text = format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message);
@@ -310,7 +310,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
         return Err(DomainError::new("plan_review_pending", why));
     }
-    if origin != Origin::Admitted && crate::fleet_gate::held_by_user(domain, &task.id) {
+    if origin != Origin::Admitted && crate::admission::held_by_user(domain, &task.id) {
         return Err(conflict(format!("The user paused “{}” in the queue: only the user resumes it", task.title)));
     }
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
@@ -362,16 +362,16 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
     }
     if origin == Origin::Orchestrator && replaced.is_none() {
-        use crate::fleet_gate::{Key, Waiting};
+        use crate::admission::{Key, Waiting};
         let now = alondra_core::now_millis();
         let key = Key::Task(task.id.clone());
         let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
         if domain.live.gate.ask(domain, waiting, now).is_err() {
             domain.live.gate.forget(&key);
-            crate::fleet_gate::enqueue(domain, &body, "orchestrator", now)
+            crate::admission::enqueue(domain, &body, "orchestrator", now)
                 .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
             return Ok(json!({"task": task.id, "queued": true, "message": format!("“{}” is queued. {}", task.title,
-                crate::fleet_gate::queued_text(domain, &task.id, now))}));
+                crate::admission::queued_text(domain, &task.id, now))}));
         }
     }
     let mission = body.prompt.clone().unwrap_or_else(|| {
@@ -694,7 +694,7 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
     let agent_id = agent(&current, &body.node)?;
     if let Some(paused) = domain.live.gate.paused(domain, &agent_id.0) {
         let why = match paused.reason {
-            crate::fleet_pause::Reason::ByUser => format!("{} paused it and only {} resumes it", crate::domain_messages::user_name(), crate::domain_messages::user_name()),
+            crate::pauses::Reason::ByUser => format!("{} paused it and only {} resumes it", crate::domain_messages::user_name(), crate::domain_messages::user_name()),
             _ => "Alondra paused it for the machine and resumes it by itself in its turn, within the limit".into(),
         };
         return Err(DomainError::new("node_paused", format!("{} is paused: {why}. Nothing was sent; a message now would start it again past the limit.", body.node)));

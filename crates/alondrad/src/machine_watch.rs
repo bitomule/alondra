@@ -2,8 +2,8 @@
 //! with `wait_for_machine` that it waits for the machine. One incident at a
 //! time puts one Problem in front of the user and, once the gauges say the Mac recovered (or the
 //! user says they fixed it), withdraws the card. No clock reminds about it or holds it open. The nodes that waited are not
-//! woken here: they wait paused at the fleet gate, which brings them back one at a time within the
-//! limit (`fleet_pause`). A disk below `disk::low_lines()` opens an incident before any node fails,
+//! woken here: they wait paused at the admission gate, which brings them back one at a time within the
+//! limit (`pauses`). A disk below `disk::low_lines()` opens an incident before any node fails,
 //! and while it is open no node starts. The disk watched is the Mac's own and every volume a node
 //! was launched on, so a repository on an external disk is watched too.
 //!
@@ -83,7 +83,7 @@ pub(crate) struct Waiter {
 pub(crate) enum Action {
     Raise { id: String, card: MachineCard },
     Withdraw(String),
-    /// The incident is over: its declared waits are left to the fleet gate.
+    /// The incident is over: its declared waits are left to the admission gate.
     Release(Vec<String>),
 }
 
@@ -96,7 +96,7 @@ pub(crate) const USAGE_WAIT_REFUSED: &str = "wait_for_machine is only for the Ma
 
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
 /// `disk::recovered_lines()` to count as fine, so a disk hovering at the line does not flap. Memory
-/// and the CPU load open none: they only pace the fleet at the gate.
+/// and the CPU load open none: they only pace new starts at the gate.
 pub(crate) fn failing(machine: &Machine, previous: Option<MachineCause>) -> Option<MachineCause> {
     (machine.disk_total > 0 && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
 }
@@ -209,7 +209,7 @@ impl Default for MachineWatch {
 
 impl MachineWatch {
     /// A memory incident an earlier daemon left open is dropped: `watch` then withdraws its card
-    /// as a stray, and its declared waits stay with the fleet gate.
+    /// as a stray, and its declared waits stay with the admission gate.
     pub(crate) fn persisted_in(home: &Path) -> Self {
         let file = home.join(FILE);
         let mut record: Record = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
@@ -418,7 +418,7 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, alerts: &impl Alerts, actio
                 let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_core::domain::InteractionId(id))).await;
             }
             Action::Release(sessions) => {
-                log!("the machine recovered: {} node(s) that waited come back through the fleet gate", sessions.len());
+                log!("the machine recovered: {} node(s) that waited come back through the admission gate", sessions.len());
                 let releasing = domain.clone();
                 tokio::task::spawn_blocking(move || releasing.live.machine_watch.forget(&sessions)).await.expect("machine release worker failed");
             }
@@ -439,7 +439,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     }
     let Some(change) = watch.sample(machine, now) else { return };
     let mac = watch.mac();
-    let working = domain.state().map(|state| crate::fleet_gate::working_tasks(&state).len()).unwrap_or(0);
+    let working = domain.state().map(|state| crate::admission::working_tasks(&state).len()).unwrap_or(0);
     if let Some(home) = watch.home() {
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working);
     }
@@ -839,7 +839,7 @@ mod tests {
         until("the incident closed", || domain.live.machine_watch.incident().is_none()).await;
         watcher.abort();
         assert!(open_machine_cards(&domain).is_empty());
-        assert!(node.texts().is_empty(), "the fleet gate brings the node back, not the machine watch");
+        assert!(node.texts().is_empty(), "the admission gate brings the node back, not the machine watch");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
     }
 
@@ -894,12 +894,12 @@ mod tests {
     }
 
     fn holds(domain: &DomainRuntime, now: Millis) -> bool {
-        let head = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task("t".into()), priority: Default::default(), resuming: false, since: 0 };
-        crate::fleet_gate::decide(&head, 0, 4, &domain.live.machine_watch.mac(), 0, None, 0, now).is_err()
+        let head = crate::admission::Waiting { key: crate::admission::Key::Task("t".into()), priority: Default::default(), resuming: false, since: 0 };
+        crate::admission::decide(&head, 0, 4, &domain.live.machine_watch.mac(), 0, None, 0, now).is_err()
     }
 
     #[tokio::test]
-    async fn sustained_memory_pressure_puts_no_card_and_no_push_while_the_fleet_is_held_and_resumed() {
+    async fn sustained_memory_pressure_puts_no_card_and_no_push_while_the_nodes_are_held_and_resumed() {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("s1", "killed for lack of memory", 0, now_millis());
         let clock = Arc::new(Mutex::new((0 as Millis, true)));

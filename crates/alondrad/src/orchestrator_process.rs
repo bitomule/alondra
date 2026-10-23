@@ -248,7 +248,7 @@ impl Stream {
                 let tools = v["tools"].as_array();
                 // Claude prefixes plugin MCP names. Accept only the two exact launch forms
                 // observed for this server, paired with their matching tool names.
-                let required: &[&str] = if self.restricted { &["create_task", "ask"] } else { &["fleet", "ask"] };
+                let required: &[&str] = if self.restricted { &["create_task", "ask"] } else { &["tasks_in_progress", "ask"] };
                 let available = [
                     ("plugin:alondra-orchestrator:alondra-orchestrator", "mcp__plugin_alondra-orchestrator_alondra-orchestrator"),
                     ("alondra-orchestrator", "mcp__alondra-orchestrator"),
@@ -572,22 +572,25 @@ mod tests {
     #[test]
     fn orchestrator_init_rejects_node_and_accepts_exact_plugin_name() {
         let mut stream = Stream::default();
-        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra:alondra","status":"connected"}],"tools":["mcp__plugin_alondra_alondra__fleet","mcp__plugin_alondra_alondra__ask"]}"#;
+        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra:alondra","status":"connected"}],"tools":["mcp__plugin_alondra_alondra__tasks_in_progress","mcp__plugin_alondra_alondra__ask"]}"#;
         assert!(stream.accept(node_only, "s").is_err());
         assert!(!stream.initialized);
-        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__fleet","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}"#;
+        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__tasks_in_progress","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(orchestrator, "s").is_ok());
         assert!(stream.initialized);
     }
     #[test]
     fn orchestrator_init_requires_its_own_mcp_server_and_tools() {
         let mut stream = Stream::default();
-        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra","status":"connected"}],"tools":["mcp__alondra__fleet","mcp__alondra__ask"]}"#;
+        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra","status":"connected"}],"tools":["mcp__alondra__tasks_in_progress","mcp__alondra__ask"]}"#;
         assert!(stream.accept(node_only, "s").is_err());
         assert!(!stream.initialized);
-        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["mcp__alondra-orchestrator__tasks_in_progress","mcp__alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(orchestrator, "s").is_ok());
         assert!(stream.initialized);
+        let mut stream = Stream::default();
+        let renamed_away = std::str::from_utf8(orchestrator).unwrap().replace("__tasks_in_progress", "__fleet");
+        assert!(stream.accept(renamed_away.as_bytes(), "s").is_err(), "a catalog that still names the tool fleet lacks tasks_in_progress");
     }
     #[test]
     fn restricted_init_rejects_shell_agent_and_foreign_mcp() {
@@ -604,7 +607,7 @@ mod tests {
         let foreign = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"},{"name":"foreign","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(foreign, "s").is_err());
         let mut stream = Stream { restricted: true, ..Stream::default() };
-        let legacy_catalog = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        let legacy_catalog = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__tasks_in_progress","mcp__alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(legacy_catalog, "s").is_err(), "a v2 invocation needs the v2 catalog");
         let generic_catalog = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__domain_command","mcp__alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(generic_catalog, "s").is_err(), "a generic legacy tool is not a typed v2 catalog");

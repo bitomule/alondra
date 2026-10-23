@@ -108,12 +108,12 @@ as the user through views and actions, the way the iPhone does.
     ends and its worktree goes → finished.
   - TC2: a question answered on its card reaches the node.
   - TC3: requested changes, a second delivery, the new head merged.
-  - TC4: cancelling ends the node and takes it out of Fleet.
+  - TC4: cancelling ends the node and the task is no longer in progress.
   - F1–F4: refusals Alondra owes. A final delivery with an uncommitted file (named), a draft PR,
     failing checks handed back to the node, a second PR for one task.
 - `session`:
   - S1: a node whose native Claude crashed carries on by itself in the resumed session, with no card, and finishes.
-  - S2: «Interrupt» in Fleet ends the turn with one card, and the node's Claude is not restarted.
+  - S2: «Interrupt» on the task ends the turn with one card, and the node's Claude is not restarted.
   - S3: a daemon restart keeps the card, the task and the node, whose host it adopts.
   - S4: a crashed session's bearer is refused once it resumes with a new one.
   - S5: from a turn Claude started by itself, with the user's message waiting behind it, a plan of 41 points is refused and Claude gets why; its shorter plan reaches the user's Review card and the message then runs.
@@ -179,7 +179,7 @@ CLAUDE.md, the local CLAUDE.local.md and Alondra's node plugin, whose MCP server
 Then the double answers tasks with tool calls the journey scripts in `sdk/model-tools`: a command
 waits on its permission card and runs once the phone allows it; a question's option reaches Claude
 as its answer; a plan the model writes to plan mode's plan file waits on its Review card and Claude
-goes on with it once the phone approves it; «Interrupt» in Fleet stops a running command and the turn ends with one card; a
+goes on with it once the phone approves it; «Interrupt» on the task stops a running command and the turn ends with one card; a
 command that acts as the user is refused by the node guard with no card; a command that runs for
 seconds finishes and its turn ends with one card. Last, a task's detail shows what its node reads from
 the SDK host alone: its task list as «Steps», the call it and its subagent run in «Right now», its

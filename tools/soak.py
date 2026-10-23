@@ -7,7 +7,7 @@ that wait for changes, and records the process's resident memory every 5 minutes
     python3 tools/soak.py --hours 72 --out soak.csv
 
 `make soak SOAK_ARGS="--hours 72"` runs it on the freshly built alondrad at background priority
-(taskpolicy -b), so it does not compete with the real fleet for CPU or disk.
+(taskpolicy -b), so it does not compete with the real nodes for CPU or disk.
 
 An accelerated run shortens retention and compaction so a leak shows within the hour:
 

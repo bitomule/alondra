@@ -16,7 +16,7 @@ use super::{
 };
 use crate::client::Client;
 use crate::ops::{self, MessageKind, Recovery};
-use crate::runtime::{Activity, FleetNode};
+use crate::runtime::{Activity, RuntimeNode};
 
 /// A row of the agents list: a project's header, or an agent.
 pub enum AgentRow {
@@ -26,7 +26,7 @@ pub enum AgentRow {
 
 impl App {
     /// The runtime's view of an agent's session, when alondrad reports it.
-    pub fn node(&self, id: &AgentId) -> Option<&FleetNode> {
+    pub fn node(&self, id: &AgentId) -> Option<&RuntimeNode> {
         self.runtime.as_ref()?.node(id)
     }
 
@@ -44,7 +44,7 @@ impl App {
 }
 
 /// What a session last said: its last message, else what the daemon says it needs or does.
-pub fn said(n: &FleetNode) -> String {
+pub fn said(n: &RuntimeNode) -> String {
     n.last_message
         .clone()
         .or(n.daemon_needs.clone())

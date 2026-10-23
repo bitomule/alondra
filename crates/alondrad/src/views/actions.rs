@@ -662,7 +662,7 @@ async fn execute_external(
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
                 domain.live.gate.pause_by_user(domain, &action.subject, now)
             } else {
-                crate::fleet_gate::hold_queued(domain, &TaskId(action.subject.clone()), now)
+                crate::admission::hold_queued(domain, &TaskId(action.subject.clone()), now)
             };
             match paused {
                 Ok(()) => Ok(to_applied(200, json!({"paused": action.subject}))),
@@ -674,7 +674,7 @@ async fn execute_external(
             if domain.live.gate.resume_now(domain, &action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
-            match crate::fleet_gate::release_queued(domain, home, &TaskId(action.subject.clone())).await {
+            match crate::admission::release_queued(domain, home, &TaskId(action.subject.clone())).await {
                 Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
@@ -688,7 +688,7 @@ async fn execute_external(
                 },
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
             };
-            match crate::fleet_gate::set_node_limit(home, limit) {
+            match crate::admission::set_node_limit(home, limit) {
                 Ok(()) => Ok(to_applied(200, json!({"max_working_nodes": limit}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }

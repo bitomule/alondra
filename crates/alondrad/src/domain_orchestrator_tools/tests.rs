@@ -1429,9 +1429,9 @@ impl crate::node_close::Sessions for NoBgSessions {
 }
 
 // `claude agents` lists only claude --bg sessions: a node of the SDK missing from it is not lost,
-// and stays in Fleet while its task is open.
+// and stays live while its task is open.
 #[tokio::test]
-async fn a_node_of_the_sdk_missing_from_claudes_listing_stays_in_fleet() {
+async fn a_node_of_the_sdk_missing_from_claudes_listing_stays_live() {
     let f = world();
     let agent = agent_of(&launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap());
     assert!(crate::node_reconcile::once(&f.domain, &NoBgSessions).await);

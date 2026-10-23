@@ -319,7 +319,7 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
 #[tokio::test]
 async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
     let f = world();
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(4)) });
+    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
     let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
     for id in &ids {
         create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));
@@ -344,11 +344,11 @@ async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_
 #[tokio::test]
 async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_the_next_one_starts() {
     let f = world();
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     create(&f, "b", &[], Some(&plan(&f, "app/b")));
     let now = alondra_core::now_millis();
-    let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
+    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
         resuming: false, since: 0 };
     assert_eq!(f.domain.live.gate.ask(&f.domain, waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
@@ -695,12 +695,12 @@ fn queued(f: &Fixture) -> Vec<(String, i64)> {
 }
 
 /// 15 October: t-fastconn-5-remove-mailbox was cancelled at 19:42 and reopened at 19:45. It stayed
-/// in progress with no node, nothing started it, and once launched by hand the fleet took it out of
+/// in progress with no node, nothing started it, and once launched by hand the queue took it out of
 /// its queue before starting it and was refused («Task already has a node»), so it was in no queue
-/// at all. Reopened, it goes back to the queue with its plan and its seniority; a start the fleet
+/// at all. Reopened, it goes back to the queue with its plan and its seniority; a start the gate
 /// cannot make leaves it there, and its retry starts it.
 #[tokio::test]
-async fn a_reopened_task_waits_in_the_fleets_queue_with_its_seniority_and_a_refused_start_keeps_it_there() {
+async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_start_keeps_it_there() {
     let f = world();
     f.domain.live.gate.ignore_mac();
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
@@ -719,7 +719,7 @@ async fn a_reopened_task_waits_in_the_fleets_queue_with_its_seniority_and_a_refu
 
     create(&f, "f2", &[], Some(&plan(&f, "app/f2")));
     let body: LaunchBody = serde_json::from_value(json!({"task": "f2", "name": "app/f2", "cwd": f.project.to_str().unwrap()})).unwrap();
-    crate::fleet_gate::enqueue(&f.domain, &body, "orchestrator", alondra_core::now_millis()).unwrap();
+    crate::admission::enqueue(&f.domain, &body, "orchestrator", alondra_core::now_millis()).unwrap();
     let now = alondra_core::now_millis();
     let snapshot = f.domain.live.gate.snapshot(&f.domain, now).unwrap();
     let order: Vec<String> = snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect();
@@ -727,7 +727,7 @@ async fn a_reopened_task_waits_in_the_fleets_queue_with_its_seniority_and_a_refu
     assert_eq!(snapshot.working, 0, "back in the queue, its first start no longer counts as one under way");
 
     f.sdk.refuse_starts(true);
-    crate::fleet_gate::pass_at(&f.domain, &f.home, now).await.unwrap();
+    crate::admission::pass_at(&f.domain, &f.home, now).await.unwrap();
     assert!(agent_of(&f, "f1").is_none());
     assert!(queued(&f).iter().any(|(task, _)| task == "f1"), "a refused start never takes it out of the queue: {:?}", queued(&f));
     let retry = f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")];
@@ -737,7 +737,7 @@ async fn a_reopened_task_waits_in_the_fleets_queue_with_its_seniority_and_a_refu
     assert_eq!(order, ["Task(TaskId(\"f2\"))"], "while it waits for its retry it holds nobody back");
 
     f.sdk.refuse_starts(false);
-    crate::fleet_gate::pass_at(&f.domain, &f.home, retry.1).await.unwrap();
+    crate::admission::pass_at(&f.domain, &f.home, retry.1).await.unwrap();
     assert!(agent_of(&f, "f1").is_some(), "its retry starts it");
     assert!(!queued(&f).iter().any(|(task, _)| task == "f1"));
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
@@ -802,14 +802,14 @@ fn paused_ids(f: &Fixture) -> Vec<String> {
 #[tokio::test]
 async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queue_until_the_user_resumes_it() {
     let f = world();
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "q1", &[], Some(&plan(&f, "app/q1")));
     create(&f, "q2", &[], Some(&plan(&f, "app/q2")));
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1);
     assert_eq!(queued_ids(&f), [("q2".to_owned(), true)], "q2 waits for its automatic start, and the user may pause it");
 
-    crate::fleet_gate::hold_queued(&f.domain, &"q2".into(), alondra_core::now_millis()).unwrap();
+    crate::admission::hold_queued(&f.domain, &"q2".into(), alondra_core::now_millis()).unwrap();
     assert!(queued_ids(&f).is_empty());
     assert_eq!(paused_ids(&f), ["q2"]);
 
@@ -823,7 +823,7 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
     assert_eq!(refused.code, "conflict");
     assert!(refused.message.contains("The user paused"), "{}", refused.message);
 
-    crate::fleet_gate::release_queued(&f.domain, &f.home, &"q2".into()).await.unwrap();
+    crate::admission::release_queued(&f.domain, &f.home, &"q2".into()).await.unwrap();
     assert_eq!(launches(&f), 2);
     assert!(agent_of(&f, "q2").is_some());
     assert!(paused_ids(&f).is_empty());
@@ -834,7 +834,7 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
 #[tokio::test]
 async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_until_the_user_resumes_it() {
     let f = world();
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "o1", &[], Some(&plan(&f, "app/o1")));
     create(&f, "o2", &[], Some(&plan(&f, "app/o2")));
     let body: LaunchBody = serde_json::from_value(json!({"task": "o1"})).unwrap();
@@ -844,16 +844,16 @@ async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_unti
     assert_eq!(queued["queued"], true);
     assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
 
-    crate::fleet_gate::hold_queued(&f.domain, &"o2".into(), alondra_core::now_millis()).unwrap();
+    crate::admission::hold_queued(&f.domain, &"o2".into(), alondra_core::now_millis()).unwrap();
     assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
     assert_eq!(paused_ids(&f), ["o2"]);
 
     finish(&f, "o1", "What o1 delivered", false);
-    crate::fleet_gate::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1, "neither the queue nor the automatic start brings o2 back");
 
-    crate::fleet_gate::release_queued(&f.domain, &f.home, &"o2".into()).await.unwrap();
+    crate::admission::release_queued(&f.domain, &f.home, &"o2".into()).await.unwrap();
     assert_eq!(launches(&f), 2);
     assert!(agent_of(&f, "o2").is_some());
 }
@@ -863,6 +863,6 @@ async fn pausing_a_task_that_waits_for_nothing_says_it_is_not_queued() {
     let f = world();
     done_task(&f, "n0");
     open_task(&f, "n1");
-    assert_eq!(crate::fleet_gate::hold_queued(&f.domain, &"n1".into(), alondra_core::now_millis()), Err("This task is not queued"));
-    assert_eq!(crate::fleet_gate::hold_queued(&f.domain, &"n0".into(), alondra_core::now_millis()), Err("This task is not queued"));
+    assert_eq!(crate::admission::hold_queued(&f.domain, &"n1".into(), alondra_core::now_millis()), Err("This task is not queued"));
+    assert_eq!(crate::admission::hold_queued(&f.domain, &"n0".into(), alondra_core::now_millis()), Err("This task is not queued"));
 }
