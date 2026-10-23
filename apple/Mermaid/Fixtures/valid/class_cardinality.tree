@@ -1,0 +1,10 @@
+class TB
+class Customer "Customer"
+class Ticket "Ticket"
+class Student "Student"
+class Course "Course"
+class Galaxy "Galaxy"
+class Star "Star"
+relation Customer none solid arrow Ticket from="1" to="*" "buys"
+relation Student none solid arrow Course from="1" to="1..*"
+relation Galaxy none solid arrow Star to="many" "contains"

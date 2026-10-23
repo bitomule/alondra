@@ -1,0 +1,14 @@
+sequenceDiagram
+    accTitle: Connection with fallback
+    accDescr: The app tries the relay when the direct link fails.
+    participant App
+    participant Mac
+    participant Relay
+    critical Connect directly
+        App->>Mac: Hello
+    option Direct link fails
+        App->>Relay: Hello through relay
+    end
+    break Session expired
+        Mac-->>App: Sign in again
+    end

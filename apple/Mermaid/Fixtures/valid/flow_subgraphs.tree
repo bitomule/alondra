@@ -1,0 +1,17 @@
+flowchart TB
+subgraph one "one"
+subgraph two "Second group"
+subgraph inner "Inner group" in two
+node c1 rectangle "c1"
+node a2 rectangle "a2"
+node a1 rectangle "a1" in one
+node b1 rectangle "b1" in two
+node b2 rectangle "b2" in two
+node b3 rectangle "b3" in inner
+node c2 rectangle "c2"
+edge c1 -> a2 solid none/arrow
+edge a1 -> a2 solid none/arrow
+edge b1 -> b2 solid none/arrow
+edge b2 -> b3 solid none/arrow
+edge one -> two solid none/arrow
+edge two -> c2 solid none/arrow

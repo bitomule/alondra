@@ -1,0 +1,10 @@
+class TB
+class Square "Square<Shape>"
+  attribute "int id"
+  attribute "List<int> position"
+  method "setPoints(List<int> points)"
+  method "getPoints() List<int>"
+class Shape "Shape" <<interface>>
+  method "draw()"
+class Animal "Animal" <<abstract>>
+relation Shape inheritance dashed none Square

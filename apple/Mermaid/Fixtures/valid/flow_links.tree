@@ -1,0 +1,22 @@
+flowchart LR
+node A rectangle "A"
+node B rectangle "B"
+node C rectangle "C"
+node D rectangle "D"
+node E rectangle "E"
+node F rectangle "F"
+node G rectangle "G"
+node H rectangle "H"
+node I rectangle "I"
+node J rectangle "J"
+node K rectangle "K"
+edge A -> B solid none/arrow
+edge B -> C solid none/none
+edge C -> D dotted none/arrow
+edge D -> E thick none/arrow
+edge E -> F solid none/cross
+edge F -> G solid none/circle
+edge G -> H solid arrow/arrow
+edge H -> I dotted none/none
+edge I -> J thick none/none
+edge J -> K solid none/arrow

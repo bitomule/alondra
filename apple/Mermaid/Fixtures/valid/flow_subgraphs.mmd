@@ -1,0 +1,14 @@
+flowchart TB
+    c1-->a2
+    subgraph one
+        a1-->a2
+    end
+    subgraph two [Second group]
+        b1-->b2
+        subgraph inner["Inner group"]
+            b3
+        end
+        b2-->b3
+    end
+    one --> two
+    two --> c2

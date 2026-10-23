@@ -1,0 +1,8 @@
+flowchart BT
+node Leaf1 rectangle "Leaf1"
+node Root rectangle "Root"
+node Leaf2 rectangle "Leaf2"
+node Top rectangle "Top"
+edge Leaf1 -> Root solid none/arrow
+edge Leaf2 -> Root solid none/arrow
+edge Root -> Top solid none/arrow

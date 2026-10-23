@@ -1,0 +1,6 @@
+flowchart TB
+node A rectangle "A"
+node B rectangle "B"
+node C rectangle "C"
+edge A -> B solid none/arrow
+edge B -> C solid none/arrow

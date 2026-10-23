@@ -1,0 +1,9 @@
+sequence
+participant Alice "Alice"
+participant Bob "Bob"
+note leftOf Alice "Thinks first"
+message Alice -> Bob solid arrow "Question"
+note rightOf Bob "Looks it up"
+note over Alice,Bob "Both wait"
+note over Bob "Answers"
+message Bob -> Alice dotted arrow "Answer"

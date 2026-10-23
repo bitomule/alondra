@@ -1,0 +1,25 @@
+classDiagram
+    direction LR
+    class Request {
+        +String text
+        +Date created
+    }
+    class Task {
+        +String id
+        +Plan plan
+        +start()
+        +close()
+    }
+    class Node {
+        +String session
+        +Model model
+    }
+    class Card {
+        <<enumeration>>
+        ask
+        result
+        plan
+    }
+    Request "1" --> "0..1" Task : becomes
+    Task "1" *-- "1" Node : runs on
+    Task o-- Card : shows

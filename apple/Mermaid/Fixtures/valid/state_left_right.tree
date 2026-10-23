@@ -1,0 +1,10 @@
+state LR
+state [*]start start ""
+state A normal "A"
+state B normal "B"
+state C normal "C"
+state [*]end end ""
+transition [*]start -> A
+transition A -> B
+transition B -> C
+transition C -> [*]end

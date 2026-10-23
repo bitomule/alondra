@@ -1,0 +1,66 @@
+flowchart TB
+node n1 rectangle "Inbox"
+node n2 rectangle "Triage"
+node n3 diamond "Kind?"
+node n4 rectangle "Reproduce"
+node n5 rectangle "Design"
+node n6 rectangle "Answer"
+node n7 rectangle "Write failing test"
+node n8 rectangle "Fix"
+node n9 rectangle "Ablation"
+node n10 rectangle "Plan"
+node n11 diamond "Approved?"
+node n12 rectangle "Phase 1"
+node n13 rectangle "Phase 2"
+node n14 rectangle "Phase 3"
+node n15 rectangle "Open PR"
+node n16 rectangle "Checks"
+node n17 diamond "Green?"
+node n18 rectangle "Fix checks"
+node n19 rectangle "Review"
+node n20 diamond "Accepted?"
+node n21 rectangle "Rework"
+node n22 rectangle "Merge"
+node n23 rectangle "Release batch"
+node n24 rectangle "Apps beta"
+node n25 rectangle "Daemon release"
+node n26 rectangle "Rehearsal"
+node n27 rectangle "Publish"
+node n28 rectangle "Watch logs"
+node n29 rectangle "Close"
+node n30 stadium "Archive"
+edge n1 -> n2 solid none/arrow
+edge n2 -> n3 solid none/arrow
+edge n3 -> n4 solid none/arrow "bug"
+edge n3 -> n5 solid none/arrow "feature"
+edge n3 -> n6 solid none/arrow "question"
+edge n4 -> n7 solid none/arrow
+edge n7 -> n8 solid none/arrow
+edge n8 -> n9 solid none/arrow
+edge n5 -> n10 solid none/arrow
+edge n10 -> n11 solid none/arrow
+edge n11 -> n10 solid none/arrow "no"
+edge n11 -> n12 solid none/arrow "yes"
+edge n12 -> n13 solid none/arrow
+edge n13 -> n14 solid none/arrow
+edge n9 -> n15 solid none/arrow
+edge n14 -> n15 solid none/arrow
+edge n15 -> n16 solid none/arrow
+edge n16 -> n17 solid none/arrow
+edge n17 -> n18 solid none/arrow "no"
+edge n18 -> n16 solid none/arrow
+edge n17 -> n19 solid none/arrow "yes"
+edge n19 -> n20 solid none/arrow
+edge n20 -> n21 solid none/arrow "no"
+edge n21 -> n15 solid none/arrow
+edge n20 -> n22 solid none/arrow "yes"
+edge n22 -> n23 solid none/arrow
+edge n23 -> n24 solid none/arrow
+edge n23 -> n25 solid none/arrow
+edge n24 -> n26 solid none/arrow
+edge n25 -> n26 solid none/arrow
+edge n26 -> n27 solid none/arrow
+edge n27 -> n28 solid none/arrow
+edge n6 -> n29 solid none/arrow
+edge n28 -> n29 solid none/arrow
+edge n29 -> n30 solid none/arrow

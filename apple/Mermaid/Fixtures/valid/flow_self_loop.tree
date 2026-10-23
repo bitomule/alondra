@@ -1,0 +1,5 @@
+flowchart TB
+node Poll rectangle "Poll"
+node Done rectangle "Done"
+edge Poll -> Poll solid none/arrow "again"
+edge Poll -> Done solid none/arrow

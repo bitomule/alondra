@@ -1,0 +1,14 @@
+flowchart LR
+    subgraph prepare [Prepare]
+        bump[Bump versions] --> build[Build and sign]
+        build --> smoke[Smoke test]
+    end
+    subgraph rehearse [Rehearse]
+        copy[Copy HOME] --> upgrade[Upgrade daemon]
+        upgrade --> answer[Answer /daemon]
+    end
+    subgraph publish [Publish]
+        tag[Tag] --> formula[Update formula]
+    end
+    smoke --> copy
+    answer --> tag

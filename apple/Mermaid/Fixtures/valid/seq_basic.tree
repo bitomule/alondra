@@ -1,0 +1,6 @@
+sequence
+participant Alice "Alice"
+participant John "John"
+message Alice -> John solid arrow "Hello John, how are you?"
+message John -> Alice dotted arrow "Great!"
+message Alice -> John solid open "See you later!"

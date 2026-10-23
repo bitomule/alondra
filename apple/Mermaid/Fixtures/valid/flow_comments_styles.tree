@@ -1,0 +1,4 @@
+flowchart LR
+node A rectangle "A"
+node B rectangle "B"
+edge A -> B solid none/arrow

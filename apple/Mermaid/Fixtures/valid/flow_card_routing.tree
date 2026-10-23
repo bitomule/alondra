@@ -1,0 +1,11 @@
+flowchart TB
+node A rectangle "Card arrives"
+node B diamond "Needs user?"
+node C rectangle "Ask David"
+node D rectangle "Run node"
+node E rectangle "Deliver result"
+edge A -> B solid none/arrow
+edge B -> C solid none/arrow "yes"
+edge B -> D solid none/arrow "no"
+edge C -> E solid none/arrow
+edge D -> E solid none/arrow

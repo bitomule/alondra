@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Client
+    participant Server
+    loop Every minute
+        Client->>Server: Poll
+    end
+    alt is ready
+        Server-->>Client: Result
+    else is busy
+        Server-->>Client: Retry later
+    end
+    opt verbose
+        Server->>Server: Log request
+    end
+    par fetch user
+        Client->>Server: GET /user
+    and fetch feed
+        Client->>Server: GET /feed
+    end

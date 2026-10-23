@@ -1,0 +1,9 @@
+class TB
+namespace Shapes
+class Triangle "Triangle" in Shapes
+class Rectangle "Rectangle" in Shapes
+  attribute "double width"
+  attribute "double height"
+class Canvas "Canvas"
+relation Canvas none solid arrow Triangle
+relation Canvas none solid arrow Rectangle

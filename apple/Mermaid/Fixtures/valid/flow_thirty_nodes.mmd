@@ -1,0 +1,36 @@
+flowchart TD
+    n1[Inbox] --> n2[Triage]
+    n2 --> n3{Kind?}
+    n3 -->|bug| n4[Reproduce]
+    n3 -->|feature| n5[Design]
+    n3 -->|question| n6[Answer]
+    n4 --> n7[Write failing test]
+    n7 --> n8[Fix]
+    n8 --> n9[Ablation]
+    n5 --> n10[Plan]
+    n10 --> n11{Approved?}
+    n11 -->|no| n10
+    n11 -->|yes| n12[Phase 1]
+    n12 --> n13[Phase 2]
+    n13 --> n14[Phase 3]
+    n9 --> n15[Open PR]
+    n14 --> n15
+    n15 --> n16[Checks]
+    n16 --> n17{Green?}
+    n17 -->|no| n18[Fix checks]
+    n18 --> n16
+    n17 -->|yes| n19[Review]
+    n19 --> n20{Accepted?}
+    n20 -->|no| n21[Rework]
+    n21 --> n15
+    n20 -->|yes| n22[Merge]
+    n22 --> n23[Release batch]
+    n23 --> n24[Apps beta]
+    n23 --> n25[Daemon release]
+    n24 --> n26[Rehearsal]
+    n25 --> n26
+    n26 --> n27[Publish]
+    n27 --> n28[Watch logs]
+    n6 --> n29[Close]
+    n28 --> n29
+    n29 --> n30([Archive])

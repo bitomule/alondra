@@ -1,0 +1,11 @@
+sequence autonumber
+participant Client "Client"
+participant Server "Server"
+participant Database "Database"
+message Client -> Server solid arrow activateTarget "Request"
+message Server -> Database solid arrow activateTarget "Query"
+message Database -> Server dotted arrow deactivateSource "Rows"
+message Server -> Client dotted arrow deactivateSource "Response"
+activate Client
+message Client -> Client solid arrow "Render"
+deactivate Client

@@ -1,0 +1,7 @@
+sequenceDiagram
+    actor U as User
+    participant A as App on iPhone
+    participant D as Daemon
+    U->>A: Tap approve
+    A->>D: Send decision
+    D-->>A: Card closed

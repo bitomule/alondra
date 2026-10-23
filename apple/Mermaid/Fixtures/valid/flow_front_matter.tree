@@ -1,0 +1,7 @@
+flowchart LR
+node Tag rectangle "Tag"
+node Build rectangle "Build"
+node Publish rectangle "Publish"
+edge Tag -> Build solid none/arrow
+edge Build -> Publish solid none/arrow
+accTitle "Release flow"

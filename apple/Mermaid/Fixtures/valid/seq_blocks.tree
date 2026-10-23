@@ -1,0 +1,19 @@
+sequence
+participant Client "Client"
+participant Server "Server"
+loop
+  section "Every minute"
+    message Client -> Server solid arrow "Poll"
+alt
+  section "is ready"
+    message Server -> Client dotted arrow "Result"
+  section "is busy"
+    message Server -> Client dotted arrow "Retry later"
+opt
+  section "verbose"
+    message Server -> Server solid arrow "Log request"
+par
+  section "fetch user"
+    message Client -> Server solid arrow "GET /user"
+  section "fetch feed"
+    message Client -> Server solid arrow "GET /feed"

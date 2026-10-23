@@ -1,0 +1,6 @@
+state TB
+state State1 normal "The state with a note"
+state State2 normal "State2"
+transition State1 -> State2
+note right of State1 "Important information!\nYou can write notes."
+note left of State2 "This is the note to the left."

@@ -1,0 +1,8 @@
+flowchart TB
+node A rectangle "Text with (parens) and [brackets]"
+node B rectangle "First line\nsecond line"
+node C rectangle ""Quoted" and &"
+node D rectangle "Markdown string"
+edge A -> B solid none/arrow
+edge B -> C solid none/arrow
+edge C -> D solid none/arrow

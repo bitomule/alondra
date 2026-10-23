@@ -1,0 +1,7 @@
+sequence
+actor U "User"
+participant A "App on iPhone"
+participant D "Daemon"
+message U -> A solid arrow "Tap approve"
+message A -> D solid arrow "Send decision"
+message D -> A dotted arrow "Card closed"

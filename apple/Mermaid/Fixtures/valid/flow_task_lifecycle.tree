@@ -1,0 +1,21 @@
+flowchart TB
+node request rectangle "Request"
+node triage diamond "Orchestrator triage"
+node plan rectangle "Plan card"
+node existing rectangle "Existing task"
+node closed stadium "Closed"
+node node rectangle "Node works"
+node pr rectangle "Pull request"
+node review diamond "Review"
+node done stadium "Done"
+edge request -> triage solid none/arrow
+edge triage -> plan solid none/arrow "new task"
+edge triage -> existing solid none/arrow "folded"
+edge triage -> closed solid none/arrow "declined"
+edge plan -> node solid none/arrow "approved"
+edge plan -> plan solid none/arrow "changes"
+edge node -> pr solid none/arrow
+edge pr -> review solid none/arrow
+edge review -> done solid none/arrow "merge"
+edge review -> node solid none/arrow "changes"
+edge existing -> node solid none/arrow

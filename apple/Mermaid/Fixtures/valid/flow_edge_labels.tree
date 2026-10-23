@@ -1,0 +1,12 @@
+flowchart TB
+node A rectangle "A"
+node B rectangle "B"
+node C rectangle "C"
+node D rectangle "D"
+node E rectangle "E"
+node F rectangle "F"
+edge A -> B solid none/arrow "pipe label"
+edge B -> C solid none/arrow "dash label"
+edge C -> D dotted none/arrow "dotted label"
+edge D -> E thick none/arrow "thick label"
+edge E -> F solid none/none "open label"

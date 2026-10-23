@@ -1,0 +1,62 @@
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+# Reads, places and draws Mermaid diagrams. Nothing from Alondra: the caller supplies the theme
+# and turns the summary into its own words.
+swift_library(
+    name = "AlondraMermaid",
+    srcs = glob(["Sources/**/*.swift"]),
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    features = ["swift.enable_testing"],
+    module_name = "AlondraMermaid",
+    visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "AlondraMermaidTests",
+    srcs = glob(["Tests/*.swift"]),
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    data = glob(["Fixtures/**"]),
+    deps = [":AlondraMermaid"],
+)
+
+# Times the placement of a 30-node flowchart through its `os_signpost` interval. It prints the
+# numbers for the PR and asserts nothing about time, so it only runs when asked for.
+swift_test(
+    name = "AlondraMermaidSignposts",
+    srcs = ["Measurements/LayoutSignpostTests.swift"],
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    tags = ["manual"],
+    deps = [":AlondraMermaid"],
+)
+
+swift_library(
+    name = "AlondraMermaidSnapshotTestsLib",
+    testonly = True,
+    srcs = glob(["Snapshots/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    module_name = "AlondraMermaidSnapshotTestsLib",
+    deps = [
+        ":AlondraMermaid",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ],
+)
+
+# `timeout = "long"` and the shared host and runner for the reasons given in
+# //apple/Testing/Snapshots:AlondraSnapshotTests.
+ios_unit_test(
+    name = "AlondraMermaidSnapshotTests",
+    timeout = "long",
+    bundle_id = "com.bitomule.alondra.mermaidsnapshottests",
+    data = glob(["Fixtures/**"]) + glob(["Snapshots/__Snapshots__/**"], allow_empty = True),
+    env = {
+        "KEEP_XCRESULT_ON_SUCCESS": "0",
+        "TEST_HOST_BUNDLE_ID": "com.bitomule.alondra.snapshottesthost",
+        "SNAPSHOT_ROOT": "apple/Mermaid/Snapshots/__Snapshots__",
+    },
+    minimum_os_version = "26.0",
+    runner = "//apple/Testing/Snapshots:iphone_17_pro_runner",
+    test_host = "//apple/Testing/Snapshots:SnapshotTestHost",
+    deps = [":AlondraMermaidSnapshotTestsLib"],
+)

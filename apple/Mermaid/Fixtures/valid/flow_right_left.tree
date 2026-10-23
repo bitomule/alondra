@@ -1,0 +1,7 @@
+flowchart RL
+node Start rectangle "Start"
+node Middle rectangle "Middle"
+node End rectangle "End"
+edge Start -> Middle solid none/arrow
+edge Middle -> End solid none/arrow
+edge Start -> End solid none/arrow

@@ -1,0 +1,12 @@
+state TB
+state [*]start start ""
+state Still normal "Still"
+state [*]end end ""
+state Moving normal "Moving"
+state Crash normal "Crash"
+transition [*]start -> Still
+transition Still -> [*]end
+transition Still -> Moving
+transition Moving -> Still
+transition Moving -> Crash
+transition Crash -> [*]end

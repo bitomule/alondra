@@ -1,0 +1,11 @@
+sequence
+participant A "A"
+participant B "B"
+message A -> B solid none "solid line"
+message A -> B dotted none "dotted line"
+message A -> B solid arrow "solid arrow"
+message A -> B dotted arrow "dotted arrow"
+message A -> B solid cross "solid cross"
+message A -> B dotted cross "dotted cross"
+message A -> B solid open "solid async"
+message A -> B dotted open "dotted async"

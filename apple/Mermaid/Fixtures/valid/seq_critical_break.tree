@@ -1,0 +1,14 @@
+sequence
+participant App "App"
+participant Mac "Mac"
+participant Relay "Relay"
+critical
+  section "Connect directly"
+    message App -> Mac solid arrow "Hello"
+  section "Direct link fails"
+    message App -> Relay solid arrow "Hello through relay"
+break
+  section "Session expired"
+    message Mac -> App dotted arrow "Sign in again"
+accTitle "Connection with fallback"
+accDescr "The app tries the relay when the direct link fails."

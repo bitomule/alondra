@@ -1,0 +1,19 @@
+state TB
+composite First "First"
+composite Second "Second"
+composite inner "inner" in Second
+state [*]start start ""
+state [*]start@First start "" in First
+state second normal "second" in First
+state [*]end@First end "" in First
+state [*]start@Second start "" in Second
+state [*]start@inner start "" in inner
+state deep normal "deep" in inner
+state [*]end end ""
+transition [*]start -> First
+transition [*]start@First -> second
+transition second -> [*]end@First
+transition First -> Second
+transition [*]start@Second -> inner
+transition [*]start@inner -> deep
+transition Second -> [*]end

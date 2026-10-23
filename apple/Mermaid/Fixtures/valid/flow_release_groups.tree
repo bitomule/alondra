@@ -1,0 +1,19 @@
+flowchart LR
+subgraph prepare "Prepare"
+subgraph rehearse "Rehearse"
+subgraph publish "Publish"
+node bump rectangle "Bump versions" in prepare
+node build rectangle "Build and sign" in prepare
+node smoke rectangle "Smoke test" in prepare
+node copy rectangle "Copy HOME" in rehearse
+node upgrade rectangle "Upgrade daemon" in rehearse
+node answer rectangle "Answer /daemon" in rehearse
+node tag rectangle "Tag" in publish
+node formula rectangle "Update formula" in publish
+edge bump -> build solid none/arrow
+edge build -> smoke solid none/arrow
+edge copy -> upgrade solid none/arrow
+edge upgrade -> answer solid none/arrow
+edge tag -> formula solid none/arrow
+edge smoke -> copy solid none/arrow
+edge answer -> tag solid none/arrow

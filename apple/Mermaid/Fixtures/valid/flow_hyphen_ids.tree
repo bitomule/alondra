@@ -1,0 +1,8 @@
+flowchart LR
+node my-node rectangle "my-node"
+node other-node rectangle "other-node"
+node third-node rectangle "third-node"
+node x-1 rectangle "x-1"
+edge my-node -> other-node solid none/arrow
+edge other-node -> third-node solid none/none
+edge x-1 -> my-node dotted none/arrow

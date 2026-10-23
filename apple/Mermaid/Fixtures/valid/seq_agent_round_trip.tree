@@ -1,0 +1,9 @@
+sequence
+participant TUI "TUI"
+participant Daemon "Daemon"
+participant Node "Node"
+message TUI -> Daemon solid arrow "open task"
+message Daemon -> Node solid arrow "start session"
+message Node -> Daemon dotted arrow "result ready"
+message Daemon -> TUI dotted arrow "show card"
+accTitle "Opening a task"

@@ -1,0 +1,9 @@
+sequenceDiagram
+    autonumber
+    Client->>+Server: Request
+    Server->>+Database: Query
+    Database-->>-Server: Rows
+    Server-->>-Client: Response
+    activate Client
+    Client->>Client: Render
+    deactivate Client

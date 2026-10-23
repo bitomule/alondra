@@ -1,0 +1,34 @@
+class TB
+class classA "classA"
+class classB "classB"
+class classC "classC"
+class classD "classD"
+class classE "classE"
+class classF "classF"
+class classG "classG"
+class classH "classH"
+class classI "classI"
+class classJ "classJ"
+class classK "classK"
+class classL "classL"
+class classM "classM"
+class classN "classN"
+class classO "classO"
+class classP "classP"
+class classQ "classQ"
+class classR "classR"
+class classS "classS"
+class classT "classT"
+class classU "classU"
+class classV "classV"
+relation classA inheritance solid none classB
+relation classC composition solid none classD
+relation classE aggregation solid none classF
+relation classG arrow solid none classH
+relation classI none solid none classJ
+relation classK arrow dashed none classL
+relation classM inheritance dashed none classN
+relation classO none dashed none classP
+relation classQ none solid arrow classR
+relation classS none dashed arrow classT
+relation classU none dashed inheritance classV

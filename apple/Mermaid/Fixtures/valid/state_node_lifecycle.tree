@@ -1,0 +1,18 @@
+state TB
+state [*]start start ""
+state Queued normal "Queued"
+state Starting normal "Starting"
+state Working normal "Working"
+state WaitingForUser normal "WaitingForUser"
+state Delivered normal "Delivered"
+state Closing normal "Closing"
+state [*]end end ""
+transition [*]start -> Queued
+transition Queued -> Starting "capacity free"
+transition Starting -> Working
+transition Working -> WaitingForUser "asks a question"
+transition WaitingForUser -> Working "answer arrives"
+transition Working -> Delivered "present result"
+transition Delivered -> Working "changes requested"
+transition Delivered -> Closing "accepted"
+transition Closing -> [*]end

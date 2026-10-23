@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> Queued
+    Queued --> Starting: capacity free
+    Starting --> Working
+    Working --> WaitingForUser: asks a question
+    WaitingForUser --> Working: answer arrives
+    Working --> Delivered: present result
+    Delivered --> Working: changes requested
+    Delivered --> Closing: accepted
+    Closing --> [*]

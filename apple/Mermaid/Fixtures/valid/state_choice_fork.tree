@@ -1,0 +1,21 @@
+state TB
+state if_state choice ""
+state [*]start start ""
+state IsPositive normal "IsPositive"
+state False normal "False"
+state True normal "True"
+state fork_state fork ""
+state State2 normal "State2"
+state State3 normal "State3"
+state join_state join ""
+state [*]end end ""
+transition [*]start -> IsPositive
+transition IsPositive -> if_state
+transition if_state -> False "if n < 0"
+transition if_state -> True "if n >= 0"
+transition True -> fork_state
+transition fork_state -> State2
+transition fork_state -> State3
+transition State2 -> join_state
+transition State3 -> join_state
+transition join_state -> [*]end

@@ -1,0 +1,10 @@
+classDiagram
+    class BankAccount {
+        +String owner
+        +Decimal balance
+        +deposit(amount)
+        +withdraw(amount) bool
+    }
+    class Customer
+    Customer : +String name
+    Customer : +open() BankAccount

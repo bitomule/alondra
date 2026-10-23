@@ -15,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -92,6 +92,31 @@ mac-snapshots-record:
 	else \
 		echo "No recorded snapshots found"; exit 1; \
 	fi
+
+MERMAID_SNAPSHOT_TARGET := //apple/Mermaid:AlondraMermaidSnapshotTests
+MERMAID_SNAPSHOT_ROOT := apple/Mermaid/Snapshots/__Snapshots__
+
+mermaid-snapshots-record:
+	-bazelisk test $(MERMAID_SNAPSHOT_TARGET) \
+		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--nocache_test_results --test_output=errors
+	@outputs=$$(find bazel-testlogs/apple/Mermaid/AlondraMermaidSnapshotTests -type d -name test.outputs | head -1); \
+	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MERMAID_SNAPSHOT_ROOT)" ]; then \
+		mkdir -p $(MERMAID_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MERMAID_SNAPSHOT_ROOT)/." $(MERMAID_SNAPSHOT_ROOT)/ && chmod -R u+w $(MERMAID_SNAPSHOT_ROOT); \
+		echo "Baselines copied to $(MERMAID_SNAPSHOT_ROOT)"; \
+	else \
+		echo "No recorded snapshots found"; exit 1; \
+	fi
+
+# Writes what each Mermaid fixture produces (`.tree`, `.error`, `.crossings`) into the test
+# outputs and copies it over Fixtures/: review the diff before committing it.
+mermaid-fixtures-record:
+	-bazelisk test //apple/Mermaid:AlondraMermaidTests --test_env=MERMAID_FIXTURES_RECORD=1 \
+		--zip_undeclared_test_outputs=false --nocache_test_results --test_output=errors
+	@outputs=bazel-testlogs/apple/Mermaid/AlondraMermaidTests/test.outputs; \
+	for file in $$outputs/*.tree $$outputs/*.crossings; do cp "$$file" apple/Mermaid/Fixtures/valid/; done; \
+	for file in $$outputs/*.error; do cp "$$file" apple/Mermaid/Fixtures/invalid/; done; \
+	chmod -R u+w apple/Mermaid/Fixtures
 
 # The Mac app's connection measurements, summarized per path and network. An iPhone's come from
 # Settings > Connection measurements > Share: `make connection-measurements MEASUREMENTS=<file>`.

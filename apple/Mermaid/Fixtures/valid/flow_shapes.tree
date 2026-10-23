@@ -1,0 +1,16 @@
+flowchart TB
+node rect rectangle "Rectangle"
+node round rounded "Rounded"
+node stadium stadium "Stadium"
+node sub subroutine "Subroutine"
+node db cylinder "Database"
+node circle circle "Circle"
+node decide diamond "Decide"
+node hex hexagon "Prepare"
+edge rect -> round solid none/arrow
+edge round -> stadium solid none/arrow
+edge stadium -> sub solid none/arrow
+edge sub -> db solid none/arrow
+edge db -> circle solid none/arrow
+edge circle -> decide solid none/arrow
+edge decide -> hex solid none/arrow

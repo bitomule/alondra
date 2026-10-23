@@ -1,0 +1,13 @@
+classDiagram
+    class Square~Shape~ {
+        int id
+        List~int~ position
+        setPoints(List~int~ points)
+        getPoints() List~int~
+    }
+    class Shape {
+        <<interface>>
+        draw()
+    }
+    <<abstract>> Animal
+    Shape <|.. Square

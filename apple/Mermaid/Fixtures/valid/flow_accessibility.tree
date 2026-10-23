@@ -1,0 +1,8 @@
+flowchart TB
+node Build rectangle "Build"
+node Test rectangle "Test"
+node Ship rectangle "Ship"
+edge Build -> Test solid none/arrow
+edge Test -> Ship solid none/arrow
+accTitle "Deploy pipeline"
+accDescr "Code goes through build and test before it ships."

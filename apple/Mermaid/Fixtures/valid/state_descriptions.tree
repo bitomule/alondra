@@ -1,0 +1,4 @@
+state TB
+state s2 normal "This is a state description"
+state s1 normal "First description\nSecond line"
+transition s1 -> s2 "Moves on"

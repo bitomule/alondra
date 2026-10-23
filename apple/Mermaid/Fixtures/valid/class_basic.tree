@@ -1,0 +1,9 @@
+class TB
+class BankAccount "BankAccount"
+  attribute "+String owner"
+  attribute "+Decimal balance"
+  method "+deposit(amount)"
+  method "+withdraw(amount) bool"
+class Customer "Customer"
+  attribute "+String name"
+  method "+open() BankAccount"

@@ -5,7 +5,10 @@ load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 exports_files(
     ["Support/AssertAppSnapshot.swift"],
-    visibility = ["//apple/Testing/MacSnapshots:__pkg__"],
+    visibility = [
+        "//apple/Mermaid:__pkg__",
+        "//apple/Testing/MacSnapshots:__pkg__",
+    ],
 )
 
 # One canonical simulator and OS, so a baseline is recorded and verified on the same renderer.
@@ -24,6 +27,7 @@ simpool_ios_test_runner(
     device_type = "iPhone 17 Pro",
     os_version = "26.3",
     pre_action = "//apple/Testing/Simulator:uninstall_test_host",
+    visibility = ["//apple/Mermaid:__pkg__"],
     xcodebuild_args = [
         "-collect-test-diagnostics",
         "never",
@@ -51,6 +55,7 @@ ios_application(
     infoplists = ["TestHost/Info.plist"],
     minimum_os_version = "26.0",
     resources = ["//apple:iOS/Resources/Localizable.xcstrings"],
+    visibility = ["//apple/Mermaid:__pkg__"],
     deps = [":SnapshotTestHostLib"],
 )
 

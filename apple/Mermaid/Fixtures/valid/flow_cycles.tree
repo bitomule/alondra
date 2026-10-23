@@ -1,0 +1,10 @@
+flowchart TB
+node Plan rectangle "Plan"
+node Build rectangle "Build"
+node Review rectangle "Review"
+node Merge rectangle "Merge"
+edge Plan -> Build solid none/arrow
+edge Build -> Review solid none/arrow
+edge Review -> Build solid none/arrow "changes"
+edge Review -> Merge solid none/arrow
+edge Merge -> Plan solid none/arrow

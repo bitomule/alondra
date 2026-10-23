@@ -102,6 +102,8 @@ checks:
         - //apple/Data/Attachments:AlondraAttachmentsTests
         - //apple/Demo:AlondraDemoTests
         - //apple/Design:AlondraDesignTests
+        - //apple/Mermaid:AlondraMermaidTests
+        - //apple/Mermaid:AlondraMermaidSnapshotTests
         - //apple/Features:AlondraFeaturesTests
         - //apple/Testing:TemporaryFilesTests
         - //apple/Testing:IssueReportingIntegrationTests

@@ -1,0 +1,12 @@
+flowchart TD
+    request[Request] --> triage{Orchestrator triage}
+    triage -->|new task| plan[Plan card]
+    triage -->|folded| existing[Existing task]
+    triage -->|declined| closed([Closed])
+    plan -->|approved| node[Node works]
+    plan -->|changes| plan
+    node --> pr[Pull request]
+    pr --> review{Review}
+    review -->|merge| done([Done])
+    review -->|changes| node
+    existing --> node
