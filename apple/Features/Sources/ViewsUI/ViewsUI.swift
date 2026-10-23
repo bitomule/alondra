@@ -322,6 +322,7 @@ private struct MarkdownLine: View {
             case .listItem(.number(let marker)): listRow { Text("\(marker). ").font(.body.monospacedDigit().weight(.semibold)).foregroundStyle(ViewPalette.dawn) }
             case .listItem(.task(let done)): listRow { Image(systemName: done ? "checkmark.square.fill" : "square").foregroundStyle(done ? ViewPalette.sage : .secondary) }
             case .quote: HStack(alignment: .top, spacing: 12) { Capsule().fill(ViewPalette.slate.opacity(0.5)).frame(width: 3); Text(block.content).font(.body.italic()).foregroundStyle(.secondary) }.fixedSize(horizontal: false, vertical: true)
+            case .code(let language) where MermaidBlockView.handles(language: language): MermaidBlockView(source: block.plainText)
             case .code(let language): CodeBlock(source: block.plainText, language: language) { HighlightedCode(code: block.plainText, language: language).font(.system(.callout, design: .monospaced)) }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(ViewPalette.night.opacity(0.7), in: .rect(cornerRadius: 12))
             case .tableRow: EmptyView()
             case .rule: Rectangle().fill(ViewPalette.hairline).frame(height: 1)

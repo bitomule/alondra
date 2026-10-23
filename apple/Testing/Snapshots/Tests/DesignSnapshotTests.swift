@@ -1,5 +1,8 @@
+import AlondraContract
 import AlondraDesign
+import AlondraFeatures
 import SwiftUI
+import UIKit
 import XCTest
 
 /// The shared pieces every screen is built from, in the three variants each baseline is recorded in.
@@ -61,6 +64,26 @@ final class DesignSnapshotTests: XCTestCase {
         _ = try await files.fetch(try XCTUnwrap(StoredImage.attachment(StoredImageSample.url)))
         assertVariants {
             StoredImageSample().padding().environment(\.storedFiles, files)
+        }
+    }
+
+    func test_mermaidBlocks() async {
+        await MermaidSample.prepare()
+        assertVariants {
+            MermaidSample().padding()
+        }
+    }
+
+    /// Card bodies, task details and documents draw their Markdown through the views' own renderer.
+    func test_mermaidBlockInViews() async throws {
+        let source = "sequenceDiagram\n    App->>Daemon: Open card\n    Daemon-->>App: Card"
+        let markdown = try JSONDecoder().decode(
+            Markdown.self,
+            from: JSONSerialization.data(withJSONObject: ["text": "```mermaid\n\(source)\n```", "truncated": false, "commentable": false])
+        )
+        await MermaidSample.prepare(sources: [source])
+        assertVariants {
+            MarkdownView(markdown: markdown).padding()
         }
     }
 
@@ -137,6 +160,88 @@ private struct ReadmeSample: View {
             ForEach(segments) { MarkdownSegmentView(segment: $0) }
         }
         .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A document with one diagram of each kind and each block that stays code with its notice. The
+/// diagrams are laid out before the capture, so it shows them and not the code they start as.
+private struct MermaidSample: View {
+    private static let markdown = """
+    ## How a card reaches you
+
+    ```mermaid
+    flowchart LR
+        A[Card arrives] --> B{Needs you?}
+        B -->|yes| C[Ask David]
+        B -->|no| D[Run node]
+    ```
+
+    ```mermaid
+    sequenceDiagram
+        App->>Daemon: Open card
+        Daemon-->>App: Card
+    ```
+
+    ```mermaid
+    stateDiagram-v2
+        [*] --> Waiting
+        Waiting --> Working: start
+        Working --> [*]
+    ```
+
+    ```mermaid
+    classDiagram
+        Task <|-- Request
+        Task *-- Node
+    ```
+
+    These stay code:
+
+    ```mermaid
+    flowchart TD
+        A --> B
+        B -->
+    ```
+
+    ```mermaid
+    pie title Pets
+        "Dogs" : 3
+    ```
+
+    ```mermaid
+    flowchart LR
+        \((0...100).map { "N\($0)" }.joined(separator: " --> "))
+    ```
+    """
+
+    private static let segments = MarkdownParser.segments(from: markdown)
+
+    static func prepare() async {
+        await prepare(sources: segments.compactMap { segment in
+            guard case .block(let block) = segment, case .code(let language) = block.kind,
+                  MermaidBlockView.handles(language: language) else { return nil }
+            return block.plainText
+        })
+    }
+
+    static func prepare(sources: [String]) async {
+        let sizes = [UIContentSizeCategory.large, .accessibilityExtraLarge].map { category in
+            UIFontMetrics(forTextStyle: .subheadline)
+                .scaledValue(for: 14, compatibleWith: UITraitCollection(preferredContentSizeCategory: category))
+                .rounded()
+        }
+        for source in sources {
+            for size in sizes {
+                _ = await MermaidRenderCache.shared.rendering(.init(source: source, size: size))
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Self.segments) { MarkdownSegmentView(segment: $0) }
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

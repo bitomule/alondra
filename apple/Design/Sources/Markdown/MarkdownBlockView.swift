@@ -61,6 +61,8 @@ public struct MarkdownBlockView: View {
                     .foregroundStyle(.secondary)
             }
             .fixedSize(horizontal: false, vertical: true)
+        case .code(let language) where MermaidBlockView.handles(language: language):
+            MermaidBlockView(source: block.plainText)
         case .code(let language):
             CodeBlock(source: block.plainText, language: language) {
                 HighlightedCode(code: block.plainText, language: language)

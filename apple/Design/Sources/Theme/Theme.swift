@@ -28,6 +28,7 @@ public enum Palette {
     public static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x111217)
     public static let sageDeep = dynamic(light: 0x3F7D4E, dark: 0x3E8A51)
     public static let skyDeep = dynamic(light: 0x2F6FB0, dark: 0x3576BD)
+    static let diagramNode = dynamic(light: 0xEDE4D8, dark: 0x2C303D)
 
     private static func dynamic(light: UInt32, dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> Color {
         #if canImport(UIKit)

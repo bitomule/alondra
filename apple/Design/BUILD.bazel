@@ -11,6 +11,7 @@ swift_library(
     deps = [
         "//apple/Contract:AlondraContract",
         "//apple/Data/Attachments:AlondraAttachments",
+        "//apple/Mermaid:AlondraMermaid",
         "@swiftpkg_highlightswift//:HighlightSwift",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
@@ -20,10 +21,14 @@ swift_test(
     name = "AlondraDesignTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
-    data = ["//fixtures/markdown"],
+    data = [
+        "Resources/AlondraDesign.xcstrings",
+        "//fixtures/markdown",
+    ],
     deps = [
         ":AlondraDesign",
         "//apple/Contract:AlondraContract",
+        "//apple/Mermaid:AlondraMermaid",
     ],
 )
 
