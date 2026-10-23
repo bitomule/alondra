@@ -824,6 +824,41 @@ fn stopping_the_owners_leaves_no_process_of_their_hosts() {
     assert!(left.is_empty(), "SDK host processes survived the daemon shutdown: {left:?}");
 }
 
+#[test]
+fn the_log_names_each_claude_session_once_and_every_turn_end() {
+    let init = |session: &str| serde_json::json!({"type": "system", "subtype": "init", "session_id": session, "model": "claude-opus-5-5"});
+    let mut session = None;
+    assert_eq!(claude_said(&init("db594c1c"), &mut session).as_deref(), Some("the SDK host's Claude runs session db594c1c with claude-opus-5-5"));
+    assert_eq!(claude_said(&init("db594c1c"), &mut session), None, "the init of each turn of the same session is not logged again");
+    let ended = serde_json::json!({"type": "result", "subtype": "success", "is_error": false, "terminal_reason": "completed"});
+    assert_eq!(claude_said(&ended, &mut session).as_deref(), Some("a turn of the SDK host's Claude ended (completed)"));
+    let failed = serde_json::json!({"type": "result", "subtype": "success", "is_error": true, "terminal_reason": "api_error"});
+    assert_eq!(claude_said(&failed, &mut session).as_deref(), Some("a turn of the SDK host's Claude failed (success, api_error)"));
+    assert_eq!(claude_said(&serde_json::json!({"type": "assistant"}), &mut session), None, "what Claude says inside a turn is not logged");
+    assert_eq!(claude_said(&init("f4bc77bd"), &mut session).as_deref(), Some("the SDK host's Claude runs session f4bc77bd with claude-opus-5-5"));
+}
+
+#[test]
+fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_holds_it() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let agent = driver.agent().clone();
+    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    let phase = slice.domain.state().unwrap().agents[&agent].phase.key();
+    let shown = crate::domain_orchestrator_reads::node(&slice.domain, &agent.0).unwrap()["node"].clone();
+    assert_eq!((shown["alive"].as_bool(), shown["state"].as_str(), shown["sdk_host"].as_bool()), (Some(true), Some(phase), Some(true)), "{shown}");
+    assert_eq!(shown["name"], "Release notes");
+    assert_eq!(shown["task"]["id"], TASK);
+    assert!(shown["last_message"].as_str().is_some_and(|said| !said.is_empty()), "what its Claude said last: {shown}");
+    let in_progress = crate::domain_orchestrator_reads::tasks_in_progress(&slice.domain, serde_json::Value::Null, serde_json::Value::Null).unwrap();
+    let listed: Vec<&str> = in_progress["nodes"].as_array().unwrap().iter().filter_map(|node| node["session_id"].as_str()).collect();
+    assert_eq!(listed, [agent.0.as_str()], "tasks_in_progress lists the SDK node");
+    slice.domain.stop_sdk_owners();
+    let shown = crate::domain_orchestrator_reads::node(&slice.domain, &agent.0).unwrap()["node"].clone();
+    assert_eq!(shown["sdk_host"].as_bool(), Some(false), "no host runs it once its owner stopped: {shown}");
+}
+
 /// The closer reaches an SDK node only through its owner: `claude rm` and the session listing are
 /// never asked about one.
 struct NoClaudeSessions;

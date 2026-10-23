@@ -166,6 +166,8 @@ pub(crate) struct Driver {
     host_closed: bool,
     /// A step of this owner failed: its host is stopped and replaced like one that closed.
     owner_failed: bool,
+    /// The Claude session the host last said it runs, so the log names each one once.
+    claude_session: Option<String>,
     #[cfg(test)]
     pub(crate) fail_next_step: bool,
 }
@@ -272,6 +274,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     driver.sealed();
     driver.worker.install_owner(grant, state).map_err(adapter("starting the SDK host"))?;
+    driver.log_host("started");
     let permit = driver.permits.pop_front().ok_or_else(|| Failed("the admission issued no launch permit".into()))?;
     driver.dispatch(permit)?;
     driver.awaiting = first;
@@ -368,6 +371,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+    driver.log_host("started, as its admission's first host");
     driver.dispatch(permit)?;
     let read = driver.domain.read();
     driver.awaiting = read.state().lifecycle_of(&task).ok()
@@ -452,6 +456,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             return take_host(domain, backend, task, plugin, relaunch, false);
         }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+        driver.log_host("was adopted");
         driver.permits.extend(reserved.permits);
         for command in adoption.commands {
             let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
@@ -533,6 +538,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed(format!("its new host could not start ({error:?})")))?;
     let mut driver = Driver::new(domain, worker, scope, task, agent);
     driver.replacement = true;
+    driver.log_host(if resume { "started anew; its Claude resumes the same session on its next input" } else { "started anew; its Claude starts the session on its next input" });
     driver.sealed();
     Ok(Some(driver))
 }
@@ -724,11 +730,16 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: ClaudeWorker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, #[cfg(test)] fail_next_step: false }
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, claude_session: None, #[cfg(test)] fail_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
         &self.agent
+    }
+
+    fn log_host(&self, what: &str) {
+        let pid = self.worker.host_group().map_or_else(|| "no pid".to_owned(), |pid| format!("pid {pid}"));
+        log!("the SDK host of {} {what} ({}, {pid})", self.task, self.agent);
     }
 
     /// What the store issued for this task since the last look; its permits wait their turn.
@@ -822,6 +833,7 @@ impl Driver {
             Err(StoreError::Storage(error)) if stale(&error) => log!("the handoff of an input to the SDK host of {} is no longer the store's to record", self.task),
             Err(error) => return Err(failed("recording the handoff")(error)),
         }
+        log!("input {} of {} went to its SDK host ({}): {handoff:?}", input.as_str(), self.task, self.agent);
         self.sealed();
         if handoff == Handoff::Offered {
             self.awaiting = Some(input);
@@ -860,6 +872,9 @@ impl Driver {
             self.domain.contexts.observed(&self.task, event, alondra_core::now_millis());
         }
         crate::sdk_live::feed(&self.domain, &self.agent, &batch);
+        if let Some(line) = alondra_provider_claude::sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {
+            log!("{line} ({}, task {})", self.agent, self.task);
+        }
         for observation in self.sealed().observations {
             #[cfg(test)]
             self.domain.before_acknowledge();
@@ -1064,6 +1079,26 @@ fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domai
             stage(true)
         }
         staged => staged,
+    }
+}
+
+/// The log line of what the host's Claude did, for the steps of its life: the session it runs,
+/// once per session, and the end of each of its turns. Everything else it says is not logged.
+fn claude_said(message: &serde_json::Value, session: &mut Option<String>) -> Option<String> {
+    match (message["type"].as_str(), message["subtype"].as_str()) {
+        (Some("system"), Some("init")) => {
+            let id = message["session_id"].as_str()?;
+            if session.as_deref() == Some(id) {
+                return None;
+            }
+            *session = Some(id.to_owned());
+            Some(format!("the SDK host's Claude runs session {id} with {}", message["model"].as_str().unwrap_or("its default model")))
+        }
+        (Some("result"), subtype) => Some(match message["is_error"].as_bool() {
+            Some(true) => format!("a turn of the SDK host's Claude failed ({}, {})", subtype.unwrap_or("no subtype"), message["terminal_reason"].as_str().unwrap_or("no reason given")),
+            _ => format!("a turn of the SDK host's Claude ended ({})", message["terminal_reason"].as_str().or(subtype).unwrap_or("completed")),
+        }),
+        _ => None,
     }
 }
 
