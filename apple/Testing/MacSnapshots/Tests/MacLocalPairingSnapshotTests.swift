@@ -51,12 +51,12 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
 
     func test_settings_thisMacItsPairedMacsAndItsDevices() throws {
         let document = try machine("machine-settings-mac")
-        assertWindow(size: CGSize(width: 560, height: 1120)) { settings(thisMac: "This Mac", machine: document) }
+        assertWindow(size: CGSize(width: 560, height: 1320)) { settings(thisMac: "This Mac", machine: document) }
     }
 
     func test_settings_thisMacItsPairedMacsAndItsDevices_spanish() throws {
         let document = try machine("machine-settings-ios-es")
-        assertWindow(size: CGSize(width: 560, height: 1180), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document) }
+        assertWindow(size: CGSize(width: 560, height: 1400), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document) }
     }
 
     private func machine(_ name: String) throws -> ViewDocument {
@@ -77,7 +77,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         ]
         state.selectedMacID = ids[0]
         state.showsSignOutWithMacs = true
-        state.nodeLimit.setting = NodeLimitSetting(document: machine)
+        state.machineSettings.settings = MachineSetting.all(in: machine)
         state.allowedRules.rules = AllowedRule.all(in: machine)
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [

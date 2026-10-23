@@ -157,35 +157,45 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
-    func test_settings_nodesAtOnce() throws {
-        let limit = NodeLimitSetting(document: try ScreenFixtures.document("machine-settings-ios"))
-        let store = settings { $0.nodeLimit.setting = limit }
-        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1100) { SettingsView(store: store) } }
+    func test_settings_thisMac() throws {
+        let machine = MachineSetting.all(in: try ScreenFixtures.document("machine-settings-ios"))
+        let store = settings { $0.machineSettings.settings = machine }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1350) { SettingsView(store: store) } }
     }
 
-    func test_settings_nodesAtOnce_spanish() throws {
-        let limit = NodeLimitSetting(document: try ScreenFixtures.document("machine-settings-ios-es"))
-        let store = settings { $0.nodeLimit.setting = limit }
-        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1100) { SettingsView(store: store) } }
+    func test_settings_thisMac_spanish() throws {
+        let machine = MachineSetting.all(in: try ScreenFixtures.document("machine-settings-ios-es"))
+        let store = settings { $0.machineSettings.settings = machine }
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) { ScreenFrame(height: 1350) { SettingsView(store: store) } }
+    }
+
+    func test_settings_mergeMethodChosen_spanish() throws {
+        let machine = MachineSetting.all(in: try ScreenFixtures.document("machine-settings-ios-es"))
+        let store = settings {
+            $0.machineSettings.settings = machine
+            $0.machineSettings.chosen[.mergeMethod] = "Rebase and merge"
+            $0.machineSettings.sending = [.mergeMethod]
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1350) { SettingsView(store: store) } }
     }
 
     func test_settings_permissionsAllowedAlways() throws {
         let document = try ScreenFixtures.document("machine-settings-ios")
         let store = settings {
-            $0.nodeLimit.setting = NodeLimitSetting(document: document)
+            $0.machineSettings.settings = MachineSetting.all(in: document)
             $0.allowedRules.rules = AllowedRule.all(in: document)
         }
-        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1500) { SettingsView(store: store) } }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1750) { SettingsView(store: store) } }
     }
 
     func test_settings_permissionsAllowedAlways_spanish() throws {
         let document = try ScreenFixtures.document("machine-settings-ios-es")
         let store = settings {
-            $0.nodeLimit.setting = NodeLimitSetting(document: document)
+            $0.machineSettings.settings = MachineSetting.all(in: document)
             $0.allowedRules.rules = AllowedRule.all(in: document)
             $0.allowedRules.error = "Alondra no pudo cambiar el fichero de ajustes del repo"
         }
-        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { SettingsView(store: store) } }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1750) { SettingsView(store: store) } }
     }
 
     func test_settings_alertsOffAndNothingToSelect() {

@@ -26,7 +26,7 @@ public struct MacSettingsView<PairingContent: View>: View {
                 }
             }
             macsSection
-            NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
+            MachineSettingsSection(store: store.scope(state: \.machineSettings, action: \.machineSettings))
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             ServerSettingsSection(store: store.scope(state: \.accounts, action: \.accounts))
             ServerSettingsSection(store: store.scope(state: \.mcpServers, action: \.mcpServers))
@@ -90,7 +90,7 @@ public struct MacSettingsView<PairingContent: View>: View {
         }
         .modifier(MacSettingsDeviceDialogs(store: store))
         .task { await store.send(.appeared).finish() }
-        .task { await store.send(.nodeLimit(.task)).finish() }
+        .task { await store.send(.machineSettings(.task)).finish() }
         .task { await store.send(.allowedRules(.task)).finish() }
         .task { await store.send(.accounts(.task)).finish() }
         .task { await store.send(.mcpServers(.task)).finish() }

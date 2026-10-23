@@ -38,7 +38,7 @@ public struct AllowedRule: Equatable, Identifiable, Sendable {
         public let client: ViewClient
         public let lang: String
 
-        public init(client: ViewClient = .ios, lang: String = NodeLimitFeature.State.deviceLanguage) {
+        public init(client: ViewClient = .ios, lang: String = MachineSettingsFeature.State.deviceLanguage) {
             self.client = client; self.lang = lang
         }
 

@@ -14,7 +14,7 @@ public struct SettingsView: View {
     public var body: some View {
         Form {
             account
-            NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
+            MachineSettingsSection(store: store.scope(state: \.machineSettings, action: \.machineSettings))
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             ServerSettingsSection(store: store.scope(state: \.accounts, action: \.accounts))
             ServerSettingsSection(store: store.scope(state: \.mcpServers, action: \.mcpServers))
@@ -61,7 +61,7 @@ public struct SettingsView: View {
             Text("This iPhone deletes its keys for this Mac. To use it again, find it and pair it again.")
         }
         .task { await store.send(.appeared).finish() }
-        .task { await store.send(.nodeLimit(.task)).finish() }
+        .task { await store.send(.machineSettings(.task)).finish() }
         .task { await store.send(.allowedRules(.task)).finish() }
         .task { await store.send(.accounts(.task)).finish() }
         .task { await store.send(.mcpServers(.task)).finish() }

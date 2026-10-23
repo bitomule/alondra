@@ -20,7 +20,7 @@ extension Connection {
 
     public func setProjectsRoot(_ path: String) async throws -> MacSettings {
         try checkActive()
-        let body = try JSONEncoder().encode(Change(projectsRoot: path, lang: NodeLimitFeature.State.deviceLanguage))
+        let body = try JSONEncoder().encode(Change(projectsRoot: path, lang: MachineSettingsFeature.State.deviceLanguage))
         return try await api.send(.json(.put, path: ["settings"], body: body), operationID: UUID().uuidString.lowercased())
     }
 

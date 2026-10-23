@@ -44,6 +44,18 @@ private func goldenReply(_ name: String) throws -> AlondraContract.Action {
     return try JSONDecoder().decode(AlondraContract.Action.self, from: JSONSerialization.data(withJSONObject: try #require(card["reply"])))
 }
 
+/// The first button of the first card the daemon rendered, from its golden.
+private func goldenButton(_ name: String) throws -> AlondraContract.Action {
+    let root = ProcessInfo.processInfo.environment["TEST_SRCDIR"].map(URL.init(fileURLWithPath:))
+    let workspace = ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main"
+    let url = try #require(root).appendingPathComponent("\(workspace)/fixtures/views/cards/\(name)")
+    let view = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let sections = try #require(view["sections"] as? [[String: Any]])
+    let card = try #require((sections.first?["items"] as? [[String: Any]])?.first)
+    let button = try #require((card["actions"] as? [[String: Any]])?.first)
+    return try JSONDecoder().decode(AlondraContract.Action.self, from: JSONSerialization.data(withJSONObject: button))
+}
+
 private func answer() throws -> AlondraContract.Action {
     try decodeAction(#"{"id":"answer:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":false,"enabled":true}"#)
 }
@@ -373,6 +385,23 @@ struct MacAnsweringTests {
         #expect(!store.state.actionPresented)
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    @Test
+    func thePullRequestCardsMergeButtonMergesAtOnceWithTheMethodItSays() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let merge = try goldenButton("card-pr-mac.json")
+        #expect(merge.label == "Squash and merge")
+        await store.send(.beginViewAction(merge))
+        #expect(!store.state.actionPresented, "no sheet to choose the method")
+        await store.skipReceivedActions()
+        #expect(sent.value.map(\.actionId) == [merge.id])
+        #expect(sent.value.map(\.optionId) == ["squash"])
     }
 
     @Test(arguments: [

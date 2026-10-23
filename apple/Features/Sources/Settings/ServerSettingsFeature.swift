@@ -19,7 +19,7 @@ import Foundation
         public var newAccount: NewAccount?
         public var claudeSignIn: ClaudeSignIn?
 
-        public init(key: ViewKey, client: ViewClient = .ios, lang: String = NodeLimitFeature.State.deviceLanguage) {
+        public init(key: ViewKey, client: ViewClient = .ios, lang: String = MachineSettingsFeature.State.deviceLanguage) {
             self.key = key
             actions = ActionFeature.State(dataEpoch: "", client: client, lang: lang)
         }

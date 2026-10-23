@@ -127,7 +127,7 @@ public extension DependencyValues {
         /// The Mac app on its own daemon, with an account behind some of its paired Macs.
         public var showsSignOutWithMacs = false
         public var confirmLogout = false
-        public var nodeLimit = NodeLimitFeature.State()
+        public var machineSettings = MachineSettingsFeature.State()
         public var allowedRules = AllowedRulesFeature.State()
         public var accounts = ServerSettingsFeature.State(key: .accounts)
         public var mcpServers = ServerSettingsFeature.State(key: .mcpServers)
@@ -158,7 +158,7 @@ public extension DependencyValues {
         case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
         case revokeDeviceTapped(String), cancelRevokeDevice, confirmRevokeDevice, deviceRevoked(String), revokeFailed(String)
         case logoutTapped, cancelLogout, confirmLogout
-        case nodeLimit(NodeLimitFeature.Action)
+        case machineSettings(MachineSettingsFeature.Action)
         case allowedRules(AllowedRulesFeature.Action)
         case accounts(ServerSettingsFeature.Action)
         case mcpServers(ServerSettingsFeature.Action)
@@ -175,14 +175,14 @@ public extension DependencyValues {
     }
 
     public var body: some ReducerOf<Self> {
-        Scope(state: \.nodeLimit, action: \.nodeLimit) { NodeLimitFeature() }
+        Scope(state: \.machineSettings, action: \.machineSettings) { MachineSettingsFeature() }
         Scope(state: \.allowedRules, action: \.allowedRules) { AllowedRulesFeature() }
         Scope(state: \.accounts, action: \.accounts) { ServerSettingsFeature() }
         Scope(state: \.mcpServers, action: \.mcpServers) { ServerSettingsFeature() }
         Scope(state: \.measurements, action: \.measurements) { ConnectionMeasurementsFeature() }
         Reduce { state, action in
             switch action {
-            case .nodeLimit, .allowedRules, .accounts, .mcpServers, .measurements: return .none
+            case .machineSettings, .allowedRules, .accounts, .mcpServers, .measurements: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
                 return .run { send in

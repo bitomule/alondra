@@ -79,7 +79,7 @@ struct MacServiceSettingsScene: View {
         state.macs = workspace.macChoices
         state.selectedMacID = workspace.selectedChoiceID
         state.showsSignOutWithMacs = owner == nil && account.macs.contains { !$0.local }
-        state.nodeLimit = NodeLimitFeature.State(client: .mac)
+        state.machineSettings = MachineSettingsFeature.State(client: .mac)
         state.allowedRules = AllowedRulesFeature.State(client: .mac)
         state.accounts = ServerSettingsFeature.State(key: .accounts, client: .mac)
         state.mcpServers = ServerSettingsFeature.State(key: .mcpServers, client: .mac)
