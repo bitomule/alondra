@@ -277,6 +277,9 @@ pub enum PostMergeFact {
     UserDecision,
     /// The node's session is over, so nothing it ran is left.
     SessionOver,
+    /// After the merge, a turn the node began after declaring the work ended with nothing of its
+    /// own running, and the node did not declare the work again in it.
+    TurnEnded,
 }
 
 /// How the plan review of a held task was settled. `Cancelled` only releases the hold: the

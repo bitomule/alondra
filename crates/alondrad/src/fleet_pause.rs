@@ -14,8 +14,6 @@ use std::collections::BTreeMap;
 
 const TERMINATE_AFTER: Millis = 10_000;
 const KILL_AFTER: Millis = 20_000;
-/// A wait the Mac's gauges do not explain, such as a build queue, gets this long before it returns.
-pub(crate) const DECLARED_GRACE: Millis = 5 * 60_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -60,21 +58,22 @@ pub(crate) struct Paused {
     pub turn_since: Option<Millis>,
     #[serde(default)]
     pub cleanup: Cleanup,
-    /// The user released it ("I've fixed it"): it no longer waits out the grace of a declared wait.
+    /// The user released it ("I've fixed it").
     #[serde(default)]
     pub released: bool,
 }
 
 impl Paused {
-    /// Whether the gate may bring it back now: a pause by the user waits for the user, a declared
-    /// wait for its grace, and an API error for its retry or for the model to answer another node.
+    /// Whether the gate may bring it back now: a pause by the user waits for the user, and an API
+    /// error for its retry or for the model to answer another node. A declared wait for the
+    /// machine returns once the gate's measures of memory, disk and CPU say there is room, however
+    /// long or short it waited.
     pub(crate) fn returns(&self, usage_clear: bool, api_answered: bool, now: Millis) -> bool {
         match &self.reason {
             Reason::ByUser => false,
             Reason::Usage => usage_clear,
             Reason::ApiError(retry) => api_answered || now >= retry.at,
-            Reason::Declared { .. } => self.released || now - self.since >= DECLARED_GRACE,
-            Reason::Memory => true,
+            Reason::Declared { .. } | Reason::Memory => true,
         }
     }
 }

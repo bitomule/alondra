@@ -2655,6 +2655,7 @@ impl DomainState {
             Command::MoveNode { agent_id, event, at } => {
                 system(actor)?;
                 self.move_node(agent_id, event, *at)?;
+                self.post_merge_turn(agent_id, event, lifecycles)?;
                 if *event == NodeEvent::TurnStarted {
                     let task = self.node_task(agent_id).filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent_id)).map(|t| t.id.clone());
                     if let Some(task) = task {
@@ -4188,7 +4189,7 @@ impl DomainState {
                 self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
-                    .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at });
+                    .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at, turn_since: false });
                 let waited = self.wait_targets(task_id, waits_for, work.is_some())?;
                 match work {
                     Some(work) => self.declare_post_merge(task_id, work, lifecycles)?,

@@ -820,8 +820,13 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let work = store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap();
     assert_eq!(work.reason, "release.sh publishes 0.2.54");
+    assert!(!work.turn_since);
+    execute(&mut store, &Actor::System, "turn", Command::MoveNode { agent_id: "agent-1".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 1 });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert!(store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap().turn_since, "the turn begun since survives a restart");
     execute(&mut store, &agent(), "finished", declare(None));
-    assert_eq!(count(&store, "task_post_merge_work"), 0);
+    assert_eq!((count(&store, "task_post_merge_work"), count(&store, "task_post_merge_turns")), (0, 0));
 }
 
 #[test]

@@ -44,6 +44,15 @@ pub enum Drained {
     Callback { callback: String },
 }
 
+/// What a turn of the node does to the work after the merge its task owes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostMergeTurn {
+    /// A turn began after the declaration.
+    Began,
+    /// Such a turn ended with nothing of the node's own running: the work is over.
+    Ended,
+}
+
 /// What ended the work a node declared it runs after its PR merged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +61,7 @@ pub enum PostMergeEnd {
     Cleanup,
     UserDecision,
     SessionOver,
+    TurnEnded,
 }
 
 impl From<PostMergeEnd> for PostMergeFact {
@@ -61,6 +71,7 @@ impl From<PostMergeEnd> for PostMergeFact {
             PostMergeEnd::Cleanup => Self::Cleanup,
             PostMergeEnd::UserDecision => Self::UserDecision,
             PostMergeEnd::SessionOver => Self::SessionOver,
+            PostMergeEnd::TurnEnded => Self::TurnEnded,
         }
     }
 }
@@ -71,6 +82,7 @@ impl From<PostMergeFact> for PostMergeEnd {
             PostMergeFact::Cleanup => Self::Cleanup,
             PostMergeFact::UserDecision => Self::UserDecision,
             PostMergeFact::SessionOver => Self::SessionOver,
+            PostMergeFact::TurnEnded => Self::TurnEnded,
         }
     }
 }
@@ -1711,6 +1723,37 @@ impl DomainState {
             return Ok(());
         };
         self.decide(lifecycles, task, LifecycleRecord::PostMergeEnded { operation, fact })
+    }
+
+    /// The turns of a node that declared work after the merge: a turn begun after the declaration
+    /// marks it, and once the task is closing, such a turn ending with nothing of the node's own
+    /// running ends the work, unless the node declared it again in that turn. A turn that ends
+    /// behind work of its own, because Alondra paused the node, or while the work waits for another
+    /// task to land, leaves it owed, however long it lasts.
+    pub(super) fn post_merge_turn(&mut self, agent: &AgentId, event: &NodeEvent, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some((task, step)) = self.post_merge_turn_step(agent, event) else { return Ok(()) };
+        match step {
+            PostMergeTurn::Began => {
+                self.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work.as_mut().unwrap().turn_since = true;
+                Ok(())
+            }
+            PostMergeTurn::Ended => self.end_post_merge(&task, PostMergeEnd::TurnEnded, lifecycles),
+        }
+    }
+
+    /// What `event` does to the work after the merge the node's task owes, if anything: the node
+    /// machine may not move for it (a closing node stays closing), yet it still has to be recorded.
+    pub fn post_merge_turn_step(&self, agent: &AgentId, event: &NodeEvent) -> Option<(TaskId, PostMergeTurn)> {
+        let t = self.node_task(agent).filter(|t| t.agent_id.as_ref() == Some(agent))?;
+        let work = t.wrap_up.post_merge_work.as_ref()?;
+        let step = match event {
+            NodeEvent::TurnStarted if !work.turn_since => PostMergeTurn::Began,
+            NodeEvent::TurnEnded if work.turn_since && self.in_cleanup(t) && self.waiting_after_merge(t).is_none()
+                && !matches!(self.node_phase(agent), Some(NodePhase::Paused(_))) =>
+                PostMergeTurn::Ended,
+            _ => return None,
+        };
+        Some((t.id.clone(), step))
     }
 
     /// The user ended the task's work after the merge on one of its cards: its node closes now,

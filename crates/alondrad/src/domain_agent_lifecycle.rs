@@ -99,8 +99,10 @@ pub(crate) fn node_event(domain: &DomainRuntime, agent_id: &AgentId, happened: N
 /// `node_event` for something that happened at `at`, by the reporter's clock.
 pub(crate) fn node_event_at(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent, at: Millis) -> Result<bool, StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
-    if !matches!(state.node_next(agent_id, &happened, at), Ok(Some(_))) {
-        return Ok(false);
+    match state.node_next(agent_id, &happened, at) {
+        Ok(Some(_)) => {}
+        Ok(None) if state.post_merge_turn_step(agent_id, &happened).is_some() => {}
+        _ => return Ok(false),
     }
     let id = format!("{}-{}-{}", happened.key(), agent_id.0, crate::auth::random_hex(8));
     submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at })

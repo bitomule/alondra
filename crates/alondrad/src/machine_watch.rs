@@ -1,7 +1,7 @@
 //! What the daemon does when the Mac stops nodes: the disk nearly full, or a node that declared
 //! with `wait_for_machine` that it waits for the machine. One incident at a
-//! time puts one Problem in front of the user, reminds once after
-//! `REMIND_AFTER_MS` and, once the Mac recovers, withdraws the card. The nodes that waited are not
+//! time puts one Problem in front of the user and, once the gauges say the Mac recovered (or the
+//! user says they fixed it), withdraws the card. No clock reminds about it or holds it open. The nodes that waited are not
 //! woken here: they wait paused at the fleet gate, which brings them back one at a time within the
 //! limit (`fleet_pause`). A disk below `disk::low_lines()` opens an incident before any node fails,
 //! and while it is open no node starts. The disk watched is the Mac's own and every volume a node
@@ -31,11 +31,8 @@ use crate::machine_state::{MacState, NoRoom};
 use crate::usage_pause::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
+/// Measurements in a row past the recovery line that end an incident: one alone may be a blip.
 const HEALTHY_SAMPLES: u32 = 2;
-/// A disk that climbs back can fall again within minutes as builds come and go: its incident, and
-/// its one card, stays open until the disk has been fine this long.
-pub(crate) const DISK_SETTLE_MS: Millis = 10 * 60_000;
-pub(crate) const REMIND_AFTER_MS: Millis = 30 * 60_000;
 const TICK: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,11 +51,7 @@ pub(crate) struct Incident {
     pub card: Option<String>,
     pub cards: u32,
     pub nodes_shown: usize,
-    pub reminded: bool,
     pub healthy: u32,
-    /// Since when the gauges say fine, while they do.
-    #[serde(default)]
-    pub fine_since: Option<Millis>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -90,7 +83,6 @@ pub(crate) struct Waiter {
 pub(crate) enum Action {
     Raise { id: String, card: MachineCard },
     Withdraw(String),
-    Push(MachineCard),
     /// The incident is over: its declared waits are left to the fleet gate.
     Release(Vec<String>),
 }
@@ -113,7 +105,7 @@ fn disk_space(machine: &Machine) -> crate::disk::Space {
     crate::disk::Space { free: machine.disk_available, purgeable: machine.disk_purgeable, total: machine.disk_total }
 }
 
-fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], minutes: Option<u64>) -> MachineCard {
+fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter]) -> MachineCard {
     let space = disk_space(machine);
     let short_now = cause == MachineCause::Disk && space.short_now();
     MachineCard {
@@ -122,7 +114,7 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
         purgeable: if short_now { space.purgeable } else { 0 },
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
-        minutes,
+        minutes: None,
         disk: disk.filter(|_| cause == MachineCause::Disk).map(str::to_owned),
         still: false,
     }
@@ -157,10 +149,8 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
     };
     let fine = measured.is_none();
     incident.healthy = if fine { incident.healthy + 1 } else { 0 };
-    incident.fine_since = if fine { incident.fine_since.or(Some(now)) } else { None };
-    let settled = incident.cause != MachineCause::Disk || incident.fine_since.is_some_and(|since| now - since >= DISK_SETTLE_MS);
     let declared_only = incident.cause == MachineCause::Declared;
-    if declared_only || (fine && (fixed || (incident.healthy >= HEALTHY_SAMPLES && settled))) {
+    if declared_only || (fine && (fixed || incident.healthy >= HEALTHY_SAMPLES)) {
         let mut actions: Vec<Action> = incident.card.into_iter().map(Action::Withdraw).collect();
         if !waiting.is_empty() {
             actions.push(Action::Release(waiting.iter().map(|waiter| waiter.session.clone()).collect()));
@@ -168,17 +158,11 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
         return (None, actions);
     }
     let cause = measured.unwrap_or(incident.cause);
-    let longest = waiting.iter().map(|waiter| now - waiter.at).max();
-    let remind = !incident.reminded && longest.is_some_and(|waited| waited >= REMIND_AFTER_MS);
     let first_stop = incident.nodes_shown == 0 && !waiting.is_empty();
     let mut actions = vec![];
-    if remind || first_stop || cause != incident.cause || fixed {
-        let card = MachineCard { still: fixed, ..card_for(cause, machine, disk, waiting, remind.then(|| longest.unwrap_or(0) as u64 / 60_000)) };
+    if first_stop || cause != incident.cause || fixed {
+        let card = MachineCard { still: fixed, ..card_for(cause, machine, disk, waiting) };
         actions.extend(incident.card.take().map(Action::Withdraw));
-        if remind {
-            incident.reminded = true;
-            actions.push(Action::Push(card.clone()));
-        }
         incident.cards += 1;
         let id = format!("{MACHINE_PREFIX}{}-{}", incident.since, incident.cards);
         incident.card = Some(id.clone());
@@ -192,9 +176,9 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
 /// A problem the Mac's gauges measure opens an incident with its card. A wait a node declared
 /// with no measured cause, such as a build queue, opens none: it is the node's state.
 fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], now: Millis) -> (Option<Incident>, Vec<Action>) {
-    let card = card_for(cause, machine, disk, waiting, None);
+    let card = card_for(cause, machine, disk, waiting);
     let id = format!("{MACHINE_PREFIX}{now}");
-    let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0, fine_since: None };
+    let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), healthy: 0 };
     (Some(incident), vec![Action::Raise { id, card }])
 }
 
@@ -433,7 +417,6 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, alerts: &impl Alerts, actio
                 let withdrawing = domain.clone();
                 let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_core::domain::InteractionId(id))).await;
             }
-            Action::Push(card) => alerts.tell(push_text(card), false).await,
             Action::Release(sessions) => {
                 log!("the machine recovered: {} node(s) that waited come back through the fleet gate", sessions.len());
                 let releasing = domain.clone();
@@ -518,6 +501,8 @@ mod tests {
 
     const GB: u64 = 1_000_000_000;
     const MIN: Millis = 60_000;
+    const HOUR: Millis = 60 * MIN;
+    const SAMPLE: Millis = 10_000;
 
     fn machine(disk_free: u64, memory_free: u32) -> Machine {
         Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [1.0; 3], cpus: 8,
@@ -534,6 +519,10 @@ mod tests {
 
     fn raised(actions: &[Action]) -> Vec<&MachineCard> {
         actions.iter().filter_map(|action| match action { Action::Raise { card, .. } => Some(card), _ => None }).collect()
+    }
+
+    fn raised_ids(actions: &[Action]) -> Vec<String> {
+        actions.iter().filter_map(|action| match action { Action::Raise { id, .. } => Some(id.clone()), _ => None }).collect()
     }
 
     #[test]
@@ -640,54 +629,56 @@ mod tests {
         }
     }
 
+    /// Hours of a full disk with nodes waiting and nothing new measured: the one card stays, with
+    /// no reminder and no other card.
     #[test]
-    fn a_long_wait_reminds_once_at_thirty_minutes() {
+    fn hours_of_a_full_disk_with_nothing_new_remind_nothing_and_raise_no_other_card() {
         let stopped = [waiter("s1", "Lumo", 0)];
         let (mut incident, _) = step(None, &machine(0, 50), &stopped, false, 0);
-        let mut reminders = 0;
-        for minute in 1..=240 {
+        for minute in 1..=12 * 60 {
             let (next, actions) = step(incident, &machine(0, 50), &stopped, false, minute * MIN);
-            if actions.iter().any(|action| matches!(action, Action::Push(_))) {
-                reminders += 1;
-                assert_eq!(minute, 30, "the reminder comes at 30 minutes");
-                assert_eq!(raised(&actions)[0].minutes, Some(30));
-            } else {
-                assert!(actions.is_empty(), "nothing else at minute {minute}: {actions:?}");
-            }
+            assert!(actions.is_empty(), "nothing at minute {minute}: {actions:?}");
             incident = next;
         }
-        assert_eq!(reminders, 1, "only once");
+        assert_eq!(incident.unwrap().card.as_deref(), Some("machine-0"));
     }
 
+    /// The disk counts as fine once two measurements in a row are past the recovery line, at
+    /// whatever time they come: everyone waiting is released then, never minutes later.
     #[test]
-    fn the_disk_must_stay_past_the_recovery_line_to_release_everyone() {
+    fn the_disk_past_the_recovery_line_twice_in_a_row_releases_everyone_at_once() {
         let stopped = [waiter("s1", "Lumo", 0), waiter("s2", "Quill", 0)];
         let (incident, _) = step(None, &machine(0, 50), &stopped, false, 0);
-        let (incident, actions) = step(incident, &machine(6 * GB, 50), &stopped, false, MIN);
-        assert!(actions.is_empty() && incident.is_some(), "6 GB is above the warning yet below the recovery line");
-        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 2 * MIN);
-        assert!(actions.is_empty() && incident.is_some(), "one healthy sample is not enough");
-        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 3 * MIN);
-        assert!(actions.is_empty() && incident.is_some(), "a disk fine for a minute may fall again");
-        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 2 * MIN + DISK_SETTLE_MS);
+        let (incident, actions) = step(incident, &machine(6 * GB, 50), &stopped, false, 10 * HOUR);
+        assert!(actions.is_empty() && incident.is_some(), "6 GB is above the warning yet below the recovery line, however long");
+        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 10 * HOUR + SAMPLE);
+        assert!(actions.is_empty() && incident.is_some(), "one measurement alone may be a blip");
+        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 10 * HOUR + 2 * SAMPLE);
         assert!(incident.is_none());
         assert_eq!(actions[0], Action::Withdraw("machine-0".into()));
         assert!(actions.contains(&Action::Release(vec!["s1".into(), "s2".into()])));
     }
 
-    /// 8 Oct 2026: the disk climbed past the recovery line for two samples and fell again, and
-    /// a second card («3.8 GB left») joined the first («4.8 GB left») three minutes later.
+    /// 8 Oct 2026: the disk climbed past the recovery line for two samples and fell again, and a
+    /// second card joined the first. The card now follows the measurements only: withdrawn when the
+    /// disk is back past the line, a new one when it falls again, never two at once.
     #[test]
-    fn a_disk_that_recovers_briefly_and_falls_again_keeps_its_one_card() {
+    fn a_disk_that_recovers_and_falls_again_never_shows_two_cards() {
         let (mut incident, actions) = step(None, &machine(4_800_000_000, 50), &[], false, 0);
-        assert_eq!(raised(&actions).len(), 1);
-        let samples = [(8 * GB, MIN), (8 * GB, MIN + 10_000), (8 * GB, MIN + 20_000), (3_800_000_000, 3 * MIN)];
+        let mut open: Vec<String> = raised_ids(&actions);
+        let samples = [(8 * GB, MIN), (8 * GB, MIN + SAMPLE), (8 * GB, MIN + 2 * SAMPLE), (3_800_000_000, 3 * MIN)];
         for (free, at) in samples {
             let (next, actions) = step(incident, &machine(free, 50), &[], false, at);
-            assert!(actions.is_empty(), "no card withdrawn or raised at {at}: {actions:?}");
+            for action in &actions {
+                if let Action::Withdraw(id) = action {
+                    open.retain(|card| card != id);
+                }
+            }
+            open.extend(raised_ids(&actions));
+            assert!(open.len() <= 1, "at {at}: {open:?}");
             incident = next;
         }
-        assert_eq!(incident.unwrap().card.as_deref(), Some("machine-0"));
+        assert_eq!(open, ["machine-180000"], "the disk fell again: one card, the new one");
     }
 
     #[test]
@@ -715,7 +706,7 @@ mod tests {
         }
         assert_eq!((cards, incident), (0, None));
 
-        let left = Incident { since: 0, cause: MachineCause::Declared, card: Some("machine-1791441349131".into()), cards: 3, nodes_shown: 1, reminded: false, healthy: 0, fine_since: None };
+        let left = Incident { since: 0, cause: MachineCause::Declared, card: Some("machine-1791441349131".into()), cards: 3, nodes_shown: 1, healthy: 0 };
         let (incident, actions) = step(Some(left), &machine(100 * GB, 50), &queued, false, MIN);
         assert!(incident.is_none());
         assert_eq!(actions, [Action::Withdraw("machine-1791441349131".into()), Action::Release(vec!["s1".into()])]);
@@ -766,13 +757,14 @@ mod tests {
     }
 
     #[test]
-    fn two_nodes_stopped_by_the_same_full_disk_share_one_card_that_names_both() {
+    fn a_second_node_stopped_by_the_same_full_disk_and_hours_without_news_raise_no_other_card() {
         let (incident, _) = step(None, &machine(0, 50), &[waiter("s1", "Lumo", 0)], false, 0);
         let both = [waiter("s1", "Lumo", 0), waiter("s2", "Quill", 1_000)];
         let (incident, actions) = step(incident, &machine(0, 50), &both, false, 10_000);
         assert!(actions.is_empty(), "{actions:?}");
-        let (_, actions) = step(incident, &machine(0, 50), &both, false, 31 * MIN);
-        assert_eq!(raised(&actions)[0].nodes, ["Lumo", "Quill"], "the reminder names both");
+        let (incident, actions) = step(incident, &machine(0, 50), &both, false, 10 * HOUR);
+        assert!(actions.is_empty(), "hours later with nothing new: {actions:?}");
+        assert_eq!(incident.unwrap().card.as_deref(), Some("machine-0"));
     }
 
     struct Home(crate::test_support::Directory);
@@ -874,7 +866,7 @@ mod tests {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("fase0", "disk full", 0, now_millis());
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, reminded: false, healthy: 0, fine_since: None };
+        let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, healthy: 0 };
         domain.live.machine_watch.set_incident(Some(incident));
         // The card's id is taken already, so the domain refuses it as a full disk would.
         domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
@@ -945,7 +937,7 @@ mod tests {
     async fn the_new_daemon_retires_the_memory_card_an_earlier_one_left_open() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let left = Incident { since: 1_000, cause: MachineCause::Memory, card: Some("machine-1000".into()), cards: 1, nodes_shown: 0, reminded: false, healthy: 0, fine_since: None };
+        let left = Incident { since: 1_000, cause: MachineCause::Memory, card: Some("machine-1000".into()), cards: 1, nodes_shown: 0, healthy: 0 };
         std::fs::write(home.join(FILE), serde_json::json!({"incident": left, "declared": {}}).to_string()).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let body = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"memory_pressure":true,"single_node":true}"#;

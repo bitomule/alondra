@@ -114,6 +114,10 @@ const TASK_POST_MERGE_WORK: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_w
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  reason TEXT NOT NULL,\
  declared_at INTEGER NOT NULL CHECK(declared_at BETWEEN 0 AND 9007199254740991));";
+/// The work after the merge a node declared that a turn begun since then marks, kept beside it;
+/// created on every open like task_relations.
+const TASK_POST_MERGE_TURNS: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_turns(\
+ task_id TEXT PRIMARY KEY REFERENCES task_post_merge_work(task_id));";
 /// A task's priority other than Normal, kept beside the task; created on every open like task_relations.
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
@@ -156,9 +160,8 @@ const TASK_CLOSINGS: &str = "CREATE TABLE IF NOT EXISTS task_closings(\
  rm_started_at INTEGER,\
  ready_since INTEGER,\
  problem_id TEXT);";
-/// The closer's watch over work a node declared after the merge (not domain state): which
-/// declaration it watches, since when, when it asked the node whether it still runs, and the card
-/// it raised when the node did not answer.
+/// The watch an earlier closer kept over work a node declared after the merge (not domain state).
+/// Nothing writes it any more: it is read only to withdraw the card it raised, then forgotten.
 const POST_MERGE_CHECKS: &str = "CREATE TABLE IF NOT EXISTS post_merge_checks(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  declared_at INTEGER NOT NULL,\
@@ -168,20 +171,11 @@ const POST_MERGE_CHECKS: &str = "CREATE TABLE IF NOT EXISTS post_merge_checks(\
  close_now INTEGER NOT NULL DEFAULT 0 CHECK(close_now IN(0,1)));";
 const TASK_CLOSING_SELECT_ONE: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings WHERE task_id=?1";
 const TASK_CLOSING_SELECT_ALL: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings ORDER BY task_id";
-/// What the closer remembers about work a node declared after the merge, across restarts.
+/// A check an earlier daemon kept on work a node declared after the merge: the card it may have
+/// raised asking the user whether to close the node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PostMergeCheck {
-    pub task_id: TaskId,
-    /// The revision of the declaration this watch is about.
-    pub declared_at: i64,
-    /// Milliseconds: when the closer first saw that declaration.
-    pub since: i64,
-    /// Milliseconds: when Alondra asked the node whether it still runs.
-    pub asked_at: Option<i64>,
-    /// The card asking the user whether to close the node.
     pub problem_id: Option<String>,
-    /// The user chose to close the node anyway.
-    pub close_now: bool,
 }
 /// What the closer remembers about closing one task's node, across restarts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -594,6 +588,7 @@ impl DomainStore {
         tx.execute_batch(ORCHESTRATOR_SESSION)?;
         tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
+        tx.execute_batch(TASK_POST_MERGE_TURNS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
@@ -1289,22 +1284,10 @@ impl DomainStore {
     }
     pub(crate) fn post_merge_check(&self, task_id: &TaskId) -> Result<Option<PostMergeCheck>> {
         Ok(self.conn.query_row(
-            "SELECT task_id,declared_at,since,asked_at,problem_id,close_now FROM post_merge_checks WHERE task_id=?1",
+            "SELECT problem_id FROM post_merge_checks WHERE task_id=?1",
             [&task_id.0],
-            |row| Ok(PostMergeCheck {
-                task_id: TaskId(row.get(0)?), declared_at: row.get(1)?, since: row.get(2)?, asked_at: row.get(3)?,
-                problem_id: row.get(4)?, close_now: row.get::<_, i64>(5)? != 0,
-            }),
+            |row| Ok(PostMergeCheck { problem_id: row.get(0)? }),
         ).optional()?)
-    }
-    pub(crate) fn save_post_merge_check(&mut self, check: &PostMergeCheck) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO post_merge_checks(task_id,declared_at,since,asked_at,problem_id,close_now) VALUES(?1,?2,?3,?4,?5,?6) \
-             ON CONFLICT(task_id) DO UPDATE SET declared_at=excluded.declared_at,since=excluded.since,asked_at=excluded.asked_at,\
-             problem_id=excluded.problem_id,close_now=excluded.close_now",
-            params![check.task_id.0, check.declared_at, check.since, check.asked_at, check.problem_id, check.close_now as i64])?;
-        self.note_side_write();
-        Ok(())
     }
     pub(crate) fn forget_post_merge_check(&mut self, task_id: &TaskId) -> Result<()> {
         self.conn.execute("DELETE FROM post_merge_checks WHERE task_id=?1", [&task_id.0])?;

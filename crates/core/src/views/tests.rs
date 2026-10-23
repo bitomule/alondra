@@ -3488,7 +3488,7 @@ fn a_task_detail_says_what_its_node_still_does_after_the_merge() {
     node_in(&mut state, NodePhase::Closing);
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
     state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.post_merge_work =
-        Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
+        Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
     let now = |lang| {
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
         node_work_rows(&view, "now").first().map(|row| row.title.clone())
@@ -5065,7 +5065,7 @@ fn a_node_working_after_the_merge_says_what_it_does_in_fleet() {
         }).unwrap()
     };
     assert_eq!(state_of(&state, Lang::En), "Done");
-    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
+    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
     assert_eq!(state_of(&state, Lang::En), "Finishing after the merge: release.sh publishes 0.2.54");
     assert_eq!(state_of(&state, Lang::Es), "Terminando tras el merge: release.sh publishes 0.2.54");
 

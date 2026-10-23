@@ -253,6 +253,10 @@ pub struct PostMergeWork {
     /// The revision of the node's last declaration: saying it again, even with the same reason,
     /// is the node answering that it still works on it.
     pub declared_at: Revision,
+    /// A turn of the node began after this declaration: once the task is closing, that turn
+    /// ending with nothing of the node's own running ends the work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn_since: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WrapUp {

@@ -350,15 +350,23 @@ fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
          close_cancelled=excluded.close_cancelled,node_end=excluded.node_end",
         params![t.id.0, w.asked_at.map(|r| r as i64), w.cleaned_at.map(|r| r as i64), w.close_cancelled as i64, node_end],
     )?;
+    exec(c, "DELETE FROM task_post_merge_turns WHERE task_id=?1", [&t.id.0])?;
     match &w.post_merge_work {
-        Some(work) => exec(
-            c,
-            "INSERT INTO task_post_merge_work(task_id,reason,declared_at) VALUES(?1,?2,?3) \
-             ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason,declared_at=excluded.declared_at",
-            params![t.id.0, work.reason, work.declared_at as i64],
-        )?,
-        None => exec(c, "DELETE FROM task_post_merge_work WHERE task_id=?1", [&t.id.0])?,
-    };
+        Some(work) => {
+            exec(
+                c,
+                "INSERT INTO task_post_merge_work(task_id,reason,declared_at) VALUES(?1,?2,?3) \
+                 ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason,declared_at=excluded.declared_at",
+                params![t.id.0, work.reason, work.declared_at as i64],
+            )?;
+            if work.turn_since {
+                exec(c, "INSERT INTO task_post_merge_turns(task_id) VALUES(?1)", [&t.id.0])?;
+            }
+        }
+        None => {
+            exec(c, "DELETE FROM task_post_merge_work WHERE task_id=?1", [&t.id.0])?;
+        }
+    }
     Ok(())
 }
 fn save_worktrees(c: &Connection, t: &Task) -> Result<()> {
@@ -1289,11 +1297,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.tasks.get_mut(&TaskId::from(id)).context("worktree task missing")?.worktrees.insert(row.get(1)?, worktree);
     }
     drop(stored);
-    let mut post_merge = c.prepare("SELECT task_id, reason, declared_at FROM task_post_merge_work")?;
+    let mut post_merge = c.prepare(
+        "SELECT w.task_id, w.reason, w.declared_at, t.task_id IS NOT NULL FROM task_post_merge_work w \
+         LEFT JOIN task_post_merge_turns t ON t.task_id = w.task_id",
+    )?;
     let mut stored = post_merge.query([])?;
     while let Some(row) = stored.next()? {
         let id: String = row.get(0)?;
-        let work = PostMergeWork { reason: row.get(1)?, declared_at: row.get::<_, i64>(2)? as u64 };
+        let work = PostMergeWork { reason: row.get(1)?, declared_at: row.get::<_, i64>(2)? as u64, turn_since: row.get(3)? };
         state.tasks.get_mut(&TaskId::from(id)).context("post-merge work task missing")?.wrap_up.post_merge_work = Some(work);
     }
     drop(stored);

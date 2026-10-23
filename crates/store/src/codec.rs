@@ -135,6 +135,7 @@ pub(super) enum PostMergeFactRecord {
     Cleanup,
     UserDecision,
     SessionOver,
+    TurnEnded,
 }
 impl From<&PostMergeFact> for PostMergeFactRecord {
     fn from(fact: &PostMergeFact) -> Self {
@@ -143,6 +144,7 @@ impl From<&PostMergeFact> for PostMergeFactRecord {
             PostMergeFact::Cleanup => Self::Cleanup,
             PostMergeFact::UserDecision => Self::UserDecision,
             PostMergeFact::SessionOver => Self::SessionOver,
+            PostMergeFact::TurnEnded => Self::TurnEnded,
         }
     }
 }
@@ -153,6 +155,7 @@ impl From<PostMergeFactRecord> for PostMergeFact {
             PostMergeFactRecord::Cleanup => Self::Cleanup,
             PostMergeFactRecord::UserDecision => Self::UserDecision,
             PostMergeFactRecord::SessionOver => Self::SessionOver,
+            PostMergeFactRecord::TurnEnded => Self::TurnEnded,
         }
     }
 }
@@ -1286,6 +1289,7 @@ mod tests {
             PostMergeFact::Cleanup,
             PostMergeFact::UserDecision,
             PostMergeFact::SessionOver,
+            PostMergeFact::TurnEnded,
         ] {
             roundtrip(
                 &current,

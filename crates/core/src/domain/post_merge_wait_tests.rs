@@ -208,3 +208,20 @@ fn a_node_names_a_task_a_pr_or_its_url() {
     assert_eq!(WaitTarget::parse("https://github.com/bitomule/alondra/pull/1142/"),
         WaitTarget::PullRequest { repository: "bitomule/alondra".into(), number: 1142 });
 }
+
+/// A turn that ends while the work after the merge waits for another task leaves it owed: what it
+/// waits for has not landed. Once it lands, the turn it wakes the node for ends the work if the
+/// node does not declare it again.
+#[test]
+fn a_turn_ending_while_the_work_waits_for_another_task_leaves_it_owed() {
+    let mut s = release_and_fix();
+    must(&mut s, node("a"), declare(Some("publish beta 59"), vec![fix_pr()]));
+    let turn = |s: &mut DomainState, event: NodeEvent, at: Millis| { must(s, Actor::System, Command::MoveNode { agent_id: "a".into(), event, at }); };
+    turn(&mut s, NodeEvent::TurnStarted, 10);
+    turn(&mut s, NodeEvent::TurnEnded, 11);
+    assert!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work.is_some(), "the fix has not landed");
+    deliver_and_merge(&mut s, FIX, "b", "Fixed");
+    turn(&mut s, NodeEvent::TurnStarted, 12);
+    turn(&mut s, NodeEvent::TurnEnded, 13);
+    assert_eq!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work, None, "the turn the landing woke it for ended without declaring it again");
+}

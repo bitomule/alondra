@@ -1,19 +1,19 @@
 //! Closing the node of a task that is finished or cancelled: Alondra asks the node to clean up,
-//! waits for it to say so (or for the wait to run out), closes its session with `claude rm` and
-//! records what became of it, which is what makes a closing task done. A node that still works
-//! once its margin is over (at once for a cancelled task) has its turn cut, unless it declared work
-//! after the merge; a close that keeps failing ends in a card the user answers. Nothing is closed
-//! while the node waits for the user.
+//! waits for it to say so (or, while it is idle, for the configured wait to run out), closes its
+//! session with `claude rm` and records what became of it, which is what makes a closing task done.
+//! A node of a finished task is closed only between turns, however long its turn runs; only a
+//! cancelled task's node has its turn cut. Work it declared after the merge holds the close until
+//! a fact ends it, never a clock. A close that keeps failing ends in a card the user answers.
+//! Nothing is closed while the node waits for the user.
 use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::{PostMergeCheck, TaskClosing};
+use crate::domain_store::TaskClosing;
 use crate::node_close::{CloseOutcome, Sessions, close_node};
 use crate::worktree::TaskWorktree;
 use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_core::views::Lang;
 use alondra_core::domain::{
-    AgentId, CardSpec, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, POST_MERGE_CLOSE, POST_MERGE_LEAVE,
-    POST_MERGE_PROBLEM_PREFIX, PostMergeWork, QuestionOption, Scope, Task, TaskId, TaskState, clip,
+    AgentId, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, Scope, Task, TaskId,
 };
 use anyhow::Result;
 use std::path::Path;
@@ -23,12 +23,9 @@ use std::time::Duration;
 pub(crate) const RETRY: Duration = Duration::from_secs(5 * 60);
 pub(crate) const TICK: Duration = Duration::from_secs(30);
 const MAX_FAILURES: u32 = 3;
-const BUSY_FALLBACK: Duration = Duration::from_secs(30 * 60);
 const STILL_WORKING: &str = "it is still working";
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const LAST_BACKOFF: Duration = Duration::from_secs(5 * 60);
-pub(crate) const POST_MERGE_ASK: Duration = Duration::from_secs(3 * 60 * 60);
-pub(crate) const POST_MERGE_ANSWER: Duration = Duration::from_secs(30 * 60);
 
 pub(crate) struct Timing {
     /// How long a node may take to clean up before Alondra closes it anyway; `None` closes it only
@@ -36,20 +33,16 @@ pub(crate) struct Timing {
     pub wait: Option<Duration>,
     pub retry: Duration,
     pub tick: Duration,
-    /// How long a node may say it works after the merge before Alondra asks whether it still does.
-    pub post_merge_ask: Duration,
-    /// How long Alondra waits for that answer from an idle node before asking the user.
-    pub post_merge_answer: Duration,
 }
 
 impl Timing {
     pub(crate) fn new(wait: Option<Duration>) -> Self {
-        Self { wait, retry: RETRY, tick: TICK, post_merge_ask: POST_MERGE_ASK, post_merge_answer: POST_MERGE_ANSWER }
+        Self { wait, retry: RETRY, tick: TICK }
     }
 
     /// A sandbox with fast timing looks again every couple of seconds.
     pub(crate) fn sandbox(wait: Option<Duration>) -> Self {
-        Self { wait, retry: Duration::from_secs(10), tick: Duration::from_secs(2), post_merge_ask: POST_MERGE_ASK, post_merge_answer: POST_MERGE_ANSWER }
+        Self { wait, retry: Duration::from_secs(10), tick: Duration::from_secs(2) }
     }
 }
 
@@ -264,21 +257,11 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
     let session_over = state.node_session_closed(task);
     let mut close_now = session_over;
-    match (&kind, state.post_merge_owed(task), &task.wrap_up.post_merge_work) {
-        (Due::Cleanup, true, Some(work)) if !session_over => match watch_post_merge_work(
-            domain, &state, timing, now, task, &agent, work,
-            domain.live.node(&agent.0).is_some_and(|node| node.busy),
-            Some(&|text: &str| { let _ = crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, text, false); }),
-        )? {
-            Watch::Hold => return hold_while_working_after_merge(domain, now, row),
-            Watch::CloseNow => close_now = true,
-        },
-        (Due::Cleanup, true, None) if !session_over => return hold_while_working_after_merge(domain, now, row),
-        _ => {
-            close_now |= matches!(post_merge_answer(domain, &state, task_id)?, Some(Card::Retry)) || state.post_merge_closed_by_user(task_id);
-            forget_post_merge_check(domain, task_id)?;
-        }
+    forget_post_merge_check(domain, task_id)?;
+    if matches!(kind, Due::Cleanup) && state.post_merge_owed(task) && !session_over {
+        return hold_while_working_after_merge(domain, now, row);
     }
+    close_now |= state.post_merge_closed_by_user(task_id);
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;
     let ready = match kind {
@@ -300,16 +283,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         return Ok(());
     }
     if node.as_ref().is_some_and(|node| node.busy) {
-        let first = row.ready_since.is_none();
-        let waiting_since = *row.ready_since.get_or_insert(now);
-        if first {
-            domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
-        }
-        let margin = match kind {
-            Due::Cancelled | Due::Unattended => 0,
-            Due::Cleanup => millis(timing.wait.unwrap_or(BUSY_FALLBACK)),
-        };
-        if now - waiting_since < margin {
+        if matches!(kind, Due::Cleanup) {
             return Ok(());
         }
         return match domain.live.close_interrupted_at(&agent.0) {
@@ -380,7 +354,7 @@ async fn close_sdk_node(
     row: TaskClosing, owned: bool,
 ) -> Result<()> {
     let cleanup = matches!(kind, Due::Cleanup);
-    let user_closed = matches!(post_merge_answer(domain, state, &task.id)?, Some(Card::Retry)) || state.post_merge_closed_by_user(&task.id);
+    let user_closed = state.post_merge_closed_by_user(&task.id);
     let owes_nothing = !cleanup || task.wrap_up.cleaned_at.is_some() || user_closed;
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;
@@ -404,13 +378,8 @@ async fn close_sdk_node(
     if cleanup {
         let working = sdk_working(state, task);
         if state.post_merge_owed(task) && !user_closed {
-            let Some(work) = &task.wrap_up.post_merge_work else {
-                return hold_while_working_after_merge(domain, now, row);
-            };
-            let ask = |text: &str| tell_node(domain, state, task, agent, text);
-            if let Watch::Hold = watch_post_merge_work(domain, state, timing, now, task, agent, work, working, Some(&ask))? {
-                return hold_while_working_after_merge(domain, now, row);
-            }
+            forget_post_merge_check(domain, &task.id)?;
+            return hold_while_working_after_merge(domain, now, row);
         } else if working && task.wrap_up.cleaned_at.is_none() && !user_closed {
             return hold_while_working_after_merge(domain, now, row);
         } else if task.wrap_up.cleaned_at.is_none() && !user_closed && !timing.wait.is_some_and(|wait| now >= row.since + millis(wait)) {
@@ -492,12 +461,6 @@ fn sdk_working(state: &DomainState, task: &Task) -> bool {
             ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
 }
 
-/// What the user answered on the card about the task's work after the merge, if it was raised.
-fn post_merge_answer(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> Result<Option<Card>> {
-    let check = domain.store.lock().expect("domain store poisoned").post_merge_check(task)?;
-    Ok(check.and_then(|check| check.problem_id).map(|id| card(state, &id)))
-}
-
 /// The session is gone; the worktree Alondra made for the task goes too, which `claude rm` leaves
 /// because Claude Code did not make it. The task finishes only once it is gone, so a worktree with
 /// work not saved is a failed close and is tried again, never forgotten.
@@ -524,11 +487,8 @@ async fn finish_with_worktree(
     }
 }
 
-enum Watch {
-    Hold,
-    CloseNow,
-}
-
+/// A check an earlier daemon kept on the work after the merge, with the card it may have raised:
+/// gone, as no clock asks about that work any more.
 fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<()> {
     let check = domain.store.lock().expect("domain store poisoned").post_merge_check(task_id)?;
     let Some(check) = check else { return Ok(()) };
@@ -536,104 +496,6 @@ fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<(
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
     domain.store.lock().expect("domain store poisoned").forget_post_merge_check(task_id)
-}
-
-/// Work the node declared after the merge holds the close, but not forever: after
-/// `post_merge_ask` Alondra asks the node whether it still runs; a node that is not working and
-/// does not answer within `post_merge_answer` gets a card in front of the user, who closes it or
-/// leaves it for another round. Declaring again, even with the same reason, is the answer.
-/// Work that waits for another Task to land is never asked about: Alondra wakes it when it lands.
-#[allow(clippy::too_many_arguments)]
-fn watch_post_merge_work(
-    domain: &DomainRuntime, state: &DomainState, timing: &Timing, now: i64, task: &Task, agent: &AgentId, work: &PostMergeWork,
-    working: bool, ask: Option<&dyn Fn(&str)>,
-) -> Result<Watch> {
-    if state.waiting_after_merge(task).is_some() {
-        return Ok(Watch::Hold);
-    }
-    let declared_at = work.declared_at as i64;
-    let stored = domain.store.lock().expect("domain store poisoned").post_merge_check(&task.id)?;
-    let mut check = match stored {
-        Some(check) if check.declared_at == declared_at => check,
-        previous => {
-            if let Some(card) = previous.and_then(|check| check.problem_id) {
-                let _ = domain.withdraw_problem(&InteractionId(card));
-            }
-            PostMergeCheck { task_id: task.id.clone(), declared_at, since: now, asked_at: None, problem_id: None, close_now: false }
-        }
-    };
-    if let Some(card_id) = check.problem_id.clone() {
-        match card(state, &card_id) {
-            Card::Unanswered => {}
-            Card::Retry => check.close_now = true,
-            Card::Leave | Card::Withdrawn => {
-                check.since = now;
-                check.asked_at = None;
-                check.problem_id = None;
-            }
-        }
-    } else if let Some(asked) = check.asked_at {
-        if !working && now - asked >= millis(timing.post_merge_answer) {
-            check.problem_id = raise_post_merge_card(domain, task, &work.reason, now - check.since);
-        }
-    } else if now - check.since >= millis(timing.post_merge_ask) {
-        let text = still_working_text(&work.reason, &task.id, now - check.since, timing.post_merge_answer);
-        match ask {
-            Some(ask) => ask(&text),
-            None => log!("{agent} runs through the Agent SDK and cannot be asked yet whether its work after the merge still runs"),
-        }
-        check.asked_at = Some(now);
-    }
-    domain.store.lock().expect("domain store poisoned").save_post_merge_check(&check)?;
-    Ok(if check.close_now { Watch::CloseNow } else { Watch::Hold })
-}
-
-fn elapsed(millis: i64) -> String {
-    let minutes = millis.max(0) / 60_000;
-    match (minutes / 60, minutes % 60) {
-        (0, minutes) => format!("{minutes} min"),
-        (hours, 0) => format!("{hours} h"),
-        (hours, minutes) => format!("{hours} h {minutes} min"),
-    }
-}
-
-fn still_working_text(reason: &str, task: &TaskId, held: i64, answer: Duration) -> String {
-    format!(
-        "{held} ago you said this was still running after the merge: “{reason}”. If it still runs, call \
-post_merge_work again with task_id {task} and the reason. If it ended, call it without reason, \
-clean up and call cleanup_done. If you do not answer within {answer} while you are not working, \
-Alondra asks the user whether to close this session.",
-        held = elapsed(held),
-        task = task.0,
-        answer = elapsed(millis(answer)),
-    )
-}
-
-fn raise_post_merge_card(domain: &DomainRuntime, task: &Task, reason: &str, held: i64) -> Option<String> {
-    let id = format!("{POST_MERGE_PROBLEM_PREFIX}{}-{}", task.id, crate::auth::random_hex(6));
-    let need = clip(&format!("Decide whether to close the session of “{}”", task.title), CardSpec::NEED_MAX);
-    let why = clip(&format!(
-        "Its PR is merged and its node has said for {} that it is still working: “{reason}”. It does not answer whether it still is.",
-        elapsed(held)), CardSpec::WHY_MAX);
-    let diagnosis = format!(
-        "Task: “{title}”. The node said {held} ago that this was still running after the merge: “{reason}”. Alondra asked \
-it whether it still runs, it did not answer, and it is not working now. Close the node: Alondra closes the session \
-now, and anything still running in it stops. Leave it: the session stays open and Alondra asks the node again in \
-a few hours.",
-        title = task.title,
-        held = elapsed(held),
-    );
-    let options = vec![
-        QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the node".into(), description: None },
-        QuestionOption { id: POST_MERGE_LEAVE.into(), label: "Leave it".into(), description: None },
-    ];
-    match domain.raise_problem(&id, Some(&format!("post-merge:{}", task.id)), Scope::Task { task_id: task.id.clone() }, need, why, diagnosis, options) {
-        Ok(_) => Some(id),
-        Err(error) => {
-            log!("could not ask the user whether to close the session of {} after its work after the merge: {error:?}", task.id);
-            None
-        }
-    }
 }
 
 /// The node said it still works on something after the merge: its margin starts over from now

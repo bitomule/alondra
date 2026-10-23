@@ -13,15 +13,13 @@ const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
 
 #[test]
-fn a_pause_by_the_user_never_returns_by_itself_and_a_declared_wait_waits_out_its_grace() {
+fn a_pause_by_the_user_never_returns_by_itself_and_a_declared_wait_returns_without_waiting_out_any_time() {
     let paused = |reason| Paused { task: "t".into(), reason, since: 0, cut: None, turn_since: None, cleanup: Cleanup::Done, released: false };
     assert!(!paused(Reason::ByUser).returns(true, false, 10 * 60 * MIN));
     assert!(paused(Reason::Memory).returns(true, false, 0));
     assert!(!paused(Reason::Usage).returns(false, false, 0));
     let declared = paused(Reason::Declared { reason: "build queue".into() });
-    assert!(!declared.returns(true, false, DECLARED_GRACE - 1));
-    assert!(declared.returns(true, false, DECLARED_GRACE));
-    assert!(Paused { released: true, ..declared }.returns(true, false, 0), "\"I've fixed it\" lets it go at once");
+    assert!(declared.returns(true, false, 0), "the gate's measures alone say when it has room");
     let retry = alondra_core::domain::ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: 30_000, outage: false };
     let failed = paused(Reason::ApiError(retry));
     assert!(!failed.returns(true, false, 29_999), "an API error waits for its retry");
@@ -299,10 +297,10 @@ async fn the_orchestrator_is_told_a_paused_node_resumes_by_itself() {
     assert!(refused.message.contains("Alondra paused it for the machine and resumes it by itself"), "{}", refused.message);
 }
 
-/// Two nodes that declared a wait no gauge measures are the nodes' state, not a card: they wait
-/// out the grace with the Mac fine and come back one at a time, a start apart.
+/// Two nodes that declared a wait no gauge measures are the nodes' state, not a card: with the
+/// Mac fine they come back one at a time, a start apart, without waiting out any minutes.
 #[tokio::test]
-async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_time_after_the_grace() {
+async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_time_at_once() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
     let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
@@ -311,11 +309,32 @@ async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_
     fleet.hold(50, base, 12 * MIN).await;
     let resumes = fleet.events("resume");
     assert_eq!(tasks(&resumes), ["t1", "t2"]);
-    assert!(resumes[0].0 >= base + DECLARED_GRACE, "{resumes:?}");
+    assert!(resumes[0].0 < base + MIN, "the measures say there is room: no grace to wait out {resumes:?}");
     assert!(resumes[1].0 - resumes[0].0 >= SPACING, "{resumes:?}");
     let cards = fleet.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
     assert_eq!(cards, 0);
     assert!(fleet.events("pause").is_empty(), "a node that waits by itself is never interrupted");
+}
+
+/// A node waits for the machine while the Mac has no room: hours pass with nothing new measured,
+/// and nothing brings it back, reminds anyone or raises a card; the first measurements with room
+/// bring it back.
+#[tokio::test]
+async fn a_declared_wait_without_room_stays_for_hours_and_returns_once_the_measures_say_there_is_room() {
+    use TaskPriority::Normal;
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    fleet.waits_for_machine("t1", base);
+    let mut now = base;
+    for _ in 0..36 {
+        fleet.tick(3, now).await;
+        now += 10 * MIN;
+    }
+    assert!(fleet.events("resume").is_empty(), "six hours without room: it still waits");
+    let cards = fleet.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count();
+    assert_eq!((cards, fleet.notices), (0, 0));
+    fleet.hold(50, now, 3 * MIN).await;
+    assert_eq!(tasks(&fleet.events("resume")), ["t1"]);
 }
 
 /// A node that declared its wait is left alone: no interrupt and nothing of its own stopped, even

@@ -419,17 +419,14 @@ fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gat
     assert!(gate.hold_back(&domain, "agent-t1", Reason::Declared { reason: "The build ran out of memory".into() }, now + MIN));
     let snapshot = gate.snapshot(&domain, now + MIN).unwrap();
     assert_eq!(snapshot.working, 0, "its mod still reports the turn that called wait_for_machine, yet it waits");
-    assert_eq!(ask(&domain, "t2", now + MIN), Ok(()), "its slot goes to the queue");
-    start(&domain, "t2", now + MIN);
-
-    gate.release_declared(&domain);
     let resume = Waiting { key: Key::Resume("agent-t1".into()), priority: TaskPriority::Normal, resuming: true, since: now + MIN };
-    assert_eq!(gate.ask(&domain, resume.clone(), now + 2 * MIN), Err(Hold::Slots { working: 1, limit: 1 }), "it waits for a slot like any start");
-    finish(&domain, "t2", now + 5 * MIN);
-    assert_eq!(gate.ask(&domain, resume, now + 5 * MIN), Ok(()));
-    let snapshot = gate.snapshot(&domain, now + 5 * MIN).unwrap();
+    assert_eq!(snapshot.queue.first().map(|head| &head.key), Some(&resume.key),
+        "the measures say there is room: it is first to come back, ahead of new starts, without waiting out any minutes");
+    assert_eq!(gate.ask(&domain, resume, now + MIN), Ok(()));
+    let snapshot = gate.snapshot(&domain, now + MIN).unwrap();
     assert_eq!((snapshot.working, snapshot.working_tasks.into_iter().collect::<Vec<_>>()), (1, vec![TaskId::from("t1")]),
         "back from its wait it takes its slot again");
+    assert_eq!(ask(&domain, "t2", now + MIN), Err(Hold::Slots { working: 1, limit: 1 }));
 }
 
 /// 9 October: 59 notices to the orchestrator, one per swing of the Mac's memory, and none ever read.

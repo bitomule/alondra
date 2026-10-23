@@ -3,7 +3,8 @@ use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::node_close::Answer;
 use crate::node_push::testing::Node;
 use alondra_core::domain::{
-    Actor, CommandEnvelope, DeliveryTarget, Instruction, ModelChooser, PROTOCOL_VERSION, TaskState,
+    Actor, CardSpec, CommandEnvelope, DeliveryTarget, Instruction, ModelChooser, POST_MERGE_CLOSE, POST_MERGE_PROBLEM_PREFIX,
+    PROTOCOL_VERSION, QuestionOption, TaskState,
 };
 use alondra_core::{DaemonObservation, Event};
 use serde_json::{Value, json};
@@ -448,56 +449,23 @@ async fn closing_holds_the_sessions_watch() {
     assert_eq!(seen, Some(false), "a revival cannot take the watch while claude rm runs");
 }
 
-#[tokio::test]
-async fn a_node_that_is_busy_gets_the_margin_from_when_it_was_ready_not_from_when_the_task_was_seen() {
-    let rig = Rig::new(thirty_minutes());
-    rig.pass(T0).await;
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
-    rig.pass(T0 + 40 * MINUTE).await;
-    assert_eq!(rig.closing().unwrap().failures, 0, "ready and busy for the first time: the margin starts now");
-    rig.pass(T0 + 69 * MINUTE).await;
-    assert_eq!(rig.closing().unwrap().failures, 0);
-    assert_eq!(rig.sessions.removals(), 0);
-    assert_eq!(rig.node.interrupts(), 0);
-    rig.pass(T0 + 71 * MINUTE).await;
-    assert_eq!(rig.node.interrupts(), 1, "past the margin its turn is cut");
-    assert_eq!(rig.closing().unwrap().failures, 0, "cutting the turn is not a failure yet");
-    rig.pass(T0 + 72 * MINUTE).await;
-    assert_eq!(rig.node.interrupts(), 1, "cut once, then it gets time to stop");
-    rig.pass(T0 + 76 * MINUTE).await;
-    let row = rig.closing().unwrap();
-    assert_eq!((row.failures, row.last_error.as_deref()), (1, Some("it is still working")));
-    assert!(rig.told().last().unwrap().contains("it is still working"));
-}
+const HOUR: i64 = 60 * MINUTE;
 
+/// A finished task's node that keeps working is never cut nor reported, however long its turn
+/// runs: it is closed between turns, once its turn ends.
 #[tokio::test]
-async fn a_node_stuck_in_its_cleanup_past_the_margin_has_its_turn_cut_and_is_closed_without_a_card() {
+async fn a_busy_node_of_a_finished_task_is_never_cut_and_closes_once_its_turn_ends() {
     let rig = Rig::new(thirty_minutes());
     rig.domain.live.observe(&hook("UserPromptSubmit"));
-    rig.pass(T0).await;
-    rig.pass(T0 + 31 * MINUTE).await;
-    assert_eq!(rig.node.interrupts(), 0, "the margin starts once the close is due");
-    rig.pass(T0 + 62 * MINUTE).await;
-    assert_eq!(rig.node.interrupts(), 1);
+    for hours in [0, 1, 6, 24, 72] {
+        rig.pass(T0 + hours * HOUR).await;
+    }
+    assert_eq!((rig.node.interrupts(), rig.sessions.removals(), rig.closing().unwrap().failures), (0, 0, 0));
+    assert!(rig.cards().is_empty());
     rig.domain.live.observe(&hook("Stop"));
-    rig.pass(T0 + 63 * MINUTE).await;
+    rig.pass(T0 + 72 * HOUR + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1);
     rig.assert_done(NodeEnd::Closed);
-    assert!(rig.cards().is_empty());
-}
-
-#[tokio::test]
-async fn a_node_that_keeps_working_after_its_turn_is_cut_ends_in_the_card_after_three_failures() {
-    let rig = Rig::new(thirty_minutes());
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
-    rig.pass(T0).await;
-    for minutes in [31, 62, 68, 74, 80, 86, 92] {
-        rig.pass(T0 + minutes * MINUTE).await;
-    }
-    assert_eq!(rig.node.interrupts(), 3, "each attempt cuts its turn first");
-    assert_eq!(rig.closing().unwrap().failures, 3);
-    assert_eq!(rig.cards().len(), 1);
-    assert_eq!(rig.sessions.removals(), 0);
 }
 
 #[tokio::test]
@@ -647,44 +615,45 @@ impl Rig {
             .cloned().collect()
     }
 
-    fn answer_post_merge_card(&self, option: &str) {
-        let card = self.post_merge_cards()[0].id.clone();
-        command(&self.domain, user(), &format!("answer-{option}-{}", crate::auth::random_hex(4)), Command::AnswerQuestion {
-            attachments: vec![], interaction_id: card, option_id: option.into(), inputs: Default::default(),
-        });
-    }
-
-    fn asked_whether_it_still_runs(&self) -> usize {
-        self.told().iter().filter(|text| text.contains("still running after the merge")).count()
+    fn node_event(&self, event: alondra_core::domain::NodeEvent) {
+        crate::domain_agent_lifecycle::node_event(&self.domain, &SESSION.into(), event).unwrap();
     }
 }
 
-const HOUR: i64 = 60 * MINUTE;
-
+/// Hours of work declared after the merge and nothing new from the node: nobody asks the node,
+/// no card reaches the user, nothing is closed.
 #[tokio::test]
-async fn after_three_hours_alondra_asks_the_node_and_an_idle_node_that_does_not_answer_goes_to_the_user() {
+async fn hours_of_work_after_the_merge_ask_nothing_raise_no_card_and_close_nothing() {
     let rig = Rig::new(thirty_minutes());
     rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    let told = rig.told().len();
+    for hours in [0, 3, 4, 8, 24, 72] {
+        rig.pass(T0 + hours * HOUR).await;
+    }
+    assert!(rig.domain.state().unwrap().post_merge_owed(&rig.task()), "only a fact ends it");
+    assert_eq!((rig.sessions.removals(), rig.node.interrupts(), rig.told().len()), (0, 0, told));
+    assert!(rig.post_merge_cards().is_empty() && rig.cards().is_empty());
+}
+
+/// After the merge the turn the node does its work in ends without declaring it again: that turn
+/// end is the fact that ends the work, and the usual wait for its cleanup then closes it.
+#[tokio::test]
+async fn a_turn_after_the_merge_that_ends_without_declaring_again_ends_the_work_and_the_node_closes() {
+    use alondra_core::domain::NodeEvent;
+    let rig = Rig::merged(Some("publish the release"));
     rig.pass(T0).await;
-    rig.pass(T0 + 3 * HOUR - MINUTE).await;
-    assert_eq!(rig.asked_whether_it_still_runs(), 0);
-    rig.pass(T0 + 3 * HOUR).await;
-    assert_eq!(rig.asked_whether_it_still_runs(), 1);
-    rig.pass(T0 + 3 * HOUR + 29 * MINUTE).await;
-    assert!(rig.post_merge_cards().is_empty());
-    rig.pass(T0 + 3 * HOUR + 30 * MINUTE).await;
-    let cards = rig.post_merge_cards();
-    assert_eq!(cards.len(), 1);
-    let card = serde_json::to_string(&cards[0]).unwrap();
-    assert!(card.contains("“Result”") && card.contains("3 h 30 min") && card.contains("release.sh publishes 0.2.54")
-        && card.contains("Close the node") && card.contains("Leave it"), "{card}");
-    assert_eq!(rig.sessions.removals(), 0, "nothing is closed without the user");
+    rig.node_event(NodeEvent::TurnStarted);
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
     rig.pass(T0 + 5 * HOUR).await;
-    assert_eq!((rig.sessions.removals(), rig.post_merge_cards().len(), rig.asked_whether_it_still_runs()), (0, 1, 1));
-    rig.answer_post_merge_card("close");
+    assert_eq!(rig.sessions.removals(), 0, "it works on it");
+    rig.domain.live.observe(&hook("Stop"));
+    rig.node_event(NodeEvent::TurnEnded);
+    assert!(!rig.domain.state().unwrap().post_merge_owed(&rig.task()), "its turn ended without declaring it again");
     rig.pass(T0 + 5 * HOUR + MINUTE).await;
+    rig.pass(T0 + 5 * HOUR + 31 * MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1);
     rig.assert_done(NodeEnd::Closed);
+    assert!(rig.post_merge_cards().is_empty());
 }
 
 #[tokio::test]
@@ -705,52 +674,6 @@ async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_wit
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1, "the user's choice closes the node now, not after the 30 minutes its cleanup gets");
     rig.assert_done(NodeEnd::Closed);
-}
-
-#[tokio::test]
-async fn the_clock_only_asks_and_never_ends_the_work_after_the_merge() {
-    let rig = Rig::new(thirty_minutes());
-    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
-    for now in [T0, T0 + 3 * HOUR, T0 + 3 * HOUR + 30 * MINUTE, T0 + 8 * HOUR, T0 + 13 * HOUR + 30 * MINUTE] {
-        rig.pass(now).await;
-    }
-    let state = rig.domain.state().unwrap();
-    let owed = state.post_merge_owed(&rig.task());
-    assert!(owed && rig.sessions.removals() == 0 && rig.task().state != TaskState::Done,
-        "post-merge obligation discharged without a fact: owed {owed}, node closed {} times, task {:?}", rig.sessions.removals(), rig.task().state);
-    assert_eq!((rig.asked_whether_it_still_runs(), rig.post_merge_cards().len()), (1, 1), "the clock scheduled the question and the card");
-}
-
-#[tokio::test]
-async fn a_node_that_declares_again_or_is_working_never_reaches_the_user_and_leave_it_starts_another_round() {
-    let rig = Rig::new(thirty_minutes());
-    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
-    rig.pass(T0).await;
-    rig.pass(T0 + 3 * HOUR).await;
-    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
-    rig.pass(T0 + 4 * HOUR).await;
-    assert!(rig.post_merge_cards().is_empty(), "declaring again is the answer");
-    rig.pass(T0 + 7 * HOUR - MINUTE).await;
-    assert_eq!(rig.asked_whether_it_still_runs(), 1, "the next round counts from the new declaration");
-    rig.pass(T0 + 7 * HOUR).await;
-    assert_eq!(rig.asked_whether_it_still_runs(), 2);
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
-    rig.pass(T0 + 8 * HOUR).await;
-    assert!(rig.post_merge_cards().is_empty(), "a working node is not reported");
-    rig.domain.live.observe(&hook("Stop"));
-    rig.pass(T0 + 8 * HOUR + MINUTE).await;
-    assert_eq!(rig.post_merge_cards().len(), 1);
-    rig.answer_post_merge_card("leave");
-    rig.pass(T0 + 8 * HOUR + 2 * MINUTE).await;
-    assert_eq!(rig.sessions.removals(), 0);
-    assert!(rig.post_merge_cards().is_empty());
-    rig.pass(T0 + 11 * HOUR + 2 * MINUTE).await;
-    assert_eq!(rig.asked_whether_it_still_runs(), 3);
-    rig.declare_post_merge_work(None);
-    rig.pass(T0 + 11 * HOUR + 3 * MINUTE).await;
-    assert_eq!(rig.sessions.removals(), 0);
-    rig.pass(T0 + 11 * HOUR + 34 * MINUTE).await;
-    assert_eq!(rig.sessions.removals(), 1, "once the work ends the usual wait closes it");
 }
 
 #[tokio::test]

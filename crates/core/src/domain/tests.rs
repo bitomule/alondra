@@ -3707,7 +3707,7 @@ fn only_the_tasks_node_declares_work_after_the_merge_and_cleanup_done_ends_it() 
     reject_unchanged(&mut s, agent_b(), post_merge_work(Some("release.sh")), "not_assigned");
     reject_unchanged(&mut s, user(), post_merge_work(Some("release.sh")), "not_assigned");
     exec(&mut s, agent(), post_merge_work(Some("  release.sh publishes 0.2.54  "))).unwrap();
-    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, Some(PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: s.revision }));
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, Some(PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: s.revision, turn_since: false }));
     exec(&mut s, agent(), post_merge_work(Some(" "))).unwrap();
     assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None, "a blank reason ends it");
     exec(&mut s, agent(), post_merge_work(Some(&"x".repeat(500)))).unwrap();

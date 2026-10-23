@@ -179,9 +179,10 @@ Pick the tool by what you need:
   a Homebrew publish, a release script), above all in the background, where you look idle. Call
   it with `task_id` and a one-line `reason` as soon as it starts: Alondra does not close the session while you say so. When it ends, call it again
   without `reason` (or call `cleanup_done`): the wait to close the session then starts over.
-  After 3 hours Alondra asks you whether it still runs: call it again with the reason if it
-  does. If you are not working and do not answer within 30 minutes, the user decides whether to
-  close the session.
+  Alondra never asks how long it takes. After the merge, a turn you end with nothing of yours
+  running in the background also ends that work, unless you called `post_merge_work` with the
+  reason again in that turn or it waits with `waits_for`: declare it again whenever you end a
+  turn while the work still runs elsewhere.
 - Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your
   task: the PR alone is not its final result. Declare it with `post_merge_work` and its `reason`
   before you present the PR as final. Accepting and merging the PR then does not close the task:
