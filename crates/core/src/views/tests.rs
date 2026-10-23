@@ -3000,7 +3000,7 @@ fn a_chain_folds_flat_under_its_first_open_task_each_after_what_it_waits_for() {
 fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
     LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
         working: false, summary: Some("Claude exited without a successful terminal result".into()), failure: None,
-        queue_depth: 1, active_run_id: Some("run-1".into()), can_retry, can_cancel: !can_retry,
+        queue_depth: 1, active_run_id: Some("run-1".into()), can_retry, can_cancel: !can_retry, waits_for_sign_in: false,
     }), ..Default::default() }
 }
 
@@ -3123,6 +3123,19 @@ fn a_request_not_split_yet_says_it_waits_for_the_users_decision() {
     };
     assert_eq!(subtitle(&orchestrator_waiting(true)), ("block:for-you".into(), "Esperando tu decisión".into()));
     assert_eq!(subtitle(&orchestrator_waiting(false)), ("block:in-progress".into(), "Preparando sus tareas".into()));
+}
+
+#[test]
+fn a_request_not_split_yet_says_it_waits_for_a_claude_sign_in_while_no_account_has_one() {
+    let mut state = fixture();
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Still splitting".into()));
+    let live = |waits_for_sign_in| LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
+        working: false, summary: None, failure: None, queue_depth: 1, active_run_id: None, can_retry: false, can_cancel: false, waits_for_sign_in,
+    }), ..Default::default() };
+    let subtitle = |live: &LiveSnapshot, lang| active_row(&state, live, Client::Ios, lang, "r-2").1.subtitle.unwrap();
+    assert_eq!(subtitle(&live(true), Lang::Es), "Esperando una sesión de Claude");
+    assert_eq!(subtitle(&live(true), Lang::En), "Waiting for a Claude sign-in");
+    assert_eq!(subtitle(&live(false), Lang::Es), "Preparando sus tareas", "once an account has a session it says what it does again");
 }
 
 #[test]

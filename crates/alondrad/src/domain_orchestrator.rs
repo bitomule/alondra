@@ -289,15 +289,42 @@ impl Executor {
         }
     }
 
+    /// Records for the screens that no batch starts because no Claude account has a session, or
+    /// that one has it again, and the line the log says it with: only when that changes.
+    fn account_wait_change(&self, now: alondra_core::Millis) -> Option<String> {
+        let checked = crate::accounts::none_signed_in(&self.domain.read().state().accounts);
+        let wait = &self.domain.live.account_wait;
+        match checked {
+            Some(checked) if wait.start() => {
+                let next = self.domain.live.usage_pause.current().map_or_else(
+                    || "at the next account check".to_owned(),
+                    |pause| format!("at {}", crate::usage_pause::clock_text(pause.until, now, false)),
+                );
+                Some(format!("orchestrator waits: no Claude account has a session ({checked}); requests stay unprocessed until one is signed in, next try {next}"))
+            }
+            None if wait.end() => Some("orchestrator: a Claude account has a session again; it still waits for Claude usage".to_owned()),
+            _ => None,
+        }
+    }
+
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
     pub(crate) async fn tick(&self) -> Result<()> {
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
         let now = now_millis();
-        if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) || self.domain.live.usage_pause.is_active() {
+        if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
             return Ok(());
         }
-        let Some(account) = crate::accounts::choose_for_launch(&self.domain, &self.home, now) else { return Ok(()) };
+        let account = if self.domain.live.usage_pause.is_active() { None } else { crate::accounts::choose_for_launch(&self.domain, &self.home, now) };
+        let Some(account) = account else {
+            if let Some(line) = self.account_wait_change(now) {
+                log!("{line}");
+            }
+            return Ok(());
+        };
+        if self.domain.live.account_wait.end() {
+            log!("orchestrator resumes: the Claude account {account} has a session");
+        }
         {
             let mut store = self.domain.store.lock().expect("domain store poisoned");
             store.discard_expired_orchestrator_messages(
@@ -670,6 +697,7 @@ pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
         "cancel_requested": runtime.cancel_requested,
         "active_run_id": runtime.active_run.as_ref().map(|run| run.id.clone()),
         "queue_depth": queue_depth, "last_error": runtime.last_error, "failure": runtime.failure, "retry_at": runtime.retry_at,
+        "waits_for_sign_in": executor.domain.live.account_wait.is_waiting(),
     }))
 }
 
@@ -1589,6 +1617,44 @@ mod tests {
         assert_eq!(outbox(domain)[0].1, "retryable");
         assert!(load(&f.executor.home).unwrap().active_run.is_none());
         assert!(f.executor.cancel("nothing").is_err(), "cancel needs a running execution");
+    }
+
+    fn accounts_seen(f: &Fixture, id: &str, state: alondra_core::accounts::AccountState) {
+        use alondra_core::accounts::{AccountBilling, AccountId, AccountStatus, Provider};
+        let accounts = vec![AccountStatus {
+            provider: Provider::Claude, id: AccountId::default_account(), name: "default".into(), state,
+            email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        }];
+        command(&f.executor.domain, Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    }
+
+    #[tokio::test]
+    async fn without_a_signed_in_account_the_orchestrator_says_it_waits_once_and_resumes_when_one_signs_in() {
+        use alondra_core::accounts::AccountState;
+        let f = fixture();
+        let domain = &f.executor.domain;
+        accounts_seen(&f, "accounts-out", AccountState::SignedOut);
+        ask_orchestrator(&f, 1);
+        f.tick().await;
+        assert_eq!(f.starts().len(), 0, "no account can run the batch");
+        assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true, "the screens hear why the request sits");
+        let until = domain.live.usage_pause.current().expect("launches hold too").until;
+
+        domain.live.usage_pause.resume(until);
+        f.tick().await;
+        assert_eq!(f.starts().len(), 0);
+        assert_eq!(f.executor.account_wait_change(until), None, "the log says it once, not on every tick");
+        assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true);
+
+        domain.live.account_wait.end();
+        let line = f.executor.account_wait_change(until).expect("a new wait is said");
+        assert!(line.contains("no Claude account has a session (default (signed out))") && line.contains("next try at "), "{line}");
+
+        accounts_seen(&f, "accounts-in", AccountState::SignedIn);
+        domain.live.usage_pause.resume(now_millis());
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1, "an account with a session runs the batch");
+        assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], false, "and the wait is gone from the screens");
     }
 
     #[tokio::test]

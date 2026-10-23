@@ -144,6 +144,39 @@ pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondr
     chosen
 }
 
+/// The Claude accounts as the domain last checked them, when none has a session to start work
+/// with: `default (signed out), work (off)`. None while one may have it: signed in, not checked
+/// yet, or not checkable.
+pub(crate) fn none_signed_in(accounts: &[AccountStatus]) -> Option<String> {
+    let claude: Vec<&AccountStatus> = accounts.iter().filter(|account| account.provider == Provider::Claude).collect();
+    if claude.is_empty() || !claude.iter().all(|account| matches!(account.state, AccountState::SignedOut | AccountState::Disabled)) {
+        return None;
+    }
+    let state = |state: AccountState| if state == AccountState::Disabled { "off" } else { "signed out" };
+    Some(claude.iter().map(|account| format!("{} ({})", account.id, state(account.state))).collect::<Vec<_>>().join(", "))
+}
+
+/// Whether the orchestrator waits because no Claude account has a session: set and cleared once
+/// per change, so the log and the screens say it once.
+#[derive(Default)]
+pub(crate) struct AccountWait(std::sync::Mutex<bool>);
+
+impl AccountWait {
+    pub(crate) fn is_waiting(&self) -> bool {
+        *self.0.lock().expect("account wait poisoned")
+    }
+
+    /// True when the wait starts now.
+    pub(crate) fn start(&self) -> bool {
+        !std::mem::replace(&mut *self.0.lock().expect("account wait poisoned"), true)
+    }
+
+    /// True when a standing wait ends now.
+    pub(crate) fn end(&self) -> bool {
+        std::mem::replace(&mut *self.0.lock().expect("account wait poisoned"), false)
+    }
+}
+
 /// Every account the user registered, on or off: the folders an execution may run Claude with.
 pub(crate) fn registered(home: &Path) -> Vec<AccountId> {
     config(home).map_or_else(|_| vec![AccountId::default_account()], |config| config.accounts(Provider::Claude).into_iter().map(|account| account.id).collect())

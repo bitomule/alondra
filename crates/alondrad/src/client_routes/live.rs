@@ -40,6 +40,7 @@ pub(crate) struct Live {
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
+    pub(crate) account_wait: crate::accounts::AccountWait,
     pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,

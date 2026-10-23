@@ -487,6 +487,7 @@ async fn gather_inner(
         active_run_id: value["active_run_id"].as_str().map(str::to_owned),
         can_retry: value["can_retry"].as_bool().unwrap_or(false),
         can_cancel: value["can_cancel"].as_bool().unwrap_or(false),
+        waits_for_sign_in: value["waits_for_sign_in"].as_bool().unwrap_or(false),
     });
     let update = crate::updates::status(client.home());
     let update = update.available.then(|| Notice {

@@ -385,6 +385,9 @@ pub struct LiveOrchestrator {
     pub can_retry: bool,
     #[serde(default)]
     pub can_cancel: bool,
+    /// No batch starts because no Claude account has a session.
+    #[serde(default)]
+    pub waits_for_sign_in: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveBackground {
