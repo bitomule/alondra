@@ -37,3 +37,10 @@ sh_test(
     data = ["node_token_usage.py"],
     size = "small",
 )
+
+sh_test(
+    name = "buildbuddy_credential_helper_test",
+    srcs = ["tests/test_buildbuddy_credential_helper.py"],
+    data = ["buildbuddy-credential-helper.sh"],
+    size = "small",
+)

@@ -137,6 +137,15 @@ checks:
       targets:
         - //tools:node_token_usage_test
 
+  buildbuddy-credential-helper:
+    uses: bazel/test
+    paths:
+      - "tools/buildbuddy-credential-helper.sh"
+      - "tools/tests/test_buildbuddy_credential_helper.py"
+    with:
+      targets:
+        - //tools:buildbuddy_credential_helper_test
+
   native-fixture-lifecycle:
     uses: bazel/test
     paths:
