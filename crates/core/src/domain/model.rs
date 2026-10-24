@@ -66,10 +66,28 @@ pub struct Request {
     /// The user cleared it from the completed work: a closed Request without Tasks no list shows again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleared: bool,
+    /// Who asked: only the user's own requests and their schedules' tell the user the answer.
+    #[serde(default)]
+    pub origin: RequestOrigin,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false, origin: RequestOrigin::User }
+    }
+}
+/// Rows written before the origin was recorded read as the user's, so no answer they asked for is lost.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RequestOrigin {
+    #[default]
+    User,
+    Orchestrator,
+    Node { agent_id: AgentId },
+    Schedule,
+}
+impl RequestOrigin {
+    pub fn the_user_asked(&self) -> bool {
+        matches!(self, Self::User | Self::Schedule)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

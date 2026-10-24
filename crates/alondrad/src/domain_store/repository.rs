@@ -768,7 +768,7 @@ pub(super) fn save_changes(
     }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
-        strip(&mut row, &["maintenance", "message", "cleared"]);
+        strip(&mut row, &["maintenance", "message", "cleared", "origin"]);
         upsert(c, "requests", &["id"], row)?;
         if x.maintenance {
             exec(c, "INSERT OR IGNORE INTO maintenance_requests(request_id) VALUES(?1)", params![x.id.0])?;
@@ -778,6 +778,10 @@ pub(super) fn save_changes(
         }
         if x.cleared {
             exec(c, "INSERT OR IGNORE INTO cleared_requests(request_id) VALUES(?1)", params![x.id.0])?;
+        }
+        if x.origin != RequestOrigin::User {
+            exec(c, "INSERT INTO request_origins(request_id,origin) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET origin=excluded.origin",
+                params![x.id.0, serde_json::to_string(&x.origin)?])?;
         }
     }
     for (x, _) in changed(&before.agents, &after.agents) {
@@ -1055,6 +1059,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(cleared);
+    let mut origins = c.prepare("SELECT request_id,origin FROM request_origins")?;
+    let mut stored = origins.query([])?;
+    while let Some(row) = stored.next()? {
+        let (id, origin): (String, String) = (row.get(0)?, row.get(1)?);
+        state.requests.get_mut(&RequestId::from(id)).context("request origin missing")?.origin = serde_json::from_str(&origin)?;
+    }
+    drop(stored);
+    drop(origins);
     for row in rows(c, "agents", &[], &["phase"])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);

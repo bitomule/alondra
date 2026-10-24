@@ -2,7 +2,7 @@ use super::*;
 use crate::domain::{
     Background, NodePhase, Pause, PauseCleanup, PauseReason,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
-    InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
+    InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, RequestOrigin, Scope, Task,
     TaskState, ModelChooser, TaskModel, inbox_items,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -3822,6 +3822,25 @@ fn the_pending_list_shows_only_requests_the_orchestrator_has_not_handled() {
     state.tasks.remove(&"t-2".into());
     state.requests.get_mut(&"r-new".into()).unwrap().closed = true;
     assert!(pending(&state).is_empty(), "closing a request takes it out of the queue");
+}
+
+#[test]
+fn an_answered_request_shows_its_answer() {
+    let mut state = fixture();
+    let mut answered = Request::new("r-answered".into(), "Does make e2e-sdk pass?".into());
+    (answered.closed, answered.answer, answered.origin) = (true, Some("It passes again since PR #1153".into()), RequestOrigin::Orchestrator);
+    state.requests.insert("r-answered".into(), answered);
+    for (lang, title) in [(Lang::En, "Answer"), (Lang::Es, "Respuesta")] {
+        let view = render(&state, &LiveSnapshot::default(), Client::Tui, lang, "request:r-answered", "");
+        let section = view.sections.iter().find(|section| section.id == "answer").expect("an answer section");
+        assert_eq!(section.title.as_deref(), Some(title));
+        assert!(matches!(section.items.as_slice(), [Item::Markdown(m)] if m.text == "It passes again since PR #1153"), "{:?}", section.items);
+    }
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "request:r-1", "");
+    assert!(view.sections.iter().all(|section| section.id != "answer"), "an open request has no answer yet");
+    let tasks = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks?section=finished&after=0", "");
+    let row = rows_with_parents(&tasks).into_iter().map(|(_, row)| row).find(|row| row.id == "r-answered").expect("the answered request is listed");
+    assert_eq!(row.link, Some(Link::View { key: "request:r-answered".into() }), "its row opens the request and its answer");
 }
 
 #[test]

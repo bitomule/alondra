@@ -275,9 +275,11 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
         .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
         row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
     }
-    row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View {
-        key: format!("task:{}", task.id),
-    });
+    if let Some(task) = tasks.iter().max_by_key(|task| task.revision) {
+        row.link = Some(super::Link::View { key: format!("task:{}", task.id) });
+    } else if context.client != super::Client::Tui {
+        row.link = None;
+    }
     if request.closed && !request.withdrawn && tasks.is_empty() && request.answer.is_some() {
         row.icon = Icon::Check;
     }
@@ -1334,6 +1336,13 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
             commentable: false,
         })],
     ));
+    if let Some(answer) = request.answer.as_ref().filter(|_| request.closed && !request.withdrawn) {
+        view.sections.push(common::section(
+            "answer",
+            Some(t!(context.lang, "Answer", "Respuesta").into()),
+            vec![Item::Markdown(Markdown { text: answer.clone(), truncated: false, more: None, commentable: false })],
+        ));
+    }
     if !request.closed && !request.withdrawn {
         if let Some(mut action) = common::action(
             Verb::Withdraw,

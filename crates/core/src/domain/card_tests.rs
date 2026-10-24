@@ -426,6 +426,60 @@ fn closing_with_an_answer_tells_the_user() {
         "an answer already sent is not sent again");
 }
 
+fn answer_cards(s: &DomainState, request: &str) -> usize {
+    s.interactions.values()
+        .filter(|i| i.recipient == Recipient::User && i.scope == Scope::Orchestrator { request_id: Some(request.into()) })
+        .count()
+}
+
+/// 22 October: «¿a qué viene este card?» for a request a node had raised.
+#[test]
+fn closing_a_request_a_node_raised_tells_the_user_nothing() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    ok(&mut s, orchestrator(), settle("p", new_task("t-readme", "r-readme")));
+    assert_eq!(s.requests[&"r-readme".into()].origin, RequestOrigin::Node { agent_id: "a".into() });
+    ok(&mut s, orchestrator(), Command::CancelTask { task_id: "t-readme".into() });
+    let out = ok(&mut s, orchestrator(), Command::CloseRequest {
+        request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None,
+    });
+    assert_eq!(answer_cards(&s, "r-readme"), 0);
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
+    assert_eq!(s.requests[&"r-readme".into()].answer.as_deref(), Some("Fixed by PR #1153"));
+}
+
+#[test]
+fn closing_a_request_the_orchestrator_raised_tells_the_user_nothing() {
+    let mut s = fixture();
+    ok(&mut s, orchestrator(), Command::CreateRequest { request_id: "req-measure".into(), body: "Measure the SDK usage".into(), auto_merge: false, maintenance: false, message: false });
+    assert_eq!(s.requests[&"req-measure".into()].origin, RequestOrigin::Orchestrator);
+    let out = ok(&mut s, orchestrator(), Command::CloseRequest {
+        request_id: "req-measure".into(), answer: Some("make e2e-sdk passes again".into()), withdrawn: false, title: Some("SDK e2e".into()),
+    });
+    assert_eq!(answer_cards(&s, "req-measure"), 0);
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
+    assert_eq!(s.requests[&"req-measure".into()].answer.as_deref(), Some("make e2e-sdk passes again"));
+}
+
+#[test]
+fn closing_a_request_the_user_made_tells_the_user_its_answer() {
+    let mut s = fixture();
+    ok(&mut s, user(), Command::CreateRequest { request_id: "mine".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
+    assert_eq!(s.requests[&"mine".into()].origin, RequestOrigin::User);
+    ok(&mut s, orchestrator(), Command::CloseRequest {
+        request_id: "mine".into(), answer: Some("Yes".into()), withdrawn: false, title: None,
+    });
+    assert_eq!(answer_cards(&s, "mine"), 1);
+}
+
+#[test]
+fn a_request_stored_before_its_origin_reads_as_the_users() {
+    let mut stored = serde_json::to_value(Request::new("old".into(), "Is main green?".into())).unwrap();
+    stored.as_object_mut().unwrap().remove("origin");
+    let request: Request = serde_json::from_value(stored).unwrap();
+    assert_eq!(request.origin, RequestOrigin::User);
+}
+
 #[test]
 fn withdraw_question_is_still_accepted_as_withdraw() {
     let command: Command = serde_json::from_value(serde_json::json!({"kind": "withdraw_question", "interaction_id": "q"})).unwrap();

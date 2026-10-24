@@ -1522,10 +1522,10 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
-    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests; DROP TABLE cleared_requests").unwrap();
+    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests; DROP TABLE cleared_requests; DROP TABLE request_origins").unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees", "maintenance_requests", "cleared_requests"] {
+    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees", "maintenance_requests", "cleared_requests", "request_origins"] {
         let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table} is created empty");
     }
@@ -1545,6 +1545,21 @@ fn a_maintenance_message_stays_one_after_a_restart() {
     let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert!(state.requests[&"request-m".into()].maintenance);
     assert!(!state.requests[&"request-1".into()].maintenance);
+}
+
+#[test]
+fn who_raised_a_request_is_kept_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "raised", Command::CreateRequest {
+        request_id: "request-o".into(), body: "Measure the SDK usage".into(), auto_merge: false, maintenance: false, message: false });
+    execute(&mut store, &user(), "asked", Command::CreateRequest {
+        request_id: "request-u".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert_eq!(state.requests[&"request-o".into()].origin, RequestOrigin::Orchestrator);
+    assert_eq!(state.requests[&"request-u".into()].origin, RequestOrigin::User);
 }
 
 #[test]

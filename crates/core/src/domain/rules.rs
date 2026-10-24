@@ -788,6 +788,9 @@ impl DomainState {
                     request_id: request_id.clone(), body: format!("{}\n\n{}", i.card.need, i.body),
                     auto_merge: false, maintenance: false, message: true,
                 }, effects, created, lifecycles)?;
+                if let (Author::Agent { agent_id }, Some(request)) = (&i.author, self.requests.get_mut(request_id)) {
+                    request.origin = RequestOrigin::Node { agent_id: agent_id.clone() };
+                }
                 self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created, lifecycles)?;
                 self.apply(actor, &Command::CreateTask { plan_items: None,
                     task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
@@ -2468,7 +2471,7 @@ impl DomainState {
                     launch.clone(),
                     *finished_at,
                 )?;
-                self.requests.insert(request.id.clone(), request.clone());
+                self.requests.insert(request.id.clone(), Request { origin: RequestOrigin::Schedule, ..request.clone() });
                 self.tasks.insert(task.id.clone(), task.clone());
                 self.plan_lifecycle(lifecycles, &task.id)?;
                 created.push(request.id.0.clone());
@@ -2633,7 +2636,11 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request { auto_merge: *auto_merge, maintenance: *maintenance, message: *message || *maintenance, ..Request::new(request_id.clone(), body.clone()) },
+                    Request {
+                        auto_merge: *auto_merge, maintenance: *maintenance, message: *message || *maintenance,
+                        origin: if matches!(actor, Actor::Orchestrator { .. }) { RequestOrigin::Orchestrator } else { RequestOrigin::User },
+                        ..Request::new(request_id.clone(), body.clone())
+                    },
                 );
                 created.push(request_id.0.clone());
                 // 8ccd131 handed every new request of the user to the orchestrator.
@@ -2667,7 +2674,7 @@ impl DomainState {
                 if title.is_some() {
                     request.title = title.clone();
                 }
-                if let Some(answer) = answer.as_ref().filter(|_| !request.maintenance) {
+                if let Some(answer) = answer.as_ref().filter(|_| !request.maintenance && request.origin.the_user_asked()) {
                     self.tell_the_answer(actor, request_id, answer, title.as_deref(), created, effects)?;
                 }
             }

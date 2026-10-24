@@ -334,6 +334,29 @@ fn the_user_cancels_a_task_whose_scheduled_launch_failed() {
 }
 
 #[test]
+fn a_scheduled_request_tells_the_user_its_answer() {
+    let mut state = fixture();
+    let mut definition = schedule();
+    definition.title = "Updated review".into();
+    exec(&mut state, Actor::System, Command::CreateSchedule { schedule: definition }).unwrap();
+    exec(&mut state, Actor::System, Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Due,
+        now: 100, next_after_now: Some(200), expected_schedule_revision: None,
+    }).unwrap();
+    let (request, task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    exec(&mut state, Actor::System, Command::RecordScheduleRunSent {
+        run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
+    }).unwrap();
+    assert_eq!(state.requests[&RequestId::from("scheduled-request")].origin, RequestOrigin::Schedule);
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    receipt(&mut state, "scheduled-task");
+    exec(&mut state, Actor::Orchestrator { generation: 0 }, Command::CloseRequest {
+        request_id: "scheduled-request".into(), answer: Some("Nothing to review this week".into()), withdrawn: false, title: None,
+    }).unwrap();
+    assert!(state.interactions.contains_key(&InteractionId::from("scheduled-request-answer")));
+}
+
+#[test]
 fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
     let mut state = DomainState::new("epoch");
     exec(

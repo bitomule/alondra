@@ -104,6 +104,11 @@ const MAINTENANCE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS maintenance_reque
 /// The closed Requests without Tasks the user cleared from the completed work; created on every
 /// open like maintenance_requests.
 const CLEARED_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS cleared_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
+/// Who raised each Request the user did not, kept beside them; created on every open like
+/// maintenance_requests. A Request without a row is the user's, as every one from before it.
+const REQUEST_ORIGINS: &str = "CREATE TABLE IF NOT EXISTS request_origins(\
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),\
+ origin TEXT NOT NULL CHECK(json_valid(origin)));";
 /// The Requests sent as messages to the orchestrator, kept beside them; created on every open like
 /// task_relations. When it is first created, the messages from before it are the maintenance ones and
 /// those with the `request-` + 32 hex id that only the orchestrator message route makes.
@@ -589,6 +594,7 @@ impl DomainStore {
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
         tx.execute_batch(CLEARED_REQUESTS)?;
+        tx.execute_batch(REQUEST_ORIGINS)?;
         let messages_known: bool = tx.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='message_requests'", [], |r| r.get::<_, i64>(0),
         )? == 1;
