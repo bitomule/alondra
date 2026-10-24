@@ -13,6 +13,7 @@ mod restore;
 mod rules;
 mod mcp_servers;
 mod tasks;
+mod title;
 mod updated;
 mod usage_banner;
 mod version_watch;
@@ -790,6 +791,7 @@ pub fn run() -> Result<()> {
         ));
     }
     let res = main_loop(&mut terminal, macs);
+    title::clear(&mut stdout());
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     crate::pty::reset_terminal_modes();
@@ -841,6 +843,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
     let mut active = 0;
     let mut chosen = false;
     let mut dirty = true;
+    let mut tab_title = title::TerminalTitle::default();
     loop {
         if dirty {
             let tabs = mac_tabs(&macs, active);
@@ -848,6 +851,9 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
             app.macs = tabs;
             app.reconcile();
             draw(terminal, app)?;
+            let attention: Vec<Option<usize>> =
+                macs.iter().map(|(app, _)| (!app.offline).then(|| app.attention())).collect();
+            tab_title.show(&mut stdout(), title::text(&attention))?;
             dirty = false;
         }
         if event::poll(IDLE_POLL)? {
@@ -883,6 +889,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
                             app.reviewed(key, pr, number, res);
+                            tab_title.forget();
                             repaint(terminal, app)?;
                             break;
                         }
@@ -898,6 +905,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
                             app.account_signed_in(res);
+                            tab_title.forget();
                             repaint(terminal, app)?;
                             break;
                         }
@@ -921,6 +929,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
         }
         if macs[0].0.updated.restart && !macs.iter().any(|(app, _)| app.holds_restart()) {
             restart(terminal, &mut macs[0].0)?;
+            tab_title.forget();
             dirty = true;
         }
         let local = &macs[0].0;
@@ -943,6 +952,7 @@ fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             return Ok(());
         }
     };
+    title::clear(&mut stdout());
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     crate::pty::reset_terminal_modes();
