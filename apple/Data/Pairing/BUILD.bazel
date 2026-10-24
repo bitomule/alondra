@@ -25,3 +25,9 @@ swift_test(
         "//apple/Data/Transport:AlondraTransport",
     ],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

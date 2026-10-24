@@ -34,3 +34,9 @@ swift_test(
         ":AlondraAccount",
     ],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

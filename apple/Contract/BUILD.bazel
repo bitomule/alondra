@@ -18,3 +18,9 @@ swift_test(
         ":AlondraContract",
     ],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

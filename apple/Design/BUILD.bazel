@@ -33,3 +33,9 @@ swift_test(
 )
 
 exports_files(["Resources/AlondraDesign.xcstrings"])
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

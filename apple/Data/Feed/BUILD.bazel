@@ -49,3 +49,9 @@ swift_test(
     data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test"],
     deps = ["//apple/Contract:AlondraContract", "//apple/Testing:AlondraTestSupport"],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

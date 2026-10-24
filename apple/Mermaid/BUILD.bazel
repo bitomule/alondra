@@ -60,3 +60,9 @@ ios_unit_test(
     test_host = "//apple/Testing/Snapshots:SnapshotTestHost",
     deps = [":AlondraMermaidSnapshotTestsLib"],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

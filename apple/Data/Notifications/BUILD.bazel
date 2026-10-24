@@ -27,3 +27,9 @@ swift_test(
         "//apple/Data/Pairing:AlondraPairing",
     ],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

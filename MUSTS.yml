@@ -34,6 +34,7 @@ checks:
         - //apple:no_sleep_wording_test
         - //apple:release_bonjour_test
         - //apple:spanish_catalog_test
+        - //apple:unused_catalog_strings_test
         - //apple:push_keychain_group_test
         - //apple:update_keeps_session_test
         - //:plugin_mod_test

@@ -23,3 +23,9 @@ swift_test(
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

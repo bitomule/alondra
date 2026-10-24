@@ -11,17 +11,6 @@
     "Finish on the Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en el Mac"}}}},
     "Update Alondra to use this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esto"}}}},
     "Update Alondra to see this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para ver esto"}}}},
-    "Your Mac could not do it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. Vuelve a intentarlo."}}}},
-    "MCP servers": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Servidores MCP"
-          }
-        }
-      }
-    },
     "Waiting to send": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando para enviar"}}}},
     "Uploading attachments…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subiendo adjuntos…"}}}},
     "Sending…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviando…"}}}},
@@ -198,7 +187,6 @@
     "Finish Signing Out": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Terminar de cerrar sesión"}}}},
     "Something went wrong. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Algo ha fallado. Inténtalo de nuevo."}}}},
     "Your notification settings couldn’t be saved. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudieron guardar tus ajustes de notificaciones. Inténtalo de nuevo."}}}},
-    "Link another Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vincular otro Mac"}}}},
     "Off · Open Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desactivados · Abrir Ajustes"}}}},
     "You can reply, allow or approve from the Lock Screen.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes responder, permitir o aprobar desde la pantalla bloqueada."}}}},
     "Server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidor"}}}},
@@ -262,30 +250,10 @@
     "This device is no longer approved. Approve it again from the Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac."}}}},
     "This changed while you were looking. It’s updated now; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto cambió mientras lo mirabas. Ya está actualizado; vuelve a intentarlo."}}}},
     "Couldn’t reach your Mac. Nothing was sent; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo contactar con tu Mac. No se envió nada; inténtalo de nuevo."}}}},
-    "Couldn’t reach Alondra. Check your connection and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo conectar con Alondra. Revisa tu conexión y vuelve a intentarlo."}}}},
     "Couldn’t load this from your Mac. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar desde tu Mac. Vuelve a intentarlo."}}}},
-    "Add a note or line comment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añade una nota o un comentario en una línea"}}}},
-    "Choose a valid time.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una hora válida."}}}},
-    "Could not verify the latest diff; review was not sent: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo comprobar el último diff; la revisión no se envió: %@"}}}},
-    "It started, and what is left of it waits for PR #%@ of “%@” to be merged: it goes on once that PR is merged.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Empezó, y lo que queda espera al merge del PR #%1$@ de «%2$@»: sigue en cuanto se haga ese merge."}}}},
-    "Send your comments or clear them before accepting.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Envía tus comentarios o bórralos antes de aceptar."}}}},
-    "The PR changed; review the new diff before sending": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El PR ha cambiado; revisa el nuevo diff antes de enviar"}}}},
-    "The diff changed; refresh before sending line comments": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El diff ha cambiado; actualiza antes de enviar comentarios en líneas"}}}},
-    "The document changed. Review it again before sending comments.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El documento ha cambiado. Revísalo de nuevo antes de enviar comentarios."}}}},
     "This PR is no longer open": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este PR ya no está abierto"}}}},
-    "This diff is too large to verify; review was not sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado grande para comprobarlo; la revisión no se envió"}}}},
-    "We couldn’t confirm the result. Sending it again won’t apply it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Enviarlo de nuevo no lo aplicará dos veces."}}}},
-    "We couldn’t confirm the result. Try again; it won’t be applied twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Inténtalo de nuevo; no se aplicará dos veces."}}}},
-    "document: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "documento: %@"}}}},
-    "question: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "pregunta: %@"}}}},
-    "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera al merge del PR #%@"}}}},
     "Dismiss": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar"}}}},
-    "Mark read": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Marcar como leído"}}}},
-    "%lld working · %lld waiting": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%1$lld trabajando · %2$lld esperando"}}}},
     "· %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "· %@"}}}},
-    "· for %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "· desde hace %@"}}}},
-    "Edit Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Editar de nuevo"}}}},
-    "This diff is too long to show in full. Open the PR on GitHub for the rest.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado largo para mostrarlo entero. Abre la PR en GitHub para ver el resto."}}}},
     "No internet connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin conexión a internet"}}}},
     "Can’t reach the Alondra server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se puede contactar con el servidor de Alondra"}}}},
     "Your Mac isn’t answering": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no responde"}}}},
@@ -325,137 +293,12 @@
     "Alondra on this Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra en este Mac"}}}},
     "Connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conexión"}}}},
     "This Mac talks to its own Alondra directly. No account is needed.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este Mac habla directamente con su propio Alondra. No hace falta ninguna cuenta."}}}},
-    "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
-    "Review the activity before continuing.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Revisa la actividad antes de continuar."}}}},
-    "View details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver detalles"}}}},
-    "The action could not be confirmed. Check the status before trying again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se ha podido confirmar la acción. Comprueba el estado antes de volver a intentarlo."}}}},
-    "The interrupted work will not be repeated. Check what was completed first; pending messages will continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El trabajo interrumpido no se repetirá. Revisa primero qué se ha completado; los mensajes pendientes seguirán adelante."}}}},
-    "Actions already completed will not be undone. You can review the result before continuing.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las acciones ya completadas no se desharán. Podrás revisar el resultado antes de continuar."}}}},
-    "Continue without repeating?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Continuar sin repetir?"}}}},
-
-    "Stop": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener"}}}},
-
-    "Stop the current intervention?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Detener la intervención actual?"}}}},
-
-    "Retry the interrupted work?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Reintentar el trabajo interrumpido?"}}}},
-    "Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que algunas acciones ya se hayan completado. Revisa la actividad y las tareas antes de reintentar para evitar repetir trabajo."}}}},
-
-    "%lld operations are still unconfirmed": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Operaciones que siguen sin confirmar: %lld"
-          }
-        }
-      }
-    },
-    "%lld operations unconfirmed; checking their status": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Operaciones sin confirmar: %lld; comprobando su estado"
-          }
-        }
-      }
-    },
-    "Feedback delivered; %lld reports could not be marked read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentarios entregados; informes que no se pudieron marcar como leídos: %lld"
-          }
-        }
-      }
-    },
     "Settings…": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Ajustes…"
-          }
-        }
-      }
-    },
-    "%@ ago": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "hace %@"
-          }
-        }
-      }
-    },
-    "%@ · %@ ago": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ · hace %2$@"
-          }
-        }
-      }
-    },
-    "%@: write why…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@: escribe por qué…"
-          }
-        }
-      }
-    },
-    "%lld GB free": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld GB libres"
-          }
-        }
-      }
-    },
-    "%lld nodes": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld node"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodes"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodo"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodos"
-                }
-              }
-            }
           }
         }
       }
@@ -540,46 +383,6 @@
         }
       }
     },
-    "%lld pending": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld pending"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld pending"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld pendiente"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld pendientes"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "%lld things waiting for you": {
       "localizations": {
         "en": {
@@ -640,52 +443,12 @@
         }
       }
     },
-    "Answer, and it moves on to the next one by itself.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respondes, y pasa sola a la siguiente."
-          }
-        }
-      }
-    },
     "Archive Completed": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Archivar terminadas"
-          }
-        }
-      }
-    },
-    "Archive every done or cancelled task": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Archiva todas las tareas terminadas o descartadas"
-          }
-        }
-      }
-    },
-    "Ask": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preguntar"
-          }
-        }
-      }
-    },
-    "Ask the node about this PR; the card stays in the inbox": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pregúntale al nodo sobre este PR; la tarjeta se queda en la bandeja"
           }
         }
       }
@@ -700,42 +463,12 @@
         }
       }
     },
-    "Ask for new work (⇧⌘N)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pedir trabajo nuevo (⇧⌘N)"
-          }
-        }
-      }
-    },
-    "CPU": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CPU"
-          }
-        }
-      }
-    },
     "Cancel": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Cancelar"
-          }
-        }
-      }
-    },
-    "Changes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cambios"
           }
         }
       }
@@ -750,26 +483,6 @@
         }
       }
     },
-    "Close Node…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerrar nodo…"
-          }
-        }
-      }
-    },
-    "Close this node with claude rm": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cierra este nodo con claude rm"
-          }
-        }
-      }
-    },
     "Comment": {
       "localizations": {
         "es": {
@@ -780,72 +493,12 @@
         }
       }
     },
-    "Comment on this block": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentar este bloque"
-          }
-        }
-      }
-    },
-    "Comment on this line": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentar esta línea"
-          }
-        }
-      }
-    },
     "Comment…": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Comentar…"
-          }
-        }
-      }
-    },
-    "Couldn’t get a code: %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No pude pedir un código: %@"
-          }
-        }
-      }
-    },
-    "Couldn’t pair this Mac with alondrad: %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No pude vincular este Mac con alondrad: %@"
-          }
-        }
-      }
-    },
-    "Couldn’t read it: %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No he podido leerlo: %@"
-          }
-        }
-      }
-    },
-    "Document": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Documento"
           }
         }
       }
@@ -876,16 +529,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cargando…"
-          }
-        }
-      }
-    },
-    "The item changed": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El elemento ha cambiado"
           }
         }
       }
@@ -930,222 +573,12 @@
         }
       }
     },
-    "Expired": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Caducado"
-          }
-        }
-      }
-    },
-    "Expires in %lld:%@ · works once": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Caduca en %1$lld:%2$@ · sirve una vez"
-          }
-        }
-      }
-    },
-    "Finished": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Terminado"
-          }
-        }
-      }
-    },
-    "finished without tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "terminada sin tareas"
-          }
-        }
-      }
-    },
-    "For example: “Find out why Redraft is slow to open and propose a fix”": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Por ejemplo: «Revisa por qué Redraft tarda en abrir y propón un arreglo»"
-          }
-        }
-      }
-    },
-    "Found in the conversations": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Encontrado en las conversaciones"
-          }
-        }
-      }
-    },
-    "General comment (optional)…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentario general (opcional)…"
-          }
-        }
-      }
-    },
-    "General comment on the plan (optional)…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentario general sobre el plan (opcional)…"
-          }
-        }
-      }
-    },
-    "Generate Another Code": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Generar otro código"
-          }
-        }
-      }
-    },
-    "GitHub is checking whether it can be merged": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "GitHub está comprobando si se puede hacer merge"
-          }
-        }
-      }
-    },
-    "Hover over a line to comment on it": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pasa el ratón por una línea para comentarla"
-          }
-        }
-      }
-    },
-    "I need more context": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Necesito más contexto"
-          }
-        }
-      }
-    },
     "It has conflicts with its base branch": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Tiene conflictos con su rama base"
-          }
-        }
-      }
-    },
-    "Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Su nodo integra la base en la rama, resuelve los conflictos y hace push; la tarjeta vuelve cuando se puede hacer merge"
-          }
-        }
-      }
-    },
-    "I’ll pass it to the orchestrator: it prepares the mission and launches the node.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Se lo paso al orquestador: prepara la misión y lanza el nodo."
-          }
-        }
-      }
-    },
-    "Key %lld": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tecla %lld"
-          }
-        }
-      }
-    },
-    "Mark as Read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leído"
-          }
-        }
-      }
-    },
-    "Mark as read (L)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Marcar como leído (L)"
-          }
-        }
-      }
-    },
-    "Memory": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Memoria"
-          }
-        }
-      }
-    },
-    "Merge (%@)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hacer merge (%@)"
-          }
-        }
-      }
-    },
-    "Merge PR #%llu?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Hacer merge del PR #%llu?"
-          }
-        }
-      }
-    },
-    "Merge…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hacer merge…"
           }
         }
       }
@@ -1170,72 +603,12 @@
         }
       }
     },
-    "No camera?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Sin cámara?"
-          }
-        }
-      }
-    },
-    "No node needs you right now. Anything new will show up in Waiting for You.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ningún nodo te necesita ahora mismo. Lo que llegue aparecerá en «Te espera»."
-          }
-        }
-      }
-    },
-    "None yet.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ninguno todavía."
-          }
-        }
-      }
-    },
-    "Not in the conversations either": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tampoco aparece en las conversaciones"
-          }
-        }
-      }
-    },
     "Not used yet": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Sin uso todavía"
-          }
-        }
-      }
-    },
-    "Nothing matches": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nada coincide"
-          }
-        }
-      }
-    },
-    "Notice": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aviso"
           }
         }
       }
@@ -1250,16 +623,6 @@
         }
       }
     },
-    "Open Alondra on the iPhone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abre Alondra en el iPhone"
-          }
-        }
-      }
-    },
     "Open on GitHub": {
       "localizations": {
         "es": {
@@ -1270,252 +633,12 @@
         }
       }
     },
-    "Open with the default app": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abrir con la app por defecto"
-          }
-        }
-      }
-    },
-    "Or answer in your own words…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O responde con tus palabras…"
-          }
-        }
-      }
-    },
-    "Orchestrator": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Orquestador"
-          }
-        }
-      }
-    },
-    "Pair Another": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vincular otro"
-          }
-        }
-      }
-    },
-    "Pair an iPhone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vincular un iPhone"
-          }
-        }
-      }
-    },
-    "Pair an iPhone…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vincular un iPhone…"
-          }
-        }
-      }
-    },
-    "Pair your iPhone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vincula tu iPhone"
-          }
-        }
-      }
-    },
-    "Paired devices": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dispositivos vinculados"
-          }
-        }
-      }
-    },
-    "Pending": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pendiente"
-          }
-        }
-      }
-    },
-    "Permission": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permiso"
-          }
-        }
-      }
-    },
-    "Plan": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Plan"
-          }
-        }
-      }
-    },
-    "Point the camera at this code": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apunta la cámara a este código"
-          }
-        }
-      }
-    },
-    "PR handling": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gestión de PR"
-          }
-        }
-      }
-    },
-    "Progress": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Progreso"
-          }
-        }
-      }
-    },
-    "Pull request": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pull request"
-          }
-        }
-      }
-    },
-    "Pull Requests": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pull requests"
-          }
-        }
-      }
-    },
-    "Question": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pregunta"
-          }
-        }
-      }
-    },
-    "Remove Comment": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quitar comentario"
-          }
-        }
-      }
-    },
-    "Remove comment": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quitar comentario"
-          }
-        }
-      }
-    },
-    "Remove comment %lld": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quitar comentario %lld"
-          }
-        }
-      }
-    },
     "Reply": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Responder"
-          }
-        }
-      }
-    },
-    "Reply to the node (optional)…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Responder al nodo (opcional)…"
-          }
-        }
-      }
-    },
-    "Request Changes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pedir cambios"
-          }
-        }
-      }
-    },
-    "Request Changes (%lld)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pedir cambios (%lld)"
-          }
-        }
-      }
-    },
-    "Resolve Conflicts": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Resolver conflictos"
           }
         }
       }
@@ -1560,92 +683,12 @@
         }
       }
     },
-    "Seen %@ ago": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Visto hace %@"
-          }
-        }
-      }
-    },
     "Send": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Enviar"
-          }
-        }
-      }
-    },
-    "Send Comments": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar comentarios"
-          }
-        }
-      }
-    },
-    "Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Devuelve la pregunta al nodo para que la explique mejor. Lo que hayas escrito va como lo que te falta."
-          }
-        }
-      }
-    },
-    "Sends your %lld comments": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Sends your comment"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Sends your %lld comments"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Envía tu comentario"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Envía tus %lld comentarios"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "Settings → Pair with the Mac": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ajustes → Vincular con el Mac"
           }
         }
       }
@@ -1660,66 +703,6 @@
         }
       }
     },
-    "The node asks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El nodo pregunta"
-          }
-        }
-      }
-    },
-    "The node says": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El nodo dice"
-          }
-        }
-      }
-    },
-    "The node asks something": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El nodo pregunta algo"
-          }
-        }
-      }
-    },
-    "This node is gone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este nodo ya no está"
-          }
-        }
-      }
-    },
-    "Today": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hoy"
-          }
-        }
-      }
-    },
-    "Unpair": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desvincular"
-          }
-        }
-      }
-    },
     "Waiting for You": {
       "localizations": {
         "es": {
@@ -1730,32 +713,12 @@
         }
       }
     },
-    "Week": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Semana"
-          }
-        }
-      }
-    },
     "What do you want done?": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "¿Qué quieres que se haga?"
-          }
-        }
-      }
-    },
-    "What do you want to say about this?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Qué quieres decir sobre esto?"
           }
         }
       }
@@ -1780,136 +743,6 @@
         }
       }
     },
-    "What it said last · %@ ago": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lo último que dijo · hace %@"
-          }
-        }
-      }
-    },
-    "What should change?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Qué hay que cambiar?"
-          }
-        }
-      }
-    },
-    "What the node said last": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lo último que dijo el nodo"
-          }
-        }
-      }
-    },
-    "Without your comments": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sin tus comentarios"
-          }
-        }
-      }
-    },
-    "Write to %@…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escribe a %@…"
-          }
-        }
-      }
-    },
-    "You can now answer from the iPhone, even away from home.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ya puedes contestar desde el iPhone, también fuera de casa."
-          }
-        }
-      }
-    },
-    "Your answer…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu respuesta…"
-          }
-        }
-      }
-    },
-    "Your turn": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Te toca"
-          }
-        }
-      }
-    },
-    "iPhone paired": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "iPhone vinculado"
-          }
-        }
-      }
-    },
-    "load %lld": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "carga %lld"
-          }
-        }
-      }
-    },
-    "memory %lld%% free": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "memoria %lld %% libre"
-          }
-        }
-      }
-    },
-    "no project": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sin proyecto"
-          }
-        }
-      }
-    },
-    "unknown node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "nodo desconocido"
-          }
-        }
-      }
-    },
     "unnamed": {
       "localizations": {
         "es": {
@@ -1920,32 +753,12 @@
         }
       }
     },
-    "· %@ ago": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "· hace %@"
-          }
-        }
-      }
-    },
     "“%@”": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "«%@»"
-          }
-        }
-      }
-    },
-    "↩ saves · ⌥↩ new line · esc cancels": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "↩ guarda · ⌥↩ salto de línea · esc cancela"
           }
         }
       }
@@ -1966,106 +779,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Plegar todos los archivos"
-          }
-        }
-      }
-    },
-    "Earlier in this delivery (%lld)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Antes en esta entrega (%lld)"
-          }
-        }
-      }
-    },
-    "About report #%llu": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sobre el informe #%llu"
-          }
-        }
-      }
-    },
-    "Alondra isn’t responding; %lld pending, retrying": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alondra no responde; lo reintento (pendientes: %lld)"
-          }
-        }
-      }
-    },
-    "Couldn’t send %lld: Alondra didn’t answer for 2 minutes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se pudo enviar (%lld): Alondra no respondió en 2 minutos"
-          }
-        }
-      }
-    },
-    "Rescue Comments": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rescatar comentarios"
-          }
-        }
-      }
-    },
-    "Approve": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aprobar"
-          }
-        }
-      }
-    },
-    "The node reads your comments on the artifact and applies them (C)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El nodo lee tus comentarios del artefacto y los aplica (C)"
-          }
-        }
-      }
-    },
-    "Tell the node the artifact is approved (V)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Decirle al nodo que el artefacto está aprobado (V)"
-          }
-        }
-      }
-    },
-    "Attach Files…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Adjuntar archivos…"
-          }
-        }
-      }
-    },
-    "Attach files (or drop them here)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Adjunta archivos (o suéltalos aquí)"
           }
         }
       }
@@ -2100,42 +813,12 @@
         }
       }
     },
-    "The orchestrator decides": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador decide"
-          }
-        }
-      }
-    },
     "Issue": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Incidencia"
-          }
-        }
-      }
-    },
-    "Remove the issue": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quitar la issue"
-          }
-        }
-      }
-    },
-    "From an issue…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desde una issue…"
           }
         }
       }
@@ -2150,62 +833,12 @@
         }
       }
     },
-    "Search GitHub again": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Buscar de nuevo en GitHub"
-          }
-        }
-      }
-    },
-    "Use %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Usar %@"
-          }
-        }
-      }
-    },
-    "No open issues match": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ninguna issue abierta coincide"
-          }
-        }
-      }
-    },
     "Filter projects": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Filtrar proyectos"
-          }
-        }
-      }
-    },
-    "No project matches": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ningún proyecto coincide"
-          }
-        }
-      }
-    },
-    "Send the node what should change; the card comes back when it pushes again": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envía al nodo lo que hay que cambiar; la tarjeta vuelve cuando suba cambios"
           }
         }
       }
@@ -2230,16 +863,6 @@
         }
       }
     },
-    "This request is gone": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esta petición ya no está"
-          }
-        }
-      }
-    },
     "from “%@”": {
       "localizations": {
         "es": {
@@ -2250,142 +873,12 @@
         }
       }
     },
-    "· subagent of “%@”": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "· subagente de «%@»"
-          }
-        }
-      }
-    },
-    "This Alondra can’t cancel or reopen tasks yet.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este Alondra todavía no puede cancelar ni reabrir tareas."
-          }
-        }
-      }
-    },
-    "Reopen": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reabrir"
-          }
-        }
-      }
-    },
-    "Reopen a finished or cancelled task": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reabre una tarea terminada o descartada"
-          }
-        }
-      }
-    },
-    "Cancel Task…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancelar tarea…"
-          }
-        }
-      }
-    },
-    "Its node stops working on it": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Su nodo deja de trabajar en ella"
-          }
-        }
-      }
-    },
-    "Cancel “%@”?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Cancelar «%@»?"
-          }
-        }
-      }
-    },
-    "Cancel Task": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancelar tarea"
-          }
-        }
-      }
-    },
-    "Its node stops working on it. You can reopen it later.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Su nodo deja de trabajar en ella. Puedes reabrirla después."
-          }
-        }
-      }
-    },
-    "for %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "desde hace %@"
-          }
-        }
-      }
-    },
-    "Pull requests in merge order": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pull requests en orden de merge"
-          }
-        }
-      }
-    },
     "Dependencies": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Dependencias"
-          }
-        }
-      }
-    },
-    "Depends on": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Depende de"
-          }
-        }
-      }
-    },
-    "Waiting on it": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La esperan"
           }
         }
       }
@@ -2410,52 +903,12 @@
         }
       }
     },
-    "unread": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sin leer"
-          }
-        }
-      }
-    },
-    "read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "leído"
-          }
-        }
-      }
-    },
-    "Read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leer"
-          }
-        }
-      }
-    },
     "Options": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Opciones"
-          }
-        }
-      }
-    },
-    "Effort": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esfuerzo"
           }
         }
       }
@@ -2520,82 +973,12 @@
         }
       }
     },
-    "this task": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "esta tarea"
-          }
-        }
-      }
-    },
-    "Task: %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tarea: %@"
-          }
-        }
-      }
-    },
-    "Withdraw Request…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Retirar petición…"
-          }
-        }
-      }
-    },
     "Withdraw Request": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Retirar petición"
-          }
-        }
-      }
-    },
-    "Withdraw “%@”?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Retirar «%@»?"
-          }
-        }
-      }
-    },
-    "It ends as done, without tasks, and the orchestrator can no longer define it.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Queda como terminada, sin tareas, y el orquestador ya no puede definirla."
-          }
-        }
-      }
-    },
-    "Scheduled": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Programadas"
-          }
-        }
-      }
-    },
-    "Scheduled Tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tareas programadas"
           }
         }
       }
@@ -2630,52 +1013,12 @@
         }
       }
     },
-    "Create a recurring mission for the orchestrator.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Crea una misión recurrente para el orquestador."
-          }
-        }
-      }
-    },
     "Delete": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Borrar"
-          }
-        }
-      }
-    },
-    "Run now": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ejecutar ahora"
-          }
-        }
-      }
-    },
-    "Delete scheduled task?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Borrar esta tarea programada?"
-          }
-        }
-      }
-    },
-    "Future runs will stop. Existing requests stay in Tasks.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No volverá a ejecutarse. Las solicitudes existentes seguirán en Tareas."
           }
         }
       }
@@ -2690,16 +1033,6 @@
         }
       }
     },
-    "Edit Schedule": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Editar programación"
-          }
-        }
-      }
-    },
     "Name": {
       "localizations": {
         "es": {
@@ -2710,102 +1043,12 @@
         }
       }
     },
-    "Mission instructions": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Instrucciones de la misión"
-          }
-        }
-      }
-    },
     "When": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Cuándo"
-          }
-        }
-      }
-    },
-    "Repeat": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Repetición"
-          }
-        }
-      }
-    },
-    "Every day": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cada día"
-          }
-        }
-      }
-    },
-    "Every week": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cada semana"
-          }
-        }
-      }
-    },
-    "Day": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Día"
-          }
-        }
-      }
-    },
-    "Hour": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hora"
-          }
-        }
-      }
-    },
-    "Minute": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Minuto"
-          }
-        }
-      }
-    },
-    "Uses the Mac’s local time zone. A missed run is sent once when Alondra starts again.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Usa la zona horaria del Mac. Si se pierde una ejecución, Alondra la envía una sola vez al arrancar."
-          }
-        }
-      }
-    },
-    "Active": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activa"
           }
         }
       }
@@ -2830,16 +1073,6 @@
         }
       }
     },
-    "Could not load scheduled tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se pudieron cargar las tareas programadas"
-          }
-        }
-      }
-    },
     "Retry": {
       "localizations": {
         "es": {
@@ -2856,56 +1089,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Más"
-          }
-        }
-      }
-    },
-    "Time": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hora"
-          }
-        }
-      }
-    },
-    "Run": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ejecutar"
-          }
-        }
-      }
-    },
-    "What should the orchestrator do?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Qué debe hacer el orquestador?"
-          }
-        }
-      }
-    },
-    "Skip for Now": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saltar por ahora"
-          }
-        }
-      }
-    },
-    "Dismiss Pull Request": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Descartar pull request"
           }
         }
       }
@@ -2970,32 +1153,12 @@
         }
       }
     },
-    "Checking connection…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comprobando conexión…"
-          }
-        }
-      }
-    },
     "Notifications": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Notificaciones"
-          }
-        }
-      }
-    },
-    "Notifications enabled": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Notificaciones activadas"
           }
         }
       }
@@ -3010,42 +1173,12 @@
         }
       }
     },
-    "Open Notification Settings": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abrir ajustes de notificaciones"
-          }
-        }
-      }
-    },
     "Waiting for token": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Esperando registro de notificaciones"
-          }
-        }
-      }
-    },
-    "Registering notifications…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Registrando notificaciones…"
-          }
-        }
-      }
-    },
-    "Registered": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Registrado"
           }
         }
       }
@@ -3116,16 +1249,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cargando ajustes…"
-          }
-        }
-      }
-    },
-    "Quiet hours use the time zone of the Mac running your agents. Changes sync through the encrypted service.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El horario de silencio usa la zona horaria del Mac donde se ejecutan tus agentes. Los cambios se sincronizan mediante el servicio cifrado."
           }
         }
       }
@@ -3706,22 +1829,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Explorar la demo"
-          }
-        }
-      }
-    },
-    "Opening demo…": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opening demo…"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abriendo demo…"
           }
         }
       }

@@ -83,6 +83,37 @@ filegroup(
     ]) + ["//apple/Features:sources", "//apple/iOS/UI:sources"],
 )
 
+APP_SOURCES = [
+    ":view_sources",
+    "//apple/Contract:sources",
+    "//apple/Data/Account:sources",
+    "//apple/Data/Attachments:sources",
+    "//apple/Data/Feed:sources",
+    "//apple/Data/Iroh:sources",
+    "//apple/Data/Notifications:sources",
+    "//apple/Data/Pairing:sources",
+    "//apple/Data/Sync:sources",
+    "//apple/Data/Transport:sources",
+    "//apple/Demo:sources",
+    "//apple/Design:sources",
+    "//apple/Mermaid:sources",
+]
+
+sh_test(
+    name = "unused_catalog_strings_test",
+    srcs = ["unused_catalog_strings_test.py"],
+    args = [
+        "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
+        "$(rootpath iOS/Resources/Localizable.xcstrings)",
+        "$(rootpath macOS/Resources/Localizable.xcstrings)",
+    ] + ["$(rootpaths %s)" % sources for sources in APP_SOURCES],
+    data = [
+        "//apple/Design:Resources/AlondraDesign.xcstrings",
+        "iOS/Resources/Localizable.xcstrings",
+        "macOS/Resources/Localizable.xcstrings",
+    ] + APP_SOURCES,
+)
+
 filegroup(
     name = "localization_catalogs",
     srcs = [
