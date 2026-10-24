@@ -196,4 +196,4 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 #[path = "retention_tests.rs"]
-mod tests;
+pub(crate) mod tests;

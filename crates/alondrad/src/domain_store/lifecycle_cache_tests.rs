@@ -114,7 +114,7 @@ fn a_write_from_another_connection_is_read_with_the_lifecycles_its_journals_repl
     run_on(&other, &node(), present("delivery-elsewhere")).unwrap();
     assert_kept(&other);
     let state = home.runtime.state().unwrap();
-    home.runtime.execute_on_current(&CommandEnvelope {
+    home.runtime.execute_as_system(CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "cache-after".into(), expected_revision: 0,
         command: Command::RegisterAgent { agent_id: "node-after".into(), name: "After".into(), at: 1 },
     }).unwrap();

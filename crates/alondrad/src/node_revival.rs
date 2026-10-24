@@ -379,7 +379,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
             expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into() },
         };
-        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
+        match domain.execute_as_system(envelope) {
             Ok(_) => {
                 domain.live.remember_closed_task(&task_id.0, node.clone());
                 freed.push(task_id);

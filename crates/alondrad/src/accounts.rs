@@ -200,45 +200,40 @@ fn unchecked(accounts: &[AccountStatus]) -> Vec<AccountStatus> {
 
 /// Records `accounts` and their `reserve` in the domain when it holds something else.
 fn record(domain: &DomainRuntime, accounts: Vec<AccountStatus>, reserve: Share) {
-    for _ in 0..5 {
-        let state = domain.read();
-        if unchecked(&state.state().accounts) == accounts && state.state().account_reserve == reserve {
-            return;
-        }
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.state().data_epoch.clone(),
-            command_id: format!("accounts-{}", crate::auth::random_hex(16)).into(),
-            expected_revision: state.state().revision,
-            command: Command::RecordAccounts { accounts: accounts.clone(), reserve },
-        };
-        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
-            Ok(_) => return,
-            Err(error) => log!("could not record the accounts: {error}"),
-        }
+    let state = domain.read();
+    if unchecked(&state.state().accounts) == accounts && state.state().account_reserve == reserve {
+        return;
+    }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.state().data_epoch.clone(),
+        command_id: format!("accounts-{}", crate::auth::random_hex(16)).into(),
+        expected_revision: 0,
+        command: Command::RecordAccounts { accounts, reserve },
+    };
+    drop(state);
+    if let Err(error) = domain.execute_as_system(envelope) {
+        log!("could not record the accounts: {error}");
     }
 }
 
 /// Records how new work is spread, and whether nodes move between accounts, when the domain
 /// holds another way.
-fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
-    for _ in 0..5 {
-        let state = domain.read();
-        if state.state().account_policy == policy && state.state().account_moves == move_when_exhausted {
-            return;
-        }
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.state().data_epoch.clone(),
-            command_id: format!("account-policy-{}", crate::auth::random_hex(16)).into(),
-            expected_revision: state.state().revision,
-            command: Command::RecordDistribution { policy, move_when_exhausted },
-        };
-        drop(state);
-        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
-            Ok(_) => return,
-            Err(error) => log!("could not record how work is spread over the accounts: {error}"),
-        }
+pub(crate) fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
+    let state = domain.read();
+    if state.state().account_policy == policy && state.state().account_moves == move_when_exhausted {
+        return;
+    }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.state().data_epoch.clone(),
+        command_id: format!("account-policy-{}", crate::auth::random_hex(16)).into(),
+        expected_revision: 0,
+        command: Command::RecordDistribution { policy, move_when_exhausted },
+    };
+    drop(state);
+    if let Err(error) = domain.execute_as_system(envelope) {
+        log!("could not record how work is spread over the accounts: {error}");
     }
 }
 

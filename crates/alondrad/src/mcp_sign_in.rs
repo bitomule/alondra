@@ -81,7 +81,7 @@ pub(crate) fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, addr
     if !(200..400).contains(&status) {
         return Err(SignInError::Undelivered(format!("Claude refused the sign-in ({status})")));
     }
-    domain.execute(&Actor::System, &envelope, None, || Ok(())).map(drop).map_err(|error| SignInError::Refused(format!("{error:?}")))
+    domain.execute_as_system(envelope).map(drop).map_err(|error| SignInError::Refused(format!("{error:?}")))
 }
 
 #[cfg(test)]

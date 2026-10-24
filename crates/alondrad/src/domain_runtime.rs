@@ -51,6 +51,8 @@ pub struct DomainRuntime {
     #[cfg(test)]
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
+    before_next_commit: Mutex<Option<Box<dyn FnOnce(&DomainRuntime) + Send>>>,
+    #[cfg(test)]
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
     owner_failures: Mutex<Option<std::sync::mpsc::Sender<String>>>,
@@ -119,6 +121,8 @@ impl DomainRuntime {
             contexts: Default::default(),
             #[cfg(test)]
             before_owner_publish: Default::default(),
+            #[cfg(test)]
+            before_next_commit: Default::default(),
             #[cfg(test)]
             before_acknowledge: Default::default(),
             #[cfg(test)]
@@ -250,10 +254,10 @@ impl DomainRuntime {
                 protocol_version: PROTOCOL_VERSION,
                 data_epoch: state.data_epoch.clone(),
                 command_id: format!("compact-ended-tasks-{}", crate::auth::random_hex(8)).into(),
-                expected_revision: state.revision,
+                expected_revision: 0,
                 command: Command::CompactEndedTasks { task_ids },
             };
-            match self.execute_on_current(&envelope) {
+            match self.execute_as_system(envelope) {
                 Ok(outcome) if outcome.changed => compacted += count,
                 Ok(_) => return Ok(compacted),
                 Err(StoreError::Domain(error)) => {
@@ -294,6 +298,11 @@ impl DomainRuntime {
     #[cfg(test)]
     pub(crate) fn take_acknowledgements(&self) -> Vec<alondra_store::Committed> {
         self.seals.take_all()
+    }
+    /// Runs `hook` once, as the next command reaches the writer lock.
+    #[cfg(test)]
+    pub(crate) fn before_next_commit(&self, hook: impl FnOnce(&DomainRuntime) + Send + 'static) {
+        *self.before_next_commit.lock().unwrap() = Some(Box::new(hook));
     }
     #[cfg(test)]
     pub(crate) fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {
@@ -411,25 +420,18 @@ impl DomainRuntime {
 
     /// Record the Claude session the orchestrator runs in, unless the domain already has it.
     pub fn bind_orchestrator_session(&self, session: &str) -> Result<(), StoreError> {
-        let command_id: CommandId = format!("orchestrator-session-{}", crate::auth::random_hex(16)).into();
-        for _ in 0..5 {
-            let state = self.state().map_err(StoreError::Storage)?;
-            if state.orchestrator_session.as_ref().is_some_and(|bound| bound.0 == session) {
-                return Ok(());
-            }
-            let envelope = CommandEnvelope {
-                protocol_version: PROTOCOL_VERSION,
-                data_epoch: state.data_epoch.clone(),
-                command_id: command_id.clone(),
-                expected_revision: state.revision,
-                command: Command::BindOrchestratorSession { session_id: session.into() },
-            };
-            match self.execute(&Actor::System, &envelope, None, || Ok(())) {
-                Err(StoreError::Domain(error)) if error.code == "stale_revision" => continue,
-                result => return result.map(|_| ()),
-            }
+        let state = self.state().map_err(StoreError::Storage)?;
+        if state.orchestrator_session.as_ref().is_some_and(|bound| bound.0 == session) {
+            return Ok(());
         }
-        Err(DomainError::new("stale_revision", "The domain stayed busy while binding the orchestrator's session").into())
+        self.execute_as_system(CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("orchestrator-session-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: 0,
+            command: Command::BindOrchestratorSession { session_id: session.into() },
+        })
+        .map(drop)
     }
 
     pub fn revoke_agent(&self, session: &str) -> Result<()> {
@@ -573,6 +575,32 @@ impl DomainRuntime {
         launch: Option<&crate::domain_store::RequestLaunch>,
         authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
     ) -> Result<CommandOutcome, StoreError> {
+        self.commit(actor, envelope, transport, launch, false, authorize)
+    }
+
+    /// A command the daemon issues itself, judged on the state it commits against: the revision
+    /// is filled under the writer lock, so a command committed meanwhile never makes it stale.
+    pub(crate) fn execute_as_system(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
+        let envelope = CommandEnvelope { expected_revision: 0, ..envelope };
+        self.commit(&Actor::System, &envelope, None, None, true, || Ok(()))
+    }
+
+    fn commit(
+        &self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        launch: Option<&crate::domain_store::RequestLaunch>,
+        on_current: bool,
+        authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
+    ) -> Result<CommandOutcome, StoreError> {
+        #[cfg(test)]
+        {
+            let hook = self.before_next_commit.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook(self);
+            }
+        }
         let mut store = self.store.lock().expect("domain store poisoned");
         // Lock order is domain store → approval lease. Revocation takes only the
         // exclusive approval lease and never waits for the domain store.
@@ -587,6 +615,7 @@ impl DomainRuntime {
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
         let commit = match launch {
             Some(launch) => store.execute_launching(actor, &prepared.envelope, transport, launch),
+            None if on_current => store.execute_filling_revision(actor, &prepared.envelope),
             None => store.execute_authenticated(actor, &prepared.envelope, transport),
         };
         if matches!(&commit, Err(StoreError::Domain(_))) {
@@ -642,26 +671,6 @@ impl DomainRuntime {
         if let Err(error) = written {
             log!("allow always: the rules of {interaction_id} were not written: {error:#}");
         }
-    }
-
-    /// A system command the domain judges on the state it commits against, as the node machine
-    /// does its moves: the revision is filled under the writer lock, so a command committed
-    /// meanwhile never makes it stale.
-    pub(crate) fn execute_on_current(&self, envelope: &CommandEnvelope) -> Result<CommandOutcome, StoreError> {
-        let mut store = self.store.lock().expect("domain store poisoned");
-        let mut commit = store.execute_filling_revision(&Actor::System, envelope)?;
-        self.publish(&commit.state);
-        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
-            self.seals.put(sealed);
-        }
-        if !commit.replayed && commit.outcome.changed {
-            self.changed.send_replace(commit.state.revision);
-        }
-        drop(store);
-        if !commit.replayed && commit.outcome.changed {
-            crate::task_closer::settle_unattended(self, &commit.state);
-        }
-        Ok(commit.outcome)
     }
 
     pub fn execute_bearer(
@@ -1207,3 +1216,5 @@ mod rejections;
 mod cost_tests;
 #[cfg(test)]
 mod mcp_flow_tests;
+#[cfg(test)]
+mod system_command_tests;

@@ -179,17 +179,4 @@ impl DomainRuntime {
             command: Command::Withdraw { interaction_id: id.clone() },
         })
     }
-
-    pub(crate) fn execute_as_system(&self, mut envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
-        for _ in 0..5 {
-            match self.execute(&Actor::System, &envelope, None, || Ok(())) {
-                Err(StoreError::Domain(error)) if error.code == "stale_revision" => {
-                    let Ok(state) = self.state() else { break };
-                    envelope.expected_revision = state.revision;
-                }
-                result => return result,
-            }
-        }
-        Err(DomainError::new("stale_revision", "Alondra remained busy").into())
-    }
 }

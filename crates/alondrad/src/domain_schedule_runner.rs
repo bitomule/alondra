@@ -203,27 +203,14 @@ async fn prepare_claimed(
 }
 
 fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
-    let command_id: alondra_core::domain::CommandId =
-        format!("schedule-worker-{}", crate::auth::random_hex(16)).into();
-    for _ in 0..5 {
-        let state = domain.state().map_err(StoreError::Storage)?;
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch.clone(),
-            command_id: command_id.clone(),
-            expected_revision: state.revision,
-            command: command.clone(),
-        };
-        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
-            Err(StoreError::Domain(error)) if error.code == "stale_revision" => continue,
-            result => return result,
-        }
-    }
-    Err(alondra_core::domain::DomainError::new(
-        "stale_revision",
-        "Schedule writer remained busy",
-    )
-    .into())
+    let state = domain.state().map_err(StoreError::Storage)?;
+    domain.execute_as_system(CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("schedule-worker-{}", crate::auth::random_hex(16)).into(),
+        expected_revision: 0,
+        command,
+    })
 }
 
 fn ordinary_conflict(error: &StoreError) -> bool {

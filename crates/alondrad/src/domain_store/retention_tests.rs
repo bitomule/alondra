@@ -343,6 +343,13 @@ fn ended_task(fixture: &Fixture) -> DomainStore {
     assert_eq!(store.load().unwrap().tasks[&TaskId::from("task-1")].state, TaskState::Done);
     store
 }
+/// Runs `test` on a daemon whose store holds a done task with cards to compact.
+pub(crate) fn with_an_ended_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntime)) {
+    let fixture = Fixture::new();
+    drop(ended_task(&fixture));
+    let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
+    test(&runtime);
+}
 /// What the apps show: the task's detail, its cards, the home and the task list, on every client.
 fn shown(state: &DomainState) -> Vec<serde_json::Value> {
     use alondra_core::views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
@@ -426,7 +433,7 @@ fn measure_retention() {
             expected_revision: state.revision, command: Command::CompactEndedTasks { task_ids: batch.clone() },
         };
         let started = std::time::Instant::now();
-        runtime.execute_on_current(&envelope).unwrap();
+        runtime.execute_as_system(envelope).unwrap();
         eprintln!("one batch of {} ended tasks under the writer lock: {:.0} ms", batch.len(), started.elapsed().as_secs_f64() * 1000.0);
     }
     let started = std::time::Instant::now();

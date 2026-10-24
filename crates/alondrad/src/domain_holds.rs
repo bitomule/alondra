@@ -507,7 +507,7 @@ fn execute(domain: &DomainRuntime, state: &DomainState, command: Command) -> Res
         command_id: format!("hold-{}", crate::auth::random_hex(16)).into(),
         expected_revision: state.revision, command,
     };
-    domain.execute(&Actor::System, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| anyhow::anyhow!("{error:?}"))
+    domain.execute_as_system(envelope).map(|_| ()).map_err(|error| anyhow::anyhow!("{error:?}"))
 }
 
 fn note(answer: &Answer) -> Option<String> {

@@ -457,7 +457,7 @@ fn publication_follows_the_commit_and_the_acknowledgement_follows_publication() 
     let competing = {
         let runtime = Arc::clone(&runtime);
         let command = envelope(&state, "competing", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Second".into(), at: 0 });
-        std::thread::spawn(move || runtime.execute_on_current(&command))
+        std::thread::spawn(move || runtime.execute_as_system(command))
     };
     blocked.recv().unwrap();
     release.send(()).unwrap();

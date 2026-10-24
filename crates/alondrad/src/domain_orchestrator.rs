@@ -159,7 +159,7 @@ fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
             command: Command::MarkRead { interaction_id: id.as_str().into() },
         };
         let started = std::time::Instant::now();
-        if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
+        if let Err(error) = domain.execute_as_system(envelope) {
             log!("could not mark the orchestrator's notice {id} read: {error:?}");
         }
         pause(started.elapsed());

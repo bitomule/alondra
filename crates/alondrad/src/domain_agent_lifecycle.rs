@@ -146,7 +146,7 @@ fn submit_on_current(domain: &DomainRuntime, kind: &str, event_id: &str, state: 
         expected_revision: 0,
         command,
     };
-    domain.execute_on_current(&envelope).map(|outcome| outcome.changed)
+    domain.execute_as_system(envelope).map(|outcome| outcome.changed)
 }
 
 fn command_id(kind: &str, event_id: &str) -> CommandId {

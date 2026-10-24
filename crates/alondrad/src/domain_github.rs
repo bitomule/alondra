@@ -159,7 +159,7 @@ pub(crate) fn execute_system(domain: &DomainRuntime, command: Command) -> Result
         expected_revision: state.revision,
         command,
     };
-    domain.execute(&Actor::System, &envelope, None, || Ok(())).map(|_| ())
+    domain.execute_as_system(envelope).map(|_| ())
 }
 
 /// Only registered, open PRs need periodic observation. One final observation

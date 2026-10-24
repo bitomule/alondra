@@ -209,7 +209,7 @@ pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain:
             text: crate::node_push::stamped(author, alondra_core::now_millis(), text),
         },
     };
-    domain.execute(&Actor::System, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| match error {
+    domain.execute_as_system(envelope).map(|_| ()).map_err(|error| match error {
         crate::domain_store::StoreError::Domain(error) => error,
         other => refused("storage_unavailable", format!("{other}")),
     })

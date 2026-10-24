@@ -225,7 +225,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed(format!("{error:?}")))?;
     domain
-        .execute_on_current(&envelope("register", Command::RegisterAgent {
+        .execute_as_system(envelope("register", Command::RegisterAgent {
             agent_id: agent.clone(),
             name: launch.name.clone(),
             at: alondra_core::now_millis(),
@@ -580,7 +580,7 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
         expected_revision: 0,
         command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned() },
     };
-    if let Err(error) = domain.execute_on_current(&envelope) {
+    if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
     }
 }

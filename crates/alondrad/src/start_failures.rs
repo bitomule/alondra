@@ -83,7 +83,7 @@ pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem
         command_id: format!("start-problem-{}-{}", task.0, crate::auth::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::RaiseStartProblem { task_id: task.clone(), problem },
     };
-    domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    domain.execute_as_system(envelope).map_err(|error| anyhow::anyhow!("{error:?}"))?;
     Ok(())
 }
 

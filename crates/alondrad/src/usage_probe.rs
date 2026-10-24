@@ -66,20 +66,15 @@ pub(crate) fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core:
 
 /// Records what `account` said of its usage, unless the domain already holds it.
 pub(crate) fn record(domain: &DomainRuntime, account: &AccountId, reading: UsageReading, now: Millis) {
-    let day = crate::node_reports::local_day(now);
-    for _ in 0..5 {
-        let read = domain.read();
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: read.state().data_epoch.clone(),
-            command_id: format!("account-usage-{}", crate::auth::random_hex(16)).into(),
-            expected_revision: read.state().revision,
-            command: DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading: reading.clone(), at: now, day: day.clone() },
-        };
-        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
-            Ok(_) => return,
-            Err(error) => log!("could not record the usage of account {account}: {error}"),
-        }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: domain.read().state().data_epoch.clone(),
+        command_id: format!("account-usage-{}", crate::auth::random_hex(16)).into(),
+        expected_revision: 0,
+        command: DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: now, day: crate::node_reports::local_day(now) },
+    };
+    if let Err(error) = domain.execute_as_system(envelope) {
+        log!("could not record the usage of account {account}: {error}");
     }
 }
 

@@ -168,7 +168,7 @@ fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
         expected_revision: state.revision,
         command: alondra_core::domain::Command::InterruptTurn { agent_id: alondra_core::domain::AgentId(session.to_owned()) },
     };
-    if let Err(error) = domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())) {
+    if let Err(error) = domain.execute_as_system(envelope) {
         log!("pausing {session}: its turn was not interrupted ({error:?}); what it is told waits all the same");
     }
 }
