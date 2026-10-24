@@ -92,7 +92,7 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
     }
 
     func test_directConnection_checking() {
-        assertScreen([.light], inWindow: true, animatedPixels: true) {
+        assertScreen([.light], inWindow: true) {
             ScreenFrame(height: 852) { direct(DirectConnection(verdict: .checking, port: 47811)) }
         }
     }
@@ -128,11 +128,11 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
 
     func test_findMac_noMacYet() {
         let store = lookingForMacs()
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+        assertScreen([.light, .dark], inWindow: true, pixelPrecision: nativeLabelPixelPrecision) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
     func test_findMac_noMacYet_spanish() {
         let store = lookingForMacs()
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+        assertScreen([.light], language: .spanish, inWindow: true, pixelPrecision: nativeLabelPixelPrecision) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 }

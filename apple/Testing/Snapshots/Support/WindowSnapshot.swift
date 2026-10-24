@@ -32,6 +32,7 @@ func drawInKeyWindow(_ view: AnyView, size fixedSize: CGSize?, traits: UITraitCo
     }
     let initialFrame = host.view.frame
     host.view.frame.size = size
+    stopAnimationClock(host.view.layer)
     guard let window = UIApplication.shared.connectedScenes
         .compactMap({ $0 as? UIWindowScene })
         .flatMap(\.windows)
@@ -61,8 +62,11 @@ func drawInKeyWindow(_ view: AnyView, size fixedSize: CGSize?, traits: UITraitCo
     placed()
     settleGlass(host)
     host.view.frame.origin = CGPoint(x: 10_000, y: 10_000)
+    advanceAnimationClock(host.view.layer)
 
     defer {
+        host.view.layer.speed = 1
+        host.view.layer.timeOffset = 0
         host.view.frame = initialFrame
         root.beginAppearanceTransition(false, animated: false)
         host.willMove(toParent: nil)
@@ -76,6 +80,23 @@ func drawInKeyWindow(_ view: AnyView, size fixedSize: CGSize?, traits: UITraitCo
     return UIGraphicsImageRenderer(bounds: host.view.bounds, format: UIGraphicsImageRendererFormat(for: traits)).image { _ in
         host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
     }
+}
+
+/// Core Animation's clock stands still under `layer`: an animation added from here on starts at the
+/// same instant of it whenever it is added, so how long the machine took to get here changes nothing.
+@MainActor
+func stopAnimationClock(_ layer: CALayer) {
+    layer.speed = 0
+    layer.timeOffset = 0
+}
+
+/// Commits what the stopped clock holds, then moves it on far enough that every animation that ends
+/// has ended and every repeating one, a spinner or a pulsing symbol, stands at the same point of its
+/// cycle on every run.
+@MainActor
+func advanceAnimationClock(_ layer: CALayer) {
+    CATransaction.flush()
+    layer.timeOffset = 60
 }
 
 /// UIKit configures a navigation bar's glass twice while placing it: once provisionally as the bar is

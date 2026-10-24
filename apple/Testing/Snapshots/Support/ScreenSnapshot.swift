@@ -56,6 +56,11 @@ extension ScreenFeature.State {
     }
 }
 
+/// The sign-in screens' «Access from anywhere» glass button draws its label a few levels darker or
+/// lighter from one test process to the next (`test_pairingComparisonAcceptsNativeLabelVariation…`
+/// keeps a real one): this share of a screen's pixels may differ for it.
+let nativeLabelPixelPrecision: Float = 0.9995
+
 /// `assertVariants` for a whole screen: one point a pixel keep a tall screen's baseline small, and
 /// `variants` leaves out the accessibility size where one screen already shows how it grows.
 @MainActor
@@ -63,15 +68,12 @@ func assertScreen<Content: View>(
     _ variants: [SnapshotVariant] = SnapshotVariant.allCases,
     language: SnapshotLanguage = .english,
     inWindow: Bool = false,
-    animatedPixels: Bool = false,
-    pixelPrecision: Float? = nil,
+    pixelPrecision: Float = 1,
     file: StaticString = #filePath,
     testName: String = #function,
     line: UInt = #line,
     @ViewBuilder _ content: () -> Content
 ) {
-    // A system spinner draws a different frame on every run; it covers far less than 1% of a screen.
-    let precision: Float = pixelPrecision ?? (animatedPixels ? 0.99 : 1)
     for variant in variants {
         let suffix = language == .english ? variant.suffix : "\(variant.suffix)_\(language.rawValue.prefix(2))"
         let traits = UITraitCollection(traitsFrom: [
@@ -79,8 +81,8 @@ func assertScreen<Content: View>(
             UITraitCollection(displayScale: 1),
         ])
         let strategy: Snapshotting<AnyView, UIImage> = inWindow
-            ? .windowImage(precision: precision, perceptualPrecision: 0.98, traits: traits)
-            : .image(precision: precision, perceptualPrecision: 0.98, layout: .sizeThatFits, traits: traits)
+            ? .windowImage(precision: pixelPrecision, perceptualPrecision: 0.98, traits: traits)
+            : .image(precision: pixelPrecision, perceptualPrecision: 0.98, layout: .sizeThatFits, traits: traits)
         assertAppSnapshot(
             of: screen(variant, language: language, content),
             as: strategy.asRecorded,

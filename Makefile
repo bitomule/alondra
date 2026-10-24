@@ -38,10 +38,11 @@ test:
 SNAPSHOT_TARGET := //apple/Testing/Snapshots:AlondraSnapshotTests
 SNAPSHOT_ROOT := apple/Testing/Snapshots/Tests/__Snapshots__
 
-# Record mode always reports FAILED; the images land in the test outputs and are copied back.
+# Only a screen that no longer matches its baseline (or has none) is recorded and reported FAILED;
+# its image lands in the test outputs and is copied back. Every other baseline keeps its bytes.
 snapshots-record:
 	-bazelisk test $(SNAPSHOT_TARGET) \
-		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--test_env=SNAPSHOT_ROOT=$(SNAPSHOT_ROOT) \
 		--nocache_test_results --test_output=errors
 	@outputs=$$(find bazel-testlogs/apple/Testing/Snapshots/AlondraSnapshotTests -type d -name test.outputs | head -1); \
@@ -49,7 +50,7 @@ snapshots-record:
 		mkdir -p $(SNAPSHOT_ROOT) && cp -R "$$outputs/$(SNAPSHOT_ROOT)/." $(SNAPSHOT_ROOT)/ && chmod -R u+w $(SNAPSHOT_ROOT); \
 		echo "Baselines copied to $(SNAPSHOT_ROOT)"; \
 	else \
-		echo "No recorded snapshots found"; exit 1; \
+		echo "Every baseline still matches its screen: nothing recorded"; \
 	fi
 
 snapshots-verify:
@@ -82,7 +83,7 @@ MAC_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/Tests/__Snapshots__
 
 mac-snapshots-record:
 	-bazelisk test $(MAC_SNAPSHOT_TARGET) \
-		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--test_env=SNAPSHOT_ROOT=$(MAC_SNAPSHOT_ROOT) \
 		--nocache_test_results --test_output=errors
 	@outputs=$$(find bazel-testlogs/apple/Testing/MacSnapshots/AlondraMacSnapshotTests -type d -name test.outputs | head -1); \
@@ -90,7 +91,7 @@ mac-snapshots-record:
 		mkdir -p $(MAC_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MAC_SNAPSHOT_ROOT)/." $(MAC_SNAPSHOT_ROOT)/ && chmod -R u+w $(MAC_SNAPSHOT_ROOT); \
 		echo "Baselines copied to $(MAC_SNAPSHOT_ROOT)"; \
 	else \
-		echo "No recorded snapshots found"; exit 1; \
+		echo "Every baseline still matches its screen: nothing recorded"; \
 	fi
 
 MERMAID_SNAPSHOT_TARGET := //apple/Mermaid:AlondraMermaidSnapshotTests
@@ -98,14 +99,14 @@ MERMAID_SNAPSHOT_ROOT := apple/Mermaid/Snapshots/__Snapshots__
 
 mermaid-snapshots-record:
 	-bazelisk test $(MERMAID_SNAPSHOT_TARGET) \
-		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--nocache_test_results --test_output=errors
 	@outputs=$$(find bazel-testlogs/apple/Mermaid/AlondraMermaidSnapshotTests -type d -name test.outputs | head -1); \
 	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MERMAID_SNAPSHOT_ROOT)" ]; then \
 		mkdir -p $(MERMAID_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MERMAID_SNAPSHOT_ROOT)/." $(MERMAID_SNAPSHOT_ROOT)/ && chmod -R u+w $(MERMAID_SNAPSHOT_ROOT); \
 		echo "Baselines copied to $(MERMAID_SNAPSHOT_ROOT)"; \
 	else \
-		echo "No recorded snapshots found"; exit 1; \
+		echo "Every baseline still matches its screen: nothing recorded"; \
 	fi
 
 # Writes what each Mermaid fixture produces (`.tree`, `.error`, `.crossings`) into the test

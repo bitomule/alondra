@@ -53,7 +53,7 @@ final class TriageSnapshotTests: XCTestCase {
     func test_cannotReachTheMac() {
         var state = TriageFeature.State()
         state.screen.phase = .failed(TriageFeature.loadFailure)
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) {
+        assertScreen([.light, .dark], inWindow: true) {
             Harness(store: ScreenStores.triage(state: state), connection: .unreachable(.macNotAnswering))
         }
     }
@@ -61,7 +61,7 @@ final class TriageSnapshotTests: XCTestCase {
     func test_cannotReachTheMac_es() {
         var state = TriageFeature.State()
         state.screen.phase = .failed(TriageFeature.loadFailure)
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) {
+        assertScreen([.light], language: .spanish, inWindow: true) {
             Harness(store: ScreenStores.triage(state: state), connection: .unreachable(.macNotAnswering))
         }
     }

@@ -37,7 +37,7 @@ final class McpSignInSnapshotTests: XCTestCase {
     }
 
     func test_sending_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { sheet(.sending) }
+        assertScreen([.light], language: .spanish, inWindow: true) { sheet(.sending) }
     }
 
     func test_cut() {

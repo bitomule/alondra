@@ -46,9 +46,11 @@ final class MachineBadgeSnapshotTests: XCTestCase {
         window.frame = CGRect(x: 0, y: 0, width: width, height: 874)
         window.overrideUserInterfaceStyle = .light
         window.rootViewController = UIHostingController(rootView: Harness(store: store, connection: connection))
+        stopAnimationClock(window.layer)
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
         RunLoop.main.run(until: Date().addingTimeInterval(1))
+        advanceAnimationClock(window.layer)
         let bar = CGRect(x: 0, y: 0, width: width, height: 120)
         return UIGraphicsImageRenderer(bounds: bar).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)

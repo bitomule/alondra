@@ -12,7 +12,6 @@ import XCTest
 /// cannot be reached.
 @MainActor
 final class AccountSnapshotTests: XCTestCase {
-    private static let pairingPixelPrecision: Float = 0.9995
     private func signIn(_ edit: (inout SignInFeature.State) -> Void = { _ in }, additionalMac: Bool = false)
         -> StoreOf<SignInFeature> {
         var state = SignInFeature.State(additionalMac: additionalMac)
@@ -68,7 +67,7 @@ final class AccountSnapshotTests: XCTestCase {
             $0.findMac.macs = [studio]
             $0.findMac.error = "The Mac didn’t allow this device."
         }
-        assertScreen([.light], inWindow: true, pixelPrecision: Self.pairingPixelPrecision) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+        assertScreen([.light], inWindow: true, pixelPrecision: nativeLabelPixelPrecision) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
     func test_pairingComparisonAcceptsNativeLabelVariationButRejectsMissingNoticeAndMovedCard() throws {
@@ -78,7 +77,7 @@ final class AccountSnapshotTests: XCTestCase {
             "Tests/__Snapshots__/AccountSnapshotTests/test_findMac_aDeniedRequestStaysOnTheList.light.png"))))
         let nativeLabel = try XCTUnwrap(UIImage(data: Data(contentsOf: root.appendingPathComponent("Fixtures/pairing-native-label.png"))))
         let strict = Snapshotting<UIImage, UIImage>.image(precision: 1, perceptualPrecision: 0.98).diffing
-        let local = Snapshotting<UIImage, UIImage>.image(precision: Self.pairingPixelPrecision, perceptualPrecision: 0.98).diffing
+        let local = Snapshotting<UIImage, UIImage>.image(precision: nativeLabelPixelPrecision, perceptualPrecision: 0.98).diffing
         XCTAssertEqual(reference.size, nativeLabel.size)
         XCTAssertEqual(reference.imageOrientation, nativeLabel.imageOrientation)
         XCTAssertNotNil(strict.diffV2(reference, nativeLabel), "the retained real rendering variation must exercise the comparison")
@@ -317,11 +316,11 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_connectionLost_accessNotConfirmed() {
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.accessNotConfirmed, pairAgain: {}) }
+        assertScreen([.light, .dark], inWindow: true) { lost(.accessNotConfirmed, pairAgain: {}) }
     }
 
     func test_connectionLost_accessNotConfirmed_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.accessNotConfirmed, pairAgain: {}) }
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.accessNotConfirmed, pairAgain: {}) }
     }
 
     func test_connectionLost_deviceDisconnected() {
@@ -337,21 +336,21 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_connectionLost_macChangedIdentity() {
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.macChangedIdentity, pairAgain: {}) }
+        assertScreen([.light, .dark], inWindow: true) { lost(.macChangedIdentity, pairAgain: {}) }
     }
 
     func test_connectionLost_macChangedIdentity_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.macChangedIdentity, pairAgain: {}) }
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.macChangedIdentity, pairAgain: {}) }
     }
 
 
 
     func test_connectionLost_deviceStorage() {
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.deviceStorage) }
+        assertScreen([.light, .dark], inWindow: true) { lost(.deviceStorage) }
     }
 
     func test_connectionLost_deviceStorage_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.deviceStorage) }
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.deviceStorage) }
     }
 
     func test_connectionLost_signOutIncomplete() {
@@ -363,11 +362,11 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_connectionLost_macNotAnsweringItMayBeAsleep() {
-        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.macNotOnNetwork) }
+        assertScreen([.light, .dark], inWindow: true) { lost(.macNotOnNetwork) }
     }
 
     func test_connectionLost_macNotAnsweringItMayBeAsleep_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.macNotOnNetwork) }
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.macNotOnNetwork) }
     }
 
     func test_connectionLost_localNetworkDenied() {
