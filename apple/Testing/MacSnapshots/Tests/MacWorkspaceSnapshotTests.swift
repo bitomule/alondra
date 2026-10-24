@@ -57,8 +57,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         let view = AnyView(content().environment(\.locale, spanish ? Locale(identifier: "es_ES") : .current))
         for variant in variants {
             let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
-            let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
+            let window = snapshotWindow(size: size)
             defer { window.close() }
             window.appearance = variant.appearance
             window.contentView = hosting
@@ -229,9 +228,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         @ViewBuilder _ content: () -> Content
     ) async {
         let view = content().environment(\.locale, spanish ? Locale(identifier: "es_ES") : Locale(identifier: "en_US"))
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 460), styleMask: [.titled],
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
+        let window = snapshotWindow(size: CGSize(width: 460, height: 460), styleMask: [.titled])
         window.appearance = Appearance.light.appearance
         window.contentView = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         window.orderFront(nil)

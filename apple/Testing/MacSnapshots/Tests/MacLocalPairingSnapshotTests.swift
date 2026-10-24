@@ -24,7 +24,8 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         let view = AnyView(content().environment(\.locale, spanish ? Locale(identifier: "es_ES") : .current))
         for (name, appearance) in variants {
             let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
-            let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            let window = snapshotWindow(size: size)
+            defer { window.close() }
             window.appearance = NSAppearance(named: appearance)
             window.contentView = hosting
             hosting.frame = CGRect(origin: .zero, size: size)
