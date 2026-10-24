@@ -1,10 +1,9 @@
 //! `alondra update`: install the newest release with Homebrew, then wait until the daemon runs it.
 mod brew;
 
-use std::io::{BufRead, BufReader, IsTerminal, Read};
+use std::io::{BufRead, BufReader, IsTerminal};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use alondra_core::update;
@@ -78,30 +77,24 @@ const LOG: &str = "update.log";
 fn upgrade(brew_path: &Path, log: &Path, out: &mut Steps) -> Result<(), Vec<String>> {
     let mut progress = brew::Progress::default();
     out.start(&progress.running(brew::Stage::Starting));
-    let spawned = Command::new(brew_path).args(["upgrade", update::FORMULA])
-        .env("HOMEBREW_NO_COLOR", "1").env("HOMEBREW_NO_ENV_HINTS", "1")
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let (reader, writer) = match std::io::pipe() {
+        Ok(pipe) => pipe,
+        Err(error) => return Err(failure(&progress.failed(), &[error.to_string()], "")),
+    };
+    let mut command = Command::new(brew_path);
+    command.args(["upgrade", update::FORMULA]).env("HOMEBREW_NO_COLOR", "1").env("HOMEBREW_NO_ENV_HINTS", "1");
+    let spawned = writer.try_clone().and_then(|stderr| command.stdout(writer).stderr(stderr).spawn());
+    drop(command);
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => return Err(failure(&progress.failed(), &[error.to_string()], &brew_path.display().to_string())),
     };
-    let (tx, rx) = mpsc::channel();
-    let stdout = child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>);
-    let stderr = child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>);
-    for stream in [stdout, stderr].into_iter().flatten() {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            let mut line = Vec::new();
-            while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
-                let _ = tx.send(String::from_utf8_lossy(&line).trim_end().to_string());
-                line.clear();
-            }
-        });
-    }
-    drop(tx);
+    let mut reader = BufReader::new(reader);
+    let mut bytes = Vec::new();
     let mut output = String::new();
-    for line in rx {
+    while reader.read_until(b'\n', &mut bytes).is_ok_and(|n| n > 0) {
+        let line = String::from_utf8_lossy(&bytes).trim_end().to_string();
+        bytes.clear();
         let previous = progress.stage();
         if let Some(stage) = progress.feed(&line) {
             if let Some(done) = progress.done(previous) {
@@ -406,6 +399,20 @@ mod tests {
         ]);
         let saved = std::fs::read_to_string(&log).unwrap();
         assert!(saved.contains("==> Downloading https://example/alondra.tar.gz") && saved.contains("Error: alondra"), "{saved}");
+    }
+
+    #[test]
+    fn homebrew_output_is_kept_in_the_order_it_was_written() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let brew_path = dir.join("brew");
+        std::fs::write(&brew_path, "#!/bin/sh\ni=0\nwhile [ $i -lt 200 ]; do echo \"out $i\"; echo \"err $i\" >&2; i=$((i+1)); done\nexit 1\n").unwrap();
+        std::fs::set_permissions(&brew_path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let log = dir.join("home/update.log");
+        upgrade(&brew_path, &log, &mut Steps { spinner: None, terminal: false }).unwrap_err();
+        let written: String = (0..200).map(|i| format!("out {i}\nerr {i}\n")).collect();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), written);
     }
 
     #[test]
