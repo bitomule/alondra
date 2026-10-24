@@ -284,6 +284,11 @@ Pick the tool by what you need:
   whether to stop or wait for it: only the user (on the usage card) and Alondra (pacing the nodes)
   decide that, and Alondra refuses such a question. If Alondra pauses you for usage, Alondra
   resumes you.
+- Waiting for a usage limit is Alondra's job, not yours. When a turn ends on a usage limit
+  ("You've hit your session limit"), never wait for it yourself: no `sleep`, no cron
+  (`CronCreate`), no loop in the background. End your turn; Alondra waits out the limit and
+  wakes you when Claude answers again. When that message arrives the limit has renewed: go on
+  with your task at once.
 
 ## What a delivery is not
 

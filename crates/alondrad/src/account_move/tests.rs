@@ -165,7 +165,7 @@ async fn assert_moved(world: &World, old: &AgentId) {
     assert_eq!(starts[1]["resume"], starts[0]["session"], "with --resume of the same session: {starts:?}");
     assert!(starts[1]["history"].as_u64().unwrap() > 0, "its transcript is the one the work account left");
     assert_eq!(starts[1]["cwd"].as_str().map(PathBuf::from), Some(world.worktree.canonicalize().unwrap()), "in the task's folder");
-    assert_eq!(world.prompts(), ["Write the release notes rate-limited", GO_ON], "the new execution is told to go on, once");
+    assert_eq!(world.prompts(), ["Write the release notes rate-limited", MOVED_ON], "the new execution is told to go on, once");
     let state = world.domain.state().unwrap();
     assert!(state.claude_held().is_empty(), "nothing holds the task");
     assert_eq!(state.task_account(&TASK.into()), AccountId::default_account(), "the task runs on the user's own account");

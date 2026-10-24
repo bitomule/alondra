@@ -27,8 +27,15 @@ pub const TRY_NOW: &str = "try_now";
 pub const TRY_NOW_LABEL: &str = "Try now";
 const SIGNED_IN_MEANS: &str = "One waiting task goes on; when Claude answers it, the rest of its account go on too";
 const TRY_NOW_MEANS: &str = "One waiting task tries again now; when Claude answers it, the rest go on too";
-/// What a task Claude held is told when it goes on, on its account or on the one it moved to.
+/// What a task Claude's sign-in or API held is told when it goes on.
 pub const GO_ON: &str ="Claude answers again: go on with your task from where it stopped.";
+macro_rules! alondra_waits {
+    () => { "Alondra waits out usage limits for you: never wait for one with sleep, cron or a background loop; end your turn and Alondra wakes you when Claude answers again." };
+}
+/// What a task the usage limit held is told when Claude answers it again.
+pub const USAGE_RENEWED: &str = concat!("Your usage limit has renewed: Claude answers again. Go on with your task now, from where it stopped. ", alondra_waits!());
+/// What a task the usage limit held is told when it goes on on another account.
+pub const MOVED_ON: &str = concat!("Your task now runs on another Claude account that has usage left: Claude answers again. Go on with your task now, from where it stopped. ", alondra_waits!());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +73,13 @@ impl ClaudeHold {
             Some(Self::Usage)
         } else {
             None
+        }
+    }
+    /// What the task is told when Claude answers it again.
+    pub fn go_on(self) -> &'static str {
+        match self {
+            Self::SignedOut | Self::Outage => GO_ON,
+            Self::Usage => USAGE_RENEWED,
         }
     }
     fn option(self) -> QuestionOption {
@@ -365,7 +379,7 @@ impl DomainState {
     }
 
     fn resume_held(&mut self, held: &ClaudeHeld, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
-        let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(&held.task), text: Some(GO_ON.into()) };
+        let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(&held.task), text: Some(held.hold.go_on().into()) };
         self.decide(lifecycles, &held.task, record)
     }
 }

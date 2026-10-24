@@ -1,6 +1,11 @@
 exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
 exports_files(
+    ["plugin/skills/alondra/SKILL.md"],
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(
     ["Makefile"],
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__"],
 )

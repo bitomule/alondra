@@ -813,8 +813,14 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }).unwrap_err().code, "forbidden");
     must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)], "one probe, the oldest");
+    let resumed_text = |s: &DomainState, id: &str| s.lifecycle_journal[&TaskId::from(id)].iter().rev()
+        .find_map(|record| match record { LifecycleRecord::Resumed { text, .. } => text.clone(), _ => None });
+    assert_eq!(resumed_text(&s, "t").as_deref(), Some(GO_ON), "the API answers again");
     must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage)]);
+    let renewed = resumed_text(&s, "v").expect("the limit's task is told to go on");
+    assert!(renewed.starts_with("Your usage limit has renewed: Claude answers again. Go on with your task now"), "{renewed}");
+    assert!(renewed.contains("never wait for one with sleep, cron or a background loop"), "{renewed}");
     assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None }).unwrap_err().code, "not_found");
     assert_aggregate_rules(&s);
 }
