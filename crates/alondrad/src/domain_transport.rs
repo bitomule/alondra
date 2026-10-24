@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 const MAX_HOOK_BYTES: u64 = 25 * 1024 * 1024;
@@ -70,6 +70,10 @@ async fn handle(mut stream: UnixStream, domain: &Arc<DomainRuntime>) -> Result<(
     if let Some(card) = frame.get_mut("node_hold").map(Value::take) {
         return node_hold(stream, domain, card).await.context("node hold");
     }
+    answer_hook(stream, domain, frame).await
+}
+
+async fn answer_hook<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<DomainRuntime>, frame: Value) -> Result<()> {
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
     let event = text(&envelope.payload, "hook_event_name").unwrap_or_else(|| "unnamed".into());
     let payload = Arc::new(envelope.payload);
@@ -92,7 +96,7 @@ async fn handle(mut stream: UnixStream, domain: &Arc<DomainRuntime>) -> Result<(
 
 /// The reply as one write. The hook reads it as one JSON value and exits the moment it has it, so it
 /// may be gone before the shutdown: a reply delivered, not a failure.
-async fn write_reply(stream: &mut UnixStream, status: u16, body: &[u8]) -> std::io::Result<()> {
+async fn write_reply<S: AsyncWrite + Unpin>(stream: &mut S, status: u16, body: &[u8]) -> std::io::Result<()> {
     let mut frame = status.to_be_bytes().to_vec();
     frame.extend_from_slice(body);
     stream.write_all(&frame).await?;
@@ -153,7 +157,7 @@ async fn withdraw(domain: &Arc<DomainRuntime>, id: InteractionId) -> Result<()> 
     domain.hook_work.run(move || crate::domain_holds::withdraw(&withdrawing, &id)).await?
 }
 
-async fn answer_after_recording(mut stream: UnixStream, domain: &Arc<DomainRuntime>, payload: &Arc<Value>) -> Result<()> {
+async fn answer_after_recording<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<DomainRuntime>, payload: &Arc<Value>) -> Result<()> {
     let reply = record(domain, payload.clone()).await.context("recording it")?;
     let body = match reply {
         Reply::Plain(body) => body,
@@ -1585,10 +1589,10 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
-        let (mut client, server) = UnixStream::pair().unwrap();
-        send_hook(&mut client, json!({"session_id": "session-a", "hook_event_name": "PostToolUse"})).await;
+        let (client, server) = tokio::io::duplex(64);
         drop(client);
-        let error = handle(server, &domain).await.unwrap_err();
+        let frame = json!({"launched": true, "payload": {"session_id": "session-a", "hook_event_name": "PostToolUse"}});
+        let error = answer_hook(server, &domain, frame).await.unwrap_err();
         assert!(format!("{error:#}").starts_with("PostToolUse hook: writing its reply: "), "{error:#}");
         assert_eq!(domain.state().unwrap().node_phase(&"session-a".into()), Some(&NodePhase::Working));
     }

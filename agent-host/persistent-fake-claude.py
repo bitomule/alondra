@@ -458,6 +458,12 @@ for raw in sys.stdin:
             pass
         elif text == 'native-failure-now':
             sys.exit(7)
+        elif text.endswith('stall-before-starting') and not os.path.exists(capture + '.stalled'):
+            # Like a native Claude busy with something else: the first time, it holds the prompt in
+            # its transcript but starts no turn for it until the host's process group is killed; a
+            # Claude that resumes the session takes the same prompt up normally.
+            open(capture + '.stalled', 'w').close()
+            time.sleep(3600)
         elif text == 'failed-delivery':
             result(message, failed=True)
         elif text == 'max-turns':

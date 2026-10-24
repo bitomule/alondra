@@ -1515,7 +1515,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("bulky:6");
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first");
+    carry_on(&slice.domain, "Add the tests first stall-before-starting");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -1523,7 +1523,9 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let journal = restarted.read().state().lifecycle_journal[&TaskId::from(TASK)].clone();
     assert!(journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { .. })),
         "the ended host's journal proves the answer was handed: it goes again flagged as maybe received, never as one the host never got: {journal:?}");
-    assert_eq!(slice.prompts().len(), 2);
+    slice.settle(&mut resumed);
+    let prompts = slice.prompts();
+    assert!(prompts.last().unwrap().ends_with("Add the tests first stall-before-starting"), "the resumed session took the answer: {prompts:?}");
     resumed.stop().unwrap();
 }
 
