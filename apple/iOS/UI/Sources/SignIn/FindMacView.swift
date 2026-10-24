@@ -68,7 +68,7 @@ public struct FindMacView: View {
         switch store.findMac.step {
         case .comparing: Text("Your Mac asks whether to allow this iPhone. Allow it only if it shows this same code.")
         case .approved: Text("Your inbox, tasks and conversations are ready.")
-        default: Text("Macs running Alondra on this Wi-Fi appear here. No account needed.")
+        default: Text("Macs running Alondra on this Wi-Fi appear here. No account needed, but this iPhone gets no alerts.")
         }
     }
 

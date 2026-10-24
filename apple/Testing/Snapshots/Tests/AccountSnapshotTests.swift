@@ -94,7 +94,7 @@ final class AccountSnapshotTests: XCTestCase {
         XCTAssertEqual(original.height, 852)
         let bytes = try XCTUnwrap(original.dataProvider?.data) as Data
         var changed = bytes
-        let rows = removingNotice ? 432..<459 : 261..<531
+        let rows = removingNotice ? 454..<481 : 283..<553
         let columns = removingNotice ? 45..<332 : 25..<376
         for y in rows {
             for x in columns {
@@ -208,7 +208,7 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
-    /// Paired on the local network: no account, no notifications, each Mac with how it answers.
+    /// Paired on the local network: no account, so alerts say they need one; each Mac with how it answers.
     private func localSettings() -> StoreOf<SettingsFeature> {
         var state = SettingsFeature.State(service: "mac-9c1e44aa", device: "phone-7f3a91c2d4e5", supportsNotifications: false,
                                           usesAccount: false)

@@ -36,6 +36,30 @@ import Foundation
     }
 }
 
+@MainActor struct AlertsNeedAccountTests {
+    private func mac(_ n: Int, local: Bool) -> MacChoice {
+        MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(n)")!, macID: "mac-\(n)", local: local)
+    }
+
+    @Test func onlyMacsLinkedWithoutAnAccountSayAlertsNeedOne() async {
+        var state = SettingsFeature.State(service: "service", device: "phone", supportsNotifications: false, usesAccount: false)
+        state.macs = [mac(1, local: true), mac(2, local: true)]
+        #expect(state.alertsNeedAccount)
+        let store = TestStore(initialState: state) { SettingsFeature() } withDependencies: {
+            $0.serviceSettings.observe = { Issue.record("Alerts were set up for Macs without an account"); return AsyncStream { $0.finish() } }
+        }
+        await store.send(.appeared)
+    }
+
+    @Test func aMacWithAnAccountOrNoMacAtAllSaysNothing() {
+        var state = SettingsFeature.State(service: "service", device: "phone", supportsNotifications: true)
+        state.macs = [mac(1, local: true), mac(2, local: false)]
+        #expect(!state.alertsNeedAccount)
+        state.macs = []
+        #expect(!state.alertsNeedAccount)
+    }
+}
+
 @MainActor struct MacSelectionSettingsTests {
     @Test func selectionFailurePreservesActiveMacAndUnknownChoiceDoesNothing() async {
         let a = UUID(), b = UUID()

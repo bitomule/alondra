@@ -141,6 +141,8 @@ public extension DependencyValues {
             self.service = service; self.device = device; self.supportsNotifications = supportsNotifications
         }
         public var canSave: Bool { editing && !saving && !conflict && draft.valid }
+        /// Alerts reach a phone only through the relay, and a Mac linked without an account never uses it.
+        public var alertsNeedAccount: Bool { !macs.isEmpty && macs.allSatisfy(\.local) }
     }
     public enum Action {
         case appeared, disappeared

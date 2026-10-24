@@ -18,7 +18,7 @@ public struct SettingsView: View {
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             ServerSettingsSection(store: store.scope(state: \.accounts, action: \.accounts))
             ServerSettingsSection(store: store.scope(state: \.mcpServers, action: \.mcpServers))
-            if store.supportsNotifications { notifications }
+            if store.supportsNotifications { notifications } else if store.alertsNeedAccount { alertsNeedAccount }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             about
         }
@@ -186,6 +186,15 @@ public struct SettingsView: View {
             } else {
                 Text("You can reply, allow or approve from the Lock Screen.")
             }
+        }
+    }
+
+    private var alertsNeedAccount: some View {
+        Section("Notifications") {
+            Label("Alerts reach this iPhone through your Alondra account. Your Macs are linked without one, so they can’t send alerts.",
+                  systemImage: "bell.slash")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.alertsNeedAccount")
         }
     }
 
