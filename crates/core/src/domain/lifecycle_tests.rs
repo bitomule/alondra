@@ -1488,6 +1488,67 @@ fn a_reply_the_node_of_the_sdk_answered_brings_the_same_delivery_back_once_its_s
     assert_aggregate_rules(&s);
 }
 
+/// An SDK task delivered while its turn runs; with `feedback`, that turn ended, the user asked it
+/// of the delivery, and the node's turn on it runs.
+fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>) {
+    sdk_turn(s, "t", "a");
+    deliver(s, "t", "a", "result");
+    let Some(instruction) = feedback else { return };
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "result".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Do not guess the state".into(), instruction });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: instruction.message("Do not guess the state") });
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    let told = replayed.pending_inputs()[0].as_str().to_owned();
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: told },
+    ] });
+}
+fn pending_cards(s: &DomainState) -> Vec<String> {
+    super::read_index::inbox_items(s).into_iter().filter(|item| item.pending)
+        .filter_map(|item| item.id.strip_prefix("interaction:").map(str::to_owned)).collect()
+}
+fn claude_asks(s: &mut DomainState, epoch: u64) -> Result<CommandOutcome, DomainError> {
+    let options = ["Hide it", "Show it"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+    exec(s, Actor::System, Command::RecordDecisionRequest {
+        task_id: "t".into(), generation: 1, epoch, hold: Hold::Question, tool: Some("AskUserQuestion".into()), input: serde_json::json!({}), mcp_server: None,
+        prompt: DecisionPrompt::Card { body: "What does the iPhone show without a state?".into(), options,
+            card: CardSpec::new(CardKind::Decide, "Pick what the iPhone shows without a state") },
+    })
+}
+
+// t-remove-fleet-3-ios: the user requested changes on its delivery and the node, working on them,
+// asked the user a question. The domain took that delivery back a second time, the lifecycle refused
+// it, and the question was denied without reaching the user.
+#[test]
+fn a_question_asked_while_working_on_requested_changes_reaches_the_user() {
+    let mut s = world();
+    delivered_through_the_sdk(&mut s, Some(Instruction::Changes));
+    claude_asks(&mut s, 7).unwrap_or_else(|error| panic!("the question was refused: {error}"));
+    let card = decision_card_id(&"t".into(), 1, 7);
+    assert!(pending_cards(&s).contains(&card.0), "the user gets the question: {:?}", pending_cards(&s));
+    assert!(s.interactions[&InteractionId::from("result")].withdrawn, "the delivery is not the user's to review while the node asks");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    claude_asks(&mut s, 8).unwrap_or_else(|error| panic!("the second question was refused: {error}"));
+    let handed_back = s.lifecycle_journal[&TaskId::from("t")].iter().filter(|record| matches!(record, LifecycleRecord::HandedBack { .. })).count();
+    assert_eq!(handed_back, 1, "the delivery is taken back once");
+    assert!(pending_cards(&s).contains(&decision_card_id(&"t".into(), 1, 8).0));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_question_asked_after_a_delivery_nobody_answered_withdraws_it() {
+    let mut s = world();
+    delivered_through_the_sdk(&mut s, None);
+    claude_asks(&mut s, 7).unwrap_or_else(|error| panic!("the question was refused: {error}"));
+    let card = decision_card_id(&"t".into(), 1, 7);
+    assert!(pending_cards(&s).contains(&card.0), "the user gets the question: {:?}", pending_cards(&s));
+    assert!(s.interactions[&InteractionId::from("result")].withdrawn, "the delivery is withdrawn");
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::HandedBack { delivery, .. }) if delivery.0 == "result"));
+    assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, None);
+    assert_aggregate_rules(&s);
+}
+
 // Without a host that resumes the session, nothing would ever answer the reply: the delivery is the
 // user's again, as when the node ends its turn on it.
 #[test]
