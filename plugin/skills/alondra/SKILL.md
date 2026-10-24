@@ -29,6 +29,20 @@ not be reached, do not proceed: retry the same call. If Alondra refused it, the 
 field and how to fix it: fix it and send it again. A refusal is never an answer or a permission,
 and sending the same refused card three times raises a Problem for the user instead.
 
+## A fix starts by reproducing the problem
+
+A task that fixes something (a failing test, a red main, a bug someone reported) starts by
+confirming the problem still happens on a fresh `origin/main`: fetch it, then run the failing test
+the task names, or the cheapest check that shows the bug. Another PR may have fixed it since the
+report.
+
+If it no longer happens, there is nothing to fix: do not open a PR, and close any you opened.
+Find what fixed it (`git log origin/main` on the files or test involved names the commit and its
+PR) and end the task yourself with `present_result`: `is_final` true, `nothing_to_review` true and a
+`text` target saying «Already fixed on main by #N», with the evidence: the command you ran, its
+output, and the commit and PR that fixed it. Never ask the user whether to close a task that has
+nothing left to do.
+
 ## Cards
 
 Every card the user reads has a `need`, what you need from them: imperative, one line, at most 90

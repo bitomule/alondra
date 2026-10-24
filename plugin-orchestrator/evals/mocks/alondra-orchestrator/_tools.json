@@ -279,6 +279,140 @@
     "type": "object"
    },
    "name": "answer_question"
+  },
+  {
+   "name": "tasks_in_progress",
+   "description": "Work in progress: unfinished nodes that are running, dormant or owe the user something, with what they run in the background (subagents and shells, each since when it runs); open questions, unread reports, undelivered messages for you, and the machine.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "all": {
+      "type": "boolean",
+      "description": "Add finished and gone nodes"
+     }
+    }
+   }
+  },
+  {
+   "name": "close_request",
+   "description": "Close a Request that needs no Task. State the answer or mark it withdrawn. The answer is the Request's record; if you sent no card, Alondra shows it to the user as one, except for a maintenance message, which gets none.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "request_id": {
+      "type": "string"
+     },
+     "answer": {
+      "type": "string"
+     },
+     "withdrawn": {
+      "type": "boolean"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "request_id"
+    ]
+   }
+  },
+  {
+   "name": "send",
+   "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task, which must be the node's own: a node works only on the task it was launched for, and a closed task's node is closed with it.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "node": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "task": {
+      "type": "string",
+      "description": "The id of the task (t-…) the message is about"
+     }
+    },
+    "required": [
+     "node",
+     "text"
+    ]
+   }
+  },
+  {
+   "name": "set_launch_plan",
+   "description": "Replace the launch plan Alondra starts a task with by itself when the node limit has room and everything it depends on is done.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "task_id": {
+      "type": "string"
+     },
+     "launch": {
+      "additionalProperties": false,
+      "description": "How Alondra starts this Task by itself once everything it depends on is done: required when dependencies or stack are set",
+      "properties": {
+       "approach": {
+        "enum": [
+         "solo",
+         "subagents",
+         "workflow"
+        ],
+        "type": "string"
+       },
+       "cwd": {
+        "description": "The folder the node starts in",
+        "type": "string"
+       },
+       "effort": {
+        "enum": [
+         "low",
+         "medium",
+         "high",
+         "xhigh",
+         "max"
+        ],
+        "type": "string"
+       },
+       "mission": {
+        "description": "The node's mission; without it, the task title and the request",
+        "type": "string"
+       },
+       "model": {
+        "description": "Required when the request's effort is auto",
+        "type": "string"
+       },
+       "name": {
+        "description": "The new node's name, with its hierarchy (lumo/phase-c)",
+        "type": "string"
+       },
+       "reason": {
+        "description": "Required when the request's effort is auto",
+        "type": "string"
+       },
+       "role": {
+        "description": "For work split into design, implementation and review",
+        "enum": [
+         "design",
+         "implementation",
+         "review"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "name",
+       "cwd"
+      ],
+      "type": "object"
+     }
+    },
+    "required": [
+     "task_id",
+     "launch"
+    ]
+   }
   }
  ]
 }

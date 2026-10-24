@@ -68,6 +68,23 @@ user follows tasks, not nodes.
   another. Keep
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
+- A report of a defect (main fails a test, a build breaks, a bug a node or the user saw) is
+  checked before it becomes a task, because it may already be fixed or already have a task:
+  - Look at the tasks: `tasks_in_progress` with `all: true` lists the open ones and the finished
+    ones with their PRs. One finished after the commit or time the report names whose title,
+    mission or PR is about the same test, file or symptom has probably fixed it; an open one about
+    them already covers it.
+  - Read the code: `Grep` the named test or file in the project's checkout and `Read` it. When
+    it already holds what the report says is missing (the expected string, the fixed call), main
+    has the fix.
+  - Already fixed: create no task. Close the request with `close_request`, its `answer` naming the
+    PR or task that fixed it ("Already fixed on main by #1159"); a node that reported it gets the
+    same in `answer_question`.
+  - An open task covers it: create no task. Fold the report into that task, with `send` and
+    `task` to its node, or with `set_launch_plan` when it has not started, and close the request
+    naming it. Never two tasks for the same red main.
+  - When what you can see does not settle it, create the task: its node first reproduces the
+    defect on a fresh main and ends the task itself if it no longer happens.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
   that do not need each other run in parallel. A dependency is a wait: the task starts, or its
   node goes on, once the others are done. It never holds back the merge of a PR the task already
