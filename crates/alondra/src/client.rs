@@ -401,7 +401,15 @@ impl Client {
 
     /// A stored file. An attachment's copy comes whole from `/files` on this Mac and in
     /// verified chunks through the service; a document revision always in chunks.
+    /// A card attachment's route is its stored reference, relative to the daemon's HOME.
     pub fn content(&self, route: &str) -> Result<Vec<u8>> {
+        let stored;
+        let route = if route.starts_with("files/") {
+            stored = format!("{FILES}?path={}", crate::mcp::urlencode(route));
+            &stored
+        } else {
+            route
+        };
         match route.strip_prefix(FILES) {
             Some(query) if self.service.is_some() => content_via(&format!("{FILES}/chunk{query}"), |path| self.get::<Value>(path)),
             Some(_) => self.raw("GET", route, &[]),
@@ -990,6 +998,16 @@ mod wire_tests {
         let served = server.join();
         assert_eq!(*seen.lock().unwrap(), expected);
         served.unwrap();
+    }
+
+    #[test]
+    fn a_card_attachment_is_read_from_files_by_the_reference_the_daemon_stored() {
+        let shot = AttachmentRef { id: "att-1".into(), name: "shot.png".into(), content_digest: "a".repeat(64), content_reference: "files/uploads/u-1/shot.png".into(), bytes: 4 };
+        let (client, seen, server) = peer(vec![("/files?path=files%2Fuploads%2Fu-1%2Fshot.png", Value::from("png"))]);
+        let bytes = client.content(&shot.content_reference).unwrap();
+        server.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["/files?path=files%2Fuploads%2Fu-1%2Fshot.png"]);
+        assert_eq!(bytes, br#""png""#);
     }
 
     #[test]
