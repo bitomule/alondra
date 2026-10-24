@@ -1953,7 +1953,7 @@ impl DomainState {
 
     /// The state of a task within the phase its lifecycle materialized: what it waits for
     /// or who has to act. Never a phase change: no Done, Cancelled or Closing comes from here.
-    pub(super) fn state_within_phase(&self, t: &Task) -> TaskState {
+    pub(super) fn state_within_phase(&self, t: &Task, cards: &TaskCards<'_>) -> TaskState {
         match t.ending {
             Some(TaskEnding::Cancelling) => return TaskState::Closing,
             Some(TaskEnding::Completing) => {
@@ -1966,10 +1966,10 @@ impl DomainState {
         });
         if self.stack_ready(t).is_err() || (goes_on && self.waits_are_over(t).is_err()) {
             TaskState::WaitingDependency
-        } else if self.blockers(&t.id) {
+        } else if cards.blockers(&t.id) {
             TaskState::NeedsYou
         } else if let Some(p) = t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)) {
-            if (self.settled(t, p) || self.accepted(p)) && self.unanswered(&t.id) {
+            if (self.settled(t, p) || self.accepted(p)) && cards.unanswered(&t.id) {
                 TaskState::NeedsYou
             } else if self.settled(t, p) {
                 self.after_merge_state(t)
@@ -1979,7 +1979,7 @@ impl DomainState {
                 if t.started || t.agent_id.is_some() { TaskState::Running } else { TaskState::NotStarted }
             } else if !self.open_blockers(&t.id).is_empty() {
                 TaskState::AwaitingBlocker
-            } else if matches!(self.attention(t), Attention::Wait(_)) {
+            } else if matches!(self.attention_given(t, cards), Attention::Wait(_)) {
                 TaskState::WaitingDependency
             } else {
                 TaskState::ForYourReview

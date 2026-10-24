@@ -1171,10 +1171,15 @@ impl DomainState {
     }
     /// R16: the open cards that hold back this delivery, oldest first.
     pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
+        self.blocked_by_among(delivery, self.interactions.values())
+    }
+    /// `blocked_by` over `cards`, which hold every interaction that names what it holds back.
+    pub(super) fn blocked_by_among<'a>(&self, delivery: &InteractionId, cards: impl Iterator<Item = &'a Interaction>) -> Vec<InteractionId> {
         let Some(delivery) = self.interactions.get(delivery)
             .filter(|delivery| self.open(delivery) && matches!(delivery.payload, InteractionPayload::Delivery { .. }))
         else { return vec![] };
-        let mut by: Vec<&Interaction> = self.interactions.values()
+        let mut by: Vec<&Interaction> = cards
+            .inspect(|_| measure::card_read())
             .filter(|i| i.card.blocks.iter().any(|target| Self::card_target_matches_delivery(target, delivery))
                 && i.id != delivery.id
                 && self.open(i))
@@ -1727,7 +1732,8 @@ impl DomainState {
             self.retire(card);
         }
     }
-    fn unanswered_card(&self, i: &Interaction, t: &TaskId) -> bool {
+    pub(super) fn unanswered_card(&self, i: &Interaction, t: &TaskId) -> bool {
+        measure::card_read();
         matches!(&i.scope, Scope::Task { task_id } if task_id == t)
             && i.recipient == Recipient::User
             && !matches!(i.author, Author::System)
@@ -1745,24 +1751,26 @@ impl DomainState {
     }
     /// An unanswered card that does not name what it holds back: no final delivery may stand next to
     /// it. A card that names its delivery or PR already holds that merge back where the user sees it.
-    fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
+    pub(super) fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
         i.card.blocks.is_empty() && self.unanswered_card(i, t)
     }
     /// A card of the task that holds it on the user: a question to the orchestrator holds it on
     /// the orchestrator, and a turn-ended card a recorded wait covers holds it on that wait.
     pub(super) fn blockers(&self, t: &TaskId) -> bool {
-        self.interactions.values().any(|i| {
-            i.scope == (Scope::Task { task_id: t.clone() })
-                && i.blocking
-                && !i.withdrawn
-                && i.recipient != Recipient::Orchestrator
-                && matches!(
-                    i.payload,
-                    InteractionPayload::Question { answer: None, .. }
-                        | InteractionPayload::ActionRequest { answer: None, .. }
-                )
-                && !self.covered_by_recorded_wait(i)
-        })
+        self.interactions.values().any(|i| self.blocker_card(i, t))
+    }
+    pub(super) fn blocker_card(&self, i: &Interaction, t: &TaskId) -> bool {
+        measure::card_read();
+        matches!(&i.scope, Scope::Task { task_id } if task_id == t)
+            && i.blocking
+            && !i.withdrawn
+            && i.recipient != Recipient::Orchestrator
+            && matches!(
+                i.payload,
+                InteractionPayload::Question { answer: None, .. }
+                    | InteractionPayload::ActionRequest { answer: None, .. }
+            )
+            && !self.covered_by_recorded_wait(i)
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
         self.merged_delivery(p)
@@ -1778,8 +1786,9 @@ impl DomainState {
     /// leaves the user's queue, the task is in progress again, and the node presents again once it
     /// has the answers. A delivery the user accepted or a PR already merged stays.
     fn withdraw_deliveries_asked_after(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let cards = TaskCards::new(self);
         let asked: Vec<(TaskId, InteractionId)> = self.tasks.values()
-            .filter(|t| !t.over() && self.interactions.values().any(|i| self.asked_aside(i, &t.id)))
+            .filter(|t| !t.over() && cards.asked_aside(&t.id))
             .filter_map(|t| {
                 let p = self.interactions.get(t.final_presentation.as_ref()?)?;
                 (!self.accepted(p) && !self.settled(t, p)).then(|| (t.id.clone(), p.id.clone()))
@@ -1927,11 +1936,12 @@ impl DomainState {
     /// request of one whose delivery is no longer settled.
     fn wrap_up_step(&mut self, effects: &mut Vec<DomainEffect>) {
         let revision = self.revision + 1;
-        let ids: Vec<TaskId> = self.tasks.values().filter(|t| !t.over()).map(|t| t.id.clone()).collect();
+        let cards = TaskCards::new(self);
+        let ids: Vec<TaskId> = self.tasks.values()
+            .filter(|t| !t.over() && !cards.blockers(&t.id) && !cards.unanswered(&t.id))
+            .map(|t| t.id.clone())
+            .collect();
         for id in ids {
-            if self.blockers(&id) || self.unanswered(&id) {
-                continue;
-            }
             let t = &self.tasks[&id];
             let finished = self.finished(t);
             if finished && self.wraps_up(t) && t.wrap_up.asked_at.is_none() {
@@ -1994,11 +2004,12 @@ impl DomainState {
         }
     }
     fn derive_states_once(&mut self) -> bool {
+        let cards = TaskCards::new(self);
         let updates: Vec<_> = self
             .tasks
             .values()
             .filter(|t| !t.state.terminal())
-            .map(|t| (t.id.clone(), self.state_within_phase(t)))
+            .map(|t| (t.id.clone(), self.state_within_phase(t, &cards)))
             .collect();
         let mut changed = false;
         for (id, state) in updates {

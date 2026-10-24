@@ -3,7 +3,7 @@
 
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A card and the revision it had when the user got something to do with it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,6 +55,60 @@ impl Holds for DomainState {
     }
     fn first_card(&self, delivery: &InteractionId) -> Option<InteractionId> {
         self.blocked_by(delivery).into_iter().next()
+    }
+}
+
+/// Each task's unanswered questions and requests, and the cards that name what they hold back,
+/// found in one pass over the interactions: a rule that reads the cards of every task reads them
+/// here, instead of scanning every interaction once per task. Every card `blockers`, `unanswered`
+/// and `asked_aside` count is an unanswered question or request of that task.
+pub(super) struct TaskCards<'a> {
+    state: &'a DomainState,
+    of_task: HashMap<&'a TaskId, Vec<&'a Interaction>>,
+    holding: Vec<&'a Interaction>,
+}
+
+impl<'a> TaskCards<'a> {
+    pub(super) fn new(state: &'a DomainState) -> Self {
+        let mut of_task: HashMap<&TaskId, Vec<&Interaction>> = HashMap::new();
+        let mut holding = vec![];
+        for i in state.interactions.values() {
+            measure::card_read();
+            if let Scope::Task { task_id } = &i.scope
+                && !i.withdrawn
+                && matches!(i.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
+            {
+                of_task.entry(task_id).or_default().push(i);
+            }
+            if !i.card.blocks.is_empty() {
+                holding.push(i);
+            }
+        }
+        Self { state, of_task, holding }
+    }
+    fn of(&self, t: &TaskId) -> impl Iterator<Item = &'a Interaction> + '_ {
+        self.of_task.get(t).into_iter().flatten().copied()
+    }
+    /// `DomainState::blockers`.
+    pub(super) fn blockers(&self, t: &TaskId) -> bool {
+        self.of(t).any(|i| self.state.blocker_card(i, t))
+    }
+    /// `DomainState::unanswered`.
+    pub(super) fn unanswered(&self, t: &TaskId) -> bool {
+        self.of(t).any(|i| self.state.unanswered_card(i, t))
+    }
+    /// Whether the task has a card `DomainState::asked_aside` holds no final delivery next to.
+    pub(super) fn asked_aside(&self, t: &TaskId) -> bool {
+        self.of(t).any(|i| self.state.asked_aside(i, t))
+    }
+}
+
+impl Holds for TaskCards<'_> {
+    fn first_blocker(&self, task: &TaskId) -> Option<TaskId> {
+        self.state.first_blocker(task)
+    }
+    fn first_card(&self, delivery: &InteractionId) -> Option<InteractionId> {
+        self.state.blocked_by_among(delivery, self.holding.iter().copied()).into_iter().next()
     }
 }
 
@@ -136,9 +190,10 @@ impl DomainState {
     }
     /// The cards the user can act on, by task.
     pub fn acting(&self) -> BTreeMap<TaskId, CardRef> {
+        let cards = TaskCards::new(self);
         self.tasks
             .values()
-            .filter_map(|t| match self.attention(t) {
+            .filter_map(|t| match self.attention_given(t, &cards) {
                 Attention::Act(card) => Some((t.id.clone(), card)),
                 _ => None,
             })

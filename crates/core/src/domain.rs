@@ -8,6 +8,7 @@ mod api_failure;
 mod claude_access;
 mod journal;
 mod lifecycle;
+mod measure;
 mod node_machine;
 mod ownership;
 mod plan;
@@ -65,6 +66,8 @@ mod decision_tests;
 mod plan_wait_tests;
 #[cfg(test)]
 mod turn_end_wait_tests;
+#[cfg(test)]
+mod transition_cost_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;
