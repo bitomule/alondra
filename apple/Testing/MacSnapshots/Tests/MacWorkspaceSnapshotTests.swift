@@ -152,6 +152,33 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    private func mcpSignIn(_ phase: McpSignInFeature.Phase, edit: (inout McpSignInFeature.State) -> Void = { _ in }) -> some View {
+        var state = McpSignInFeature.State(card: "mcp-sign-in-t-7", server: "Linear")
+        state.phase = phase
+        edit(&state)
+        let store = Store(initialState: state) { McpSignInFeature() } withDependencies: {
+            $0.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
+        }
+        return McpSignInSheet(store: store)
+    }
+
+    func test_mcpSignIn_listening() {
+        assertWindow(size: CGSize(width: 460, height: 280)) { mcpSignIn(.signingIn(.listening)) }
+    }
+
+    /// The paste state is captured on the iPhone only: on the Mac, the paste button follows the real pasteboard.
+    func test_mcpSignIn_claudeAi_spanish() {
+        assertWindow(size: CGSize(width: 460, height: 280), spanish: true, variants: Appearance.allCases) { mcpSignIn(.claudeAi) }
+    }
+
+    func test_mcpSignIn_sending_spanish() {
+        assertWindow(size: CGSize(width: 460, height: 280), spanish: true, variants: [.light]) { mcpSignIn(.sending) }
+    }
+
+    func test_mcpSignIn_cut_spanish() {
+        assertWindow(size: CGSize(width: 460, height: 280), spanish: true, variants: Appearance.allCases) { mcpSignIn(.failed(.cut)) }
+    }
+
     func test_card_questionWithItsAnswers() throws {
         let store = try presentation(detail: "card-question-mac")
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }

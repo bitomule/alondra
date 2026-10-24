@@ -38,7 +38,7 @@ final class McpSignInFeatureTests: XCTestCase {
         let store = store(page: .browser(url: page, port: 53682), events: [.opened(.listening), .returned(back)],
                           giveBack: { card, address in given.withValue { $0.append("\(card) \(address.absoluteString)") } })
         let appeared = await store.send(.appeared)
-        await store.receive(\.gaveBack) { $0.phase = .connected }
+        await store.receive(\.gaveBack)
         await appeared.cancel()
 
         XCTAssertEqual(given.value, ["\(card) \(back.absoluteString)"])
@@ -62,9 +62,33 @@ final class McpSignInFeatureTests: XCTestCase {
 
         await store.send(.pasted(" \(back.absoluteString)\n"))
         await store.receive(\.sendPastedTapped) { $0.pasted = ""; $0.pasteRefused = false; $0.phase = .sending }
-        await store.receive(\.gaveBack) { $0.phase = .connected }
+        await store.receive(\.gaveBack)
         await appeared.cancel()
         XCTAssertEqual(given.value, [back])
+    }
+
+    @MainActor
+    func testASignInThatReachesTheMacClosesTheSheetAndTellsItsHost() async {
+        let dismissed = LockIsolated(0)
+        let store = store(page: .browser(url: page, port: 53682), events: [.opened(.listening), .returned(back)], dismissed: dismissed)
+        let appeared = await store.send(.appeared)
+        await store.receive(\.gaveBack)
+        await store.receive(\.delegate.signedIn)
+        await appeared.cancel()
+        await store.finish()
+        XCTAssertEqual(dismissed.value, 1, "nothing is left to do on the sheet once the sign-in reached the Mac")
+    }
+
+    @MainActor
+    func testAServerAlreadySignedInClosesTheSheetAndTellsItsHost() async {
+        let dismissed = LockIsolated(0)
+        let store = store(page: .connected, events: [], dismissed: dismissed)
+        let appeared = await store.send(.appeared)
+        await store.receive(\.connectAnswered)
+        await store.receive(\.delegate.signedIn)
+        await appeared.cancel()
+        await store.finish()
+        XCTAssertEqual(dismissed.value, 1)
     }
 
     @MainActor
@@ -139,7 +163,7 @@ final class McpSignInFeatureTests: XCTestCase {
             let observed = LockIsolated<[String]>([])
             let card = try target(title)
             let store = TestStore(initialState: McpSignInFeature.State(card: card, server: title)) { McpSignInFeature() } withDependencies: {
-                $0.mcpSignIn.connect = { _ in .connected }
+                $0.mcpSignIn.connect = { _ in throw APIError.unavailable }
                 $0.viewsClient.observe = { key in
                     observed.withValue { $0.append(key.rawValue) }
                     return AsyncThrowingStream { continuation in

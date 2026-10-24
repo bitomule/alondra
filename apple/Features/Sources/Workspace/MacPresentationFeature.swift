@@ -545,6 +545,9 @@ public struct MacPresentationFeature: Sendable {
             case .mcpReconnected(let failure):
                 state.mcpNotice = McpSignInFeature.reconnectNotice(failure)
                 return .none
+            case .mcpSignIn(.presented(.delegate(.signedIn(let server)))):
+                state.mcpNotice = McpSignInFeature.signedInNotice(server)
+                return .none
             case .mcpNoticeDismissed:
                 state.mcpNotice = nil
                 return .none

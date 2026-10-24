@@ -223,7 +223,7 @@ struct RootView<AccountContent: View>: View {
         .environment(\.mcpLinks, McpLinks(signIn: { store.send(.mcpSignInRequested(card: $0, server: $1)) },
                                           reconnect: { store.send(.mcpReconnectRequested(card: $0)) }))
         .sheet(item: $store.scope(state: \.mcpSignIn, action: \.mcpSignIn)) { signIn in
-            McpSignInSheet(store: signIn).presentationDetents([.medium, .large])
+            McpSignInSheet(store: signIn)
         }
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             NavigationStack {

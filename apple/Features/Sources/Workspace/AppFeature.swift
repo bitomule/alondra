@@ -235,6 +235,8 @@ public struct AppFeature: Sendable {
             return .failure(failure.message)
         case .mcpReconnected(let failure):
             return McpSignInFeature.reconnectNotice(failure)
+        case .mcpSignIn(.presented(.delegate(.signedIn(let server)))):
+            return McpSignInFeature.signedInNotice(server)
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
              .newRequestPath(.element(id: _, action: let route)):

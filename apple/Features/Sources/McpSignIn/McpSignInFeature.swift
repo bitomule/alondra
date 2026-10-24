@@ -41,7 +41,6 @@ public struct McpSignInFeature: Sendable {
         case claudeAi
         case sending
         case reconnecting
-        case connected
         case failed(Failure)
     }
 
@@ -68,6 +67,13 @@ public struct McpSignInFeature: Sendable {
         case reconnected(Failure?)
         case cardSettled
         case closeTapped
+        case delegate(Delegate)
+
+        @CasePathable
+        public enum Delegate: Equatable, Sendable {
+            /// The sign-in reached the Mac: the sheet closes by itself and its host says so.
+            case signedIn(server: String)
+        }
     }
 
     @Dependency(\.mcpSignIn) var client
@@ -93,8 +99,7 @@ public struct McpSignInFeature: Sendable {
                 state.phase = .failed(failure)
                 return .none
             case .connectAnswered(.connected?, nil):
-                state.phase = .connected
-                return .none
+                return signedIn(state)
             case let .connectAnswered(.browser(url, port)?, nil):
                 state.page = url
                 state.port = port
@@ -125,8 +130,10 @@ public struct McpSignInFeature: Sendable {
                     return .none
                 }
                 return giveBack(&state, address)
-            case let .gaveBack(failure):
-                state.phase = failure.map(Phase.failed) ?? .connected
+            case .gaveBack(nil):
+                return signedIn(state)
+            case let .gaveBack(failure?):
+                state.phase = .failed(failure)
                 if failure == .notAReturn { state.asksToPaste = true }
                 return .none
             case .reconnectTapped:
@@ -143,8 +150,14 @@ public struct McpSignInFeature: Sendable {
                 return .none
             case .cardSettled, .closeTapped:
                 return .run { [dismiss] _ in await dismiss() }
+            case .delegate:
+                return .none
             }
         }
+    }
+
+    private func signedIn(_ state: State) -> Effect<Action> {
+        .concatenate(.send(.delegate(.signedIn(server: state.server))), .run { [dismiss] _ in await dismiss() })
     }
 
     private func connect(_ state: inout State) -> Effect<Action> {
@@ -203,6 +216,10 @@ public struct McpSignInFeature: Sendable {
                 if !rows.isEmpty, !connecting { return await send(.cardSettled) }
             }
         } catch: { _, _ in }.cancellable(id: CancelID.settled, cancelInFlight: true)
+    }
+
+    public static func signedInNotice(_ server: String) -> WorkspaceNotice.Event {
+        .actionCompleted(String(localized: "Signed in to \(server): the waiting tasks go on."))
     }
 
     /// The toast after Reconnect on the card itself.

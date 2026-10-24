@@ -142,6 +142,10 @@ import Foundation
             case .actions(.delegate(.failed(let message))):
                 state.error = message
                 return .none
+            case .signIn(.presented(.delegate(.signedIn(let server)))):
+                state.error = nil
+                state.notice = String(localized: "Signed in to \(server): the waiting tasks go on.")
+                return .none
             case .actions, .signIn:
                 return .none
             }
