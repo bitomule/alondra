@@ -146,6 +146,7 @@ swift_test(
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
     data = ["//fixtures/views:cards"],
     deps = [
+        "//apple/Design:AlondraDesign",
         "//apple/Data/Feed:AlondraFeed",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Features:AlondraFeatures",
@@ -181,7 +182,7 @@ macos_application(
     entitlements = select({":distribution": "macOS/AppStore.entitlements", "//conditions:default": None}),
     provisioning_profile = select({":distribution": "//signing:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
-    resources = glob(["macOS/Resources/*.xcstrings"]) + ["//fixtures/views:all", "//fixtures/views:cards_ios"],
+    resources = glob(["macOS/Resources/*.xcstrings"]) + ["//fixtures/views:all", "//fixtures/views:cards_ios", "//fixtures/views:demo_mac"],
     version = ":Version",
     visibility = ["//visibility:public"],
     deps = [":AlondraMacViewsEntry"],

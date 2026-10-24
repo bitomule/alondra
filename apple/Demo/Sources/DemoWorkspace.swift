@@ -56,7 +56,7 @@ enum DemoWorkspace {
 
     private static func fixtureName(for key: String) -> String? {
         if key == "home" { return "home-ios" }
-        if key == "sidebar" { return "home-tui" }
+        if key == "sidebar" { return "sidebar-mac" }
         if key == "tasks" || key.hasPrefix("tasks?") { return "tasks-ios" }
         if key == "new_request" || key.hasPrefix("new_request?") { return "new-request-ios" }
         if key.hasPrefix("task:") { return "task-ios" }

@@ -67,6 +67,13 @@ import Testing
         #expect(block.content.runs[\.imageURL].allSatisfy { url, _ in url == nil }, "Text draws a run with an image URL as a missing image")
     }
 
+    @Test func anImageInsideAListItemOrQuoteIsALinkBehindACameraMark() throws {
+        let blocks = MarkdownParser.blocks(from: "- Works with <img src=\"https://a.dev/b.svg\" alt=\"Homebrew\"> today\n\n> See ![the shot](https://a.dev/s.png) here")
+        #expect(blocks.map { String($0.content.characters) } == ["Works with 📷 Homebrew today", "See 📷 the shot here"])
+        #expect(blocks.map(\.plainText) == ["Works with Homebrew today", "See the shot here"])
+        #expect(blocks.map(\.opensLinks) == [true, true])
+    }
+
     @Test func aBlockKnowsWhenItOpensLinks() throws {
         let blocks = MarkdownParser.blocks(from: "<a href=\"https://a.dev\">Docs</a>\n\nplain\n\n![logo](https://a.dev/l.png)")
         #expect(blocks.map(\.opensLinks) == [true, false, false])

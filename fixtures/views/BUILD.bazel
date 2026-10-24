@@ -19,6 +19,13 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# The Mac sidebar the demo shows, which the Mac app bundles beside the iPhone cards.
+filegroup(
+    name = "demo_mac",
+    srcs = ["cards/sidebar-mac.json", "cards/sidebar-mac-es.json"],
+    visibility = ["//visibility:public"],
+)
+
 # Views as a daemon newer than the client sends them: kinds and values the client does not know.
 filegroup(
     name = "newer_daemon",

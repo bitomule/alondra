@@ -382,6 +382,37 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 620), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_aLinkedDocumentDrawsItsLinksAndImages() async throws {
+        let diagram = URL(string: "/files?path=files/images/\(String(repeating: "c", count: 64)).png")!
+        let image = NSImage(size: CGSize(width: 320, height: 140), flipped: false) { rect in
+            NSColor.systemTeal.setFill()
+            rect.fill()
+            NSColor.white.setFill()
+            CGRect(x: 24, y: 24, width: 110, height: 92).fill()
+            CGRect(x: 158, y: 96, width: 130, height: 20).fill()
+            CGRect(x: 158, y: 60, width: 96, height: 20).fill()
+            return true
+        }
+        let png = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+        let files = StoredFiles { _ in png }
+        _ = try await files.fetch(try XCTUnwrap(StoredImage.attachment(diagram)))
+        let readme = """
+        # Alondra
+
+        <p align="center"><img src="\(diagram.absoluteString)" alt="How a card reaches you"></p>
+
+        Read <a href="https://example.com/docs">the docs</a> or [the install guide](https://example.com/install).
+
+        - Works with <img src="https://example.com/badge.svg" alt="Homebrew"> on Apple Silicon
+        - Press <kbd>v</kbd> to open a document
+        """
+        let content = MacContent.markdown(MarkdownParser.segments(from: readme))
+        assertWindow(size: CGSize(width: 620, height: 520)) {
+            MacContentViewer(title: "README.md", content: content, loading: false, error: nil, comments: .constant([:]))
+                .environment(\.storedFiles, files)
+        }
+    }
+
     func test_card_clarificationSheet() throws {
         let store = try presentation(detail: "card-question-mac", edit: { state in
             let card = state.detailDocument?.sections.flatMap(\.items).compactMap { item -> Card? in

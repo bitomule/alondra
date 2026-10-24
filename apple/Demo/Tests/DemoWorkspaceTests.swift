@@ -24,6 +24,27 @@ import Testing
         store.send(.disappeared)
     }
 
+    @Test(arguments: [false, true])
+    func theMacSidebarLoadsFromTheFilesTheAppBundles(spanish: Bool) async throws {
+        let client = ViewsClient.demo(spanish: spanish)
+        guard case let .document(sidebar) = try await client.load(.sidebar, nil) else {
+            Issue.record("The demo sidebar must load")
+            return
+        }
+        #expect(sidebar.client == .mac)
+        let cardKeys = sidebar.sections.flatMap(\.items).compactMap { item -> ViewKey? in
+            guard case let .row(row) = item, case let .view(key)? = row.link, key.hasPrefix("card:") else { return nil }
+            return ViewKey(rawValue: key)
+        }
+        #expect(!cardKeys.isEmpty)
+        for key in cardKeys {
+            guard case .document = try await client.load(key, nil) else {
+                Issue.record("The sidebar card \(key.rawValue) must open in the demo")
+                continue
+            }
+        }
+    }
+
     @Test func aSpanishDeviceReadsTheNewRequestScreenInSpanish() async throws {
         guard case let .document(spanish) = try await ViewsClient.demo(spanish: true).load(.newRequest(), nil),
               case let .document(english) = try await ViewsClient.demo().load(.newRequest(), nil) else {

@@ -6,7 +6,7 @@ swift_library(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraDemo",
-    data = ["//fixtures/views:all", "//fixtures/views:cards_ios"],
+    data = ["//fixtures/views:all", "//fixtures/views:cards_ios", "//fixtures/views:demo_mac"],
     visibility = ["//visibility:public"],
     deps = [
         "//apple/Contract:AlondraContract",
@@ -18,7 +18,7 @@ swift_test(
     name = "AlondraDemoTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
-    data = ["//fixtures/views:all", "//fixtures/views:cards"],
+    data = ["//fixtures/views:all", "//fixtures/views:cards_ios", "//fixtures/views:demo_mac"],
     deps = [
         ":AlondraDemo",
         "//apple/Features:AlondraFeatures",

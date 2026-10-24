@@ -256,9 +256,9 @@ public enum MarkdownParser {
                         marker = .task(done: task.done)
                         text = task.rest
                     }
-                    append(.listItem(marker: marker), depth: depth - 1, content: text)
+                    appendMarkingImages(.listItem(marker: marker), depth: depth - 1, content: text)
                 } else if let innermost, innermost.kind == .blockQuote {
-                    append(.quote, depth: depth - 1, content: content)
+                    appendMarkingImages(.quote, depth: depth - 1, content: content)
                 } else {
                     markItemSeen(containers.first)
                     if let image = MarkdownParser.loneImage(content) {
@@ -269,7 +269,7 @@ public enum MarkdownParser {
                 }
             case .header(let level):
                 markItemSeen(containers.first)
-                append(.heading(level: level), depth: depth, content: content)
+                appendMarkingImages(.heading(level: level), depth: depth, content: content)
             case .codeBlock(let hint):
                 markItemSeen(containers.first)
                 var code = content
@@ -283,6 +283,14 @@ public enum MarkdownParser {
             default:
                 append(.paragraph, depth: depth, content: content)
             }
+        }
+
+        mutating func appendMarkingImages(_ kind: MarkdownBlock.Kind, depth: Int, content: AttributedString) {
+            guard content.runs[\.imageURL].contains(where: { url, _ in url != nil }) else {
+                return append(kind, depth: depth, content: content)
+            }
+            append(kind, depth: depth, content: MarkdownParser.markingImages(content),
+                   plainText: MarkdownParser.withoutPlaceholder(String(content.characters)))
         }
 
         mutating func markItemSeen(_ container: PresentationIntent.IntentType?) {

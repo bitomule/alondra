@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import AlondraFeed
 import AlondraFeatures
 import AlondraTransport
@@ -825,6 +826,35 @@ struct MacContentTests {
         #expect(store.state.contentBody == "+added")
         #expect(store.state.contentIsDiff)
         #expect(!store.state.contentLoading)
+    }
+
+    @Test
+    func aFetchedDocumentShowsItsLinksAndImages() async throws {
+        let readme = """
+        # Alondra
+
+        <p align="center"><img src="https://example.com/logo.png" alt="Logo"></p>
+
+        Read <a href="https://example.com/docs">the docs</a> or [the guide](https://example.com/guide).
+        """
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchContent = { _ in readme }
+        }
+        store.exhaustivity = .off
+        let ref = try JSONDecoder().decode(ContentRef.self, from: Data(#"{"kind":"document","title":"README.md","size":120,"digest":"r1","fetch":"content/r1","commentable":false}"#.utf8))
+
+        await store.send(.contentRequested(ref))
+        await store.skipReceivedActions()
+        guard case let .markdown(segments) = store.state.contentShown else {
+            Issue.record("A fetched document must be drawn as Markdown, not as plain text")
+            return
+        }
+        let blocks = segments.compactMap { segment -> MarkdownBlock? in
+            if case let .block(block) = segment { block } else { nil }
+        }
+        #expect(blocks.contains { $0.kind == .image(url: URL(string: "https://example.com/logo.png")!, alt: "Logo") })
+        let links = blocks.flatMap { block in block.content.runs[\.link].compactMap { link, _ in link } }
+        #expect(links == [URL(string: "https://example.com/docs")!, URL(string: "https://example.com/guide")!])
     }
 
     @Test

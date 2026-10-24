@@ -1,7 +1,16 @@
 import AlondraContract
+import AlondraDesign
 import Foundation
 import ComposableArchitecture
 import AlondraFeed
+
+/// What the content sheet draws: a fetched document is Markdown, so its links open and its images show.
+public enum MacContent: Equatable, Sendable {
+    case image(Data)
+    case diff(String)
+    case markdown([MarkdownSegment])
+    case text(String)
+}
 
 /// Per-window navigation and disclosure state. The service graph remains the sole
 /// owner of snapshots, drafts and mutations.
@@ -62,13 +71,22 @@ public struct MacPresentationFeature: Sendable {
         public var pickerError: String?
         public var contentTitle = ""
         public var contentBody = ""
-        public var contentIsDiff = false
+        public var contentKind: ContentKind?
+        public var contentIsDiff: Bool { contentKind == .diff }
         public var contentLoading = false
         public var contentError: String?
         public var contentPresented = false
         public var contentImageData: Data?
         public var contentDigest: String?
         public var diffComments: [String: ActionComment] = [:]
+        public var contentShown: MacContent {
+            if let contentImageData { return .image(contentImageData) }
+            switch contentKind {
+            case .diff: return .diff(contentBody)
+            case .document: return .markdown(MarkdownParser.segments(from: contentBody))
+            case .file, nil: return .text(contentBody)
+            }
+        }
         public var newRequest = NewRequestFeature.State(client: .mac)
         @Presents public var mcpSignIn: McpSignInFeature.State?
         /// Why Reconnect on a card did not go, until the person reads it.
@@ -229,7 +247,7 @@ public struct MacPresentationFeature: Sendable {
                 if state.contentDigest != identity { state.diffComments = [:] }
                 state.contentDigest = identity
                 state.contentTitle = content.title
-                state.contentIsDiff = content.kind == .diff
+                state.contentKind = content.kind
                 state.contentBody = ""
                 state.contentError = nil
                 state.contentLoading = true
@@ -241,7 +259,7 @@ public struct MacPresentationFeature: Sendable {
                 }
             case .attachmentRequested(let attachment):
                 state.contentTitle = attachment.name
-                state.contentIsDiff = false
+                state.contentKind = nil
                 state.contentBody = ""
                 state.contentError = nil
                 state.contentLoading = true
@@ -253,7 +271,7 @@ public struct MacPresentationFeature: Sendable {
                 }
             case let .contentLoaded(content, body):
                 state.contentTitle = content.title
-                state.contentIsDiff = content.kind == .diff
+                state.contentKind = content.kind
                 state.contentBody = body
                 state.contentLoading = false
                 state.contentError = nil

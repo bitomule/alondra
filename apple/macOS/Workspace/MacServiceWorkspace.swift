@@ -319,9 +319,9 @@ public struct MacServiceDetail: View {
                         .frame(minWidth: 420, minHeight: 240)
                 }
                 .sheet(isPresented: Binding(get: { presentation.contentPresented }, set: { presentation.send(.contentPresented($0)) })) {
-                    MacContentViewer(title: presentation.contentTitle, contentText: presentation.contentBody,
-                                     isDiff: presentation.contentIsDiff, loading: presentation.contentLoading,
-                                     error: presentation.contentError, imageData: presentation.contentImageData,
+                    MacContentViewer(title: presentation.contentTitle, content: presentation.contentShown,
+                                     loading: presentation.contentLoading,
+                                     error: presentation.contentError,
                                      comments: Binding(get: { presentation.diffComments },
                                                        set: { presentation.send(.diffCommentsChanged($0)) }))
                         .id(presentation.contentDigest)
@@ -389,33 +389,46 @@ public struct MacServiceDetail: View {
     }
 }
 
-private struct MacContentViewer: View {
+public struct MacContentViewer: View {
     let title: String
-    let contentText: String
-    let isDiff: Bool
+    let content: MacContent
     let loading: Bool
     let error: String?
-    let imageData: Data?
     @Binding var comments: [String: ActionComment]
 
-    var body: some View {
+    public init(title: String, content: MacContent, loading: Bool, error: String?, comments: Binding<[String: ActionComment]>) {
+        self.title = title; self.content = content; self.loading = loading; self.error = error; _comments = comments
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.title3.weight(.semibold))
             if loading { ProgressView("Loading…") }
             else if let error { ContentUnavailableView("Couldn’t load content", systemImage: "exclamationmark.triangle", description: Text(error)) }
-            else if let imageData, let image = NSImage(data: imageData) {
-                Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            else if isDiff {
-                ScrollView([.vertical, .horizontal]) {
-                    MacViewsPRDiff(text: contentText, comments: $comments)
-                        .padding(12)
-                }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
-            } else {
-                ScrollView([.vertical, .horizontal]) {
-                    Text(contentText).font(.body)
+            else {
+                switch content {
+                case let .image(data):
+                    if let image = NSImage(data: data) {
+                        Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                case let .diff(text):
+                    ScrollView([.vertical, .horizontal]) {
+                        MacViewsPRDiff(text: text, comments: $comments)
+                            .padding(12)
+                    }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+                case let .markdown(segments):
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(segments) { MarkdownSegmentView(segment: $0) }
+                        }
                         .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(12)
-                }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+                    }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+                case let .text(text):
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(text).font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(12)
+                    }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+                }
             }
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
