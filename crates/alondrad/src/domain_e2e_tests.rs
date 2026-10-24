@@ -201,7 +201,7 @@ async fn a_claude_bg_node_commands_and_receives_its_answer_once_across_a_daemon_
             "interaction_id": "info-1", "need": "The review started", "body": "Started the review", "targets": [{"kind": "text", "text": "Started the review"}], "is_final": false}))),
         ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
             "scope": scope, "recipient": {"kind": "user"}, "need": "Decide on merging the fix", "why": "The review is done and waits for it", "blocking": true,
-            "options": [{"id": "yes", "label": "Yes", "inputs": []}, {"id": "no", "label": "No", "inputs": []}]}))),
+            "options": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}]}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(!tool_text(&replies[1]).0, "{}", tool_text(&replies[1]).1);
@@ -584,7 +584,7 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
     let ask = |id: &str, revision: &str, replaces: Option<&str>| {
         let mut question = json!({"kind": "ask_question", "interaction_id": id, "scope": scope, "recipient": {"kind": "user"},
             "need": "Review the migration design", "why": "The migration waits for it", "blocking": true,
-            "options": [{"id": "approve", "label": "Approve", "inputs": []}, {"id": "drop", "label": "Drop it", "inputs": []}]});
+            "options": [{"id": "approve", "label": "Approve"}, {"id": "drop", "label": "Drop it"}]});
         if let Some(replaces) = replaces { question["replaces"] = json!(replaces); }
         vec![
             ("ask", tool_args(&epoch, id, 0, question)),
@@ -731,7 +731,7 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     let (capability, task, epoch) = node_with_a_task(&daemon, &home).await;
     let app = App::pair(&daemon);
     let scope = json!({"kind": "task", "task_id": task.0});
-    let choice = |id: &str| json!({"id": id, "label": id, "description": format!("Go with {id}"), "inputs": []});
+    let choice = |id: &str| json!({"id": id, "label": id, "description": format!("Go with {id}")});
     let ask = |id: &str, need: &str| ("ask", tool_args(&epoch, id, 0, json!({"interaction_id": id, "scope": scope,
         "recipient": {"kind": "user"}, "need": need, "why": "The release waits for it.", "blocking": false,
         "options": [choice("stable"), choice("beta")]})));

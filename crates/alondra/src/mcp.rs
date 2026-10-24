@@ -28,7 +28,7 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task for its whole life: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra doctor --fix or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}, only a real decision whose options change what you do next: never to announce that your work is ready, show a report or point at a file; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Never send the same card twice: before a card about something you already asked, read open_cards and replace your open one with `replaces`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. A plan states its scope as Markdown checklist lines (`- [ ] …`), one per thing you will deliver, or it goes back to you; once {user} approves it, your final result marks every point done with its evidence in checklist, and a point that no longer applies goes out only with a revised plan {user} approves. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true, the whole report or answer written in content.body, never a path to the file that holds it: a file, a final message left in this session or a question saying the work is ready never reaches {user} as a delivery. When the result needs {user} to choose anything (a design's open decisions, a default to pick), ask it with ask before you deliver, each question with the option you recommend: accepting a result never answers a choice left in its content. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, the full commit sha it is at as head (never a branch name) and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. When Alondra tells you the task is closing, delete what you generated for it that git does not track (build outputs, caches, temporary files) with the project's own tools, change nothing else, and call cleanup_done with the task_id: Alondra then closes your session and its worktree. While something you started for the Task still runs after its PR merged (a deploy, a release script), say so with post_merge_work and the reason, so Alondra does not close the session under it, and call it again without reason when it ends. Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your Task: declare it with post_merge_work before you present the PR as final, so accepting and merging the PR does not close the Task; Alondra tells you to do it once the PR merges. If after the merge that work has to wait for another task or pull request to land, call post_merge_work with waits_for naming it and end your turn: Alondra wakes you when it lands; a wait written only in reason wakes nobody. When Alondra tells you the task was cancelled, stop: do not commit, push or deliver anything. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. To wait for another Task to be done, ask the orchestrator (recipient orchestrator) to make yours depend on it and end your turn: Alondra tells you when it is done; never ask {user} to tell you. Every message typed into this session starts with who sent it and when; the most recent instruction from whoever directs you ({user}, Claude for {user}, the orchestrator) replaces earlier ones that contradict it. Technical permission requests remain separate from task questions. When you stop only because the Mac lacks resources (memory, a full disk, the CPU), say so with wait_for_machine and end your turn; the subscription's usage is never a reason to wait or stop: Alondra paces usage itself and {user} decides whether to keep going, so keep working; waiting in a build queue such as the build queue is normal and never a reason to call it; if something you ran died for lack of memory, call wait_for_machine with that reason and never ask {user} whether to run it again: Alondra tells you to carry on when the Mac has room, and then you run again what was cut. When you need an MCP server that is not connected, call wait_for_mcp with its name and end your turn; never call its mcp__<server>__authenticate tool yourself or ask {user} to sign in with a card: Alondra shows {user} one card to sign in and tells you when it is connected or that you go on without it. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task for its whole life: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra doctor --fix or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}, only a real decision whose options change what you do next: never to announce that your work is ready, show a report or point at a file; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Never send the same card twice: before a card about something you already asked, read open_cards and replace your open one with `replaces`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A tool's arguments are exactly its schema: never add a field it does not have, and send an object or a list as JSON itself, never as text that holds JSON. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. A plan states its scope as Markdown checklist lines (`- [ ] …`), one per thing you will deliver, or it goes back to you; once {user} approves it, your final result marks every point done with its evidence in checklist, and a point that no longer applies goes out only with a revised plan {user} approves. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true, the whole report or answer written in content.body, never a path to the file that holds it: a file, a final message left in this session or a question saying the work is ready never reaches {user} as a delivery. When the result needs {user} to choose anything (a design's open decisions, a default to pick), ask it with ask before you deliver, each question with the option you recommend: accepting a result never answers a choice left in its content. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, the full commit sha it is at as head (never a branch name) and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. When Alondra tells you the task is closing, delete what you generated for it that git does not track (build outputs, caches, temporary files) with the project's own tools, change nothing else, and call cleanup_done with the task_id: Alondra then closes your session and its worktree. While something you started for the Task still runs after its PR merged (a deploy, a release script), say so with post_merge_work and the reason, so Alondra does not close the session under it, and call it again without reason when it ends. Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your Task: declare it with post_merge_work before you present the PR as final, so accepting and merging the PR does not close the Task; Alondra tells you to do it once the PR merges. If after the merge that work has to wait for another task or pull request to land, call post_merge_work with waits_for naming it and end your turn: Alondra wakes you when it lands; a wait written only in reason wakes nobody. When Alondra tells you the task was cancelled, stop: do not commit, push or deliver anything. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. To wait for another Task to be done, ask the orchestrator (recipient orchestrator) to make yours depend on it and end your turn: Alondra tells you when it is done; never ask {user} to tell you. Every message typed into this session starts with who sent it and when; the most recent instruction from whoever directs you ({user}, Claude for {user}, the orchestrator) replaces earlier ones that contradict it. Technical permission requests remain separate from task questions. When you stop only because the Mac lacks resources (memory, a full disk, the CPU), say so with wait_for_machine and end your turn; the subscription's usage is never a reason to wait or stop: Alondra paces usage itself and {user} decides whether to keep going, so keep working; waiting in a build queue such as the build queue is normal and never a reason to call it; if something you ran died for lack of memory, call wait_for_machine with that reason and never ask {user} whether to run it again: Alondra tells you to carry on when the Mac has room, and then you run again what was cut. When you need an MCP server that is not connected, call wait_for_mcp with its name and end your turn; never call its mcp__<server>__authenticate tool yourself or ask {user} to sign in with a card: Alondra shows {user} one card to sign in and tells you when it is connected or that you go on without it. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
             "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. A node works on one Task for its whole life and closes with it: start every Task with launch (a new node), never by sending a Task to another node. Every Task is created with its launch plan in create_task (launch: name, cwd, and with auto effort model and reason; for a Request a schedule made, the schedule's model and effort), or create_task refuses it: Alondra starts it by itself when the node limit has room, by priority then age, and a Task that depends on others once they are done, with their results in its mission. You never launch Tasks to keep nodes busy; use launch only for a Task whose start failed or whose node is gone, or to replace a node. When the Request's effort is auto, launch needs model: the lowest that can reliably finish; tell a new node in its mission what other nodes are doing when their work touches (tasks_in_progress shows them); to move a live Task to another model or effort, launch it again with replace: true, which stops its node and starts the new one in the same worktree (it answers at once with replacing: true and you are told how it ended: do not launch the task again meanwhile); interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. tasks_in_progress shows the live nodes and what waits on someone, and node one node in detail. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another. A plan approved in phases is one Task per phase, each taking its points with plan_items and depending only on the phases it truly needs. When a Task's work goes on after its PR merges (publish, install, deploy, verify), say so in its mission: its node declares that work before delivering, so merging the PR does not close the Task."
@@ -60,7 +60,7 @@ fn tools(role: Role, user: &str) -> Value {
             "weekday": {"type": ["integer", "null"], "description": "For weekly: Sunday 0, Monday 1, through Saturday 6"},
             "interval": {"type": ["integer", "null"], "description": "For every_hours/days/months: interval from 1 to 365"},
             "start_at": {"type": ["integer", "null"], "description": "Unix milliseconds for once or interval anchor"},
-            "options": {"type": "object", "description": "Alondra launch choices, e.g. pr: review or auto_merge, effort: normal"},
+            "options": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Alondra launch choices, e.g. pr: review or auto_merge, effort: normal"},
             "disallowed_tools": {"type": "array", "items": {"type": "string"}, "description": "Optional Claude tool deny patterns"}
         }, "required": ["title", "text", "project", "frequency", "hour", "minute"]}}));
     }
@@ -98,14 +98,14 @@ fn domain_tool(name: &str, description: &str, fields: Value, required: &[&str]) 
 fn interaction_fields() -> Value {
     json!({
         "interaction_id":{"type":"string"},
-        "scope":{"oneOf":[
-            {"type":"object","properties":{"kind":{"const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"orchestrator"},"request_id":{"type":["string","null"]}},"required":["kind","request_id"],"additionalProperties":false}
+        "scope":{"type":"object","oneOf":[
+            {"type":"object","properties":{"kind":{"type":"string","const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"type":"string","const":"orchestrator"},"request_id":{"type":["string","null"]}},"required":["kind","request_id"],"additionalProperties":false}
         ]},
-        "recipient":{"oneOf":[
-            {"type":"object","properties":{"kind":{"const":"user"}},"required":["kind"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"orchestrator"}},"required":["kind"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"agent"},"agent_id":{"type":"string"}},"required":["kind","agent_id"],"additionalProperties":false}
+        "recipient":{"type":"object","oneOf":[
+            {"type":"object","properties":{"kind":{"type":"string","const":"user"}},"required":["kind"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"type":"string","const":"orchestrator"}},"required":["kind"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"type":"string","const":"agent"},"agent_id":{"type":"string"}},"required":["kind","agent_id"],"additionalProperties":false}
         ]},
         "body":{"type":"string"},"blocking":{"type":"boolean"},
         "options":{"type":"array","description":"Each option is a button: pressing it answers. The user can always write on the card too, alone or with the option; to ask for a value, use request_input.","items":{"type":"object","properties":{
@@ -116,10 +116,10 @@ fn interaction_fields() -> Value {
 }
 
 fn input_value_schema() -> Value {
-    json!({"type":"object","additionalProperties":{"oneOf":[
-        {"type":"object","properties":{"kind":{"const":"text"},"value":{"type":"string"}},"required":["kind","value"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"boolean"},"value":{"type":"boolean"}},"required":["kind","value"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"integer"},"value":{"type":"integer"}},"required":["kind","value"],"additionalProperties":false}
+    json!({"type":"object","additionalProperties":{"type":"object","oneOf":[
+        {"type":"object","properties":{"kind":{"type":"string","const":"text"},"value":{"type":"string"}},"required":["kind","value"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"type":"string","const":"boolean"},"value":{"type":"boolean"}},"required":["kind","value"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"type":"string","const":"integer"},"value":{"type":"integer"}},"required":["kind","value"],"additionalProperties":false}
     ]}})
 }
 
@@ -134,17 +134,17 @@ fn questions_schema(options: &Value) -> Value {
 
 fn content_schema() -> Value {
     json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. It holds the whole thing being decided, never a summary of it. Put anything longer than a sentence here, never in why. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
-        "kind":{"enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
+        "kind":{"type":"string","enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
         "summary":{"type":"string","maxLength":60,"description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
         "body":{"type":"string"}
     },"required":["kind","body"],"additionalProperties":false})
 }
 
 fn blocks_schema() -> Value {
-    json!({"type":"array","maxItems":16,"description":"What this card holds back until it is answered: an open PR, document or delivery of the Task","items":{"oneOf":[
-        {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"document"},"document_id":{"type":"string"}},"required":["kind","document_id"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"delivery"},"interaction_id":{"type":"string"}},"required":["kind","interaction_id"],"additionalProperties":false}
+    json!({"type":"array","maxItems":16,"description":"What this card holds back until it is answered: an open PR, document or delivery of the Task","items":{"type":"object","oneOf":[
+        {"type":"object","properties":{"kind":{"type":"string","const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"type":"string","const":"document"},"document_id":{"type":"string"}},"required":["kind","document_id"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"type":"string","const":"delivery"},"interaction_id":{"type":"string"}},"required":["kind","interaction_id"],"additionalProperties":false}
     ]}})
 }
 
@@ -152,7 +152,7 @@ fn checklist_schema() -> Value {
     json!({"type":"array","maxItems":alondra_core::domain::CHECKLIST_MAX_ITEMS,"description":"Only in the final result of a Task whose plan the user approved: every point of that plan's checklist (`- [ ] …` lines, numbered from 1 in order), marked done with what proves it. A point that no longer applies goes out with a revised plan the user approves, never by leaving it out here","items":{"type":"object","properties":{
         "item":{"type":"string","description":"The number of the point in the approved plan, from 1"},
         "evidence":{"type":"array","minItems":1,"maxItems":alondra_core::domain::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
-            "kind":{"enum":alondra_core::domain::EvidenceKind::ALL.map(alondra_core::domain::EvidenceKind::as_str)},
+            "kind":{"type":"string","enum":alondra_core::domain::EvidenceKind::ALL.map(alondra_core::domain::EvidenceKind::as_str)},
             "value":{"type":"string","minLength":1,"maxLength":alondra_core::domain::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL"},
             "detail":{"type":"string","maxLength":alondra_core::domain::EVIDENCE_MAX_TEXT,"description":"What it showed, such as \"713 passed\""}
         },"required":["kind","value"],"additionalProperties":false}}
@@ -208,7 +208,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     add(
         "request_input",
         format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. {user} writes it or attaches it on the card, and it reaches you as their answer; the card's only button is «I can't provide it». Use ask instead when the answer is one of a few choices."),
-        json!({"need":need_schema(),"why":why_schema(),"kind":{"enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        json!({"need":need_schema(),"why":why_schema(),"kind":{"type":"string","enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "why", "kind", "blocking"],
     );
     if node {
@@ -228,10 +228,10 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         );
     }
     if node {
-        let target = json!({"type":"array","items":{"oneOf":[
-            {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
-            {"type":"object","description":"The PR your task registered","properties":{"kind":{"const":"pull_request"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra uses the commit it knows the PR is at"}},"required":["kind"],"additionalProperties":false}
+        let target = json!({"type":"array","items":{"type":"object","oneOf":[
+            {"type":"object","properties":{"kind":{"type":"string","const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"type":"string","const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
+            {"type":"object","description":"The PR your task registered","properties":{"kind":{"type":"string","const":"pull_request"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra uses the commit it knows the PR is at"}},"required":["kind"],"additionalProperties":false}
         ]}});
         tools.push(domain_tool(
             "present_result",
@@ -244,7 +244,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     tools.push(domain_tool("withdraw", "Withdraw one of your own cards that no longer needs an answer. An answered card cannot be withdrawn.", withdraw_fields.clone(), &["interaction_id"]));
     tools.push(domain_tool("withdraw_question", "Alias of withdraw.", withdraw_fields, &["interaction_id"]));
     let mut clarification_fields = json!({"id":{"type":"string","description":"The card the user asked you to clarify"},
-        "replacement":{"type":"object","properties":{"tool":{"enum":["ask","request_action","request_input","request_test","present_result"]},"arguments":{"type":"object"}},"required":["tool","arguments"],"additionalProperties":false}});
+        "replacement":{"type":"object","properties":{"tool":{"type":"string","enum":["ask","request_action","request_input","request_test","present_result"]},"arguments":{"type":"object","additionalProperties":true,"description":"The arguments of that tool, as you would call it"}},"required":["tool","arguments"],"additionalProperties":false}});
     let clarification_help = if node {
         format!("Settle a card after {user} used Ask for clarification on it. Until you do, your next card must replace it. Send replacement, the corrected card as {{\"tool\": \"ask\", \"arguments\": {{...}}}} (any card tool; replaces is set for you), and put the explanation {user} asked for in its why or content. Or withdraw the card.")
     } else {
@@ -282,7 +282,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
 
 fn node_domain_tools(user: &str) -> Vec<Value> {
     let mut interaction = interaction_fields();
-    interaction["scope"] = json!({"type":"object","properties":{"kind":{"const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false});
+    interaction["scope"] = json!({"type":"object","properties":{"kind":{"type":"string","const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false});
     let mut tools = card_tools(user, &interaction, true);
     let attachment = json!({"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false});
     let simple = [
@@ -368,7 +368,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             "link_interaction_subject",
             "link_interaction_subject",
             "Link your Task question to its PR or document review subject; a question linked to a document revision opens that document for review.",
-            json!({"interaction_id":{"type":"string"},"subject":{"oneOf":[{"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"document_review"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false}]}}),
+            json!({"interaction_id":{"type":"string"},"subject":{"type":"object","oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","const":"document_review"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false}]}}),
             vec!["interaction_id", "subject"],
         ),
         (
@@ -382,7 +382,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             "record_verdict",
             "record_verdict",
             "Say what your final delivery concluded about the Tasks you block (a review): approved, or changes_requested with the findings as text. In both, serious_findings is how many of the failures you found are serious: they break behaviour, lose data, or open a security or session hole (0 if none); it is required with changes_requested. Call it right after present_result with is_final true. Changes_requested sends those Tasks back to work with your text, and you review their next final delivery; after three rounds your last word closes the review. Approved closes your Task and lets the blocked one reach the user. If the task you review delivers again before you give the verdict, present your result again first: a verdict only counts for the delivery you saw. You cannot register a pull request: a reviewer delivers a verdict, not code.",
-            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"verdict":{"oneOf":[{"type":"object","properties":{"kind":{"const":"approved"},"summary":{"type":"string"},"open_issues":{"type":"boolean"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","summary"],"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"changes_requested"},"text":{"type":"string"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","text","serious_findings"],"additionalProperties":false}]}}),
+            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"verdict":{"type":"object","oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"approved"},"summary":{"type":"string"},"open_issues":{"type":"boolean"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","summary"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","const":"changes_requested"},"text":{"type":"string"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","text","serious_findings"],"additionalProperties":false}]}}),
             vec!["task_id", "presentation_id", "verdict"],
         ),
     ];
@@ -970,12 +970,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         .as_object()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("tool arguments must be an object"))?;
-    for key in [
-        "protocol_version",
-        "data_epoch",
-        "command_id",
-        "expected_revision",
-    ] {
+    for key in PROTOCOL_METADATA {
         command.remove(key);
     }
     attach_card(name, &mut command)?;
@@ -1018,7 +1013,9 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         }
     }
     serde_json::from_value::<alondra_core::domain::CommandEnvelope>(typed).map_err(|error| {
-        anyhow::anyhow!("invalid_input: {error}. Fix the arguments of {name} to match its schema and call it again")
+        let error = error.to_string();
+        let reason = error.split(", expected").next().unwrap_or(&error);
+        anyhow::anyhow!("invalid_input: {reason}. Fix the arguments of {name} to match its schema and call it again")
     })?;
     Ok(envelope)
 }
@@ -1181,6 +1178,9 @@ fn fold_questions(command: &mut serde_json::Map<String, Value>) -> Result<bool> 
 /// so alondrad refuses them with the field and the fix, and counts the refusal.
 fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Result<()> {
     let Some(kind) = card_kind(name, command) else { return Ok(()) };
+    if command.contains_key("card") {
+        anyhow::bail!("invalid_input: {name} has no field card: need, why and content go at the top level of its arguments");
+    }
     if name == "ask" && fold_questions(command)? {
         return Ok(());
     }
@@ -1629,6 +1629,32 @@ pub fn serve_orchestrator() -> Result<()> {
     )
 }
 
+/// Fields Alondra supplies itself: a caller that still sends them is not refused, they are dropped.
+const PROTOCOL_METADATA: [&str; 4] = ["protocol_version", "data_epoch", "command_id", "expected_revision"];
+
+/// A call's arguments against the schema its tool publishes, and a clarification's corrected card
+/// against the schema of the tool it names.
+fn check_arguments(tools: &Value, name: &str, args: &Value) -> Result<(), String> {
+    let schema_of = |name: &str| tools.as_array().into_iter().flatten().find(|tool| tool["name"] == name).map(|tool| &tool["inputSchema"]);
+    let Some(schema) = schema_of(name) else { return Ok(()) };
+    let mut args = args.clone();
+    if let Some(fields) = args.as_object_mut() {
+        fields.retain(|key, _| !PROTOCOL_METADATA.contains(&key.as_str()));
+    }
+    crate::mcp_arguments::check(name, schema, &args)?;
+    if name == "answer_clarification"
+        && let Some(tool) = args.pointer("/replacement/tool").and_then(Value::as_str)
+        && let Some(schema) = schema_of(tool)
+    {
+        let mut arguments = args.pointer("/replacement/arguments").cloned().unwrap_or(json!({}));
+        if let Some(fields) = arguments.as_object_mut() {
+            fields.retain(|key, _| key != "replaces" && !PROTOCOL_METADATA.contains(&key.as_str()));
+        }
+        crate::mcp_arguments::check(tool, schema, &arguments).map_err(|problem| format!("replacement: {problem}"))?;
+    }
+    Ok(())
+}
+
 fn serve_server(
     server_name: &str,
     instructions: String,
@@ -1659,7 +1685,8 @@ fn serve_server(
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(match dispatch(&client, name, &args) {
+                let checked = check_arguments(&tools, name, &args).map_err(anyhow::Error::msg);
+                Ok(match checked.and_then(|()| dispatch(&client, name, &args)) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {}", explain(&e))}], "isError": true}),
                 })
@@ -2738,5 +2765,91 @@ mod card_tool_tests {
         assert_eq!(stored, format!("![s]({route})"));
         assert_eq!(carried["content_digest"], hex(stored.as_bytes()));
         assert_eq!(notice, None);
+    }
+
+    /// Every schema a tool publishes is spelled out where it is used, with its type: Claude Code
+    /// sends a property without one (an empty schema, a `$ref`) as text.
+    fn explicit(schema: &Value, at: &str, problems: &mut Vec<String>) {
+        const KNOWN: [&str; 17] = ["type", "properties", "required", "additionalProperties", "items", "oneOf", "enum", "const",
+            "description", "default", "minItems", "maxItems", "minLength", "maxLength", "minimum", "maximum", "pattern"];
+        let Some(fields) = schema.as_object() else { return problems.push(format!("{at}: not a schema")) };
+        if let Some(unknown) = fields.keys().find(|key| !KNOWN.contains(&key.as_str())) {
+            problems.push(format!("{at}: {unknown}"));
+        }
+        if !fields.contains_key("type") {
+            problems.push(format!("{at}: no type"));
+        }
+        let is_object = |t: &Value| t == "object" || t.as_array().is_some_and(|ts| ts.contains(&json!("object")));
+        if fields.get("type").is_some_and(is_object) && !fields.contains_key("properties") && !fields.contains_key("additionalProperties") && !fields.contains_key("oneOf") {
+            problems.push(format!("{at}: an object that says nothing of its fields"));
+        }
+        for (key, property) in fields.get("properties").and_then(Value::as_object).into_iter().flatten() {
+            explicit(property, &format!("{at}.{key}"), problems);
+        }
+        for (i, branch) in fields.get("oneOf").and_then(Value::as_array).into_iter().flatten().enumerate() {
+            explicit(branch, &format!("{at}|{i}"), problems);
+        }
+        if let Some(items) = fields.get("items") {
+            explicit(items, &format!("{at}[]"), problems);
+        }
+        if let Some(extra @ Value::Object(_)) = fields.get("additionalProperties") {
+            explicit(extra, &format!("{at}{{}}"), problems);
+        }
+    }
+
+    #[test]
+    fn every_tool_schema_is_inline_explicit_and_typed() {
+        for role in [Role::Node, Role::Orchestrator] {
+            let mut problems = vec![];
+            for tool in tools(role, "User").as_array().unwrap() {
+                explicit(&tool["inputSchema"], tool["name"].as_str().unwrap(), &mut problems);
+            }
+            assert!(problems.is_empty(), "{problems:#?}");
+        }
+    }
+
+    #[test]
+    fn calls_that_fit_the_schema_pass_untouched() {
+        let node = tools(Role::Node, "User");
+        let ask = json!({"interaction_id":"q-1","scope":{"kind":"task","task_id":"t-1"},"recipient":{"kind":"user"},
+            "need":"Pick the icon","why":"It ships in the next beta","blocking":true,"options":[{"id":"a","label":"A"},{"id":"b","label":"B"}],
+            "recommended":"a","content":{"kind":"report","body":"Both icons"},"replaces":null});
+        assert_eq!(check_arguments(&node, "ask", &ask), Ok(()));
+        let orchestrator = tools(Role::Orchestrator, "User");
+        let stack_cleared = json!({"task_id":"t-1","dependencies":[],"stack":null});
+        assert_eq!(check_arguments(&orchestrator, "set_dependencies", &stack_cleared), Ok(()));
+        let without_stack = json!({"task_id":"t-1","dependencies":[]});
+        assert_eq!(check_arguments(&orchestrator, "set_dependencies", &without_stack), Ok(()), "a field that takes null may be left out");
+        let to_the_orchestrator = json!({"interaction_id":"q-2","scope":{"kind":"orchestrator","request_id":null},"recipient":{"kind":"orchestrator"},
+            "why":"x","blocking":false,"options":[]});
+        assert_eq!(check_arguments(&orchestrator, "ask", &to_the_orchestrator), Ok(()));
+        assert_eq!(check_arguments(&node, "no_such_tool", &json!("anything")), Ok(()), "an unknown tool is refused by its dispatch");
+        let mut with_metadata = ask.clone();
+        for key in PROTOCOL_METADATA {
+            with_metadata[key] = json!(1);
+        }
+        assert_eq!(check_arguments(&node, "ask", &with_metadata), Ok(()), "what Alondra supplies itself is dropped, never refused");
+    }
+
+    #[test]
+    fn a_union_says_which_kinds_it_takes_and_a_corrected_card_is_checked_against_its_own_tool() {
+        let node = tools(Role::Node, "User");
+        let ask = |recipient: Value| json!({"interaction_id":"q","scope":{"kind":"task","task_id":"t"},"recipient":recipient,"why":"x","blocking":true});
+        let wrong = check_arguments(&node, "ask", &ask(json!({"kind":"everyone"}))).unwrap_err();
+        assert!(wrong.contains("`recipient.kind` must be one of user, orchestrator, agent, got \"everyone\""), "{wrong}");
+        let typo = check_arguments(&node, "ask", &ask(json!({"type":"user"}))).unwrap_err();
+        assert!(typo.contains("missing `recipient.kind`: one of user, orchestrator, agent"), "{typo}");
+        let clarified = json!({"id":"card-1","replacement":{"tool":"ask","arguments":{"interaction_id":"q","scope":{"kind":"task","task_id":"t"},
+            "recipient":{"kind":"user"},"why":"x","blocking":true,"content":"the log"}}});
+        let refused = check_arguments(&node, "answer_clarification", &clarified).unwrap_err();
+        assert!(refused.starts_with("replacement: invalid_input: the arguments of ask") && refused.contains("`content` must be an object, got a string"), "{refused}");
+    }
+
+    #[test]
+    fn a_command_alondra_cannot_build_never_names_its_internal_fields() {
+        let error = domain_envelope("present_result", &json!({"task_id":"t","interaction_id":"r","is_final":true,"need":"Review it","targets":[{"kind":"text","text":"x"}],"title":"T"}), "epoch", "c").unwrap_err().to_string();
+        assert!(error.contains("unknown field `title`") && !error.contains("expected one of") && !error.contains("card"), "{error}");
+        let error = domain_envelope("present_result", &json!({"task_id":"t","interaction_id":"r","is_final":true,"targets":[],"card":"{\"need\":\"Review it\"}"}), "epoch", "c").unwrap_err().to_string();
+        assert!(error.contains("present_result has no field card: need, why and content go at the top level"), "{error}");
     }
 }

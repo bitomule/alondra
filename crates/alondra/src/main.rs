@@ -18,6 +18,7 @@ mod delivery;
 mod doc_images;
 mod help;
 mod mcp;
+mod mcp_arguments;
 mod models;
 mod provider_accounts;
 mod ops;

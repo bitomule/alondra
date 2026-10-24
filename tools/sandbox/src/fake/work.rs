@@ -73,13 +73,13 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
         Step::RegisterPr { number } => (|| -> Result<mcp::Reply> {
             let head = git(dir, &["rev-parse", "HEAD"])?;
             worker.tool(fakes, "register_pr", json!({
-                "task_id": task()?, "pr_id": format!("pr-{number}"), "host": "github.com", "repository": gh::REPOSITORY,
+                "task_id": task()?, "host": "github.com", "repository": gh::REPOSITORY,
                 "number": number, "head": head, "base": "main", "allowed_methods": ["squash"],
             }))
         })(),
         Step::Deliver { need, pr, is_final } => (|| -> Result<mcp::Reply> {
             let targets = match pr {
-                Some(number) => json!([{"kind": "pull_request", "pr_id": format!("pr-{number}"), "head": git(dir, &["rev-parse", "HEAD"])?}]),
+                Some(_) => json!([{"kind": "pull_request", "head": git(dir, &["rev-parse", "HEAD"])?}]),
                 None => json!([{"kind": "text", "text": need}]),
             };
             let arguments = json!({
@@ -101,7 +101,7 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
         Step::Ask { id, need, options } => (|| -> Result<mcp::Reply> {
             let options: Vec<Value> = options
                 .iter()
-                .map(|label| json!({"id": label.to_lowercase().replace(' ', "-"), "label": label, "description": format!("Choose {label}"), "inputs": []}))
+                .map(|label| json!({"id": label.to_lowercase().replace(' ', "-"), "label": label, "description": format!("Choose {label}")}))
                 .collect();
             worker.tool(fakes, "ask", json!({
                 "interaction_id": id, "scope": {"kind": "task", "task_id": task()?}, "recipient": {"kind": "user"},

@@ -149,8 +149,8 @@ class Node:
     def ask(self, interaction, revision, need, replaces=None):
         question = {"interaction_id": interaction, "scope": {"kind": "task", "task_id": self.task}, "recipient": {"kind": "user"},
                     "need": need, "why": "The migration waits for this review.", "blocking": True,
-                    "options": [{"id": "approve", "label": "Approve", "description": "The migration starts", "inputs": []},
-                                {"id": "drop", "label": "Drop it", "description": "Nothing is migrated", "inputs": []}]}
+                    "options": [{"id": "approve", "label": "Approve", "description": "The migration starts"},
+                                {"id": "drop", "label": "Drop it", "description": "Nothing is migrated"}]}
         if replaces:
             question["replaces"] = replaces
         return [("ask", question),

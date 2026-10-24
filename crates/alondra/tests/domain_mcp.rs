@@ -86,7 +86,7 @@ fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
         "mcp-node",
         "register_pr",
         json!({
-            "task_id":"task-one", "pr_id":"pr-one", "host":"github.com",
+            "task_id":"task-one", "host":"github.com",
             "repository":"example/project", "number":7, "head":"abc123", "base":"main",
             "allowed_methods":["squash"]
         }),
@@ -137,7 +137,8 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "create_task",
         json!({
             "task_id":"task-one", "request_id":"request-one", "title":"Prepare result",
-            "agent_id":"agent-one", "review_prs":false, "dependencies":[], "stack":null
+            "agent_id":"agent-one", "review_prs":false, "dependencies":[], "stack":null,
+            "launch":{"name":"project/result", "cwd":"/Users/example/Projects/project"}
         }),
     );
     assert_eq!(forwarded.0, "post /requests/request-one/tasks http/1.1");
@@ -171,7 +172,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
             "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
             "recipient":{"kind":"user"}, "need":"Pick the answer", "why":"The task cannot go on without it",
             "blocking":true, "recommended":"yes",
-            "options":[{"id":"yes", "label":"Yes", "inputs":[]}, {"id":"no", "label":"No", "inputs":[]}]
+            "options":[{"id":"yes", "label":"Yes"}, {"id":"no", "label":"No"}]
         }),
     );
     assert_eq!(forwarded.0, "post /questions http/1.1");
@@ -221,8 +222,7 @@ fn mcp_without_a_producer_capability_fails_closed() {
         json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/call",
             "params":{"name":"register_pr","arguments":{
-                "data_epoch":"epoch", "command_id":"one", "expected_revision":0,
-                "task_id":"task-one", "pr_id":"pr-one", "host":"github.com",
+                "task_id":"task-one", "host":"github.com",
                 "repository":"example/project", "number":7, "head":"abc123", "base":"main",
                 "allowed_methods":["squash"]
             }}
@@ -290,8 +290,57 @@ fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + S
 fn needy_ask(id: &str) -> Value {
     json!({
         "interaction_id":id, "scope":{"kind":"task", "task_id":"task-one"}, "recipient":{"kind":"user"},
-        "blocking":true, "options":[{"id":"a", "label":"A", "inputs":[]}, {"id":"b", "label":"B", "inputs":[]}]
+        "why":"It holds the release back", "blocking":true, "options":[{"id":"a", "label":"A"}, {"id":"b", "label":"B"}]
     })
+}
+
+/// What the node of the incident sent on 23 October: its card, as text, under a field
+/// present_result does not have, and no need.
+fn incident_result() -> Value {
+    json!({"task_id":"task-one", "interaction_id":"task-one-result", "is_final":true,
+        "body":"PR #38 adds AGENTS.md", "targets":[{"kind":"pull_request"}],
+        "card":"{\"need\":\"Review simpool PR 38\",\"why\":\"Agents finish the rollout themselves\"}"})
+}
+
+#[test]
+fn arguments_that_do_not_fit_the_schema_are_refused_by_name_and_never_reach_the_daemon() {
+    let mut content_as_text = needy_ask("card-2");
+    content_as_text["content"] = json!("{\"kind\":\"report\",\"body\":\"The log\"}");
+    let mut options_as_text = needy_ask("card-3");
+    options_as_text["options"] = json!("[{\"id\":\"a\",\"label\":\"A\"}]");
+    let mut scope_as_text = needy_ask("card-4");
+    scope_as_text["scope"] = json!("task");
+    let mut recipient_as_text = needy_ask("card-5");
+    recipient_as_text["recipient"] = json!("{\"kind\":\"user\"}");
+    let mut targets_as_text = incident_result();
+    targets_as_text.as_object_mut().unwrap().remove("card");
+    targets_as_text["need"] = json!("Review simpool PR 38");
+    targets_as_text["targets"] = json!("[{\"kind\":\"pull_request\"}]");
+    let calls = [
+        ("present_result", incident_result()),
+        ("ask", content_as_text),
+        ("ask", options_as_text),
+        ("ask", scope_as_text),
+        ("ask", recipient_as_text),
+        ("present_result", targets_as_text),
+        ("register_pr", json!({})),
+    ];
+    let (replies, received) = mcp_session(&calls, |_| (200, json!({"data_epoch":"epoch"})));
+    let texts: Vec<&str> = replies.iter().map(|reply| {
+        assert_eq!(reply["isError"], true, "{reply}");
+        reply["content"][0]["text"].as_str().unwrap()
+    }).collect();
+    assert!(texts[0].contains("it has no field `card`: its fields are") && ["need", "why", "content"].iter().all(|field| texts[0].contains(field)), "{}", texts[0]);
+    assert!(!texts[0].contains("card.need"), "the refusal names the field that is wrong, not one the node never sent: {}", texts[0]);
+    for (text, field, shape) in [(texts[1], "content", "an object"), (texts[2], "options", "a list"), (texts[3], "scope", "an object"),
+        (texts[4], "recipient", "an object"), (texts[5], "targets", "a list")] {
+        assert!(text.contains(&format!("`{field}` must be {shape}, got a string: send it as JSON itself, not as text that holds JSON")), "{text}");
+    }
+    assert!(texts[6].contains("missing `task_id`, `host`, `repository`, `number`, `head`, `base`, `allowed_methods`"), "{}", texts[6]);
+    for text in &texts {
+        assert!(!text.contains("pr_id") && !text.contains("filled-by-alondra") && !text.contains("expected one of"), "no internal field leaks: {text}");
+    }
+    assert!(received.is_empty(), "nothing reached alondrad, so no refusal counts against a card: {received:?}");
 }
 
 #[test]

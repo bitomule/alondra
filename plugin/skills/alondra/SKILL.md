@@ -29,6 +29,11 @@ not be reached, do not proceed: retry the same call. If Alondra refused it, the 
 field and how to fix it: fix it and send it again. A refusal is never an answer or a permission,
 and sending the same refused card three times raises a Problem for the user instead.
 
+A tool's arguments are exactly its schema: never add a field it does not have (`need`, `why` and
+`content` go at the top level, there is no `card`), and send an object or a list as JSON itself,
+never as text that holds JSON. A call whose arguments do not fit says which ones and what they
+must be; nothing was sent, so fix them and call again.
+
 ## A fix starts by reproducing the problem
 
 A task that fixes something (a failing test, a red main, a bug someone reported) starts by

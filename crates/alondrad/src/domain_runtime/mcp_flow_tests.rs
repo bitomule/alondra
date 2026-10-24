@@ -145,7 +145,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
     fixture.agent(json!({"kind":"ask_question", "interaction_id":"question-1",
         "scope":{"kind":"task", "task_id":"answer-task"},
         "recipient":{"kind":"user"}, "body":"Which answer?", "blocking":true,
-        "options":[{"id":"yes", "label":"Yes", "inputs":[]}]})).unwrap();
+        "options":[{"id":"yes", "label":"Yes"}]})).unwrap();
     fixture.user(json!({"kind":"answer_question", "interaction_id":"question-1",
         "option_id":"yes", "inputs":{}})).unwrap();
     let answer_target = json!({"kind":"text", "text":"The requested answer"});
@@ -170,7 +170,7 @@ fn decision(id: &str, task: &str, options: Value) -> Value {
 }
 
 fn names() -> Value {
-    json!([{"id":"a", "label":"Atlas", "inputs":[]}, {"id":"b", "label":"Borealis", "inputs":[]}])
+    json!([{"id":"a", "label":"Atlas"}, {"id":"b", "label":"Borealis"}])
 }
 
 fn problems(fixture: &Fixture) -> Vec<Interaction> {
@@ -182,7 +182,7 @@ fn problems(fixture: &Fixture) -> Vec<Interaction> {
 fn three_rejections_of_the_same_card_raise_a_problem() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
-    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    let one_option = json!([{"id":"a", "label":"Atlas"}]);
     for _ in 0..2 {
         assert_eq!(domain_code(fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err()), "invalid_input");
     }
@@ -207,7 +207,7 @@ fn three_rejections_of_the_same_card_raise_a_problem() {
 fn the_node_asking_after_a_stuck_problem_withdraws_it() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
-    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    let one_option = json!([{"id":"a", "label":"Atlas"}]);
     for _ in 0..3 {
         fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err();
     }
@@ -220,7 +220,7 @@ fn the_node_asking_after_a_stuck_problem_withdraws_it() {
 fn rejections_of_different_cards_or_broken_by_a_success_do_not_add_up() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
-    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    let one_option = json!([{"id":"a", "label":"Atlas"}]);
     for id in ["first", "second", "third"] {
         fixture.agent(decision(id, "t1", one_option.clone())).unwrap_err();
     }

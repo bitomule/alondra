@@ -258,7 +258,7 @@ async fn http_producer_answer_and_document_are_persisted() {
             json!({"kind":"ask_question", "interaction_id":"question-1",
         "scope":{"kind":"task", "task_id":"answer-task"}, "recipient":{"kind":"user"},
         "body":"Which answer?", "blocking":true,
-        "options":[{"id":"yes", "label":"Yes", "inputs":[]}]}),
+        "options":[{"id":"yes", "label":"Yes"}]}),
         )
         .await;
     assert!(fixture.domain.state().unwrap().interactions.contains_key(&"question-1".into()));
