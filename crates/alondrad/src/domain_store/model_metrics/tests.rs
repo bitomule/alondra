@@ -155,15 +155,21 @@ fn decisions_can_be_neither_changed_nor_removed() {
 }
 
 #[test]
-fn a_session_that_ends_twice_keeps_its_earliest_start_its_highest_readings_and_its_last_end() {
+fn an_attempts_cost_is_what_its_session_spent_and_once_its_samples_go_what_its_task_spent() {
+    use alondra_core::metrics::{Role, Usage};
     let (_fixture, mut store) = store();
     store.record_model_decision(&sonnet_launch()).unwrap();
-    let first = NodeCost { session_id: "agent-1".into(), task_id: None, model: Some("claude-sonnet-5-5".into()), cost_usd: Some(2.0),
-        context_peak_percent: Some(70.0), started_at: Some(10), ended_at: 100 };
-    store.record_node_cost(&first).unwrap();
-    store.record_node_cost(&NodeCost { model: None, cost_usd: Some(1.5), context_peak_percent: None, started_at: Some(50), ended_at: 200, ..first.clone() }).unwrap();
-    assert_eq!(store.node_cost("agent-1").unwrap(), Some(NodeCost { task_id: Some("task-1".into()), ended_at: 200, ..first }),
-        "the task comes from the session's model decision");
+    let usage = |model: &str, cost| Usage { model: model.into(), cost_micros: cost, input: 1, output: 1, cache_read: 1, cache_write: 1 };
+    let spent = [usage("claude-sonnet-5-5", Some(1_500_000)), usage("claude-haiku-4-5", Some(250_000)), usage("unpriced", None)];
+    store.record_spend(&crate::domain_store::metrics_fold::Spent {
+        session_id: "agent-1", task_id: Some("task-1"), role: Role::Node, provider: "claude", usage: &spent, steps: Default::default(), at: 5,
+    }).unwrap();
+    let mean = |store: &mut DomainStore| find(&store.model_report(None, Millis::MAX).unwrap().by_model, "sonnet", Some("medium")).mean_cost_usd;
+    assert_eq!(mean(&mut store), Some(1.75), "every model the session spent on, subagents included");
+
+    store.conn.execute_batch("INSERT INTO task_model_usage(task_id,model,provider,cost_micros,input,output,cache_read,cache_write)
+        SELECT task_id,model,provider,cost_micros,input,output,cache_read,cache_write FROM usage_sessions; DELETE FROM usage_sessions;").unwrap();
+    assert_eq!(mean(&mut store), Some(1.75), "the folded task keeps it");
 }
 
 #[test]
@@ -171,7 +177,7 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
     let (fixture, mut store) = store();
     store.record_model_decision(&sonnet_launch()).unwrap();
     let before = store.load().unwrap();
-    store.conn.execute_batch("DROP TABLE model_decisions; DROP TABLE node_costs;").unwrap();
+    store.conn.execute_batch("DROP TABLE model_decisions; CREATE TABLE IF NOT EXISTS node_costs(session_id TEXT PRIMARY KEY);").unwrap();
     drop(store);
 
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
@@ -179,6 +185,8 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
     assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::domain_store::SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
     assert!(reopened.model_decision_rows().unwrap().is_empty());
+    let node_costs: i64 = reopened.conn.query_row("SELECT count(*) FROM sqlite_master WHERE name='node_costs'", [], |r| r.get(0)).unwrap();
+    assert_eq!(node_costs, 0, "the table that never got a cost is gone");
     reopened.record_model_decision(&sonnet_launch()).unwrap();
     assert!(reopened.conn.execute("DELETE FROM model_decisions", []).is_err(), "the recreated table is guarded too");
     drop(reopened);

@@ -285,7 +285,9 @@ function select(value: Record<string, unknown>, limits: Limits | undefined, kept
 const NORMALIZED = new Set(['type', 'subtype', 'uuid', 'session_id', 'parent_tool_use_id', 'user_message_uuid', 'user_message_uuids', 'task_id', 'run_id', 'status', 'error', 'origin', 'command_uuid']);
 const NORMALIZED_RESULT = new Set(['worktreePath', 'worktreeBranch', 'agentId', 'status', 'action']);
 const NORMALIZED_BLOCK = new Set(['type', 'name', 'id', 'tool_use_id']);
-/** An SDK message whose fields the normalizer reads stay whole; the rest is shrunk to `limits`. */
+/** What the daemon's metrics read of a message: the model call it belongs to. */
+const METERED_MESSAGE = new Set(['id', 'model', 'usage']);
+/** An SDK message whose fields the normalizer and the metrics read stay whole; the rest is shrunk to `limits`. */
 function shrinkMessage(payload: unknown, limits: Limits | undefined): unknown {
   if (!isRecord(payload)) return limits ? shrink(payload, limits) : null;
   const block = (item: unknown) => !isRecord(item) ? (limits ? shrink(item, limits, 3) : null) : select(item, limits, (key, field) =>
@@ -294,7 +296,8 @@ function shrinkMessage(payload: unknown, limits: Limits | undefined): unknown {
   return select(payload, limits, (key, item) => {
     if (NORMALIZED.has(key)) return shrink(item, WHOLE);
     if (key === 'tool_use_result' && isRecord(item)) return select(item, limits, (field, value) => NORMALIZED_RESULT.has(field) ? shrink(value, WHOLE) : undefined);
-    if (key === 'message' && isRecord(item)) return select(item, limits, (field, value) => field === 'content' && Array.isArray(value) ? value.map(block) : undefined);
+    if (key === 'message' && isRecord(item)) return select(item, limits, (field, value) => field === 'content' && Array.isArray(value) ? value.map(block)
+      : METERED_MESSAGE.has(field) ? shrink(value, WHOLE) : undefined);
     return undefined;
   });
 }

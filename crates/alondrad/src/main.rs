@@ -74,6 +74,7 @@ mod revoked_devices;
 mod device_expiry;
 mod device_usage;
 mod retention;
+mod metrics_capture;
 mod node_push;
 mod node_reports;
 mod node_work;
@@ -582,6 +583,9 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
+    if let Err(error) = domain.record_release(env!("CARGO_PKG_VERSION"), alondra_core::now_millis()) {
+        log!("could not record this release's first start: {error:#}");
+    }
     tokio::spawn(retention::run(domain.clone()));
     tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));

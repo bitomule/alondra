@@ -10,6 +10,7 @@ pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 #[cfg(test)]
 pub(crate) use owner::{Refuse, refuse_next};
 pub(crate) mod model_metrics;
+pub(crate) mod metrics_fold;
 mod lifecycle_migration;
 mod account_move;
 pub(crate) use account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};

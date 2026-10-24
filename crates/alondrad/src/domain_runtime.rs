@@ -67,6 +67,8 @@ pub(crate) struct Retained {
     pub(crate) tables: Vec<(&'static str, usize)>,
     /// Ended tasks whose cards were compacted.
     pub(crate) compacted: usize,
+    /// Ended tasks folded into their metrics.
+    pub(crate) folded: usize,
 }
 
 impl DomainRuntime {
@@ -219,6 +221,13 @@ impl DomainRuntime {
             retained.evidence.commands_removed += pass.commands_removed;
             retained.evidence.texts_released += pass.texts_released;
             if [pass.released, pass.removed, pass.commands_removed, pass.texts_released].iter().all(|changed| *changed < PASS) {
+                break;
+            }
+        }
+        loop {
+            let folded = self.store.lock().expect("domain store poisoned").fold_ended_tasks(PASS)?;
+            retained.folded += folded;
+            if folded < PASS {
                 break;
             }
         }
@@ -548,8 +557,20 @@ impl DomainRuntime {
         self.store.lock().expect("domain store poisoned").record_model_decision(decision)
     }
 
-    pub(crate) fn record_node_cost(&self, cost: &crate::domain_store::model_metrics::NodeCost) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").record_node_cost(cost)
+    pub(crate) fn record_spend(&self, spent: &crate::domain_store::metrics_fold::Spent<'_>) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").record_spend(spent)
+    }
+
+    pub(crate) fn record_release(&self, version: &str, at: alondra_core::Millis) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").record_release(version, at)
+    }
+
+    pub(crate) fn prs_without_size(&self, now: alondra_core::Millis, limit: usize) -> Result<Vec<(String, String)>> {
+        self.store.lock().expect("domain store poisoned").prs_without_size(now, limit)
+    }
+
+    pub(crate) fn record_pr_lines(&self, task_id: &str, lines: i64) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").record_pr_lines(task_id, lines)
     }
 
     pub(crate) fn model_report(&self, since: Option<alondra_core::Millis>, until: alondra_core::Millis) -> Result<alondra_core::model_report::ModelReport> {

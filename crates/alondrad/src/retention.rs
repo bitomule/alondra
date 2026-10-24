@@ -27,6 +27,9 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
                 if retained.compacted > 0 {
                     log!("compacted the cards of {} ended tasks", retained.compacted);
                 }
+                if retained.folded > 0 {
+                    log!("folded the metrics of {} ended tasks", retained.folded);
+                }
                 for (policy, changed) in retained.tables.iter().filter(|(_, changed)| *changed > 0) {
                     log!("retention of {policy}: {changed} rows");
                 }
@@ -34,6 +37,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
             Ok(Err(error)) => log!("could not run the store's retention: {error}"),
             Err(error) => log!("could not run the store's retention: {error}"),
         }
+        crate::metrics_capture::pr_sizes(&domain, &crate::prs::GhCli, alondra_core::now_millis()).await;
         tokio::time::sleep(EVERY).await;
     }
 }

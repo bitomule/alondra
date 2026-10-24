@@ -147,6 +147,14 @@ for (const code of catalog.TerminalReason) assert(classify({ type: 'result', sub
   assert.deepEqual(failed.failures.map((failure) => [failure.surface, failure.code]), [['result', 'error_during_execution'], ['transport', 'truncated_sdk_message']], 'the result failure stays, its copy of the message is shrunk too');
   assert.deepEqual([failed.payload.subtype, failed.payload.user_message_uuids], ['error_during_execution', ['695832ec-2f8d-436b-862e-8effef5118f3']]);
 
+  // So many calls in one message that only the strictest step fits: which model call it is stays.
+  const usage = { input_tokens: 3, output_tokens: 4000, cache_read_input_tokens: 900000, cache_creation_input_tokens: 30000 };
+  const calls = Array.from({ length: 4000 }, (_, n) => ({ type: 'tool_use', id: `toolu_${n}`, name: 'Bash', input: { command: 'c'.repeat(300) } }));
+  const said = fit({ type: 'assistant', session_id, uuid: '1c5eb967-209b-4b70-b922-11f6762206ee', parent_tool_use_id: null,
+    message: { id: 'msg_01', model: 'claude-opus-5-5', usage, content: calls } });
+  assert.equal(said.payload.message.content.length, 4000);
+  assert.deepEqual([said.payload.message.id, said.payload.message.model, said.payload.message.usage], ['msg_01', 'claude-opus-5-5', usage], 'which call it was and what it read stay whole');
+
   const plain = classify(toolResult('small'));
   assert.equal(fitObservation(plain, (candidate) => framingProblem(framed(candidate))), plain, 'what fits is framed as it is');
   assert(Buffer.byteLength(JSON.stringify(fitValue({ message: 'z'.repeat(100_000), unresolved_input_ids: [] }, 16_384))) <= 16_384);

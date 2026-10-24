@@ -1,5 +1,5 @@
-//! The model decisions and node costs `model_metrics.sql` keeps, and the report built from them
-//! joined with each Task's history.
+//! The model decisions `model_metrics.sql` keeps, and the report built from them joined with each
+//! Task's history and what its sessions spent.
 use super::DomainStore;
 use alondra_core::Millis;
 use alondra_core::domain::{Feedback, ModelChooser};
@@ -41,18 +41,6 @@ pub(crate) struct Decision {
     pub title: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NodeCost {
-    pub session_id: String,
-    /// The Task its state still names; the Task of its last model decision wins.
-    pub task_id: Option<String>,
-    pub model: Option<String>,
-    pub cost_usd: Option<f64>,
-    pub context_peak_percent: Option<f64>,
-    pub started_at: Option<Millis>,
-    pub ended_at: Millis,
-}
-
 fn approach_text(approach: Approach) -> &'static str {
     match approach {
         Approach::Solo => "solo",
@@ -73,35 +61,6 @@ impl DomainStore {
         )?;
         self.note_side_write();
         Ok(())
-    }
-
-    /// A session that ends again after a respawn keeps its earliest start, its highest context
-    /// and cost, and its latest end.
-    pub(crate) fn record_node_cost(&mut self, c: &NodeCost) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO node_costs(session_id,task_id,model,cost_usd,context_peak_percent,started_at,ended_at)
-             VALUES(?1,COALESCE((SELECT task_id FROM model_decisions WHERE agent_id=?1 ORDER BY id DESC LIMIT 1),?2),?3,?4,?5,?6,?7)
-             ON CONFLICT(session_id) DO UPDATE SET
-              task_id=COALESCE(excluded.task_id,node_costs.task_id),
-              model=COALESCE(excluded.model,node_costs.model),
-              cost_usd=CASE WHEN node_costs.cost_usd IS NULL THEN excluded.cost_usd WHEN excluded.cost_usd IS NULL THEN node_costs.cost_usd ELSE max(node_costs.cost_usd,excluded.cost_usd) END,
-              context_peak_percent=CASE WHEN node_costs.context_peak_percent IS NULL THEN excluded.context_peak_percent WHEN excluded.context_peak_percent IS NULL THEN node_costs.context_peak_percent ELSE max(node_costs.context_peak_percent,excluded.context_peak_percent) END,
-              started_at=CASE WHEN node_costs.started_at IS NULL THEN excluded.started_at WHEN excluded.started_at IS NULL THEN node_costs.started_at ELSE min(node_costs.started_at,excluded.started_at) END,
-              ended_at=excluded.ended_at",
-            params![c.session_id, c.task_id, c.model, c.cost_usd, c.context_peak_percent, c.started_at, c.ended_at],
-        )?;
-        self.note_side_write();
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn node_cost(&self, session_id: &str) -> Result<Option<NodeCost>> {
-        use rusqlite::OptionalExtension;
-        Ok(self.conn.query_row(
-            "SELECT session_id,task_id,model,cost_usd,context_peak_percent,started_at,ended_at FROM node_costs WHERE session_id=?1",
-            [session_id],
-            |r| Ok(NodeCost { session_id: r.get(0)?, task_id: r.get(1)?, model: r.get(2)?, cost_usd: r.get(3)?, context_peak_percent: r.get(4)?, started_at: r.get(5)?, ended_at: r.get(6)? }),
-        ).optional()?)
     }
 
     #[cfg(test)]
@@ -155,8 +114,10 @@ struct Facts {
     changes: HashMap<String, Vec<ChangeRound>>,
     /// Each reviewer verdict on a Task: when, and how many serious failures it found.
     findings: HashMap<String, Vec<(Millis, u32)>>,
-    /// Session → (Task, cost).
+    /// Session → (Task, cost), while its samples are kept.
     costs: HashMap<String, (Option<String>, Option<f64>)>,
+    /// Task → what its sessions cost, once folded.
+    task_costs: HashMap<String, f64>,
     /// The role each Task's launch plan names: design, implementation or review.
     roles: HashMap<String, String>,
 }
@@ -193,10 +154,16 @@ impl Facts {
             let (task, role) = row?;
             facts.roles.insert(task, role);
         }
-        let mut statement = c.prepare("SELECT session_id,task_id,cost_usd FROM node_costs")?;
-        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<f64>>(2)?)))? {
+        let dollars = |micros: Option<i64>| micros.map(|micros| micros as f64 / 1_000_000.0);
+        let mut statement = c.prepare("SELECT session_id,max(task_id),sum(cost_micros) FROM usage_sessions GROUP BY session_id")?;
+        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?)))? {
             let (session, task, cost) = row?;
-            facts.costs.insert(session, (task, cost));
+            facts.costs.insert(session, (task, dollars(cost)));
+        }
+        let mut statement = c.prepare("SELECT task_id,sum(cost_micros) FROM task_model_usage GROUP BY task_id HAVING count(cost_micros)>0")?;
+        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (task, cost) = row?;
+            facts.task_costs.extend(dollars(Some(cost)).map(|cost| (task, cost)));
         }
         Ok(facts)
     }
@@ -269,11 +236,13 @@ fn run_of(facts: &Facts, d: &DecisionRow, next: Option<&DecisionRow>, attributed
     if relaunched { outcomes.push(Outcome::Relaunched); }
     if cancelled { outcomes.push(Outcome::Cancelled); }
     if changes { outcomes.push(Outcome::ChangesRequested); }
-    let cost = d.agent_id.as_ref()
-        .filter(|agent| attributed.insert((*agent).clone()))
-        .and_then(|agent| facts.costs.get(agent))
-        .filter(|(task, _)| task.as_ref().is_none_or(|task| *task == d.task_id))
-        .and_then(|(_, cost)| *cost);
+    let sampled = |agent: &String| facts.costs.get(agent).filter(|(task, _)| task.as_ref().is_none_or(|task| *task == d.task_id));
+    let task_sampled = facts.costs.values().any(|(task, _)| task.as_deref() == Some(d.task_id.as_str()));
+    let cost = match d.agent_id.as_ref().filter(|agent| attributed.insert((*agent).clone())) {
+        Some(agent) if sampled(agent).is_some() => sampled(agent).and_then(|(_, cost)| *cost),
+        _ if next.is_none() && !task_sampled => facts.task_costs.get(&d.task_id).copied(),
+        _ => None,
+    };
     let relaunched_to = next.filter(|_| relaunched).and_then(|n| n.model.clone());
     Run {
         attempt: Attempt {

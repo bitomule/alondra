@@ -6,6 +6,7 @@
 use crate::node_reports::{Report, Reported, short_label};
 use crate::node_work::StepIn;
 use alondra_core::activity::Activity;
+use alondra_core::metrics::steps::StepCounts;
 use alondra_core::views::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde_json::Value;
@@ -31,6 +32,8 @@ pub(crate) struct Readings {
     pub cost_cents: Option<u64>,
     /// Since when the main thread does what it does now.
     since: Option<Millis>,
+    /// The model calls of the turn, its subagents' too, until the turn's result counts them.
+    steps: alondra_core::metrics::steps::StepMeter,
 }
 
 impl Readings {
@@ -50,8 +53,10 @@ fn remember<T>(items: &mut Vec<T>, item: T) {
     }
 }
 
-pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
+/// The steps of the turn a `result` ends, counted, and nothing for any other message.
+pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) -> Option<StepCounts> {
     let mut readings = session.sdk.take().unwrap_or_default();
+    let mut counted = None;
     let parent = message.get("parent_tool_use_id").and_then(Value::as_str).map(str::to_owned);
     match (message["type"].as_str(), message["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
@@ -78,6 +83,9 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
         (Some("system"), Some("background_tasks_changed")) => listed(session, &mut readings, message["tasks"].as_array().map_or(&[][..], Vec::as_slice), now),
         (Some("assistant"), _) => {
             readings.in_turn |= parent.is_none();
+            if let Some(id) = crate::metrics_capture::claude_step(message) {
+                readings.steps.saw(id, parent.is_some(), crate::metrics_capture::claude_tools(message));
+            }
             said(session, &mut readings, message, parent, now);
         }
         (Some("user"), _) => answered(session, &mut readings, message, parent, now),
@@ -93,10 +101,12 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
             if let Some(cost) = message["total_cost_usd"].as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0) {
                 readings.cost_cents = Some((cost * 100.0).round() as u64);
             }
+            counted = Some(readings.steps.take());
         }
         _ => {}
     }
     session.sdk = Some(readings);
+    counted
 }
 
 /// How a task ended, by the status the SDK gives it once it is over.
@@ -317,7 +327,10 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 /// What one observation of a node's host says, kept with what its node mod would have reported.
 pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_core::domain::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
-        domain.live.mods.apply_sdk(&agent.0, &message, alondra_core::now_millis());
+        let now = alondra_core::now_millis();
+        if let Some(steps) = domain.live.mods.apply_sdk(&agent.0, &message, now) {
+            crate::metrics_capture::node_turn(domain, agent, &message, steps, now);
+        }
     }
 }
 

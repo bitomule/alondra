@@ -132,13 +132,13 @@ fn a_command_older_than_a_week_keeps_its_revision_and_time_and_loses_its_body_an
     let clock_before = clock(&mut store, now);
     assert_eq!(receipts(&store.conn), ["agent", "present", "request", "task"]);
 
-    assert_eq!(drain(&mut store, now, 1), [0, 3, 0, 0, 0], "three week-old commands, one row per pass");
+    assert_eq!(drain(&mut store, now, 1), [0, 3, 0, 0, 0, 0, 0, 0], "three week-old commands, one row per pass");
 
     assert_eq!(bodies(&store.conn), [today], "only today's command keeps its body");
     assert_eq!(receipts(&store.conn), ["present"]);
     assert_eq!(audit(&store.conn), rows);
     assert_eq!(clock(&mut store, now), clock_before);
-    assert_eq!(drain(&mut store, now, 1), [0, 0, 0, 0, 0], "a second run finds nothing left");
+    assert_eq!(drain(&mut store, now, 1), [0, 0, 0, 0, 0, 0, 0, 0], "a second run finds nothing left");
     store.integrity_check().unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
@@ -190,11 +190,11 @@ fn a_receipt_written_before_receipts_carried_a_time_lasts_a_week_from_the_first_
         [],
     ).unwrap();
 
-    assert_eq!(drain(&mut store, now, 256), [0, 3, 1, 0, 0]);
+    assert_eq!(drain(&mut store, now, 256), [0, 3, 1, 0, 0, 0, 0, 0]);
     assert!(receipts(&store.conn).contains(&"unchanged".to_string()));
-    assert_eq!(drain(&mut store, now + WINDOW_MS, 256), [0, 0, 0, 0, 0]);
+    assert_eq!(drain(&mut store, now + WINDOW_MS, 256), [0, 0, 0, 0, 0, 0, 0, 0]);
     assert!(receipts(&store.conn).contains(&"unchanged".to_string()));
-    assert_eq!(drain(&mut store, now + WINDOW_MS + 1, 256), [0, 1, 0, 1, 0], "today's command and the dated receipt");
+    assert_eq!(drain(&mut store, now + WINDOW_MS + 1, 256), [0, 1, 0, 1, 0, 0, 0, 0], "today's command and the dated receipt");
     assert!(!receipts(&store.conn).contains(&"unchanged".to_string()));
 }
 
@@ -211,7 +211,7 @@ fn the_daemon_runs_every_policy_and_gives_the_disk_every_page_it_freed() {
     let retained = runtime.retain(now).unwrap();
 
     let names: Vec<_> = POLICIES.iter().map(|policy| policy.name).collect();
-    assert_eq!(retained.tables, names.into_iter().zip([0, 3, 0, 0, 0]).collect::<Vec<_>>());
+    assert_eq!(retained.tables, names.into_iter().zip([0, 3, 0, 0, 0, 0, 0, 0]).collect::<Vec<_>>());
     let observer = Connection::open(fixture.path()).unwrap();
     assert_eq!(pages(&observer, "freelist_count"), 0, "every freed page goes back");
     assert!(pages(&observer, "page_count") < before - 40, "{} pages, {before} before", pages(&observer, "page_count"));
@@ -257,7 +257,7 @@ fn a_store_of_the_previous_release_opens_into_the_schema_of_a_new_one_with_its_r
     assert_eq!(schema(&store.conn), schema(&Connection::open(fresh.path()).unwrap()));
     assert_eq!((audit(&store.conn), receipts(&store.conn)), rows);
     let now = store.conn.query_row("SELECT max(at) FROM command_audit", [], |row| row.get::<_, i64>(0)).unwrap();
-    assert_eq!(drain(&mut store, now, 256), [4, 3, 1, 0, 0], "every inline body, three week-old commands, today's undated receipt");
+    assert_eq!(drain(&mut store, now, 256), [4, 3, 1, 0, 0, 0, 0, 0], "every inline body, three week-old commands, today's undated receipt");
     assert_eq!(kinds(&audit(&store.conn)), kinds(&rows.0));
     assert!(audit(&store.conn).iter().all(|row| row.1.len() < 40), "{:?}", audit(&store.conn));
     assert_eq!(bodies(&store.conn), [rows.0[3].clone()], "today's body moved beside its audit row");
@@ -390,7 +390,7 @@ fn the_daemon_compacts_an_ended_tasks_cards_and_messages_and_the_apps_show_the_s
     let retained = runtime.retain(now).unwrap();
 
     assert_eq!(retained.compacted, 1);
-    assert_eq!(retained.tables.last(), Some(&("messages of ended tasks", messages as usize)));
+    assert!(retained.tables.contains(&("messages of ended tasks", messages as usize)), "{:?}", retained.tables);
     let after = runtime.state().unwrap();
     assert_eq!(after.interactions[&InteractionId::from("ask-1")].body, "Which table goes first?");
     assert_eq!(result_excerpt(&after.interactions[&InteractionId::from("delivery-1")].body), result_excerpt(&before.interactions[&InteractionId::from("delivery-1")].body));

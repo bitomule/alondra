@@ -414,6 +414,7 @@ impl Executor {
         } else {
             output.end(&session, false)
         };
+        crate::metrics_capture::orchestrator_batch(&self.domain, &session, &output.stream.spent, now_millis());
         if let Some(context) = output.stream.context() {
             log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));

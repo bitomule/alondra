@@ -27,12 +27,15 @@ impl Policy {
     }
 }
 
-pub(crate) const POLICIES: [Policy; 5] = [
+pub(crate) const POLICIES: [Policy; 8] = [
     Policy { name: "audit rows written with their body", pass: bodies_written_inline },
     Policy { name: "commands older than a week", pass: week_old_commands },
     Policy { name: "undated receipts", pass: undated_receipts },
     Policy { name: "receipts", pass: receipts },
     Policy { name: "messages of ended tasks", pass: messages_of_ended_tasks },
+    Policy { name: "usage samples of tasks folded a week ago", pass: super::metrics_fold::samples_of_folded_tasks },
+    Policy { name: "idle sessions without a task", pass: super::metrics_fold::idle_sessions_without_task },
+    Policy { name: "task metrics older than 90 days, into weeks", pass: super::metrics_fold::tasks_into_weeks },
 ];
 
 fn mark(tx: &Transaction<'_>, policy: &str) -> rusqlite::Result<Option<i64>> {

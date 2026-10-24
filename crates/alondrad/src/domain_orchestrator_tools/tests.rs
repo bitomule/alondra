@@ -676,23 +676,6 @@ async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
 }
 
 #[tokio::test]
-async fn closing_a_launched_node_keeps_its_model_and_task() {
-    let f = bare_world();
-    give(&f, "t", "agent-b");
-    record(&f.domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("agent-b".into()), at: 1, kind: DecisionKind::Launch,
-        model: Some("sonnet".into()), effort: None, approach: None, chosen_by: ModelChooser::Orchestrator, reason: None, title: "Editor colours".into() });
-    f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "session.start", "version": "2.1.287"})).unwrap(), 1);
-    f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 3);
-    assert!(f.domain.store.lock().unwrap().node_cost("agent-b").unwrap().is_none());
-
-    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
-    let kept = f.domain.store.lock().unwrap().node_cost("agent-b").unwrap().expect("the closed node's cost is kept");
-    assert_eq!((kept.task_id.as_deref(), kept.model.as_deref(), kept.cost_usd, kept.context_peak_percent),
-        (Some("t"), Some("claude-sonnet-5-5"), None, None), "the task comes from its launch, though closing freed it");
-    assert!(kept.started_at.is_some_and(|started| kept.ended_at >= started));
-}
-
-#[tokio::test]
 async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_request() {
     let f = world();
     let author = Actor::Agent { agent_id: "agent-b".into() };

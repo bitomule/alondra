@@ -206,7 +206,6 @@ async fn node_event(mut stream: UnixStream, domain: &Arc<DomainRuntime>, report:
         let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
         domain.report(envelope, alondra_core::now_millis());
         if let Some(session) = ended {
-            record_node_cost(&domain, &session);
             domain.live.losses.report(&session);
         }
         Ok::<_, anyhow::Error>(())
@@ -469,34 +468,11 @@ fn text(payload: &Value, key: &str) -> Option<String> {
 /// The bearer of a session that ended is revoked. Its settings file goes with it unless the Agent
 /// still has work: then `claude respawn` finds the file it passes again.
 pub(crate) fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
-    record_node_cost(domain, &agent.0);
     domain.revoke_agent(&agent.0)?;
     if crate::node_revival::has_open_task(domain, &agent.0) {
         crate::domain_sessions::suspend_for(domain.home(), agent)
     } else {
         crate::domain_sessions::remove_for(domain.home(), agent)
-    }
-}
-
-/// Keeps the model the session's mod last reported, which the daemon otherwise forgets when it
-/// restarts.
-pub(crate) fn record_node_cost(domain: &DomainRuntime, session: &str) {
-    let Some(reported) = domain.live.mods.session(session) else { return };
-    let task_id = domain.state().ok().and_then(|state| {
-        let mine = || state.tasks.values().filter(|task| task.agent_id.as_ref().is_some_and(|agent| agent.0 == session));
-        mine().find(|task| !task.state.terminal()).or_else(|| mine().next()).map(|task| task.id.0.clone())
-    });
-    let cost = crate::domain_store::model_metrics::NodeCost {
-        session_id: session.to_owned(),
-        task_id,
-        model: reported.model,
-        cost_usd: None,
-        context_peak_percent: None,
-        started_at: reported.started_at,
-        ended_at: alondra_core::now_millis(),
-    };
-    if let Err(error) = domain.record_node_cost(&cost) {
-        log!("could not record what session {session} cost: {error:#}");
     }
 }
 

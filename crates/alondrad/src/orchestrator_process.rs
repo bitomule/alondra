@@ -184,6 +184,8 @@ pub struct Stream {
     pub worked: bool,
     /// The Alondra tools Claude called that change something, in order.
     pub alondra_calls: Vec<String>,
+    /// What the session spent so far, by model, as its result said.
+    pub spent: Vec<alondra_core::metrics::Usage>,
 }
 impl Stream {
     /// The parser of a batch run through the Agent SDK host, whose prompt the SDK calls `input`.
@@ -328,6 +330,7 @@ impl Stream {
                     bail!("Claude reported the result of another input");
                 }
                 self.result = true;
+                self.spent = crate::metrics_capture::claude_usage(&v);
                 self.missing_session = v["subtype"] == "error_during_execution" && v["is_error"] == true
                     && v["num_turns"] == 0 && v["duration_api_ms"] == 0
                     && v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));

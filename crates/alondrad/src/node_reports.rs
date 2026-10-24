@@ -378,15 +378,16 @@ impl Reports {
         session.record(report, now);
     }
 
-    /// What a node's Agent SDK host observed, as the SDK gave it. It never makes the node
-    /// connected: only a mod's connection does.
-    pub(crate) fn apply_sdk(&self, session_id: &str, message: &Value, now: Millis) {
+    /// What a node's Agent SDK host observed, as the SDK gave it, and the steps of the turn it
+    /// ends. It never makes the node connected: only a mod's connection does.
+    pub(crate) fn apply_sdk(&self, session_id: &str, message: &Value, now: Millis) -> Option<alondra_core::metrics::steps::StepCounts> {
         let mut sessions = self.sessions.lock().expect("node reports poisoned");
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
-        crate::sdk_live::observe(session, message, now);
+        let steps = crate::sdk_live::observe(session, message, now);
         drop(sessions);
         self.changed.publish();
+        steps
     }
 
     /// The node's Agent SDK host is gone, and with it everything it ran.
