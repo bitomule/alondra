@@ -40,3 +40,34 @@ fn nothing_is_owed_while_no_node_has_the_server_connected() {
     let mut reconnects = Reconnects::default();
     assert_eq!(reconnects.due(&[("t".into(), &signed_out[..]), ("u".into(), &signed_out[..])], 1_000), (vec![], None));
 }
+
+fn due_after_sign_in(reconnects: &mut Reconnects, first: &[McpServerState], second: &[McpServerState], now: Millis) -> (Vec<(TaskId, String)>, Option<Millis>) {
+    let elsewhere = [server("linear", McpStatus::NeedsAuth, "https://linear.internal.example.com/mcp")];
+    reconnects.due(&[("t".into(), first), ("u".into(), second), ("w".into(), &elsewhere[..])], now)
+}
+
+// The user signed in to Linear on one node, but Claude connects it only after it has answered the
+// browser, so that node still reports it signed out: it connects it again, as every other node
+// that reports it signed out, at once and once Claude's cache is over, never more than three times.
+#[test]
+fn a_sign_in_that_ended_is_connected_again_on_every_node_that_reports_it_signed_out() {
+    let signed_out = [server("linear", McpStatus::NeedsAuth, LINEAR)];
+    let connected = [server("linear", McpStatus::Connected, LINEAR)];
+    let mut reconnects = Reconnects::default();
+    let mut due = |first: &[McpServerState], second: &[McpServerState], now: Millis| due_after_sign_in(&mut reconnects, first, second, now);
+    assert_eq!(due(&signed_out, &signed_out, 1_000), (vec![], None), "nothing is owed before a sign-in ends");
+    reconnects.signed_in(McpServerKey::of(&signed_out[0]));
+    let mut due = |first: &[McpServerState], second: &[McpServerState], now: Millis| due_after_sign_in(&mut reconnects, first, second, now);
+    let both = vec![(TaskId::from("t"), "linear".to_owned()), (TaskId::from("u"), "linear".to_owned())];
+    assert_eq!(due(&signed_out, &signed_out, 2_000), (both.clone(), Some(2_000 + SIGN_IN_CACHE)));
+    assert_eq!(due(&signed_out, &signed_out, 2_000 + SIGN_IN_CACHE - 1), (vec![], Some(2_000 + SIGN_IN_CACHE)), "not inside Claude's cache");
+    let again = 2_000 + SIGN_IN_CACHE;
+    assert_eq!(due(&signed_out, &signed_out, again), (both.clone(), Some(again + SIGN_IN_CACHE)));
+    assert_eq!(due(&signed_out, &signed_out, again + SIGN_IN_CACHE), (both, None), "the third and last");
+    assert_eq!(due(&signed_out, &signed_out, again + 10 * SIGN_IN_CACHE), (vec![], None));
+    assert_eq!(due(&connected, &connected, again + 11 * SIGN_IN_CACHE), (vec![], None));
+    assert_eq!(due(&signed_out, &signed_out, again + 12 * SIGN_IN_CACHE), (vec![], None), "a spent sign-in is not owed again");
+    reconnects.signed_in(McpServerKey::of(&signed_out[0]));
+    let owed = due_after_sign_in(&mut reconnects, &connected, &signed_out, again + 13 * SIGN_IN_CACHE).0;
+    assert_eq!(owed, [(TaskId::from("u"), "linear".to_owned())], "a node that reports it connected is not owed");
+}

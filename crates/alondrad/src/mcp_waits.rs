@@ -1,10 +1,11 @@
 //! The tasks that wait for an MCP server, from the daemon's side. A card stands for every task
 //! that waits for one server: Connect opens one sign-in, on the node of the oldest that can, and
 //! hands the user its page; where the browser came back to reaches that node's Claude in memory
-//! (`mcp_sign_in`); Reconnect has the waiting nodes read their sign-in again. While a sign-in comes
-//! back to Claude's own listener, the listener closing is the fact that it ended: the node is
-//! asked how its servers are then. Once a node reports a server connected, every other node that
-//! reports it signed out connects it again.
+//! (`mcp_sign_in`); Reconnect has the waiting nodes read their sign-in again. A sign-in ends when
+//! its return reaches Claude or, while it comes back to Claude's own listener, when the listener
+//! closes. Claude connects the server only after it has answered the browser, so a sign-in that
+//! ended counts as a node reporting the server connected: every node that reports it signed out,
+//! the one that signed in too, connects it again.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
     Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpServerState,
@@ -214,7 +215,7 @@ pub(crate) async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, addr
         .ok_or_else(|| DomainError::new("not_found", format!("No sign-in to {name} is open: press Connect again")))?;
     drop(state);
     let runtime = domain.clone();
-    let (server, at) = (name.clone(), task.clone());
+    let (server, at) = (name.clone(), task);
     let delivered = tokio::task::spawn_blocking(move || crate::mcp_sign_in::complete(&runtime, &at, &server, &address)).await
         .map_err(|_| DomainError::new("unavailable", "The sign-in could not be handed to Claude"))?;
     match delivered {
@@ -227,7 +228,6 @@ pub(crate) async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, addr
             return Err(DomainError::new("conflict", format!("The sign-in to {name} was cut: press Connect again")));
         }
     }
-    let _ = system(domain, Command::ReadMcpStatus { task_id: task });
     Ok(())
 }
 
@@ -260,18 +260,27 @@ pub(crate) fn sign_out(domain: &DomainRuntime, target: &Target) -> Result<String
     Ok(key.name)
 }
 
-/// The reconnects owed to nodes that report signed out a server another node reports connected:
-/// one at once, and again after Claude's cache of stored sign-ins is over, at most `RECONNECTS`.
+/// The reconnects owed to nodes that report signed out a server another node reports connected,
+/// or whose sign-in ended: one at once, and again after Claude's cache of stored sign-ins is over,
+/// at most `RECONNECTS`.
 #[derive(Default)]
 pub(crate) struct Reconnects {
     tried: HashMap<(TaskId, String), (u32, Millis)>,
+    signed_in: BTreeSet<McpServerKey>,
 }
 
 impl Reconnects {
+    /// A sign-in to `server` ended: it is owed as if a node reported it connected, until no node
+    /// that reports it signed out has a reconnect left.
+    pub(crate) fn signed_in(&mut self, server: McpServerKey) {
+        self.signed_in.insert(server);
+    }
+
     /// What is due now, from the servers each open task's node reported.
     pub(crate) fn due(&mut self, nodes: &[(TaskId, &[McpServerState])], now: Millis) -> (Vec<(TaskId, String)>, Option<Millis>) {
         let connected: BTreeSet<McpServerKey> = nodes.iter()
             .flat_map(|(_, servers)| servers.iter().filter(|server| server.status == McpStatus::Connected).map(McpServerKey::of))
+            .chain(self.signed_in.iter().cloned())
             .collect();
         let mut owed = BTreeSet::new();
         for (task, servers) in nodes {
@@ -300,6 +309,14 @@ impl Reconnects {
                 next = Some(next.map_or(at, |next| next.min(at)));
             }
         }
+        let tried = &self.tried;
+        self.signed_in.retain(|key| nodes.iter().any(|(task, servers)| {
+            servers.iter().any(|server| {
+                matches!(server.status, McpStatus::NeedsAuth | McpStatus::Failed)
+                    && key.names(server)
+                    && tried.get(&(task.clone(), server.name.clone())).is_none_or(|(tries, _)| *tries < RECONNECTS)
+            })
+        }));
         (due, next)
     }
 }
@@ -312,49 +329,62 @@ fn nodes(state: &DomainState) -> Vec<(TaskId, &[McpServerState])> {
     }).collect()
 }
 
-/// The open sign-ins that come back to Claude's listener, by the task whose node opened them:
-/// those of a card's waiting tasks and those the MCP servers screen opened alike.
-fn returning(state: &DomainState) -> Vec<(TaskId, u16, String)> {
+/// An open sign-in that comes back to Claude's listener: the task whose node opened it, the
+/// server, and the flow Claude names it by.
+type Returning = (TaskId, String, String);
+
+/// The open sign-ins that come back to Claude's listener, with its port: those of a card's waiting
+/// tasks and those the MCP servers screen opened alike.
+fn returning(state: &DomainState) -> Vec<(Returning, u16)> {
     state.mcp_nodes().into_iter().flat_map(|node| {
         node.signing_in.into_iter().filter_map(|server| {
             let open = open_sign_in(state, &node.task, &server)?;
-            Some((node.task.clone(), open.callback_port?, open.state.clone()?))
+            Some(((node.task.clone(), server, open.state.clone()?), open.callback_port?))
         }).collect::<Vec<_>>()
     }).collect()
+}
+
+/// The server a node reported by `name`.
+fn reported(state: &DomainState, task: &TaskId, name: &str) -> Option<McpServerKey> {
+    let agent = state.tasks.get(task)?.agent_id.as_ref()?;
+    state.mcp.get(agent)?.servers.iter().find(|server| server.name == name).map(McpServerKey::of)
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>) {
     let mut changes = domain.subscribe();
     let mut reconnects = Reconnects::default();
-    let mut read: BTreeSet<(TaskId, String)> = BTreeSet::new();
+    let mut seen: BTreeSet<Returning> = BTreeSet::new();
+    let mut ended: BTreeSet<Returning> = BTreeSet::new();
     loop {
         let now = alondra_core::now_millis();
         let snapshot = domain.read();
         let state = snapshot.state();
         let open = returning(state);
-        read.retain(|(task, flow)| open.iter().any(|(at, _, state)| at == task && state == flow));
-        let mut ended = vec![];
-        for (task, port, flow) in &open {
-            if !read.contains(&(task.clone(), flow.clone())) && !listening(*port) {
-                read.insert((task.clone(), flow.clone()));
-                ended.push(task.clone());
+        let still: BTreeSet<Returning> = open.iter().map(|(sign_in, _)| sign_in.clone()).collect();
+        let mut over: Vec<Returning> = seen.difference(&still).filter(|sign_in| !ended.contains(*sign_in)).cloned().collect();
+        for (sign_in, port) in &open {
+            if !ended.contains(sign_in) && !listening(*port) {
+                ended.insert(sign_in.clone());
+                over.push(sign_in.clone());
+            }
+        }
+        ended.retain(|sign_in| still.contains(sign_in));
+        seen = still;
+        for (task, server, _) in over {
+            if let Some(key) = reported(state, &task, &server) {
+                reconnects.signed_in(key);
             }
         }
         let (due, next) = reconnects.due(&nodes(state), now);
         drop(snapshot);
-        for task in ended {
-            if let Err(error) = system(&domain, Command::ReadMcpStatus { task_id: task.clone() }) {
-                log!("could not ask task {task}'s Claude how its MCP servers are after a sign-in: {}", error.message);
-            }
-        }
         for (task, server) in due {
             match system(&domain, Command::ReconnectMcp { task_id: task.clone(), server: server.clone() }) {
-                Ok(_) => log!("connecting {server} again for task {task}: another node signed in to it"),
+                Ok(_) => log!("connecting {server} again for task {task}: someone signed in to it"),
                 Err(error) if error.code == "no_task" || error.code == "task_not_active" => {}
                 Err(error) => log!("could not connect {server} again for task {task}: {}", error.message),
             }
         }
-        let watching = open.len() > read.len();
+        let watching = open.len() > ended.len();
         let wake = [next.map(|at| Duration::from_millis(u64::try_from(at - now).unwrap_or(0))), watching.then_some(LISTENER)]
             .into_iter().flatten().min();
         match wake {

@@ -1032,9 +1032,19 @@ fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
         return line.trim_end().to_owned();
     });
+    let watching = tokio.spawn(crate::mcp_waits::run(runtime.clone()));
     tokio.block_on(give_back(&runtime, &card, address.clone())).unwrap();
     assert_eq!(claude.join().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
-    assert_eq!(controls("ReadMcpStatus"), 1, "the node then says how its servers are");
+    let mut changes = runtime.subscribe();
+    let asked = tokio.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while controls("ReconnectMcp") == 0 {
+                changes.changed().await.unwrap();
+            }
+        }).await
+    });
+    assert!(asked.is_ok(), "Claude connects the server only after it answered the browser: the node must connect it again");
+    watching.abort();
     assert_eq!(runtime.read().state().mcp_waiting().len(), 1, "a return is no fact that the server connected");
     observe(vec![mcp_report("connected")]);
     assert!(runtime.read().state().mcp_waiting().is_empty(), "its own node reported it connected");

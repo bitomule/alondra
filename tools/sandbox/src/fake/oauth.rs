@@ -3,7 +3,10 @@
 //! user signs in once, which every session shares, as Claude's keychain is
 //! (`fakes/mcp-signed-in/<name>`); a running session sees it only once it connects the server again.
 //! A sign-in listens on loopback as Claude's own listener does: its page sends the browser straight
-//! back to `/callback` with a code, and the return signs the server in. Clearing the sign-in forgets it
+//! back to `/callback` with a code, and the return signs the server in. Claude connects the server
+//! only after it has answered the browser, so a status read right after the return may still find it
+//! signed out: the session that signed in connects it, as every other one, once it connects it
+//! again. Clearing the sign-in forgets it
 //! for every session, and the session that cleared it reports the server failed until it connects again.
 use std::{
     collections::BTreeSet,
@@ -136,10 +139,7 @@ impl Servers {
                 let _ = write!(stream, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 continue;
             }
-            let signed = fs::create_dir_all(&self.signed_in).and_then(|()| fs::write(self.signed_in.join(name), b"signed in\n"));
-            if signed.is_ok() && let Ok(mut connected) = self.connected.lock() {
-                connected.insert(name.to_owned());
-            }
+            let _ = fs::create_dir_all(&self.signed_in).and_then(|()| fs::write(self.signed_in.join(name), b"signed in\n"));
             let page = format!("Signed in to {name}. You can close this page.");
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
             return;

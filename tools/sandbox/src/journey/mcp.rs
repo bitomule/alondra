@@ -107,6 +107,13 @@ fn waiting(user: &User, tasks: &[&str]) -> Result<Vec<String>> {
     Ok(still)
 }
 
+fn gone(report: &mut Report, user: &User, card: &str, server: &str) -> Result<()> {
+    wait(report, &format!("no card waits for {server} any more"), || {
+        let inbox = user.inbox()?;
+        Ok((inbox.iter().all(|id| id != card).then_some(()), format!("{inbox:?}")))
+    })
+}
+
 fn went_on(report: &mut Report, fakes: &Fakes, sessions: &[&Session], text: &str) -> Result<()> {
     for session in sessions {
         wait(report, &format!("{} is told “{text}…”", session.short), || told(fakes, session, text))?;
@@ -149,10 +156,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             (status, _) => bail!("the return answered {status}"),
         })?;
         went_on(report, fakes, &[&first, &second], "linear is connected")?;
-        wait(report, "no card waits for Linear any more", || {
-            let inbox = user.inbox()?;
-            Ok((inbox.iter().all(|id| *id != card).then_some(()), format!("{inbox:?}")))
-        })?;
+        gone(report, &user, &card, "Linear")?;
         wait(report, "both tasks work again", || {
             let still = waiting(&user, &["t-m1a", "t-m1b"])?;
             Ok((still.is_empty().then_some(()), format!("{still:?}")))
@@ -182,6 +186,11 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })?;
         went_on(report, fakes, &[&node], "notion is connected")?;
+        gone(report, &user, &card, "Notion")?;
+        wait(report, "the task works again", || {
+            let still = waiting(&user, &["t-m2"])?;
+            Ok((still.is_empty().then_some(()), format!("{still:?}")))
+        })?;
         let code = back.split("code=").nth(1).and_then(|rest| rest.split('&').next()).context("a code")?.to_owned();
         report.step("the one-time code is written nowhere: the Mac's HOME, its SDK hosts' journals", || {
             let home = sandbox.mac(1)?.mac.home;
