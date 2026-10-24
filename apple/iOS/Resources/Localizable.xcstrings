@@ -210,6 +210,7 @@
     "Alondra couldn’t revoke this device. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no ha podido revocar este dispositivo. Vuelve a intentarlo."}}}},
     "A device wants to use Alondra": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Un dispositivo quiere usar Alondra"}}}},
     "Allow “%@” only if its screen shows this same code.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Permite «%@» solo si su pantalla muestra este mismo código."}}}},
+    "Allowed in this task": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Permitido en esta tarea"}}}},
     "Allow “%@” to use Alondra?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Permitir que «%@» use Alondra?"}}}},
     "Code %@. Allow it only if the device shows the same code.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Código %@. Permítelo solo si el dispositivo muestra el mismo código."}}}},
     "The Mac didn’t take that answer. The request may have expired.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El Mac no ha aceptado esa respuesta. Puede que la petición haya caducado."}}}},

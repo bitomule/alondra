@@ -7,7 +7,8 @@ import SwiftUI
 /// One task: its state, folder and what its node reports, what the node is doing right now and
 /// needs, how far its steps, subagents and workflows have got, what runs in the background and what
 /// it said last, what it waits for from you, its request, pull requests, dependencies, documents,
-/// options and history, with interrupt, relaunch, cancel and reopen and a composer to
+/// options, the commands it lets through without asking and history, with interrupt, relaunch,
+/// cancel and reopen and a composer to
 /// write to its node.
 public struct TaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
@@ -33,6 +34,7 @@ public struct TaskDetailView: View {
                         dependencies(detail)
                         documents(detail)
                         options(detail)
+                        allowed(detail)
                         history(detail)
                         actions(detail)
                     }
@@ -366,6 +368,21 @@ public struct TaskDetailView: View {
             .contentShape(.rect)
         }
         .accessibilityIdentifier("task.priority")
+    }
+
+    /// A revoked grant leaves at once and comes back with the error if the daemon refuses.
+    @ViewBuilder private func allowed(_ detail: TaskDetail) -> some View {
+        let shown = detail.allowed.elements.filter { !store.optimistic.hides($0.revoke?.id) }
+        if !shown.isEmpty {
+            DetailSection(title: detail.allowed.title ?? String(localized: "Allowed in this task"), symbol: "checkmark.shield") {
+                VStack(spacing: 0) {
+                    ForEach(shown.enumerated(), id: \.element.id) { index, grant in
+                        GrantLine(grant: grant) { revoke in store.send(.perform(revoke)) }
+                            .overlay(alignment: .top) { if index > 0 { Hairline() } }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder private func history(_ detail: TaskDetail) -> some View {

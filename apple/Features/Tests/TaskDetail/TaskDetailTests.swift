@@ -108,6 +108,22 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertNotNil(detail.lastMessage)
     }
 
+    func testWhatTheTaskAllowsLandsInItsPlaceWithItsRevoke() throws {
+        let detail = TaskDetail(document: try Fixtures.document("task-allowed-ios"))
+
+        XCTAssertEqual(detail.allowed.title, "Allowed in this task")
+        XCTAssertEqual(detail.allowed.elements.map(\.command), ["git branch -D scratch/empty-state", "bazelisk test …"])
+        XCTAssertEqual(detail.allowed.elements.first?.detail, "exact command, from the task's worktree · used 2 times")
+        XCTAssertEqual(detail.allowed.elements.map { $0.revoke?.label }, ["Revoke", "Revoke"])
+        XCTAssertEqual(detail.allowed.elements.map { $0.revoke?.command }, ["revoke_grant", "revoke_grant"])
+        XCTAssertNotEqual(detail.allowed.elements[0].revoke?.id, detail.allowed.elements[1].revoke?.id, "each row revokes its own grant")
+
+        let spanish = TaskDetail(document: try Fixtures.document("task-allowed-ios-es"))
+        XCTAssertEqual(spanish.allowed.title, "Permitido en esta tarea")
+        XCTAssertEqual(spanish.allowed.elements.map { $0.revoke?.label }, ["Revocar", "Revocar"])
+        XCTAssertTrue(TaskDetail(document: try Fixtures.document("task-ios")).allowed.elements.isEmpty, "a task that allows nothing has no section")
+    }
+
     func testASectionTheScreenDoesNotKnowIsIgnored() throws {
         let document = try Samples.document("task-detail") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
@@ -177,6 +193,39 @@ final class TaskDetailTests: XCTestCase {
         await store.receive(\.actions.settled)
         XCTAssertFalse(store.state.optimistic.hides(cancel.id))
         await store.receive(\.delegate.failed, "The task already finished")
+    }
+
+    @MainActor
+    func testARevokedGrantLeavesAtOnceAndReturnsWithTheErrorIfTheDaemonRefuses() async throws {
+        let gate = Gate()
+        let sent = SentActions()
+        let document = try Fixtures.document("task-allowed-ios")
+        let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
+            TaskDetailFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = ViewsClient.showing(document)
+            $0.viewsClient.perform = { request in
+                sent.record(request)
+                await gate.wait()
+                return try Responses.rejected("The task already ended")
+            }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.finish()
+        await store.skipReceivedActions()
+        let revoke = try XCTUnwrap(store.state.detail?.allowed.elements.first?.revoke)
+
+        await store.send(.perform(revoke))
+        await store.receive(\.actions.sent)
+        XCTAssertTrue(store.state.optimistic.hides(revoke.id))
+        XCTAssertEqual(sent.requests.map(\.actionId), [revoke.id])
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertFalse(store.state.optimistic.hides(revoke.id))
+        await store.receive(\.delegate.failed, "The task already ended")
     }
 
     @MainActor

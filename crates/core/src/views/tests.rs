@@ -5848,11 +5848,13 @@ fn a_body_that_only_repeats_the_card_or_holds_alondras_own_data_is_not_shown_aga
 
 const ALLOWED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
 const ALLOWED_WORKTREE: &str = "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15";
-const ALLOWED_CASES: [(&str, &str, Lang); 4] = [
-    ("card-permission-task-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Lang::En),
-    ("card-permission-task-es-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Lang::Es),
-    ("task-allowed-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Lang::En),
-    ("task-allowed-es-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Lang::Es),
+const ALLOWED_CASES: [(&str, &str, Client, Lang); 6] = [
+    ("card-permission-task-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
+    ("card-permission-task-es-mac.json", "card:cc2d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::Es),
+    ("task-allowed-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Mac, Lang::En),
+    ("task-allowed-es-mac.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Mac, Lang::Es),
+    ("task-allowed-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),
+    ("task-allowed-ios-es.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::Es),
 ];
 
 /// A node of the demo task asks to reset its worktree, offered «allow in this task», and the task
@@ -5888,8 +5890,10 @@ fn allowed_in_task_screens_match_goldens() {
         include_str!("../../../../fixtures/views/cards/card-permission-task-es-mac.json"),
         include_str!("../../../../fixtures/views/cards/task-allowed-mac.json"),
         include_str!("../../../../fixtures/views/cards/task-allowed-es-mac.json"),
-    ]).filter_map(|((filename, key, lang), expected)| {
-        let actual = render(&state, &golden_live(), Client::Mac, lang, key, "2026-09-30T10:00:00Z");
+        include_str!("../../../../fixtures/views/cards/task-allowed-ios.json"),
+        include_str!("../../../../fixtures/views/cards/task-allowed-ios-es.json"),
+    ]).filter_map(|((filename, key, client, lang), expected)| {
+        let actual = render(&state, &golden_live(), client, lang, key, "2026-09-30T10:00:00Z");
         std::panic::catch_unwind(|| assert_golden(filename, &actual, expected)).is_err().then_some(filename)
     }).collect();
     assert!(differ.is_empty(), "{differ:?} differ from their goldens");

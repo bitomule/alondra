@@ -33,6 +33,15 @@ public struct TaskDetail: Equatable, Sendable {
         case row(Row)
     }
 
+    /// A command the task lets through without asking: what it allows, from where and how often
+    /// it was used, and its Revoke.
+    public struct Grant: Equatable, Sendable, Identifiable {
+        public let id: String
+        public let command: String
+        public let detail: String?
+        public let revoke: WireAction?
+    }
+
     public struct Section<Element: Equatable & Sendable>: Equatable, Sendable {
         public let title: String?
         public let elements: [Element]
@@ -67,6 +76,7 @@ public struct TaskDetail: Equatable, Sendable {
     public let dependencies: Section<Row>
     public let documents: Section<Row>
     public let options: Section<Fact>
+    public let allowed: Section<Grant>
     public let history: Section<Step>
     public let actions: [WireAction]
 
@@ -137,6 +147,9 @@ public extension TaskDetail {
             dependencies: rows("dependencies"),
             documents: rows("documents"),
             options: Section(title: section("options")?.title, elements: factsOf("options")),
+            allowed: Section(title: section("allowed_in_task")?.title, elements: rowsOf("allowed_in_task").map { row in
+                Grant(id: row.id, command: row.title, detail: row.subtitle, revoke: row.actions.first { $0.command == "revoke_grant" && $0.enabled })
+            }),
             history: Section(title: section("history")?.title, elements: rowsOf("history").map { row in
                 Step(id: row.id, state: row.title, summary: row.subtitle, at: row.trailing?.instant)
             }),
