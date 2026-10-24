@@ -1752,10 +1752,16 @@ impl DomainState {
     pub fn unanswered(&self, t: &TaskId) -> bool {
         self.interactions.values().any(|i| self.unanswered_card(i, t))
     }
-    /// An unanswered card that does not name what it holds back: no final delivery may stand next to
-    /// it. A card that names its delivery or PR already holds that merge back where the user sees it.
+    /// An unanswered question of the node that does not name what it holds back: no final delivery
+    /// may stand next to it. A card that names its delivery or PR already holds that merge back where
+    /// the user sees it. Neither a permission nor an MCP server's elicitation is a question of the
+    /// node: any tool call asks one, a background subagent's too, and it decides that call, not the
+    /// delivery. Nor is the card Alondra makes of the node's last words.
     pub(super) fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
-        i.card.blocks.is_empty() && self.unanswered_card(i, t)
+        i.card.blocks.is_empty()
+            && !matches!(self.holds.get(&i.id), Some(Hold::Permission | Hold::Elicitation))
+            && !i.id.0.starts_with(UNHEARD_PREFIX)
+            && self.unanswered_card(i, t)
     }
     /// A card of the task that holds it on the user: a question to the orchestrator holds it on
     /// the orchestrator, and a turn-ended card a recorded wait covers holds it on that wait.

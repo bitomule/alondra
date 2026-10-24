@@ -1230,6 +1230,29 @@ fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
     assert_eq!(w.s.node_phase(&agent), Some(&NodePhase::Resuming { idle_since: None, after_wait: false }), "the answer is on its way to it");
 }
 
+/// The card Alondra makes of a node's last words is Alondra's, not a question of the node: a turn
+/// that ends with words after the user asked for changes leaves the final delivery standing.
+#[test]
+fn the_card_with_a_node_s_last_words_does_not_withdraw_its_final_delivery() {
+    let mut w = World::new();
+    w.apply(&Step::Launch);
+    let (agent, task): (AgentId, TaskId) = ("node-1".into(), "t-1".into());
+    assert!(w.event(&agent, NodeEvent::TurnStarted, w.now));
+    w.apply(&Step::Deliver(0));
+    let delivery = w.s.tasks[&task].final_presentation.clone().expect("delivered");
+    assert!(w.event(&agent, NodeEvent::TurnEnded, w.now));
+    w.must(user(), Command::SubmitFeedback { attachments: vec![], presentation_id: delivery.clone(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Measure each problem".into(), instruction: Instruction::Changes });
+    assert!(w.event(&agent, NodeEvent::TurnStarted, w.now));
+    w.must(Actor::System, Command::RecordLastWords { agent_id: agent.clone(), text: "Jira is measured; I wait for the git measurement.".into() });
+    let ended = w.exec(Actor::System, Command::MoveNode { agent_id: agent.clone(), event: NodeEvent::TurnEnded, at: w.now }).unwrap();
+    assert!(w.unheard_cards().iter().any(|(node, _)| *node == agent), "its words wait for the user");
+    assert_eq!(w.s.tasks[&task].final_presentation.as_ref(), Some(&delivery), "the delivery is still the task's final one");
+    assert!(!w.s.interactions[&delivery].withdrawn);
+    assert!(!ended.effects.iter().any(|effect| matches!(effect,
+        DomainEffect::NotifyAgent { message, .. } if *message == delivery_withdrawn_for_questions())), "the node is not told it asked");
+}
+
 /// Words longer than a card's why keep their start on the card and the whole text in its detail.
 #[test]
 fn long_last_words_keep_their_start_on_the_card_and_the_whole_in_its_detail() {

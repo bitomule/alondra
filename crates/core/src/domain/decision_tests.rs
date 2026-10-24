@@ -1,6 +1,6 @@
 //! Decisions Claude asks for through a task's SDK execution: what Alondra decides by itself, the
 //! cards the user decides the rest on, and what each answer tells Claude.
-use super::lifecycle_tests::{assert_aggregate_rules, exec, kinds, last, must, node, refused_unchanged, sdk_turn, task, user, world};
+use super::lifecycle_tests::{assert_aggregate_rules, deliver, exec, kinds, last, must, node, refused_unchanged, sdk_turn, task, user, world};
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -342,6 +342,57 @@ fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wake
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
         [format!("{TURN_ENDED_PREFIX}t-1-turn-2")]);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "the task waits on the user, not on a turn that never comes");
+    assert_aggregate_rules(&s);
+}
+
+/// The node delivered its result while a background subagent still ran, and its turn ended.
+fn delivered_with_background_work(s: &mut DomainState) {
+    sdk_turn(s, "t", "a");
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:workflow".into() },
+    ] });
+    deliver(s, "t", "a", "result-7");
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+}
+fn told_it_asked(s: &DomainState) -> bool {
+    s.lifecycle_journal[&TaskId::from("t")].iter().any(|record| matches!(record,
+        LifecycleRecord::HandedBack { text: Some(text), .. } if *text == delivery_withdrawn_for_questions()))
+}
+fn delivery_stands(s: &DomainState) {
+    let t = &s.tasks[&TaskId::from("t")];
+    assert_eq!(t.final_presentation, Some("result-7".into()), "the delivery is still the task's final one");
+    assert!(!s.interactions[&InteractionId::from("result-7")].withdrawn);
+    assert!(!told_it_asked(s), "the node is not told it asked");
+}
+
+// 23 Oct, t-ai-uiux-research: after its final delivery the node's background Workflow kept
+// fetching, and the node was told «You asked the user something after your final delivery, so that
+// delivery was withdrawn» though it had asked nothing. A permission prompt of that background work
+// or an MCP server's elicitation is a decision about a tool call, not a question of the node.
+#[test]
+fn a_permission_or_elicitation_after_the_final_delivery_leaves_the_delivery_standing() {
+    let mut s = world();
+    delivered_with_background_work(&mut s);
+    let permission = must(&mut s, Actor::System, bash(7, "gh api graphql -f query=@q.graphql"));
+    assert_eq!(permission.created_ids, vec![card_of(7)], "the user still decides the permission");
+    delivery_stands(&s);
+    let elicitation = must(&mut s, Actor::System, request(8, Hold::Elicitation, None, json!({}), None, card_prompt(Hold::Elicitation, "Sign in to Atlassian")));
+    assert_eq!(elicitation.created_ids, vec![card_of(8)]);
+    delivery_stands(&s);
+    must(&mut s, user(), answer(&card_of(7), Hold::ALLOW, None));
+    delivery_stands(&s);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_question_claude_asks_after_the_final_delivery_still_withdraws_it() {
+    let mut s = world();
+    delivered_with_background_work(&mut s);
+    must(&mut s, Actor::System, request(7, Hold::Question, Some("AskUserQuestion"), json!({}), None,
+        question_prompt("Measure Android too?", &["Yes", "No"])));
+    assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, None);
+    assert!(s.interactions[&InteractionId::from("result-7")].withdrawn);
+    assert!(told_it_asked(&s), "the node hears why");
     assert_aggregate_rules(&s);
 }
 

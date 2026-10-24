@@ -54,7 +54,7 @@ fn lifecycle(s: &DomainState, task: &str) -> (TaskState, bool, Option<AgentId>, 
     let t = &s.tasks[&TaskId::from(task)];
     (t.state, t.started, t.agent_id.clone(), t.ending)
 }
-fn deliver(s: &mut DomainState, task: &str, agent: &str, id: &str) {
+pub(super) fn deliver(s: &mut DomainState, task: &str, agent: &str, id: &str) {
     must(s, node(agent), Command::PresentResult {
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Done".into(), is_final: true, nothing_to_review: false,
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
