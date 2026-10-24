@@ -95,7 +95,7 @@ fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it(
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card), "David hears of nothing");
     assert!(pending(&s).is_empty(), "nothing waits for David: {:?}", pending(&s));
-    shows_waiting(&s, "Esperando al orquestador");
+    shows_waiting(&s, "Trabajando");
     assert_aggregate_rules(&s);
 
     let answered = answer_as_orchestrator(&mut s, "t-rename-queue-1");
@@ -112,7 +112,7 @@ fn a_turn_that_ends_on_a_blocking_question_to_the_orchestrator_waits_for_it() {
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
-    shows_waiting(&s, "Esperando al orquestador");
+    shows_waiting(&s, "Trabajando");
     answer_as_orchestrator(&mut s, "q");
     resumes(&mut s, &card);
 }
@@ -143,7 +143,7 @@ fn a_turn_that_ends_with_a_suggestion_pending_waits_for_the_orchestrator() {
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
-    shows_waiting(&s, "Esperando al orquestador");
+    shows_waiting(&s, "Trabajando");
     let settled = must(&mut s, orchestrator(), Command::SettleSuggestion {
         interaction_id: "p".into(), decision: SuggestionDecision::CurrentTask { note: "Fix it here".into() },
     });

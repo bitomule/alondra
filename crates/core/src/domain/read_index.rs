@@ -146,6 +146,13 @@ impl ReadIndex {
     pub fn task(&self, task: &TaskId) -> Option<&TaskReading> {
         self.tasks.get(task)
     }
+    /// Puts `task` in `live`, as its lifecycle would, so a screen test reaches every state.
+    #[cfg(test)]
+    pub(crate) fn put_live(&mut self, task: &TaskId, live: alondra_domain::LiveState) {
+        let reading = self.tasks.get_mut(task).expect("an indexed task");
+        reading.activity = Some(TaskActivity::Live(live.clone()));
+        reading.live = Some(live);
+    }
     pub fn node(&self, node: &AgentId) -> Option<&NodeReading> {
         self.nodes.get(node)
     }

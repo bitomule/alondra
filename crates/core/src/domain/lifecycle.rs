@@ -1316,10 +1316,15 @@ impl DomainState {
 
     /// What a live task is doing, or who it waits on, from its lifecycle alone. A card that only
     /// says a turn ended stays out of sight while what Alondra recorded explains the wait: the task
-    /// is in that wait instead.
+    /// is in that wait instead. A delivery whose PR merged waits on nobody while its node runs the
+    /// work it declared for after the merge.
     pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
-        let live = self.lifecycle_of(task).ok()?.live()?;
+        let lifecycle = self.lifecycle_of(task).ok()?;
+        let live = lifecycle.live()?;
         let LiveState::WaitingUser(cards) = &live else { return Some(live) };
+        if cards.iter().eq(lifecycle.delivery()) && self.work_after_merge(task, &lifecycle).is_some() {
+            return Some(LiveState::Working(Worker::AfterMerge));
+        }
         let covered = cards.iter().map(|card| self.interactions.get(card).filter(|i| self.covered_by_recorded_wait(i))).collect::<Option<Vec<_>>>();
         let Some(revision) = covered.and_then(|covered| covered.iter().map(|i| i.revision).max()) else { return Some(live) };
         Some(match self.recorded_wait(task, revision) {

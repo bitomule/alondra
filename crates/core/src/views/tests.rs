@@ -154,6 +154,19 @@ fn render<'a>(
     key: &str,
     time: &'a str,
 ) -> View {
+    render_in(domain, live, client, lang, key, time, None)
+}
+
+/// `render`, with task t-1 in `in_state` when one is given.
+fn render_in(
+    domain: &DomainState,
+    live: &LiveSnapshot,
+    client: Client,
+    lang: Lang,
+    key: &str,
+    time: &str,
+    in_state: Option<&alondra_domain::LiveState>,
+) -> View {
     let mut domain = with_cards(domain);
     // What older fixtures said with the flags of a live node, as the phase the node machine keeps.
     let unregistered: Vec<_> = domain.tasks.values().filter_map(|task| task.agent_id.clone())
@@ -184,11 +197,15 @@ fn render<'a>(
         }
     }
     domain.settle_nodes();
+    let mut index = crate::domain::ReadIndex::build(&domain);
+    if let Some(state) = in_state {
+        index.put_live(&"t-1".into(), state.clone());
+    }
     build(
         key,
         RenderContext {
             domain: &domain,
-            index: &crate::domain::ReadIndex::build(&domain),
+            index: &index,
             live,
             client,
             lang,
@@ -7069,7 +7086,8 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
 
 /// t-parcel-open-issues-widget, 23 October: its node's phase still said working from its start
 /// while its session had long rested on its delivery, so the task read «Answering you» for 12
-/// hours. A task whose node runs through the SDK reads what its lifecycle does.
+/// hours. A task whose node runs through the SDK reads what its lifecycle does: working until it
+/// presents its delivery, then delivered, whether its last turn still runs or has ended.
 #[test]
 fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_something() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
@@ -7083,11 +7101,14 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
         },
         LifecycleRecord::ResourceAvailable,
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
-        LifecycleRecord::Presented { delivery: "d".into() },
     ];
     let live = LiveSnapshot::default();
+    state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("d".into());
     state.lifecycle_journal.insert("t-1".into(), answering.clone());
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn still runs");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn runs");
+    let answering = [answering, vec![LifecycleRecord::Presented { delivery: "d".into() }]].concat();
+    state.lifecycle_journal.insert("t-1".into(), answering.clone());
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its turn still runs, on its delivery");
     state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into() }]].concat());
     assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its session rests on the delivery");
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Entregada");
@@ -7632,11 +7653,11 @@ fn background_work_shows_only_that_it_runs_or_how_it_ended() {
 }
 
 /// A screen changes only when a fact does: the same domain and the same live readings render the
-/// same on every screen two days later, for every phase of the node, every task state and every
-/// state of its background work.
+/// same on every screen two days later, for every phase of the node, every task state, every
+/// state of its background work and every state of a task of the Agent SDK.
 #[test]
 fn no_screen_changes_with_the_clock_alone() {
-    let screens = |state: &DomainState, live: &LiveSnapshot, at: &str| -> Vec<serde_json::Value> {
+    let screens = |state: &DomainState, live: &LiveSnapshot, at: &str, in_state: Option<&alondra_domain::LiveState>| -> Vec<serde_json::Value> {
         let mut out = vec![];
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
@@ -7644,7 +7665,7 @@ fn no_screen_changes_with_the_clock_alone() {
                     if (key == "sidebar" && client != Client::Mac) || (key == "home" && client == Client::Mac) {
                         continue;
                     }
-                    let mut view = serde_json::to_value(render(state, live, client, lang, key, at)).unwrap();
+                    let mut view = serde_json::to_value(render_in(state, live, client, lang, key, at, in_state)).unwrap();
                     view.as_object_mut().unwrap().remove("rendered_at");
                     out.push(view);
                 }
@@ -7659,8 +7680,111 @@ fn no_screen_changes_with_the_clock_alone() {
             state.tasks.get_mut(&"t-1".into()).unwrap().state = task;
             let runs = run_states();
             let live = LiveSnapshot { nodes: vec![node_running_in(runs[index % runs.len()])], ..Default::default() };
-            assert_eq!(screens(&state, &live, "2026-09-30T10:00:00Z"), screens(&state, &live, "2026-10-02T10:00:00Z"),
+            assert_eq!(screens(&state, &live, "2026-09-30T10:00:00Z", None), screens(&state, &live, "2026-10-02T10:00:00Z", None),
                 "{phase:?} with its task {task:?} reads the same two days later");
+        }
+    }
+    let state = sdk_task();
+    let live = LiveSnapshot { nodes: vec![node_running_in(RunState::Running)], ..Default::default() };
+    for in_state in live_states() {
+        assert_eq!(screens(&state, &live, "2026-09-30T10:00:00Z", Some(&in_state)), screens(&state, &live, "2026-10-02T10:00:00Z", Some(&in_state)),
+            "a task of the Agent SDK in {in_state:?} reads the same two days later");
+    }
+}
+
+/// Every state a live task can be in, each once; the match fails to compile when one is added.
+fn live_states() -> Vec<alondra_domain::LiveState> {
+    use alondra_domain::{Capacity, LiveState, Several, Step, Worker};
+    let states = vec![
+        LiveState::Working(Worker::Turn), LiveState::Working(Worker::OwnWork), LiveState::Working(Worker::AfterMerge),
+        LiveState::Working(Worker::Alondra(Step::Starting)), LiveState::Working(Worker::Alondra(Step::Delivering)),
+        LiveState::Working(Worker::Alondra(Step::Waking)), LiveState::Working(Worker::Alondra(Step::Answering)),
+        LiveState::Working(Worker::Alondra(Step::Merging)), LiveState::Working(Worker::Alondra(Step::Finishing)),
+        LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("delivery-t-1")]).unwrap()),
+        LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("claude-signed-out-t-1")]).unwrap()),
+        LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Usage), LiveState::WaitingCapacity(Capacity::ClaudeApi),
+        LiveState::WaitingTask(Several::new([crate::domain::TaskId::from("t-2")]).unwrap()),
+    ];
+    for state in &states {
+        match state {
+            LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
+                | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking | Step::Answering | Step::Merging | Step::Finishing))
+            | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Usage | Capacity::ClaudeApi)
+            | LiveState::WaitingTask(_) => {}
+        }
+    }
+    states
+}
+
+/// Task t-1 whose node runs a turn through the Agent SDK, with `delivery-t-1` as its delivery.
+fn sdk_task() -> DomainState {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Starting { reviving: false, idle_since: None });
+    state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("delivery-t-1".into());
+    state.lifecycle_journal.insert("t-1".into(), vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+    ]);
+    state
+}
+
+/// The phase `claude --bg` reports never moves for a node of the Agent SDK, so its task reads only
+/// its lifecycle's state: each state reads the same on the phone, the Mac and the terminal, on
+/// the list and on the task's screen, in each language, and none says its node closed, that it
+/// comes back or that it is still starting.
+#[test]
+fn each_live_state_reads_one_way_on_every_client() {
+    let state = sdk_task();
+    let live = LiveSnapshot::default();
+    let mut shown = vec![];
+    for in_state in live_states() {
+        for lang in [Lang::En, Lang::Es] {
+            let mut texts = vec![];
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let list = render_in(&state, &live, client, lang, "tasks", "", Some(&in_state));
+                let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
+                let [badge] = row.badges.as_slice() else { panic!("{client:?} {in_state:?}: one state, one badge: {:?}", row.badges) };
+                let screen = serde_json::to_string(&render_in(&state, &live, client, lang, "task:t-1", "", Some(&in_state))).unwrap();
+                assert!(screen.contains(&serde_json::to_string(&badge.text).unwrap()), "{client:?} {in_state:?}: the task's screen says {:?}: {screen}", badge.text);
+                texts.push(badge.text.clone());
+            }
+            texts.dedup();
+            let [text] = texts.as_slice() else { panic!("{in_state:?} {lang:?}: every client reads the same: {texts:?}") };
+            for gone in ["Stopped", "Detenida", "Starting", "Arrancando", "Reconnecting", "Reconectando", "Waiting for the orchestrator", "Esperando al orquestador"] {
+                assert_ne!(text, gone, "{in_state:?} {lang:?}");
+            }
+            shown.push((lang, text.clone()));
+        }
+    }
+    let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
+    assert_eq!(read(Lang::En), ["Working", "Working", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
+        "Delivered", "Waiting for an answer", "Waiting for the machine", "Waiting for Claude's usage limit", "Waiting for the Claude API", "Waiting"]);
+    assert_eq!(read(Lang::Es), ["Trabajando", "Trabajando", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
+        "Entregada", "Esperando respuesta", "Esperando máquina", "Esperando al límite de uso de Claude", "Esperando a la API de Claude", "Esperando"]);
+}
+
+/// Whatever phase `claude --bg` last left on a node of the Agent SDK (starting, lost, closed…), its
+/// task whose turn runs reads «Working» on every client: never «Stopped», coming back or starting.
+#[test]
+fn a_task_of_the_sdk_whose_turn_runs_reads_working_whatever_its_nodes_old_phase_says() {
+    let live = LiveSnapshot::default();
+    for phase in node_phases() {
+        let mut state = sdk_task();
+        state.agents.get_mut(&"a-1".into()).unwrap().phase = phase.clone();
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for (lang, working) in [(Lang::En, "Working"), (Lang::Es, "Trabajando")] {
+                let list = render(&state, &live, client, lang, "tasks", "");
+                let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1")
+                    .unwrap_or_else(|| panic!("{client:?} {phase:?}: t-1 is listed"));
+                let texts: Vec<&str> = row.badges.iter().map(|badge| badge.text.as_str()).collect();
+                assert_eq!(texts, [working], "{client:?} {lang:?}: its node's phase {phase:?}");
+            }
         }
     }
 }

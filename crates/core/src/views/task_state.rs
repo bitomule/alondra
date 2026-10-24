@@ -5,6 +5,7 @@ use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
 };
+use alondra_domain::{Capacity, LiveState, Step, Worker};
 use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, Task, TaskActivity, TaskEnding, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -151,12 +152,13 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let read = context.reading(&task.id);
     let activity = read.and_then(|read| read.activity.clone()).unwrap_or(TaskActivity::NodeClosed);
     let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
-    let doing = node.and_then(|node| super::task_node::doing(node, matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_)), lang));
+    let at_work = matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Live(LiveState::Working(_)));
+    let doing = node.and_then(|node| super::task_node::doing(node, at_work, lang));
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
     let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
     if !matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting | TaskActivity::Reconnecting
-        | TaskActivity::ComingBack | TaskActivity::Paused(_))
+        | TaskActivity::ComingBack | TaskActivity::Paused(_) | TaskActivity::Live(_))
         && context.waits_for_user(&task.id) {
         return for_you(task, context);
     }
@@ -165,6 +167,8 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return Presentation { active_at, ..Presentation::new(halted.text, Tone::Warning, Block::InProgress, fact) };
     }
     let state = match (&activity, read.and_then(|read| read.handed_back)) {
+        (TaskActivity::Live(live), _) => return live_state(task, live,
+            Shown { fact: fact.clone(), active_at: active_at.clone(), step: node.and_then(|node| super::task_node::step(node, lang)) }, context),
         (TaskActivity::ComingBack, _) => return match common::coming_back_queued(task, context) {
             Some(queued) => in_queue(task, queued, lang),
             None => Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, None),
@@ -213,6 +217,54 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     };
     let step = node.and_then(|node| super::task_node::step(node, lang));
     Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
+}
+
+/// What the screen knows of a task's node beside its lifecycle: what it says it does, since when,
+/// and the step of its turn.
+struct Shown {
+    fact: Option<String>,
+    active_at: Option<String>,
+    step: Option<String>,
+}
+
+/// A task whose node runs through the Agent SDK, by its lifecycle's `LiveState` alone: one state
+/// for each, and none that says its node is gone or still starting once its session runs.
+fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    let Shown { fact, active_at, step } = shown;
+    let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::Waiting, fact.clone()) };
+    match live {
+        LiveState::Working(Worker::AfterMerge) => Presentation { since: active_at,
+            ..Presentation::new(t!(lang, "Finishing after the merge", "Terminando tras el merge"), Tone::Info, Block::InProgress,
+                task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())) },
+        LiveState::Working(Worker::Alondra(Step::Merging | Step::Finishing)) => closing(task, context),
+        LiveState::Working(_) => {
+            let state = match context.reading(&task.id).and_then(|read| read.handed_back) {
+                Some(Instruction::Changes) => t!(lang, "Making changes", "Corrigiendo"),
+                Some(Instruction::Conflicts) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+                Some(Instruction::Question | Instruction::Reply) => t!(lang, "Answering you", "Respondiéndote"),
+                None => t!(lang, "Working", "Trabajando"),
+            };
+            Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
+        }
+        LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) =>
+            Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        LiveState::WaitingUser(_) => match (claude_hold(task, context), context.index.mcp_wait_of_task(&task.id)) {
+            (Some(crate::domain::ClaudeHold::SignedOut), _) => warn(t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude")),
+            (_, Some(waiting)) => {
+                let name = waiting.server.name.as_str();
+                warn(&tf!(lang, "Waiting for you to sign in to {name}", "Espera a que inicies sesión en {name}"))
+            }
+            _ => warn(t!(lang, "Waiting for an answer", "Esperando respuesta")),
+        },
+        LiveState::WaitingCapacity(Capacity::Usage) => warn(t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude")),
+        LiveState::WaitingCapacity(Capacity::ClaudeApi) => warn(t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude")),
+        LiveState::WaitingCapacity(Capacity::Gate) => {
+            let queued = common::gate_queued(task, context).and_then(|queued| in_queue(task, queued, lang).fact);
+            Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, queued)
+        }
+        LiveState::WaitingTask(_) => waiting_dependency(task, context),
+    }
 }
 
 /// What a paused task's node still owes the user, when its delivery went back to it.

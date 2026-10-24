@@ -439,11 +439,12 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
     }
 }
 
-/// What an open task's node does for it, read from the node's one phase: what every reader says of
-/// the task beside its lifecycle state, so none says it works while its node is paused or waits.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// What an open task's node does for it: what every reader says of the task beside its lifecycle
+/// state, so none says it works while its node is paused or waits. A task whose node runs through
+/// the Agent SDK reads its lifecycle's `LiveState`; a node of `claude --bg` reads its one phase.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskActivity {
+    Live(alondra_domain::LiveState),
     Starting,
     /// Its session was lost and it waits for the gate to be restarted.
     ComingBack,
@@ -462,7 +463,22 @@ pub enum TaskActivity {
 
 impl TaskActivity {
     pub fn key(&self) -> &'static str {
+        use alondra_domain::{Capacity, LiveState, Step, Worker};
         match self {
+            Self::Live(LiveState::Working(Worker::Turn)) => "working",
+            Self::Live(LiveState::Working(Worker::OwnWork)) => "own_work",
+            Self::Live(LiveState::Working(Worker::AfterMerge)) => "after_merge",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Starting))) => "starting",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Delivering))) => "delivering",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Waking))) => "waking",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Answering))) => "answering",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Merging))) => "merging",
+            Self::Live(LiveState::Working(Worker::Alondra(Step::Finishing))) => "finishing",
+            Self::Live(LiveState::WaitingUser(_)) => "waiting_user",
+            Self::Live(LiveState::WaitingCapacity(Capacity::Gate)) => "waiting_machine",
+            Self::Live(LiveState::WaitingCapacity(Capacity::Usage)) => "waiting_usage",
+            Self::Live(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "waiting_claude_api",
+            Self::Live(LiveState::WaitingTask(_)) => "waiting_dependency",
             Self::Starting => "starting",
             Self::ComingBack => "coming_back",
             Self::Reconnecting => "reconnecting",
@@ -487,6 +503,9 @@ impl DomainState {
             return None;
         }
         let agent = task.agent_id.as_ref()?;
+        if super::read_index::admitted_through_sdk(self, &task.id, agent) {
+            return self.live_state(&task.id).map(TaskActivity::Live);
+        }
         if self.node_phase(agent) == Some(&NodePhase::Closing) && let Some(work) = &task.wrap_up.post_merge_work {
             if task.state == TaskState::WaitingDependency {
                 return Some(TaskActivity::WaitingDependency);
@@ -499,34 +518,13 @@ impl DomainState {
             Some(NodePhase::Starting { reviving: false, .. }) => TaskActivity::Starting,
             Some(NodePhase::Lost) if task.state == TaskState::WaitingDependency => TaskActivity::WaitingDependency,
             Some(NodePhase::Lost) => TaskActivity::ComingBack,
-            Some(NodePhase::Working | NodePhase::Resuming { .. }) => self.sdk_rest(task, agent).unwrap_or(TaskActivity::Working),
+            Some(NodePhase::Working | NodePhase::Resuming { .. }) => TaskActivity::Working,
             Some(NodePhase::WaitingBackground(work)) => TaskActivity::WaitingBackground(work.clone()),
             Some(NodePhase::WaitingUser { .. }) => TaskActivity::WaitingUser,
             Some(NodePhase::WaitingDependency) => TaskActivity::WaitingDependency,
             Some(NodePhase::Paused(pause)) => TaskActivity::Paused(pause.clone()),
             Some(NodePhase::Delivered { .. }) => TaskActivity::Delivered,
         })
-    }
-
-    /// What the SDK task `task` waits for while its lifecycle rests: no session phase of its node
-    /// moves with its turns, so a phase that still says working is not what the task does.
-    fn sdk_rest(&self, task: &Task, agent: &AgentId) -> Option<TaskActivity> {
-        if !super::read_index::admitted_through_sdk(self, &task.id, agent) {
-            return None;
-        }
-        let lifecycle = self.lifecycle_of(&task.id).ok()?;
-        if lifecycle.activity() != alondra_domain::ActivityView::Resting {
-            return None;
-        }
-        if !lifecycle.cards().is_empty() {
-            Some(TaskActivity::WaitingUser)
-        } else if lifecycle.phase() == alondra_domain::TaskPhase::Delivered {
-            Some(TaskActivity::Delivered)
-        } else if !lifecycle.dependencies().is_empty() {
-            Some(TaskActivity::WaitingDependency)
-        } else {
-            None
-        }
     }
 
     /// The task a node works on: its open one, else the last it had.

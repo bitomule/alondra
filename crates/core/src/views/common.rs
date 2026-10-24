@@ -124,7 +124,19 @@ pub(super) fn queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<
 pub(super) fn coming_back_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     let agent = task.agent_id.as_ref()?;
     (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Lost)).then_some(())?;
+    gate_queued(task, context)
+}
+
+/// The place in the gate's queue of a task that waits there, whether it has a node or not.
+pub(super) fn gate_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
+}
+
+/// What the task of a node that runs through the Agent SDK does, from its lifecycle; `None` for a
+/// node of `claude --bg`, whose phase says it.
+pub(super) fn sdk_live<'a>(agent: &crate::domain::AgentId, context: &'a RenderContext<'_>) -> Option<Option<&'a alondra_domain::LiveState>> {
+    let node = context.index.node(agent).filter(|node| node.through_sdk)?;
+    Some(node.task.as_ref().and_then(|task| context.reading(task)).and_then(|read| read.live.as_ref()))
 }
 
 pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
@@ -165,11 +177,17 @@ pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> Str
     }
 }
 
-/// The task's pause, if its node is paused.
-/// The node's turn is running, as the node machine says.
+/// The node's turn is running, as its task's lifecycle says for a node of the Agent SDK and its
+/// phase for one of `claude --bg`.
 pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
-    context.domain.node_phase(&crate::domain::AgentId(agent.into())) == Some(&crate::domain::NodePhase::Working)
+    let agent = crate::domain::AgentId(agent.into());
+    match sdk_live(&agent, context) {
+        Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
+        None => context.domain.node_phase(&agent) == Some(&crate::domain::NodePhase::Working),
+    }
 }
+
+/// The task's pause, if its node is paused.
 
 pub(super) fn paused<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
     if task.state.terminal() { return None; }
@@ -445,11 +463,12 @@ pub(super) fn orchestrator_state(context: &RenderContext<'_>) -> OrchestratorSta
 }
 
 
-/// A node whose turn is under way yet stopped processing, or whose session Claude Code says
-/// failed: the node's task says it.
+/// A node of `claude --bg` whose turn is under way yet stopped processing, or whose session Claude
+/// Code says failed: the node's task says it. A node of the Agent SDK reads its lifecycle instead.
 pub(super) fn halted(agent: &crate::domain::AgentId, context: &RenderContext<'_>) -> Option<super::Label> {
     use super::Tone;
     let lang = context.lang;
+    sdk_live(agent, context).is_none().then_some(())?;
     (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Working)).then_some(())?;
     let key = context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.state_key.as_deref());
     match key {

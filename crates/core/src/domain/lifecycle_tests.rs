@@ -1815,6 +1815,28 @@ fn working_after_the_merge(s: &mut DomainState) {
     assert!(s.post_merge_owed(&s.tasks[&TaskId::from("t")]));
 }
 
+/// The sandbox's «Publish the release once it is merged», 24 October: its PR merged while its node
+/// ran the release, and the task read «Delivered», as if it waited for a review. It works, after
+/// the merge, on the phone, the Mac and the terminal.
+#[test]
+fn a_task_of_the_sdk_that_works_after_its_merge_reads_so_on_every_client() {
+    use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    let mut s = world();
+    working_after_the_merge(&mut s);
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(alondra_domain::Worker::AfterMerge)));
+    let index = ReadIndex::build(&s);
+    let live = LiveSnapshot::default();
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for (lang, said) in [(Lang::En, "Finishing after the merge"), (Lang::Es, "Terminando tras el merge")] {
+            let view = build("task:t", RenderContext { domain: &s, index: &index, live: &live, client, lang,
+                transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
+            let shown = serde_json::to_string(&view).unwrap();
+            assert!(shown.contains(said) && !shown.contains("\"Delivered\"") && !shown.contains("\"Entregada\""), "{client:?}: {shown}");
+        }
+    }
+    assert_aggregate_rules(&s);
+}
+
 /// The user forces the running turn of `t` to stop and its host ends.
 fn force_stopped(s: &mut DomainState) -> (CommandOutcome, InteractionId) {
     must(s, user(), Command::InterruptTurn { agent_id: "a".into() });
