@@ -326,7 +326,7 @@ final class AppFeatureTests: XCTestCase {
     func testAChangeReachesTheRootScreensAndOnlyTheScreensStillOnTheLegacyRenderer() async {
         let store = makeStore()
         await store.send(.open(.tasks, key("tasks?section=finished&after=20")))
-        await store.send(.open(.inbox, key("tasks?section=archived&after=20")))
+        await store.send(.open(.inbox, key("tasks?section=active&after=20")))
         await store.send(.open(.inbox, key("card:i-9")))
         await store.send(.open(.newRequest, key("pull_request:github.com/o/r#1")))
         store.exhaustivity = .on

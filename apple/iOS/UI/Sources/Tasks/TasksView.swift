@@ -4,8 +4,7 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// The Tasks tab: each request with its task tree, then the finished and archived work folded
-/// under its count.
+/// The Tasks tab: each request with its task tree, then the completed work folded under its count.
 public struct TasksView: View {
     @Bindable var store: StoreOf<TasksFeature>
     @Environment(\.connectionState) private var connection
@@ -23,12 +22,6 @@ public struct TasksView: View {
         }
         .background(DawnBackground())
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Archive Completed", systemImage: "archivebox") { store.send(.archiveCompleted) }
-                    .disabled(store.board?.archiveCompleted == nil)
-            }
-        }
         .refreshable { await store.send(.refresh).finish() }
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
@@ -82,13 +75,10 @@ public struct TasksView: View {
                 }
                 FoldedRequests(fold: board.finished, expanded: store.expanded.contains(board.finished.id),
                                loading: store.loadingMore.contains(board.finished.id),
+                               clearable: board.clearCompleted != nil,
                                toggle: { store.send(.foldToggled(board.finished.id)) },
+                               clear: { store.send(.clearCompleted) },
                                more: { store.send(.showMore(board.finished.id)) },
-                               open: { store.send(.open($0)) })
-                FoldedRequests(fold: board.archived, expanded: store.expanded.contains(board.archived.id),
-                               loading: store.loadingMore.contains(board.archived.id),
-                               toggle: { store.send(.foldToggled(board.archived.id)) },
-                               more: { store.send(.showMore(board.archived.id)) },
                                open: { store.send(.open($0)) })
             }
         } else {

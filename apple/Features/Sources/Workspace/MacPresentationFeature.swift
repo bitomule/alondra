@@ -301,8 +301,9 @@ public struct MacPresentationFeature: Sendable {
                 let returned = state.optimistic.settle(request, applied: applied, shown: shown)
                 let stopTimer: Effect<Action> = target.map { state.optimistic.isSending($0) ? .none : .cancel(id: CancelID.confirmation($0)) } ?? .none
                 guard let returned else { return stopTimer }
-                state.optimistic.hold(returned, shown: shown, dataEpoch: request.dataEpoch)
                 state.returning[request.commandId] = returned
+                if state.detailDocument?.sections.contains(where: { $0.id == returned }) == true { return stopTimer }
+                state.optimistic.hold(returned, shown: shown, dataEpoch: request.dataEpoch)
                 return .merge(stopTimer, loadView("sidebar", known: shown))
             case .answerOverdue(let id):
                 guard state.optimistic.expire(id, undelivered: state.undelivered) else { return .none }

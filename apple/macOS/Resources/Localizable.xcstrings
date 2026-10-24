@@ -443,16 +443,6 @@
         }
       }
     },
-    "Archive Completed": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Archivar terminadas"
-          }
-        }
-      }
-    },
     "Ask for Something New…": {
       "localizations": {
         "es": {

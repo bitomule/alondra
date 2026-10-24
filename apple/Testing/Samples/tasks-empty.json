@@ -48,14 +48,7 @@
       "id": "finished",
       "collapsed": true,
       "items": [],
-      "title": "Finished",
-      "count": 0
-    },
-    {
-      "id": "archived",
-      "collapsed": true,
-      "items": [],
-      "title": "Archived",
+      "title": "Completed",
       "count": 0
     }
   ],

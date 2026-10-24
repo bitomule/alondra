@@ -297,39 +297,24 @@
           }
         }
       ],
-      "title": "Terminadas",
+      "title": "Completadas",
       "count": 27,
       "more": {
         "key": "tasks?section=finished&after=20",
         "remaining": 7
-      }
-    },
-    {
-      "id": "archived",
-      "collapsed": true,
-      "items": [],
-      "title": "Archivadas",
-      "count": 0
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      },
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@12",
-              "label": "Archivar terminadas",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true
-            }
-          ]
+          "id": "clear_completed:view@12",
+          "label": "Limpiar completadas",
+          "style": "secondary",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": true
         }
       ]
     }

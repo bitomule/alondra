@@ -3,9 +3,9 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// The Tasks tab: requests with their task trees, the finished and archived folds, archiving what
-/// is done, and the way into the scheduled tasks. Withdrawing and archiving show at once and undo
-/// themselves if the daemon does not apply them.
+/// The Tasks tab: requests with their task trees, the completed fold and clearing it, and the way
+/// into the scheduled tasks. Withdrawing and clearing show at once and undo themselves if the daemon
+/// does not apply them.
 @Reducer
 public struct TasksFeature: Sendable {
     public init() {}
@@ -37,7 +37,7 @@ public struct TasksFeature: Sendable {
         case moreLoaded(String, request: UUID, ViewDocument)
         case moreFailed(String, request: UUID)
         case open(AlondraContract.Link)
-        case archiveCompleted
+        case clearCompleted
         case perform(WireAction)
         case screen(ScreenFeature.Action)
         case actions(ActionFeature.Action)
@@ -87,7 +87,7 @@ public struct TasksFeature: Sendable {
                 return .none
             case .showMore(let id):
                 guard let board = state.board, state.loadingMore.insert(id).inserted,
-                      let more = [board.active, board.finished, board.archived].first(where: { $0.id == id })?.more
+                      let more = [board.active, board.finished].first(where: { $0.id == id })?.more
                 else { return .none }
                 let request = uuid()
                 state.pageLoads[id] = request
@@ -121,9 +121,9 @@ public struct TasksFeature: Sendable {
                 return .send(.delegate(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))))
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
-            case .archiveCompleted:
-                guard let archive = state.board?.archiveCompleted else { return .none }
-                return .send(.perform(archive))
+            case .clearCompleted:
+                guard let clear = state.board?.clearCompleted else { return .none }
+                return .send(.perform(clear))
             case .perform(let action):
                 return .concatenate(.send(.actions(.present(action))), .send(.actions(.submit)))
             case .actions(.sent(let request)):

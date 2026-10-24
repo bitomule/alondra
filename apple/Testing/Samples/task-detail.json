@@ -314,18 +314,6 @@
               },
               "attachments": false,
               "enabled": false
-            },
-            {
-              "id": "archive:t-1@4",
-              "label": "Archive",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": false,
-              "disabled_reason": "Only finished tasks can be archived"
             }
           ]
         }

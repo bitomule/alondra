@@ -73,6 +73,8 @@ final class FeedTests: XCTestCase {
         XCTAssertTrue(FeedSession.validViewKey(key))
         XCTAssertNil(ViewRoute.parse("tasks?section=active&after=-1"))
         XCTAssertNil(ViewRoute.parse("tasks?section=unknown&after=42"))
+        XCTAssertNil(ViewRoute.parse("tasks?section=archived&after=42"), "cleared work has no page")
+        XCTAssertFalse(FeedSession.validViewKey("tasks?section=archived&after=42"))
     }
 
     func testCanonicalPullRequestDiffSegmentDecodesOnce() {

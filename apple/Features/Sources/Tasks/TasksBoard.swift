@@ -1,8 +1,8 @@
 import AlondraContract
 import Foundation
 
-/// The `tasks` view as the Tasks screen lays it out: requests with their task trees, the folds for
-/// finished and archived work, and the entry to the scheduled tasks. The daemon supplies the
+/// The `tasks` view as the Tasks screen lays it out: requests with their task trees, the fold for
+/// completed work with its Clear Completed button, and the entry to the scheduled tasks. The daemon supplies the
 /// content; which section goes where is decided here, by section id.
 public struct TasksBoard: Equatable, Sendable {
     public struct Request: Equatable, Sendable, Identifiable {
@@ -90,11 +90,10 @@ public struct TasksBoard: Equatable, Sendable {
     public let schedules: Schedules?
     public let active: Fold
     public let finished: Fold
-    public let archived: Fold
-    public let archiveCompleted: WireAction?
+    public let clearCompleted: WireAction?
     public let empty: Notice?
 
-    public var isEmpty: Bool { active.requests.isEmpty && finished.count == 0 && archived.count == 0 }
+    public var isEmpty: Bool { active.requests.isEmpty && finished.count == 0 }
 }
 
 public extension TasksBoard {
@@ -118,9 +117,6 @@ public extension TasksBoard {
             return fold
         }
         let entry = rows(of: section("scheduled")).first
-        let actions = document.sections.lazy.flatMap(\.items).compactMap { item -> [WireAction]? in
-            if case .actions(let bar) = item { bar.actions } else { nil }
-        }.flatMap { $0 }
         self.init(
             summary: document.status.summary,
             schedules: entry.map {
@@ -128,34 +124,29 @@ public extension TasksBoard {
             },
             active: fold("active", fallbackTitle: ""),
             finished: fold("finished", fallbackTitle: ""),
-            archived: fold("archived", fallbackTitle: ""),
-            archiveCompleted: actions.first { $0.command == "archive_done" },
+            clearCompleted: section("finished")?.actions.first { $0.command == "clear_completed" },
             empty: document.empty
         )
     }
 }
 
 public extension TasksBoard {
-    /// The board as it is after what was just sent: a withdrawn request is gone, archived work has
-    /// moved to the archive.
+    /// The board as it is after what was just sent: a withdrawn request is gone, and cleared
+    /// completed work has left with its button.
     func hiding(_ optimistic: Optimistic) -> TasksBoard {
         guard !optimistic.isEmpty else { return self }
-        func shown(_ fold: Fold, adding moved: Fold? = nil) -> Fold {
+        func shown(_ fold: Fold) -> Fold {
             let kept = fold.requests.filter { !optimistic.hides($0.withdraw?.id) }
-            let movedRequests = moved?.requests ?? []
-            var shown = Fold(id: fold.id, title: fold.title,
-                             count: max(0, fold.count - (fold.requests.count - kept.count)) + (moved?.count ?? 0),
-                             requests: movedRequests + kept, more: fold.more)
+            var shown = Fold(id: fold.id, title: fold.title, count: max(0, fold.count - (fold.requests.count - kept.count)),
+                             requests: kept, more: fold.more)
             shown.blocks = fold.blocks
             return shown
         }
-        let archiving = optimistic.hides(archiveCompleted?.id)
-        let emptied = Fold(id: finished.id, title: finished.title, count: 0, requests: [], more: nil)
+        let clearing = optimistic.hides(clearCompleted?.id)
         return TasksBoard(
             summary: summary, schedules: schedules, active: shown(active),
-            finished: archiving ? emptied : shown(finished),
-            archived: archiving ? shown(archived, adding: finished) : shown(archived),
-            archiveCompleted: archiving ? nil : archiveCompleted, empty: empty
+            finished: clearing ? Fold(id: finished.id, title: finished.title, count: 0, requests: [], more: nil) : shown(finished),
+            clearCompleted: clearing ? nil : clearCompleted, empty: empty
         )
     }
 }

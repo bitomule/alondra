@@ -254,7 +254,7 @@ struct ViewRoute {
             guard values.count == 1, let focus = values["focus"], APIRequest.validViewID(focus) else { return nil }
             return ViewRoute(path: path, query: [("focus", focus)])
         case "tasks":
-            guard values.count == 2, let section = values["section"], ["active", "finished", "archived"].contains(section),
+            guard values.count == 2, let section = values["section"], ["active", "finished"].contains(section),
                   let after = values["after"], UInt(after) != nil else { return nil }
             return ViewRoute(path: path, query: [("section", section), ("after", after)])
         case "new_request", "schedule:new":

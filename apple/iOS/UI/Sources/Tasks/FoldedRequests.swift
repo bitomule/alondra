@@ -3,36 +3,46 @@ import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
-/// Finished or archived work: folded under its count until opened.
+/// Completed work: folded under its count until opened, with Clear Completed on its title line.
 struct FoldedRequests: View {
     let fold: TasksBoard.Fold
     let expanded: Bool
     let loading: Bool
+    let clearable: Bool
     let toggle: () -> Void
+    let clear: () -> Void
     let more: () -> Void
     let open: (AlondraContract.Link) -> Void
 
     var body: some View {
         if fold.count > 0 {
-            Button {
-                withAnimation(.smooth, toggle)
-            } label: {
-                HStack(spacing: 6) {
-                    Text(verbatim: "\(fold.title) (\(fold.count))")
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .accessibilityHidden(true)
-                    Spacer(minLength: 0)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Button {
+                    withAnimation(.smooth, toggle)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(verbatim: "\(fold.title) (\(fold.count))")
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .accessibilityHidden(true)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.footnote.weight(.bold))
+                    .textCase(.uppercase)
+                    .kerning(0.6)
+                    .foregroundStyle(.secondary)
+                    .contentShape(.rect)
                 }
-                .font(.footnote.weight(.bold))
-                .textCase(.uppercase)
-                .kerning(0.6)
-                .foregroundStyle(.secondary)
-                .contentShape(.rect)
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityHint(expanded ? Text("Hides them") : Text("Shows them"))
+                if clearable {
+                    Button("Clear Completed") { withAnimation(.smooth, clear) }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Palette.dawn)
+                        .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityHint(expanded ? Text("Hides them") : Text("Shows them"))
             .padding(.horizontal, 20)
             .padding(.top, 26)
             .padding(.bottom, 8)

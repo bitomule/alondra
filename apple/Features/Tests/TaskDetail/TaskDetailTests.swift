@@ -40,7 +40,6 @@ final class TaskDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.cancel?.enabled, true)
         XCTAssertNil(detail.reopen, "an older daemon still sends it switched off")
-        XCTAssertNil(detail.archive, "an older daemon still sends it switched off")
     }
 
     func testATaskWhoseNodeTheUserClosedOffersRelaunchBeforeCancel() throws {

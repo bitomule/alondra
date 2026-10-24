@@ -172,7 +172,25 @@ public struct ViewSection: Codable, Equatable, Sendable {
     /// How to lay the rows out; "list" is a settings list (`ListRowView`). Unknown styles fall back
     /// to each screen's own layout.
     public let style: String?
-    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more; case cardWaits = "card_waits"; case style }
+    /// Buttons on the section's title line, such as Clear Completed. A daemon older than the field sends none.
+    public let actions: [Action]
+    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more; case cardWaits = "card_waits"; case style, actions }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); title = try c.decodeIfPresent(String.self, forKey: .title)
+        count = try c.decodeIfPresent(UInt32.self, forKey: .count); collapsed = try c.decode(Bool.self, forKey: .collapsed)
+        items = try c.decode([ViewItem].self, forKey: .items); cardIds = try c.decodeIfPresent([String].self, forKey: .cardIds)
+        more = try c.decodeIfPresent(More.self, forKey: .more); cardWaits = try c.decodeIfPresent([String].self, forKey: .cardWaits)
+        style = try c.decodeIfPresent(String.self, forKey: .style)
+        actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encodeIfPresent(title, forKey: .title); try c.encodeIfPresent(count, forKey: .count)
+        try c.encode(collapsed, forKey: .collapsed); try c.encode(items, forKey: .items); try c.encodeIfPresent(cardIds, forKey: .cardIds)
+        try c.encodeIfPresent(more, forKey: .more); try c.encodeIfPresent(cardWaits, forKey: .cardWaits); try c.encodeIfPresent(style, forKey: .style)
+        if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
+    }
 }
 public struct More: Codable, Equatable, Sendable { public let key: String; public let remaining: UInt32 }
 

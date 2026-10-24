@@ -80,7 +80,7 @@ private let unchangedSidebar: @Sendable (ViewKey) throws -> ViewFetch = { key in
 
 @MainActor
 private func makeStore(
-    waiting: [String], selected: String? = nil, clock: TestClock<Duration> = TestClock(),
+    waiting: [String], selected: String? = nil, detail: String = "[]", clock: TestClock<Duration> = TestClock(),
     load: @escaping @Sendable (ViewKey) throws -> ViewFetch = { .document(try makeDocument(key: $0.rawValue, version: "d1")) }
 ) throws -> TestStoreOf<MacPresentationFeature> {
     var state = MacPresentationFeature.State()
@@ -89,7 +89,7 @@ private func makeStore(
     if let selected {
         state.selection = .viewKey(selected)
         state.selectedViewKey = selected
-        state.detailDocument = try makeDocument(key: selected, version: "d0")
+        state.detailDocument = try makeDocument(key: selected, version: "d0", sections: detail)
     }
     let store = TestStore(initialState: state) { MacPresentationFeature() } withDependencies: {
         $0.viewsClient.openScreen = { _, _ in }
@@ -938,5 +938,51 @@ struct MacWaitingQueueTests {
         #expect(MacPresentationFeature.cardID(forViewKey: "pull_request:github.com/x/y#1") == "github.com/x/y#1")
         #expect(MacPresentationFeature.cardID(forViewKey: "node:abc") == nil)
         #expect(MacPresentationFeature.cardID(forViewKey: "fleet") == nil)
+    }
+}
+
+@MainActor
+struct MacSectionActionTests {
+    private let clear = #"{"id":"clear_completed:view@6","label":"Clear Completed","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"resolves_card":true}"#
+    private var tasks: String {
+        #"[{"id":"active","collapsed":false,"items":[]},{"id":"finished","title":"Completed","count":2,"collapsed":true,"items":[],"actions":[\#(clear)]}]"#
+    }
+
+    @Test
+    func clearingEmptiesCompletedAtOnceAndARefusalBringsItBackSayingWhy() async throws {
+        let hold = Hold()
+        let daemon = Daemon { _ in
+            await hold.wait()
+            return try refused("Nothing to clear")
+        }
+        let store = try makeStore(waiting: [], selected: "tasks", detail: tasks, load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { try await daemon.perform($0) }
+        let button = try #require(store.state.detailDocument?.sections.last?.actions.first)
+
+        await store.send(.beginViewAction(button, target: "finished"))
+        await store.receive(\.action.sending)
+        #expect(store.state.hides("finished"), "Completed empties before the Mac answers")
+        #expect(!store.state.actionPresented, "it asks nothing more")
+
+        await hold.release()
+        await store.receive(\.action.delegate.failed, "Nothing to clear")
+        await store.skipReceivedActions(strict: false)
+        #expect(daemon.requests.map(\.actionId) == ["clear_completed:view@6"])
+        #expect(!store.state.hides("finished"), "refused, Completed is back")
+        #expect(store.state.returnReasons["finished"] == "Nothing to clear")
+        #expect(store.state.selection == .viewKey("tasks"), "the list stays open")
+    }
+
+    @Test
+    func clearedCompletedStaysOutUntilTheMacSendsTheNewList() async throws {
+        let store = try makeStore(waiting: [], selected: "tasks", detail: tasks, load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in try response("applied") }
+        let button = try #require(store.state.detailDocument?.sections.last?.actions.first)
+
+        await store.send(.beginViewAction(button, target: "finished"))
+        await store.receive(\.action.sending)
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.hides("finished"))
+        #expect(store.state.returnReasons["finished"] == nil)
     }
 }

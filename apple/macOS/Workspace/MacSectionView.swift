@@ -18,6 +18,7 @@ struct MacSectionView: View {
     var opened = false
     var page: SectionPage?
     var onToggle: () -> Void = {}
+    var onHeaderAction: (AlondraContract.Action) -> Void = { _ in }
 
     private var folded: Bool { section.collapsed && !opened }
     /// A folded section that came without its rows has them fetched when it is opened.
@@ -28,24 +29,37 @@ struct MacSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let title = section.title {
-                if section.collapsed && section.count != 0 {
-                    Button {
-                        withAnimation(.smooth, onToggle)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(verbatim: section.count.map { "\(title) (\($0))" } ?? title)
-                            Image(systemName: "chevron.right")
-                                .rotationEffect(.degrees(opened ? 90 : 0))
-                                .accessibilityHidden(true)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    if section.collapsed && section.count != 0 {
+                        Button {
+                            withAnimation(.smooth, onToggle)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(verbatim: section.count.map { "\(title) (\($0))" } ?? title)
+                                Image(systemName: "chevron.right")
+                                    .rotationEffect(.degrees(opened ? 90 : 0))
+                                    .accessibilityHidden(true)
+                            }
+                            .font(.headline)
+                            .contentShape(.rect)
                         }
-                        .font(.headline)
-                        .contentShape(.rect)
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityHint(opened ? Text("Hides them") : Text("Shows them"))
+                    } else {
+                        Text(title).font(.headline).accessibilityAddTraits(.isHeader)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityHint(opened ? Text("Hides them") : Text("Shows them"))
-                } else {
-                    Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                    if !section.actions.isEmpty {
+                        Spacer(minLength: 0)
+                        ForEach(Array(section.actions.enumerated()), id: \.offset) { _, action in
+                            Button(action.label) { onHeaderAction(action) }
+                                .disabled(!action.enabled)
+                                .help(action.disabledReason ?? "")
+                        }
+                    }
+                }
+                if let reason = returnReasons[section.id] {
+                    Text(reason).font(.callout).foregroundStyle(.red)
                 }
             }
             if !folded {

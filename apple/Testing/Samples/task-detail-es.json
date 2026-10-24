@@ -314,18 +314,6 @@
               },
               "attachments": false,
               "enabled": false
-            },
-            {
-              "id": "archive:t-1@4",
-              "label": "Archivar",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": false,
-              "disabled_reason": "Solo se archivan las tareas terminadas"
             }
           ]
         }

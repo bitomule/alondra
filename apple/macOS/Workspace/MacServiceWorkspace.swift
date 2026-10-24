@@ -269,7 +269,7 @@ public struct MacServiceDetail: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
                             if let title = document.title, !showsCard(document) { Text(title).font(.title2.weight(.semibold)) }
-                            ForEach(document.sections, id: \.id) { section in
+                            ForEach(document.sections.filter { !presentation.optimistic.hides($0.id, undelivered: presentation.undelivered) }, id: \.id) { section in
                                 MacSectionView(section: section,
                                                returnReasons: presentation.returnReasons,
                                                onAction: perform,
@@ -288,7 +288,8 @@ public struct MacServiceDetail: View {
                                                onContentRow: { showContent(of: document, scrollTo: proxy) },
                                                opened: presentation.openSections.contains(section.id),
                                                page: presentation.sectionPages[section.id],
-                                               onToggle: { presentation.send(.sectionToggled(section)) })
+                                               onToggle: { presentation.send(.sectionToggled(section)) },
+                                               onHeaderAction: { presentation.send(.beginViewAction($0, target: section.id)) })
                                     .id(section.id)
                             }
                         }.frame(maxWidth: 900, alignment: .leading).padding(24)

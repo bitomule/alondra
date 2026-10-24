@@ -513,12 +513,12 @@
         }
       }
     },
-    "Archive Completed": {
+    "Clear Completed": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Archivar terminadas"
+            "value": "Limpiar completadas"
           }
         }
       }

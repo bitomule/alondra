@@ -226,7 +226,7 @@ struct ViewsScreenView: View {
             taskNow(section)
         } else if store.key.rawValue.hasPrefix("task:"), section.id == "waiting" {
             taskWaiting(section)
-        } else if isTasksScreen, ["active", "finished", "archived"].contains(section.id) {
+        } else if isTasksScreen, ["active", "finished"].contains(section.id) {
             if !section.collapsed {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
@@ -254,17 +254,6 @@ struct ViewsScreenView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 24)
-            }
-        } else if isTasksScreen, section.id == "actions", !hasFinishedRows {
-            let actions = section.items.flatMap { item -> [AlondraContract.Action] in
-                if case let .actions(bar) = item { bar.actions } else { [] }
-            }
-            if !actions.isEmpty && actions.allSatisfy({ $0.verb == "archive_done" }) {
-                EmptyView()
-            } else {
-                SectionView(section: section, onAction: present, onLink: follow,
-                            onMore: { open(ViewKey(rawValue: $0)) }, onForm: presentForm,
-                            onContent: { store.send(.fetchContent($0)) }, onAttachment: { store.send(.fetchAttachment($0)) })
             }
         } else if store.key.rawValue == "schedules", section.id == "actions" {
             EmptyView()
@@ -353,12 +342,6 @@ struct ViewsScreenView: View {
 
     private func presentForm(_ form: WireForm) {
         store.send(.presentForm(form))
-    }
-
-    private var hasFinishedRows: Bool {
-        store.document?.sections.first(where: { $0.id == "finished" })?.items.contains(where: {
-            if case .row = $0 { true } else { false }
-        }) == true
     }
 
     private func excludedActionIDs(for section: ViewSection) -> Set<String> {
@@ -469,13 +452,6 @@ private struct TaskWireRow: View {
             default: "circle.dashed"
             }
         }
-    }
-}
-
-private extension AlondraContract.Action {
-    var verb: String? {
-        guard let id, let separator = id.firstIndex(of: ":") else { return nil }
-        return String(id[..<separator])
     }
 }
 

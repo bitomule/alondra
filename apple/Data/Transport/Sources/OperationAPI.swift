@@ -201,7 +201,7 @@ public struct APIRequest: Sendable, Equatable {
             return extra.isEmpty || (extra.count == 1 && extra["focus"].map(validViewID) == true)
         case "tasks":
             if extra.isEmpty { return true }
-            guard extra.count == 2, let section = extra["section"], ["active", "finished", "archived"].contains(section),
+            guard extra.count == 2, let section = extra["section"], ["active", "finished"].contains(section),
                   let after = extra["after"], UInt(after) != nil else { return false }
             return true
         case "new_request", "schedule:new":

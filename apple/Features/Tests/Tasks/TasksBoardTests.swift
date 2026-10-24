@@ -55,34 +55,38 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(board.finished.requests.map(\.tasks.isEmpty), [false, true])
     }
 
-    func testFinishedAndArchivedWorkIsFoldedUnderItsCountWithTheNextPageKey() throws {
+    func testCompletedWorkIsFoldedUnderItsCountWithTheNextPageKey() throws {
         let board = TasksBoard(document: try Samples.document("tasks-populated"))
 
         XCTAssertEqual(board.finished.count, 27)
         XCTAssertEqual(board.finished.requests.map(\.id), ["r-3", "r-4"])
         XCTAssertEqual(board.finished.more?.key, "tasks?section=finished&after=20")
         XCTAssertEqual(board.finished.more?.remaining, 7)
-        XCTAssertEqual(board.archived.count, 0)
-        XCTAssertNil(board.archived.more)
+        XCTAssertEqual(board.finished.title, "Completed")
         XCTAssertTrue(try XCTUnwrap(board.finished.requests.last).tasks.isEmpty, "a withdrawn request has no tasks")
     }
 
-    func testTheEntryToScheduledTasksAndTheArchiveActionComeFromTheirSections() throws {
+    func testTheEntryToScheduledTasksAndClearCompletedComeFromTheirSections() throws {
         let board = TasksBoard(document: try Samples.document("tasks-populated"))
 
         XCTAssertEqual(board.schedules?.count, 3)
         XCTAssertEqual(board.schedules?.link, .view(key: "schedules"))
-        XCTAssertEqual(board.archiveCompleted?.id, "archive_done:view@12")
+        XCTAssertEqual(board.clearCompleted?.id, "clear_completed:view@12")
     }
 
-    func testWithoutTerminalTasksThereIsNothingToArchive() throws {
+    func testClearCompletedIsReadFromTheCompletedHeaderOnly() throws {
         let board = TasksBoard(document: try Samples.document("tasks-populated") { object in
-            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "actions" }
+            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).map { section in
+                var section = section
+                section["actions"] = nil
+                return section
+            }
         })
-        XCTAssertNil(board.archiveCompleted)
+        XCTAssertNil(board.clearCompleted)
 
         let daemons = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        XCTAssertNil(daemons.archiveCompleted, "the daemon offers Clear Completed in the Completed header, which this app does not read yet")
+        XCTAssertEqual(daemons.clearCompleted?.command, "clear_completed", "the daemon offers it in the Completed header")
+        XCTAssertEqual(daemons.finished.title, "Completed")
         XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
         XCTAssertEqual(daemons.active.requests.count, 8)
         XCTAssertEqual(daemons.active.count, 8, "the active work is counted in tasks")

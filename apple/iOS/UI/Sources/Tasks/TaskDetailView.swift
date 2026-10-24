@@ -7,7 +7,7 @@ import SwiftUI
 /// One task: its state, folder and what its node reports, what the node is doing right now and
 /// needs, how far its steps, subagents and workflows have got, what runs in the background and what
 /// it said last, what it waits for from you, its request, pull requests, dependencies, documents,
-/// options and history, with interrupt, relaunch, cancel, reopen and archive and a composer to
+/// options and history, with interrupt, relaunch, cancel and reopen and a composer to
 /// write to its node.
 public struct TaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
@@ -382,7 +382,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
+        let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
@@ -401,8 +401,7 @@ public struct TaskDetailView: View {
         case "resume": "play.circle"
         case "pause": "pause.circle"
         case "cancel": "xmark.circle"
-        case "reopen": "arrow.clockwise"
-        default: "archivebox"
+        default: "arrow.clockwise"
         }
     }
 

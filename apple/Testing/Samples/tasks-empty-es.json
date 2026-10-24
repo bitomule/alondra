@@ -48,14 +48,7 @@
       "id": "finished",
       "collapsed": true,
       "items": [],
-      "title": "Terminadas",
-      "count": 0
-    },
-    {
-      "id": "archived",
-      "collapsed": true,
-      "items": [],
-      "title": "Archivadas",
+      "title": "Completadas",
       "count": 0
     }
   ],

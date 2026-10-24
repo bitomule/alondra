@@ -73,7 +73,6 @@ public struct TaskDetail: Equatable, Sendable {
     public var relaunch: WireAction? { action("relaunch") }
     public var cancel: WireAction? { action("cancel") }
     public var reopen: WireAction? { action("reopen") }
-    public var archive: WireAction? { action("archive") ?? action("unarchive") }
     public var pause: WireAction? { action("pause") }
     public var resume: WireAction? { action("resume") }
     public var priority: WireAction? { action("set_priority") }

@@ -9,7 +9,7 @@ final class TasksFeatureTests: XCTestCase {
     private func store(
         showing document: ViewDocument,
         sent: SentActions = SentActions(),
-        respond: @escaping @Sendable (ActionRequest) throws -> ActionResponse = { _ in try Responses.applied("Archived") },
+        respond: @escaping @Sendable (ActionRequest) throws -> ActionResponse = { _ in try Responses.applied("Completed cleared") },
         load: @escaping @Sendable (ViewKey, String?) async throws -> ViewFetch = { _, _ in throw ViewsClientError.missingView }
     ) -> TestStoreOf<TasksFeature> {
         TestStore(initialState: TasksFeature.State()) {
@@ -24,7 +24,7 @@ final class TasksFeatureTests: XCTestCase {
 
     @MainActor
     private func loaded(_ document: ViewDocument, sent: SentActions = SentActions(),
-                        respond: @escaping @Sendable (ActionRequest) throws -> ActionResponse = { _ in try Responses.applied("Archived") },
+                        respond: @escaping @Sendable (ActionRequest) throws -> ActionResponse = { _ in try Responses.applied("Completed cleared") },
                         load: @escaping @Sendable (ViewKey, String?) async throws -> ViewFetch = { _, _ in throw ViewsClientError.missingView }
     ) async -> TestStoreOf<TasksFeature> {
         let store = store(showing: document, sent: sent, respond: respond, load: load)
@@ -58,8 +58,8 @@ final class TasksFeatureTests: XCTestCase {
         let store = await loaded(try Samples.document("tasks-populated"))
 
         await store.send(.foldToggled("finished")) { $0.expanded = ["finished"] }
-        await store.send(.foldToggled("archived")) { $0.expanded = ["finished", "archived"] }
-        await store.send(.foldToggled("finished")) { $0.expanded = ["archived"] }
+        await store.send(.foldToggled("active")) { $0.expanded = ["finished", "active"] }
+        await store.send(.foldToggled("finished")) { $0.expanded = ["active"] }
     }
 
     @MainActor
@@ -189,47 +189,49 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testArchivingWhatIsDoneSendsTheDaemonsActionAndReportsItAsAToast() async throws {
+    func testClearingCompletedSendsTheDaemonsActionAndReportsItAsAToast() async throws {
         let sent = SentActions()
         let store = await loaded(try Samples.document("tasks-populated"), sent: sent)
 
-        await store.send(.archiveCompleted)
-        await store.receive(\.delegate.completed, "Archived")
+        await store.send(.clearCompleted)
+        await store.receive(\.delegate.completed, "Completed cleared")
 
         let request = try XCTUnwrap(sent.requests.first)
-        XCTAssertEqual(request.actionId, "archive_done:view@12")
+        XCTAssertEqual(request.actionId, "clear_completed:view@12")
         XCTAssertEqual(request.dataEpoch, "sample-epoch")
         XCTAssertEqual(request.client, .ios)
         XCTAssertNil(store.state.actions.action, "the finished action does not stay presented")
     }
 
     @MainActor
-    func testARefusedArchiveIsReportedAsAFailure() async throws {
+    func testARefusedClearIsReportedAsAFailure() async throws {
         let store = await loaded(try Samples.document("tasks-populated"), respond: { _ in
-            try Responses.rejected("Nothing to archive")
+            try Responses.rejected("Nothing to clear")
         })
 
-        await store.send(.archiveCompleted)
-        await store.receive(\.delegate.failed, "Nothing to archive")
+        await store.send(.clearCompleted)
+        await store.receive(\.delegate.failed, "Nothing to clear")
     }
 
     @MainActor
-    func testArchivingMovesTheFinishedWorkAtOnceAndBackIfTheDaemonRefuses() async throws {
+    func testClearingEmptiesCompletedAtOnceAndBringsItBackIfTheDaemonRefuses() async throws {
         let gate = Gate()
         let document = try Samples.document("tasks-populated")
-        let store = await loaded(document, respond: { _ in try Responses.rejected("Nothing to archive") })
+        let store = await loaded(document, respond: { _ in try Responses.rejected("Nothing to clear") })
         store.dependencies.viewsClient.perform = { _ in
             await gate.wait()
-            return try Responses.rejected("Nothing to archive")
+            return try Responses.rejected("Nothing to clear")
         }
         let before = try XCTUnwrap(store.state.board)
         XCTAssertGreaterThan(before.finished.count, 0)
 
-        await store.send(.archiveCompleted)
+        await store.send(.clearCompleted)
         await store.receive(\.actions.sent)
-        XCTAssertEqual(store.state.board?.finished.count, 0, "the finished work moves before the daemon answers")
-        XCTAssertEqual(store.state.board?.archived.count, before.archived.count + before.finished.count)
-        XCTAssertNil(store.state.board?.archiveCompleted)
+        XCTAssertEqual(store.state.board?.finished.count, 0, "Completed empties before the daemon answers")
+        XCTAssertEqual(store.state.board?.finished.requests, [])
+        XCTAssertNil(store.state.board?.finished.more)
+        XCTAssertNil(store.state.board?.clearCompleted, "the button leaves with what it cleared")
+        XCTAssertEqual(store.state.board?.active, before.active)
 
         await store.send(.screen(.loaded(document)))
         XCTAssertEqual(store.state.board?.finished.count, 0, "a stale board cannot bring it back")
@@ -237,18 +239,22 @@ final class TasksFeatureTests: XCTestCase {
         await gate.open()
         await store.receive(\.actions.settled)
         XCTAssertEqual(store.state.board, before)
-        await store.receive(\.delegate.failed, "Nothing to archive")
+        await store.receive(\.delegate.failed, "Nothing to clear")
     }
 
     @MainActor
-    func testWithNothingToArchiveTheButtonDoesNothing() async throws {
+    func testWithNothingToClearTheButtonDoesNothing() async throws {
         let sent = SentActions()
-        let nothingToArchive = try Samples.document("tasks-populated") { object in
-            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "actions" }
+        let nothingToClear = try Samples.document("tasks-populated") { object in
+            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).map { section in
+                var section = section
+                section["actions"] = nil
+                return section
+            }
         }
-        let store = await loaded(nothingToArchive, sent: sent)
+        let store = await loaded(nothingToClear, sent: sent)
 
-        await store.send(.archiveCompleted)
+        await store.send(.clearCompleted)
 
         XCTAssertTrue(sent.requests.isEmpty)
     }

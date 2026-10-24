@@ -61,7 +61,7 @@ final class TasksSnapshotTests: XCTestCase {
     func test_tasks_foldsOpen() throws {
         let document = try SampleViews.document("tasks-populated")
         assertScreen(lightAndDark) {
-            ScreenFrame(height: 1400) { TasksView(store: tasks(document, expanded: ["finished", "archived"])) }
+            ScreenFrame(height: 1400) { TasksView(store: tasks(document, expanded: ["finished"])) }
         }
     }
 

@@ -80,6 +80,21 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(document.reviewActions(forKey: "document:revision-1").map(\.label), ["Approve"])
     }
 
+    func testASectionCarriesTheButtonsOnItsTitleLineAndAnOlderDaemonNone() throws {
+        let clear = #"{"id":"clear_completed:view@6","label":"Clear Completed","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#
+        let json = #"{"protocol":1,"view":"tasks","key":"tasks","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"active","collapsed":false,"items":[]},{"id":"finished","title":"Completed","count":2,"collapsed":true,"items":[],"actions":[\#(clear)]}],"notices":[]}"#
+        let document = try ContractCodec.decode(ViewDocument.self, from: Data(json.utf8))
+        XCTAssertEqual(document.sections[0].actions, [], "a section without the field has no buttons")
+        XCTAssertEqual(document.sections[1].actions.map(\.id), ["clear_completed:view@6"])
+        XCTAssertEqual(document.sections[1].actions.map(\.label), ["Clear Completed"])
+
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(document)) as? [String: Any])
+        let sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        XCTAssertNil(sections[0]["actions"], "no buttons are written as no field, as the daemon does")
+        XCTAssertEqual((sections[1]["actions"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(try ContractCodec.decode(ViewDocument.self, from: ContractCodec.encode(document)), document)
+    }
+
     func testDecodesAndReencodesViewWithInternallyTaggedItems() throws {
         let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 question","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"queue","collapsed":false,"card_ids":["i-42","i-43"],"items":[{"type":"card","id":"i-42","icon":"question","title":"Review this","badges":[],"context":[],"timestamps":[],"detail":"included","attachments":[],"actions":[]},{"type":"markdown","text":"Hello","truncated":false,"commentable":true}]}],"notices":[]}"#.data(using: .utf8)!
         let document = try ContractCodec.decode(ViewDocument.self, from: json)

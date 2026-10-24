@@ -4,7 +4,7 @@ import Foundation
 
 /// One task: its state, what its node is doing and needs, what it waits for from you, its request,
 /// pull requests, dependencies, documents, options and history, a composer to write to its node,
-/// with interrupt, relaunch, cancel, reopen, archive, pause, resume and its priority. A tapped
+/// with interrupt, relaunch, cancel, reopen, pause, resume and its priority. A tapped
 /// action leaves the bar at once and returns if the daemon does not apply it; a chosen priority
 /// shows at once.
 @Reducer
