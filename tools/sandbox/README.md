@@ -15,6 +15,8 @@ bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + auto
 make e2e-sandbox FAKES=1           # the same, with the sandbox's own claude and gh (below)
 make e2e-journeys                  # opt-in: fresh sandbox with the fakes + scripted journeys
 make e2e-explore                   # the tester agent drives each Mac's TUI and writes a report
+make tui-sandbox SESSION=review    # a seeded one-Mac sandbox with its TUI in tmux, to review a change by hand
+make tui-sandbox-stop SESSION=review  # end that tmux session and remove its sandbox
 make e2e-doc-review                # a document reviewed in the real TUI (tmux): the node gets the comments
 make e2e-doc-links                 # a README with HTML in the real TUI (tmux): v opens its links and images
 make e2e-turn-end-wait             # a turn that ends on a message to the orchestrator waits for it, in the real TUI (tmux)
