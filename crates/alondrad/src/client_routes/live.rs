@@ -48,7 +48,7 @@ pub(crate) struct Live {
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     pub(crate) gate: crate::admission::Admission,
     watching: Mutex<std::collections::HashSet<String>>,
-    launching: Mutex<std::collections::HashSet<String>>,
+    launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,
     /// When Alondra last cut the turn of a session it has to close, by session.
     close_interrupts: Mutex<HashMap<String, i64>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
@@ -151,15 +151,21 @@ impl Live {
     /// False when something is watching the session's connection back already.
     /// Takes the right to launch a node for a task; false while another launch of it runs.
     pub(crate) fn begin_launch(&self, task_id: &str) -> bool {
-        self.launching.lock().expect("launches poisoned").insert(task_id.to_owned())
+        self.launching.send_if_modified(|launching| launching.insert(task_id.to_owned()))
     }
 
     pub(crate) fn is_launching(&self, task_id: &str) -> bool {
-        self.launching.lock().expect("launches poisoned").contains(task_id)
+        self.launching.borrow().contains(task_id)
     }
 
     pub(crate) fn end_launch(&self, task_id: &str) {
-        self.launching.lock().expect("launches poisoned").remove(task_id);
+        self.launching.send_if_modified(|launching| launching.remove(task_id));
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn until_launch_ends(&self, task_id: &str) {
+        let mut launching = self.launching.subscribe();
+        launching.wait_for(|launching| !launching.contains(task_id)).await.expect("Live owns the sender");
     }
 
     pub(crate) fn begin_watch(&self, session_id: &str) -> bool {

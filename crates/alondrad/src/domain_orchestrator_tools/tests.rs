@@ -1171,13 +1171,8 @@ async fn until_replaced(f: &Fixture) {
 
 /// Waits until the replacement under way gives the task's launch guard back.
 async fn until_launchable(f: &Fixture) {
-    for _ in 0..500 {
-        if f.domain.live.begin_launch("t") {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the launch guard is released once it ends");
+    f.domain.live.until_launch_ends("t").await;
+    assert!(f.domain.live.begin_launch("t"), "the launch guard is released once it ends");
 }
 
 /// Waiting for the old node's turn can outlast the call: the orchestrator gets its answer at once,
