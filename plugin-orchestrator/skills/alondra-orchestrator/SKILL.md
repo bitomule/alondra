@@ -170,11 +170,19 @@ with sonnet: when in doubt, use opus.**
   - touches a state machine;
   - touches concurrency or races;
   - touches session or security;
-  - includes a data migration;
+  - has a cause nobody has found, or an intermittent test;
+  - is design;
+  - changes stored data: a format or a data migration;
   - or its specification does not name the files, the states and the edge cases.
-- **sonnet** (effort left out) only when:
-  - the files, the changes and the expected tests are already written down;
-  - or the change is literal: copy, versions, renames.
+- **sonnet** (effort left out) for:
+  - an implementation phase whose approved plan names the files and the test, e.g. "Phase 2 of
+    the approved plan: add the `--json` flag to `alondra models` in `models.rs`, tested by
+    `models_json`";
+  - a mechanical rename, e.g. renaming a flag across 4 files;
+  - copy that has to be checked against the code, e.g. the help text of a command against what
+    the command does;
+  - documentation drawn from the code, e.g. the README table of commands;
+  - a release: version bump, notes, running the release script.
 - **opus, effort `medium`:** everything that is not sonnet and not `high`: implementation that
   needs any design decision, investigation of code the node does not know, ordinary bugs,
   refactors, tests that need thought.
@@ -182,6 +190,12 @@ with sonnet: when in doubt, use opus.**
   a failure without a known cause), a migration with difficult data-preservation invariants, or
   a choice with competing constraints. Name that difficulty in the mission.
 - **fable:** only when an opus node already failed at the task, or the user asks for it.
+
+Whatever fits no list is opus. Sonnet's share is measured with the same table as everything
+else (`alondra models`): if the change rounds or reopenings of sonnet tasks exceed those of the
+average opus task, this widening is reverted to the earlier, narrower sonnet rule. Before it,
+12 of 187 tasks over 7 days (6 %) went to sonnet, all finished first time with no changes asked
+or reopenings, median 16 minutes.
 
 The size or importance of the whole request does not raise every task. When the user chose an
 effort on the request, it already sets the model: `launch` refuses a `model` then, and the
@@ -219,8 +233,8 @@ service) is three tasks, each depending on the one before:
    depends on the review, with its own node.
 
 Create the three at once, each with its launch plan on `create_task` and the last two with
-`dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose files, changes and tests are already written down, or a literal
-one, stays one sonnet task.
+`dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose plan already names the files and the tests, or one of the mechanical
+cases above, stays one sonnet task.
 
 ### Plans in phases
 

@@ -625,8 +625,8 @@ impl Approach {
         ];
         match self {
             Approach::Solo => {}
-            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet only when the brief already names the files, the change and the expected tests, or the change is literal (copy, versions, renames); otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
-            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet only for stages whose files, change and expected tests are already written down, or whose change is literal (copy, versions, renames); opus for every other stage. Try it on a small slice first.".into()),
+            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet for a brief that names the files and the expected tests, a mechanical rename, copy checked against the code, documentation drawn from the code or a release; otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
+            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet for stages that implement an approved plan naming the files and the test, mechanical renames, copy checked against the code, documentation drawn from the code or releases; opus for every other stage. Try it on a small slice first.".into()),
         }
         lines
     }
@@ -677,7 +677,7 @@ impl Resolved {
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: choose the model and effort per task after splitting. Opus whenever the task touches interface with interaction, a state machine, concurrency or races, session or security, includes a data migration, or its specification does not name the files, states and edge cases; sonnet only when the files, the changes and the expected tests are already written down, or the change is literal (copy, versions, renames); opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
+            "Effort is auto: choose the model and effort per task after splitting. Opus whenever the task touches interface with interaction, a state machine, concurrency or races, session or security, a cause nobody has found or an intermittent test, design, stored data (formats or migrations), or its specification does not name the files, states and edge cases; sonnet (no effort) for an implementation phase whose approved plan names the files and the test, a mechanical rename, copy that must be checked against the code, documentation drawn from the code, or a release; opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
         } else {
             format!("Effort {} was chosen by {user} and is binding: do not pass model or effort.", self.effort)
         }
@@ -850,6 +850,18 @@ on = "Run /review-loop before the merge."
         ] {
             assert_eq!(filter_projects(&order, query, suggested), shown, "{query:?} {suggested:?}");
         }
+    }
+
+    #[test]
+    fn the_effort_note_sends_the_cases_sonnet_takes_and_the_cases_that_stay_with_opus() {
+        let note = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap().effort_note("David");
+        for sonnet in ["approved plan names the files and the test", "mechanical rename", "checked against the code", "documentation drawn from the code", "a release"] {
+            assert!(note.contains(sonnet), "{sonnet}: {note}");
+        }
+        for opus in ["state machine", "concurrency", "intermittent test", "design", "stored data", "When in doubt, use opus"] {
+            assert!(note.contains(opus), "{opus}: {note}");
+        }
+        assert!(!note.contains("already written down"), "{note}");
     }
 
     #[test]
