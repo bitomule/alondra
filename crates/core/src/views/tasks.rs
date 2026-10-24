@@ -52,6 +52,7 @@ fn presented_row(task: &Task, presentation: &task_state::Presentation, context: 
     row.struck = task.state == TaskState::Cancelled;
     row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone });
     row.badges.extend(common::scheduled_mark(task, context));
+    row.badges.extend(task.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral }));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
     let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
@@ -270,9 +271,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
             at: at.clone(),
             format: super::TimeFormat::Relative,
         });
-    if let Some(project) = tasks.iter().filter_map(|task| task.agent_id.as_ref())
-        .filter_map(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-        .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
+    if let Some(project) = context.index.request_project(&request.id) {
         row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
     }
     if let Some(task) = tasks.iter().max_by_key(|task| task.revision) {
@@ -523,7 +522,6 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
             }
         }
     }
-    let projects = projects(&listed, context);
     let mut items = Vec::new();
     for (block, mut entries) in blocks {
         entries.sort_by(|(_, left), (_, right)| left.cmp(right));
@@ -539,7 +537,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
             match entry {
                 Entry::Task(task) => {
                     count += 1;
-                    let mut line = entry_row(task, 1, &shown, &chains, &projects, context);
+                    let mut line = entry_row(task, 1, &shown, &chains, context);
                     if let Some(name) = grouped(task).map(request_name) {
                         append_fact(&mut line, &name, context);
                     }
@@ -559,7 +557,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
                     let mut header = group_row(request, &tasks, context);
                     for task in &tasks {
                         count += 1;
-                        header.children.push(entry_row(task, 2, &shown, &chains, &projects, context));
+                        header.children.push(entry_row(task, 2, &shown, &chains, context));
                     }
                     row.children.push(header);
                 }
@@ -592,20 +590,6 @@ fn order(presentation: &task_state::Presentation) -> Order {
 /// Local ISO times of one Mac compare as text.
 type Order = (u8, usize, String, std::cmp::Reverse<String>);
 
-/// The project of each task whose node says one, when the list mixes projects: only the ones that are not the
-/// most common carry it as a mark.
-fn projects<'a>(listed: &[&'a Task], context: &'a RenderContext<'_>) -> BTreeMap<&'a TaskId, &'a str> {
-    let known: BTreeMap<&TaskId, &str> = listed.iter().filter_map(|task| {
-        let id = task.agent_id.as_ref()?;
-        let project = context.live.nodes.iter().find(|node| node.agent_id == id.0)?.project.as_deref()?;
-        (project != "others").then_some((&task.id, project))
-    }).collect();
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for project in known.values() { *counts.entry(project).or_default() += 1; }
-    let Some(common) = counts.iter().max_by_key(|(_, count)| **count).map(|(project, _)| *project) else { return BTreeMap::new() };
-    known.into_iter().filter(|(_, project)| *project != common).collect()
-}
-
 fn request_name(request: &Request) -> String {
     request.title.clone().unwrap_or_else(|| summary(&request.body))
 }
@@ -634,9 +618,7 @@ fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) ->
     row.depth = 1;
     row.trailing = context.live.request_times.get(&request.id.0)
         .map(|at| Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
-    if let Some(project) = tasks.iter().filter_map(|task| task.agent_id.as_ref())
-        .filter_map(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-        .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
+    if let Some(project) = context.index.request_project(&request.id) {
         row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
     }
     row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View { key: format!("task:{}", task.id) });
@@ -651,12 +633,9 @@ fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) ->
 
 /// A task with the chain of tasks that wait for it folded under it.
 fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Presentation>,
-    chains: &BTreeMap<&TaskId, Vec<&Task>>, projects: &BTreeMap<&TaskId, &str>, context: &RenderContext<'_>) -> super::Row {
+    chains: &BTreeMap<&TaskId, Vec<&Task>>, context: &RenderContext<'_>) -> super::Row {
     let mut row = presented_row(task, &shown[&task.id], context);
     row.depth = depth;
-    if let Some(project) = projects.get(&task.id) {
-        row.badges.push(super::Label { text: (*project).into(), tone: Tone::Neutral });
-    }
     let Some(waiting) = chains.get(&task.id).filter(|waiting| waiting.len() >= CHAIN_FOLDS_FROM) else { return row };
     let mut fold = common::row(&format!("chain:{}", task.id), "", Icon::Branch,
         tf!(context.lang, "+{count} waiting for this", "+{count} esperando a esta", count = waiting.len()), None);
@@ -671,6 +650,7 @@ fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Prese
         if context.client == super::Client::Tui {
             line.badges.clear();
         }
+        line.badges.extend(member.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral }));
         fold.children.push(line);
     }
     row.children.push(fold);
@@ -1156,15 +1136,15 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             tone: None,
             link: None,
         }];
+    if let Some(project) = &task.project {
+        task_options.push(Fact {
+            label: t!(context.lang, "Project", "Proyecto").into(),
+            value: project.clone(),
+            tone: None,
+            link: None,
+        });
+    }
     if let Some(options) = context.live.task_options.get(id) {
-        if let Some(project) = options.project.as_ref().filter(|project| !project.is_empty()) {
-            task_options.push(Fact {
-                label: t!(context.lang, "Project", "Proyecto").into(),
-                value: project.clone(),
-                tone: None,
-                link: None,
-            });
-        }
         if let Some(effort) = &options.effort {
             task_options.push(Fact {
                 label: t!(context.lang, "Effort", "Esfuerzo").into(),

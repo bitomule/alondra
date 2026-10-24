@@ -425,13 +425,9 @@ impl Client {
                 _ => return storage(),
             }
         };
-        let live = self.domain.live.nodes();
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
-            let (asked_project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
-            let project = asked_project.or_else(|| task.agent_id.as_ref()
-                .and_then(|agent| live.iter().find(|node| node.session_id == agent.0))
-                .map(|node| node.project()));
-            (id.0.clone(), json!({"project": project, "state_since": state_times.get(id),
+            let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
+            (id.0.clone(), json!({"project": task.project, "state_since": state_times.get(id),
                 "effort": effort, "cancel_reason": cancel_reasons.get(id)}))
         }).collect();
         let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {

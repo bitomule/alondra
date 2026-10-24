@@ -6,14 +6,12 @@ use crate::domain::{Task, TaskState};
 use std::collections::BTreeMap;
 
 fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {
-    let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
-        .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
     let queued = common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
         .or_else(|| common::queued(task, context).or_else(|| common::coming_back_queued(task, context))
             .map(|queued| common::queued_label(queued, context.lang)));
     let presented = super::task_state::present(task, context).state;
     let state = queued.as_deref().unwrap_or(&presented);
-    let project = project.filter(|project| !project.is_empty() && *project != "others");
+    let project = task.project.as_deref();
     let state = (group != Some(state)).then_some(state);
     match (project, state) {
         (Some(project), Some(state)) => Some(format!("{project} · {state}")),
@@ -114,8 +112,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
     let mut projects: BTreeMap<String, Vec<super::Row>> = BTreeMap::new();
     for (task, agent) in super::tasks::in_progress(context) {
         let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
-        let project = live.and_then(|node| node.project.as_deref()).filter(|name| *name != "others")
-            .unwrap_or(t!(context.lang, "Other", "Otros"));
+        let project = task.project.as_deref().unwrap_or(t!(context.lang, "Other", "Otros"));
         let (icon, _) = common::task_presentation(task.state);
         let presented = super::task_state::present(task, context);
         let mut row = common::row(&task.id.0, &format!("task:{}", task.id), icon, task.title.clone(), None);

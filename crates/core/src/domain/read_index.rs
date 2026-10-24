@@ -62,6 +62,7 @@ pub struct ReadIndex {
     data_epoch: DataEpoch,
     revision: Revision,
     tasks_by_request: HashMap<RequestId, Vec<TaskId>>,
+    request_projects: HashMap<RequestId, String>,
     cards_by_task: HashMap<TaskId, Vec<InteractionId>>,
     cards_by_node: HashMap<AgentId, Vec<InteractionId>>,
     cards_by_pr: HashMap<PrId, Vec<InteractionId>>,
@@ -113,6 +114,10 @@ impl ReadIndex {
     }
     pub fn tasks_of_request(&self, request: &RequestId) -> &[TaskId] {
         self.tasks_by_request.get(request).map_or(&[], Vec::as_slice)
+    }
+    /// The project a request's work belongs to: that of its first task that has one.
+    pub fn request_project(&self, request: &RequestId) -> Option<&str> {
+        self.request_projects.get(request).map(String::as_str)
     }
     /// The task a node works for.
     pub fn task_of_node(&self, node: &AgentId) -> Option<&TaskId> {
@@ -370,6 +375,9 @@ impl<'a> Builder<'a> {
         let mut index = ReadIndex { data_epoch: state.data_epoch.clone(), revision: state.revision, ..Default::default() };
         for task in state.tasks.values() {
             index.tasks_by_request.entry(task.request_id.clone()).or_default().push(task.id.clone());
+            if let Some(project) = &task.project {
+                index.request_projects.entry(task.request_id.clone()).or_insert_with(|| project.clone());
+            }
             for reviewed in &task.blocks {
                 index.reviewers.entry(reviewed.clone()).or_default().push(task.id.clone());
             }
@@ -761,6 +769,9 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         assert_eq!(index.nodes_on_account(&account.id), state.tasks_on_account(&account.id), "the nodes on account {}", account.id);
     }
     assert_eq!(index.merge_method, state.merge_method, "the merge method");
+    for request in state.requests.keys() {
+        assert_eq!(index.request_project(request), state.request_project(request), "the project of request {request}");
+    }
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {

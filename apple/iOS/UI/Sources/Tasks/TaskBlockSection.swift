@@ -102,6 +102,15 @@ struct CompactTaskLine: View {
                 }
                 .multilineTextAlignment(.leading)
                 Spacer(minLength: 8)
+                ForEach(line.marks, id: \.self) { mark in
+                    Text(verbatim: mark)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Palette.hairline, in: .capsule)
+                        .lineLimit(1)
+                }
                 if line.waiting > 0 { WaitingBadge(count: line.waiting) }
             }
             .padding(.horizontal, 16)

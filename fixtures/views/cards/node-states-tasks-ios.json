@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v79d2fe941beb0c15",
+  "version": "v47ddfc0fa0e14f2a",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -154,6 +154,10 @@
                         {
                           "text": "Waiting",
                           "tone": "info"
+                        },
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
                         }
                       ],
                       "depth": 3,
@@ -193,7 +197,7 @@
                   "tone": "accent"
                 },
                 {
-                  "text": "Alpha",
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -226,6 +230,10 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -248,6 +256,10 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -304,6 +316,10 @@
               "badges": [
                 {
                   "text": "Paused",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],

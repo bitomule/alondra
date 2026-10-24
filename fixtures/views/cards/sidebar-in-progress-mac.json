@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v75cc27848ae0ccbc",
+  "version": "v61bd51ddb80f570f",
   "cursor": "cursor-1",
   "status": {
     "version": "vcc58fbd373b76f9d",
@@ -94,7 +94,7 @@
           },
           "icon": "question",
           "title": "Ship the compact schedule editor with this beta?",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "Decide",
@@ -114,7 +114,7 @@
           },
           "icon": "pull_request",
           "title": "Review the beta candidate",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "Review · PR #12",
@@ -134,7 +134,7 @@
           },
           "icon": "notice",
           "title": "The simulator pass is clean",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "FYI",
@@ -541,7 +541,7 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "ve65482192c4c5e06",
+      "version": "vde7c73f08271c5a6",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
@@ -607,7 +607,7 @@
               "kind": "decide",
               "need": "Ship the compact schedule editor with this beta?",
               "why": "The review of the pull request waits for your answer.",
-              "meta": "Alondra",
+              "meta": "Alondra · Demo Garden",
               "reply": {
                 "id": "reply:8fa4034b-249e-4487-a89b-57de38c26372@1",
                 "label": "Reply",

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v0bb31bb7b9ec9aa4",
+  "version": "va9bff7f0bbfecdf5",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -109,6 +109,10 @@
                 {
                   "text": "Needs you",
                   "tone": "warning"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -135,6 +139,12 @@
                       "icon": "branch",
                       "title": "Decrement the badge on retraction",
                       "subtitle": "waits for Restore the native review experience",
+                      "badges": [
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
+                        }
+                      ],
                       "depth": 3,
                       "struck": false
                     }
@@ -182,6 +192,10 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -242,6 +256,10 @@
                 {
                   "text": "Scheduled",
                   "tone": "neutral"
+                },
+                {
+                  "text": "Lumo",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -296,6 +314,10 @@
                 {
                   "text": "Didn't start",
                   "tone": "warning"
+                },
+                {
+                  "text": "BlurCamera",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -313,6 +335,10 @@
               "badges": [
                 {
                   "text": "Paused",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "BlurCamera",
                   "tone": "neutral"
                 }
               ],

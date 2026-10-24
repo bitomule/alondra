@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v5bd3144906d1b610",
+  "version": "vb667df390061b605",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -108,6 +108,10 @@
             {
               "label": "PR handling",
               "value": "Auto-merge: Alondra merges it once its checks pass"
+            },
+            {
+              "label": "Project",
+              "value": "Demo Garden"
             },
             {
               "label": "Claude account",

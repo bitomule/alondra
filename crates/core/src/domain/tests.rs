@@ -144,7 +144,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -4791,4 +4791,20 @@ fn only_the_user_sets_the_merge_method_and_merges_already_authorized_keep_theirs
     exec(&mut s, user(), Command::SetMergeMethod { method: MergeMethod::Rebase }).unwrap();
     assert_eq!(s.merge_method, MergeMethod::Rebase);
     assert_eq!(s.merge_authorizations[&AuthorizationId::from("auth")].method, MergeMethod::Squash);
+}
+
+#[test]
+fn a_task_keeps_the_project_it_was_created_with() {
+    let mut s = fixture();
+    exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, task_id: "p".into(), request_id: "r".into(), title: "Fix the login".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan { project: Some("quill".into()), ..crate::domain::LaunchPlan::new("quill/login", "/tmp") }) }).unwrap();
+    assert_eq!(s.tasks[&"p".into()].project.as_deref(), Some("quill"));
+    assert_eq!(s.tasks[&"t".into()].project, None, "a plan that names no project gives the task none");
+    exec(&mut s, user(), Command::CancelTask { task_id: "p".into() }).unwrap();
+    assert_eq!(s.tasks[&"p".into()].project.as_deref(), Some("quill"), "an ended task keeps it");
+    let mut saved = serde_json::to_value(&s.tasks[&"p".into()]).unwrap();
+    saved.as_object_mut().unwrap().remove("project");
+    assert_eq!(serde_json::from_value::<Task>(saved).unwrap().project, None, "a task saved before projects decodes");
 }

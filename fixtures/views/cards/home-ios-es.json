@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "vc2e32f35697d5cc0",
+  "version": "vf6e11adb333123bb",
   "cursor": "cursor-1",
   "status": {
     "version": "v21e817e49a9c8092",
@@ -333,7 +333,7 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vd2dd2d623d3451f2",
+      "version": "v156a33c374b58922",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
@@ -399,7 +399,7 @@
               "kind": "decide",
               "need": "Ship the compact schedule editor with this beta?",
               "why": "The review of the pull request waits for your answer.",
-              "meta": "Alondra",
+              "meta": "Alondra · Demo Garden",
               "reply": {
                 "id": "reply:8fa4034b-249e-4487-a89b-57de38c26372@1",
                 "label": "Responder",

@@ -715,7 +715,7 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
     let plan = crate::launch_plans::LaunchPlan {
         name: "app/editor".into(), cwd: f.project.to_str().unwrap().into(), mission: Some("Make the colours tokens".into()),
         model: Some("sonnet".into()), effort: None, approach: Some(alondra_core::options::Approach::Solo),
-        reason: Some("Colour tokens in one file".into()), role: None,
+        reason: Some("Colour tokens in one file".into()), role: None, project: None,
     };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();

@@ -182,7 +182,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.orchestrator("task-1", Command::CreateTask { plan_items: None,
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
         agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_core::domain::LaunchPlan { project: Some("Editor".into()), ..alondra_core::domain::LaunchPlan::new("node", "/tmp") }),
     });
     fixture.command(Actor::Orchestrator { generation: 0 }, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
@@ -256,7 +256,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     for key in expected["tasks"]["task-1"].as_object().unwrap().keys() {
         assert!(runtime["tasks"]["task-1"].get(key).is_some(), "tasks.task-1.{key} is always present, null when unknown");
     }
-    assert_eq!(runtime["tasks"]["task-1"]["project"], "App");
+    assert_eq!(runtime["tasks"]["task-1"]["project"], "Editor", "the task's own project, never its node's");
     assert_eq!(runtime["orchestrator"]["phase"], "idle", "the orchestrator runner's status travels with the runtime");
     for key in expected["requests"]["request-2"].as_object().unwrap().keys() {
         assert!(runtime["requests"]["request-2"].get(key).is_some(), "requests.request-2.{key} is always present, null when unknown");
@@ -785,7 +785,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     fixture.orchestrator("task-9", Command::CreateTask { plan_items: None,
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_core::domain::LaunchPlan { project: Some("App".into()), ..alondra_core::domain::LaunchPlan::new("node", "/tmp") }), });
     let runtime = fixture.runtime_json().await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
 }

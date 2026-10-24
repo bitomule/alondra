@@ -89,6 +89,8 @@ impl DomainRuntime {
 
     pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
         let mut store = DomainStore::open(database)?;
+        let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
+        store.fill_task_projects(&options.projects_root(&crate::options::user_home()))?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);

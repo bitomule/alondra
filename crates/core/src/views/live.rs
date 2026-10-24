@@ -465,7 +465,6 @@ pub struct LiveHistoryStep {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveTaskOptions {
-    pub project: Option<String>,
     pub effort: Option<String>,
 }
 impl LiveSnapshot {

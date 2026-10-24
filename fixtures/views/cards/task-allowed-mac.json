@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "mac",
-  "version": "vbaa3bdb59970dc7e",
+  "version": "ved1f4520cb3a515c",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -215,7 +215,7 @@
           "kind": "decide",
           "need": "Ship the compact schedule editor with this beta?",
           "why": "The review of the pull request waits for your answer.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "link": {
             "kind": "view",
             "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
@@ -285,7 +285,7 @@
           "kind": "review",
           "need": "Review the beta candidate",
           "why": "All required checks passed and the branch is up to date with main.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "diff",
             "icon": "pull_request",
@@ -315,7 +315,7 @@
           "kind": "know",
           "need": "The simulator pass is clean",
           "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "report",
             "icon": "notice",
@@ -389,6 +389,10 @@
             {
               "label": "PR handling",
               "value": "Auto-merge: Alondra merges it once its checks pass"
+            },
+            {
+              "label": "Project",
+              "value": "Demo Garden"
             },
             {
               "label": "Claude account",

@@ -214,11 +214,8 @@ fn personal(server: &McpServerState) -> bool {
     server.traits.scope == McpScope::User
 }
 
-/// The task's project: its launch's, or else its live node's.
-fn project_of(task: &TaskId, agent: &crate::domain::AgentId, context: &RenderContext<'_>) -> Option<String> {
-    context.live.task_options.get(&task.0).and_then(|options| options.project.clone())
-        .or_else(|| context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.project.clone()))
-        .filter(|project| project != "others")
+fn project_of(task: &TaskId, context: &RenderContext<'_>) -> Option<String> {
+    context.domain.tasks.get(task)?.project.clone()
 }
 
 fn check_action(project: &str, again: bool, context: &RenderContext<'_>) -> Option<Action> {
@@ -241,7 +238,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
     let mut yours: Vec<Used<'_>> = vec![];
     let mut projects: BTreeMap<String, Vec<Used<'_>>> = BTreeMap::new();
     for node in context.index.mcp_nodes() {
-        let project = project_of(&node.task, &node.agent, context).unwrap_or_else(|| other.clone());
+        let project = project_of(&node.task, context).unwrap_or_else(|| other.clone());
         let removed = |server: &McpServerState| context.live.mcp_removed.iter().any(|removal| removal.hides(&node.agent.0, node.generation, server));
         for server in node.servers.iter().filter(|server| server.name != crate::domain::ALONDRA_MCP_SERVER && !removed(server)) {
             let used = if personal(server) { &mut yours } else { projects.entry(project.clone()).or_default() };

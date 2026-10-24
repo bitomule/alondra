@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v3a6e4168656853c2",
+  "version": "v6785e0aa34961c1e",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -109,6 +109,10 @@
                 {
                   "text": "Te necesita",
                   "tone": "warning"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -150,6 +154,10 @@
                         {
                           "text": "Esperando",
                           "tone": "info"
+                        },
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
                         }
                       ],
                       "depth": 3,
@@ -200,6 +208,10 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -269,6 +281,10 @@
                 {
                   "text": "Programada",
                   "tone": "neutral"
+                },
+                {
+                  "text": "Lumo",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -326,6 +342,10 @@
                 {
                   "text": "No arrancó",
                   "tone": "warning"
+                },
+                {
+                  "text": "BlurCamera",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -356,6 +376,10 @@
               "badges": [
                 {
                   "text": "Pausada",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "BlurCamera",
                   "tone": "neutral"
                 }
               ],
@@ -434,6 +458,12 @@
           },
           "icon": "mission",
           "title": "BlurCamera · weekly improvement",
+          "badges": [
+            {
+              "text": "BlurCamera",
+              "tone": "neutral"
+            }
+          ],
           "depth": 0,
           "struck": false,
           "children": [
@@ -450,6 +480,10 @@
                 {
                   "text": "Terminada",
                   "tone": "success"
+                },
+                {
+                  "text": "BlurCamera",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -481,6 +515,10 @@
                 {
                   "text": "Terminada",
                   "tone": "success"
+                },
+                {
+                  "text": "BlurCamera",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {

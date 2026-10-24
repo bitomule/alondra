@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "allowed"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "allowed", "project"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -794,6 +794,9 @@ pub(super) fn save_changes(
             let mut row = object(model)?;
             row.insert("task_id".into(), json!(x.id));
             upsert(c, "task_models", &["task_id"], row)?;
+        }
+        if let Some(project) = x.project.as_ref().filter(|_| prior.is_none_or(|p| p.project != x.project)) {
+            exec(c, "INSERT INTO task_projects(task_id,project) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET project=excluded.project", params![x.id.0, project])?;
         }
         if prior.map_or(x.account.is_some(), |p| p.account != x.account) {
             match &x.account {
@@ -1292,6 +1295,13 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let id: String = row.get(0)?;
         let model = json!({"model": row.get::<_, String>(1)?, "chosen_by": row.get::<_, String>(2)?});
         state.tasks.get_mut(&TaskId::from(id)).context("model task missing")?.model = Some(decode(model)?);
+    }
+    drop(stored);
+    let mut projects = c.prepare("SELECT task_id, project FROM task_projects")?;
+    let mut stored = projects.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("project task missing")?.project = Some(row.get(1)?);
     }
     drop(stored);
     let mut accounts = c.prepare("SELECT task_id, account FROM task_accounts")?;

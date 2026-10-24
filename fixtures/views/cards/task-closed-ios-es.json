@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v5037fc7df66e4d0c",
+  "version": "v3502fefd2ab0e89b",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -182,6 +182,10 @@
             {
               "label": "Gestión de PR",
               "value": "Merge automático: Alondra hace el merge al pasar los checks"
+            },
+            {
+              "label": "Proyecto",
+              "value": "Demo Garden"
             },
             {
               "label": "Cuenta de Claude",

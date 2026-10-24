@@ -1,7 +1,7 @@
 //! How Alondra starts a task by itself: the launch plan every task is created with,
 //! stored beside it, and the checks it must pass when it is given.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{DomainError, RequestId};
+use alondra_core::domain::{Command, DomainError, RequestId, SuggestionDecision};
 use std::path::Path;
 
 const MISSION_LIMIT: usize = 32_000;
@@ -33,6 +33,21 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
     }
     requested.with_orchestrator_model(&file, plan.model.as_deref(), plan.effort.as_deref()).map_err(invalid)?;
     Ok(())
+}
+
+/// Sets the project a new task belongs to: the one the user asked for with its request, else the
+/// folder under the projects root it works in. Whatever its creator sent is replaced.
+pub(crate) fn stamp_project(domain: &DomainRuntime, home: &Path, command: &mut Command) {
+    let (request_id, plan) = match command {
+        Command::CreateTask { request_id, launch: Some(plan), .. }
+        | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } => (request_id, plan),
+        _ => return,
+    };
+    let chosen = domain.request_launch(request_id).ok().flatten().and_then(|launch| launch.project);
+    plan.project = chosen.or_else(|| {
+        let file = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
+        crate::options::project_of(&file, Path::new(&plan.cwd))
+    });
 }
 
 #[cfg(test)]
@@ -81,6 +96,35 @@ mod tests {
             task_id: "next".into(), request_id: "r".into(), title: "Next".into(), agent_id: None, review_prs: false,
             dependencies: deps.iter().map(|dep| (*dep).into()).collect(), stack: None, launch,
         }
+    }
+
+    #[test]
+    fn a_new_task_belongs_to_the_project_its_request_asked_for_or_else_to_the_folder_it_works_in() {
+        let w = world();
+        std::fs::write(alondra_core::options::path_in(&w.home), format!("projects_root = {:?}\n", w.root.to_str().unwrap())).unwrap();
+        let stamped = |command: Command| {
+            let mut command = command;
+            stamp_project(&w.domain, &w.home, &mut command);
+            match command {
+                Command::CreateTask { launch: Some(plan), .. } => plan.project,
+                other => panic!("not a new task: {other:?}"),
+            }
+        };
+        assert_eq!(stamped(create(&[], Some(plan(&w, json!({"project": "Other"}))))).as_deref(), Some("App"),
+            "the folder under the projects root, whatever the orchestrator said");
+        assert_eq!(stamped(create(&[], Some(plan(&w, json!({"cwd": "/"}))))), None, "a folder outside the projects root has none");
+        let state = w.domain.state().unwrap();
+        let choices = crate::domain_store::RequestLaunch {
+            project: Some("Quill".into()), options: alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("Quill"), None),
+            issue: None, issue_text: None, attachments: vec![],
+        };
+        w.domain.execute_with(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "chosen".into(), expected_revision: state.revision,
+            command: Command::CreateRequest { request_id: "chosen".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false },
+        }, None, Some(&choices), || Ok(())).unwrap();
+        let mut chosen = create(&[], Some(plan(&w, json!({}))));
+        if let Command::CreateTask { request_id, .. } = &mut chosen { *request_id = "chosen".into(); }
+        assert_eq!(stamped(chosen).as_deref(), Some("Quill"), "the project the user asked for wins");
     }
 
     #[test]

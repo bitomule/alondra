@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vaf18b2914084b763",
+  "version": "vad0964a3211d0d94",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -142,6 +142,10 @@
                         {
                           "text": "Waiting",
                           "tone": "info"
+                        },
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
                         }
                       ],
                       "depth": 3,
@@ -181,7 +185,7 @@
                   "tone": "accent"
                 },
                 {
-                  "text": "Alpha",
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -200,6 +204,10 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -217,6 +225,10 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -269,6 +281,10 @@
               "badges": [
                 {
                   "text": "Paused",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],

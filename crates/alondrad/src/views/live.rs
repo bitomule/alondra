@@ -553,8 +553,8 @@ async fn gather_inner(
         (since, reasons.into_iter().map(|(task, reason)| (task.0, reason)).collect())
     };
     let task_options = state.tasks.values().map(|task| {
-        let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
-        (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })
+        let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
+        (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { effort })
     }).collect();
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     LiveSnapshot {

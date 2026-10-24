@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v478981e35203307b",
+  "version": "v5cbc005c7c08ca3e",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -139,6 +139,12 @@
                       "icon": "branch",
                       "title": "Wire the badge after the review",
                       "subtitle": "espera a Restore the native review experience",
+                      "badges": [
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
+                        }
+                      ],
                       "depth": 3,
                       "struck": false
                     }
@@ -176,7 +182,7 @@
                   "tone": "accent"
                 },
                 {
-                  "text": "Alpha",
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -195,6 +201,10 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -212,6 +222,10 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
@@ -265,6 +279,10 @@
               "badges": [
                 {
                   "text": "Pausada",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],

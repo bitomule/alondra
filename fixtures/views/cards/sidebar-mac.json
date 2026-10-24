@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v46bd801e1af66abc",
+  "version": "v60b53a9dc89c6ae8",
   "cursor": "cursor-1",
   "status": {
     "version": "v6aa5809268a89138",
@@ -94,7 +94,7 @@
           },
           "icon": "question",
           "title": "Ship the compact schedule editor with this beta?",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "Decide",
@@ -114,7 +114,7 @@
           },
           "icon": "pull_request",
           "title": "Review the beta candidate",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "Review · PR #12",
@@ -134,7 +134,7 @@
           },
           "icon": "notice",
           "title": "The simulator pass is clean",
-          "subtitle": "Alondra",
+          "subtitle": "Alondra · Demo Garden",
           "badges": [
             {
               "text": "FYI",
@@ -211,6 +211,7 @@
               },
               "icon": "action",
               "title": "Restore the native review experience",
+              "subtitle": "Demo Garden",
               "badges": [
                 {
                   "text": "Needs you",
@@ -509,7 +510,7 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "ve903cea4a13808de",
+      "version": "v31eda8c2b06bfbd1",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
@@ -575,7 +576,7 @@
               "kind": "decide",
               "need": "Ship the compact schedule editor with this beta?",
               "why": "The review of the pull request waits for your answer.",
-              "meta": "Alondra",
+              "meta": "Alondra · Demo Garden",
               "reply": {
                 "id": "reply:8fa4034b-249e-4487-a89b-57de38c26372@1",
                 "label": "Reply",

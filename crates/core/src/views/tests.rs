@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -529,6 +529,7 @@ fn golden_fixture() -> DomainState {
     if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
         task.title = "Restore the native review experience".into();
         task.account = Some(crate::accounts::AccountId::parse("work").unwrap());
+        task.project = Some("Demo Garden".into());
     }
     state.accounts = golden_accounts().into_iter().map(|account| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: account.id, name: account.name, state: crate::accounts::AccountState::SignedIn,
@@ -718,6 +719,10 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_task(&mut state, "t-hf-registry", "r-blurcamera", "Link the website in app.json", TaskState::NotStarted, &[]);
     add_task(&mut state, "t-hf-paywall", "r-blurcamera", "Lifetime offer when the paywall closes", TaskState::Done, &[]);
     add_task(&mut state, "t-hf-post", "r-blurcamera", "Post: blur faces in a video on iPhone", TaskState::Done, &[]);
+    for (task, project) in [("t-scheduled-lumo", Some("Lumo")), ("t-hf-share-hint", Some("BlurCamera")), ("t-hf-registry", Some("BlurCamera")),
+        ("t-hf-paywall", Some("BlurCamera")), ("t-hf-post", Some("BlurCamera")), ("t-legacy-editor", None), ("t-legacy-notes", None)] {
+        state.tasks.get_mut(&task.into()).unwrap().project = project.map(Into::into);
+    }
     let paused = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
     state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::Paused(paused), since: 0 });
     for (task, agent) in [("t-badge-count", "a-badge"), ("t-scheduled-lumo", "a-lumo")] {
@@ -909,6 +914,71 @@ fn tasks_views_match_goldens() {
         let actual = render(&state, &live, client, lang, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
     }
+}
+
+/// A task in every state the user meets, each in its own project, and not one live node: what the
+/// list shows of a task is the task's, never its node's.
+#[test]
+fn every_task_shows_its_project_title_and_state_without_a_live_node() {
+    let mut state = golden_fixture();
+    let base = state.tasks[&NODE_CLOSED_TASK.into()].clone();
+    let mut request = Request::new("r-states".into(), "Work in every state".into());
+    request.title = Some("Every state".into());
+    state.requests.insert(request.id.clone(), request);
+    state.agents.insert("a-working".into(), Agent { id: "a-working".into(), name: "Worker".into(), phase: NodePhase::Working, since: 0 });
+    let cases: [(&str, &str, TaskState, Option<&str>, bool, &str, &str); 7] = [
+        ("t-queued", "Queue the import", TaskState::NotStarted, None, false, "Kiosk", "Stopped"),
+        ("t-working", "Parse the lists", TaskState::Running, Some("a-working"), false, "Quill", "Working"),
+        ("t-waiting", "Wait for the parser", TaskState::WaitingDependency, None, false, "Lumo", "Waiting"),
+        ("t-delivered", "Deliver the export", TaskState::ForYourReview, None, false, "Redraft", "Delivered"),
+        ("t-done", "Ship the beta", TaskState::Done, None, false, "MealScale", "Finished"),
+        ("t-cancelled", "Drop the old sync", TaskState::Cancelled, None, false, "BlurCamera", "Cancelled"),
+        ("t-archived", "Clean up the logs", TaskState::Done, None, true, "Matte", "Finished"),
+    ];
+    for (id, title, task_state, agent, archived, project, _) in cases {
+        let mut task = base.clone();
+        (task.id, task.request_id, task.title, task.state, task.archived) = (id.into(), "r-states".into(), title.into(), task_state, archived);
+        (task.agent_id, task.final_presentation, task.pr_id, task.started) = (agent.map(Into::into), None, None, task_state != TaskState::NotStarted);
+        task.dependencies = if id == "t-waiting" { ["t-working".into()].into() } else { BTreeSet::new() };
+        task.project = Some(project.into());
+        state.tasks.insert(task.id.clone(), task);
+    }
+    let live = LiveSnapshot::default();
+    assert!(live.nodes.is_empty());
+    fn find<'v>(rows: &'v [Row], id: &str) -> Option<&'v Row> {
+        rows.iter().find_map(|row| if row.id == id { Some(row) } else { find(&row.children, id) })
+    }
+    let row_of = |view: &View, id: &str| -> Option<Row> {
+        let rows: Vec<Row> = view.sections.iter().flat_map(|section| &section.items)
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.clone()) } else { None }).collect();
+        find(&rows, id).cloned()
+    };
+    let mut wrong = vec![];
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let open = render(&state, &live, client, Lang::En, "tasks", "2026-09-30T10:00:00Z");
+        let finished = render(&state, &live, client, Lang::En, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
+        for (id, title, _, _, archived, project, shown) in cases {
+            let detail = render(&state, &live, client, Lang::En, &format!("task:{id}"), "2026-09-30T10:00:00Z");
+            let facts: Vec<(String, String)> = detail.sections.iter().flat_map(|section| &section.items)
+                .filter_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).flatten()
+                .map(|fact| (fact.label.clone(), fact.value.clone())).collect();
+            assert!(facts.contains(&("Project".into(), project.into())), "{client:?}: the detail of {id} names its project: {facts:?}");
+            if archived {
+                assert!(row_of(&open, id).is_none() && row_of(&finished, id).is_none(), "{client:?}: an archived task is listed nowhere");
+                continue;
+            }
+            let row = row_of(&open, id).or_else(|| row_of(&finished, id)).unwrap_or_else(|| panic!("{client:?}: {id} is listed"));
+            assert_eq!(row.title, title, "{client:?}: {id}");
+            let badges: Vec<&str> = row.badges.iter().map(|badge| badge.text.as_str()).collect();
+            assert!(badges.contains(&project), "{client:?}: {id} shows its project: {badges:?}");
+            let said = row.subtitle.as_deref().is_some_and(|text| text.to_lowercase().contains(&shown.to_lowercase())
+                || (id == "t-waiting" && text == "waits for Parse the lists"));
+            if !badges.contains(&shown) && !said {
+                wrong.push(format!("{client:?}: {id} shows {shown}: {badges:?} {:?}", row.subtitle));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 const SETTLED_GOLDENS: [(&str, Client, Lang); 4] = [
@@ -1575,10 +1645,9 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
     dependency.dependencies.clear();
     state.tasks.insert(dependency.id.clone(), dependency);
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies.insert("t-2".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().project = Some("Alondra".into());
     let mut live = LiveSnapshot::default();
-    live.task_options.insert("t-1".into(), LiveTaskOptions {
-        project: Some("Alondra".into()), effort: Some("high".into()),
-    });
+    live.task_options.insert("t-1".into(), LiveTaskOptions { effort: Some("high".into()) });
     let view = render(&state, &live, Client::Tui, Lang::En, "task:t-1", "");
     let request = view.sections.iter().find(|section| section.id == "header").unwrap()
         .items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).unwrap()
@@ -3943,7 +4012,7 @@ fn string_leaves(value: &serde_json::Value, path: &str, out: &mut Vec<(String, S
 #[test]
 fn every_builder_string_has_spanish() {
     const NAMES_AND_DATA: &[&str] = &[
-        "Squash and merge", "Merge commit", "Rebase and merge", "Merge", "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
+        "Squash and merge", "Merge commit", "Rebase and merge", "Merge", "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Alondra · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
         "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
@@ -7291,7 +7360,7 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
         server("db", McpStatus::Connected, "stdio", "local", None, None),
     ], ..NodeMcp::default() });
     for (task, project) in [("t-zeta-worker", "alondra"), ("t-queued", "quill")] {
-        live.task_options.insert(task.into(), crate::views::live::LiveTaskOptions { project: Some(project.into()), effort: None });
+        state.tasks.get_mut(&crate::domain::TaskId::from(task)).unwrap().project = Some(project.into());
     }
     live.projects = ["alondra", "quill", "lumo", "blurcamera"].into_iter().map(|name| crate::options::ProjectEntry {
         name: name.into(), path: format!("/Users/someone/Projects/{name}").into(), last_used: None, nodes: 0,

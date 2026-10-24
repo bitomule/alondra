@@ -2445,6 +2445,7 @@ impl DomainState {
                     .as_ref()
                     .ok_or_else(|| DomainError::new("invalid_input", "Run has no claimed definition"))?;
                 launch.validate(definition)?;
+                let project = definition.project.clone();
                 if request.body != definition.text
                     || task.title != definition.title
                     || task.request_id != request.id
@@ -2472,7 +2473,7 @@ impl DomainState {
                     *finished_at,
                 )?;
                 self.requests.insert(request.id.clone(), Request { origin: RequestOrigin::Schedule, ..request.clone() });
-                self.tasks.insert(task.id.clone(), task.clone());
+                self.tasks.insert(task.id.clone(), Task { project, ..task.clone() });
                 self.plan_lifecycle(lifecycles, &task.id)?;
                 created.push(request.id.0.clone());
                 created.push(task.id.0.clone());
@@ -2798,7 +2799,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;

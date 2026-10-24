@@ -215,7 +215,7 @@ fn the_roles_come_from_the_launch_plans_in_the_store() {
     store.record_model_decision(&sonnet_launch()).unwrap();
     let plan = crate::launch_plans::LaunchPlan {
         name: "app/review".into(), cwd: "/synthetic".into(), mission: None, model: None, effort: None, approach: None, reason: None,
-        role: Some(alondra_core::domain::TaskRole::Review),
+        role: Some(alondra_core::domain::TaskRole::Review), project: None,
     };
     store.set_launch_plan(&"task-1".into(), &plan, 1).unwrap();
     let report = store.model_report(None, alondra_core::now_millis()).unwrap();

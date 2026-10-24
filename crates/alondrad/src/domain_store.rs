@@ -43,6 +43,8 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 /// The provider account each Task's current execution runs on, when it is not the provider's own
 /// sign-in; created on every open like task_models.
 const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
+/// The project each Task belongs to, set when it was created; created on every open like task_models.
+const TASK_PROJECTS: &str = "CREATE TABLE IF NOT EXISTS task_projects(task_id TEXT PRIMARY KEY REFERENCES tasks(id), project TEXT NOT NULL CHECK(length(trim(project))>0));";
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
 /// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
@@ -585,6 +587,7 @@ impl DomainStore {
         }
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(TASK_ACCOUNTS)?;
+        tx.execute_batch(TASK_PROJECTS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
@@ -1090,6 +1093,35 @@ impl DomainStore {
         self.conn.execute("INSERT INTO stop_blocks(task_id,blocks,marker) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET blocks=excluded.blocks,marker=excluded.marker",
             params![task_id.0, blocks, marker])?;
         Ok(())
+    }
+    /// Gives each task saved before tasks kept their project the one it can still be told from:
+    /// the project its request or its schedule asked for, else the folder under the projects root
+    /// its launch plan or one of its worktrees is in. A task none of them names keeps none.
+    pub(crate) fn fill_task_projects(&mut self, root: &Path) -> Result<usize> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let found = {
+            let mut query = tx.prepare(
+                "SELECT t.id, launch.project, json_extract(run.definition_snapshot,'$.project'), json_extract(plan.plan,'$.cwd'),
+                  (SELECT min(path) FROM task_worktree_records worktree WHERE worktree.task_id=t.id)
+                 FROM tasks t
+                 LEFT JOIN request_launch launch ON launch.request_id=t.request_id
+                 LEFT JOIN schedule_runs run ON run.task_id=t.id
+                 LEFT JOIN task_launch_plans plan ON plan.task_id=t.id
+                 WHERE NOT EXISTS(SELECT 1 FROM task_projects p WHERE p.task_id=t.id)",
+            )?;
+            let rows = query.query_map([], |row| {
+                let folder = |at: usize| row.get::<_, Option<String>>(at).map(|path| path.and_then(|path| alondra_core::options::project_of(root, Path::new(&path))));
+                let project = row.get::<_, Option<String>>(1)?.or(row.get(2)?).or(folder(3)?).or(folder(4)?);
+                Ok((row.get::<_, String>(0)?, project))
+            })?;
+            rows.filter_map(|row| row.map(|(task, project)| project.map(|project| (task, project))).transpose())
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (task, project) in &found {
+            tx.execute("INSERT INTO task_projects(task_id,project) VALUES(?1,?2)", params![task, project])?;
+        }
+        tx.commit()?;
+        Ok(found.len())
     }
     pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
         let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;

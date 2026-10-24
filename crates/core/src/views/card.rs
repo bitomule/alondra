@@ -349,9 +349,7 @@ fn meta_line(item: &InboxItem, interaction: Option<&Interaction>, context: &Rend
             None => request_title().unwrap_or_else(|| "Alondra".into()),
         },
     };
-    let project = item.agent_id.as_ref().and_then(|agent_id| {
-        context.live.nodes.iter().find(|node| node.agent_id == agent_id.0).and_then(|node| node.project.clone())
-    });
+    let project = item.task_id.as_ref().and_then(|task| context.domain.tasks.get(task)).and_then(|task| task.project.clone());
     let position = interaction.and_then(|i| i.card.group.as_ref()).filter(|_| context.client == Client::Ios)
         .map(|group| group_position(group, lang));
     Some(std::iter::once(who).chain(project).chain(position).collect::<Vec<_>>().join(" · "))
@@ -430,7 +428,7 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
     let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id));
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
-        let chip = node.and_then(|node| node.project.as_ref()).map(|project| Label { text: project.clone(), tone: Tone::Neutral });
+        let chip = |project: Option<&String>| project.map(|project| Label { text: project.clone(), tone: Tone::Neutral });
         lines.push(match task {
             Some(task) => {
                 let presentation = super::task_state::present(task, context);
@@ -438,11 +436,12 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
                     icon: Icon::Task,
                     text: task.title.clone(),
                     link: Some(Link::View { key: format!("task:{}", task.id) }),
-                    chip,
+                    chip: chip(task.project.as_ref()),
                     state: node.map(|_| Label { text: presentation.state, tone: presentation.tone }),
                 }
             }
-            None => ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None, chip, state: None },
+            None => ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None,
+                chip: chip(node.and_then(|node| node.project.as_ref())), state: None },
         });
     }
     lines.extend(review_lines(item, context));

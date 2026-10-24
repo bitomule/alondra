@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v41f25661c0c0d91b",
+  "version": "v116f62665128da35",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -154,6 +154,10 @@
                         {
                           "text": "Esperando",
                           "tone": "info"
+                        },
+                        {
+                          "text": "Demo Garden",
+                          "tone": "neutral"
                         }
                       ],
                       "depth": 3,
@@ -193,7 +197,7 @@
                   "tone": "accent"
                 },
                 {
-                  "text": "Alpha",
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -226,6 +230,10 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -248,6 +256,10 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {
@@ -304,6 +316,10 @@
               "badges": [
                 {
                   "text": "Pausada",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],

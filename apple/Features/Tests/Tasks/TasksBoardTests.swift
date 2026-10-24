@@ -101,13 +101,14 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertTrue(request.isSingleTask)
         XCTAssertEqual(task.title, "Lumo · weekly improvement")
         XCTAssertEqual(task.state, "Working")
-        XCTAssertEqual(task.marks, ["Scheduled"])
+        XCTAssertEqual(task.marks, ["Scheduled", "Lumo"])
         XCTAssertEqual(task.tone, .accent, "the mark never takes the state's place")
 
         let spanish = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
         let marks = spanish.active.requests.first { $0.id == "t-scheduled-lumo" }?.tasks.first?.marks
-        XCTAssertEqual(marks, ["Programada"])
-        XCTAssertEqual(board.active.requests.first { $0.id == "t-badge-count" }?.tasks.first?.marks, [])
+        XCTAssertEqual(marks, ["Programada", "Lumo"])
+        XCTAssertEqual(board.active.requests.first { $0.id == "t-badge-count" }?.tasks.first?.marks, ["Demo Garden"])
+        XCTAssertEqual(board.active.requests.first { $0.id == "t-legacy-editor" }?.tasks.first?.marks, [], "a task saved before projects has none")
     }
 
     func testTheActiveWorkComesInBlocksWithTheirTitleAndCount() throws {

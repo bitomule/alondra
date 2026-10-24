@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v898fe6b665321241",
+  "version": "v7d59e01b93fa78ba",
   "cursor": "cursor-1",
   "status": {
     "version": "vf84c4996f0984c30",
@@ -119,7 +119,7 @@
           "kind": "decide",
           "need": "Ship the compact schedule editor with this beta?",
           "why": "The review of the pull request waits for your answer.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "link": {
             "kind": "view",
             "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
@@ -143,7 +143,7 @@
           "kind": "review",
           "need": "Review the beta candidate",
           "why": "All required checks passed and the branch is up to date with main.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "diff",
             "icon": "pull_request",
@@ -173,7 +173,7 @@
           "kind": "know",
           "need": "The simulator pass is clean",
           "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
-          "meta": "Alondra",
+          "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "report",
             "icon": "notice",

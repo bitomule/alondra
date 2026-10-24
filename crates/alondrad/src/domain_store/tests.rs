@@ -1516,6 +1516,47 @@ fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
 }
 
 #[test]
+fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_in() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
+    let launch = RequestLaunch {
+        project: Some("Kiosk".into()),
+        options: alondra_core::options::OptionsFile::default().resolve(Some("Kiosk"), &Default::default()).unwrap(),
+        issue: None, issue_text: None, attachments: vec![],
+    };
+    let mut asked = envelope(&mut store, "asked", Command::CreateRequest { request_id: "request-2".into(), body: "Kiosk work".into(), auto_merge: false, maintenance: false, message: false });
+    asked.expected_revision = 0;
+    store.execute_launching(&user(), &asked, None, &launch).unwrap();
+    let epoch = store.load().unwrap().data_epoch.clone();
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    let quill = crate::launch_plans::LaunchPlan { project: Some("Quill".into()), ..plan() };
+    store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, quill)).unwrap();
+    store.execute_filling_revision(&orchestrator, &planned_task("next-2", "request-2", &epoch, plan())).unwrap();
+    store.execute_filling_revision(&orchestrator, &planned_task("next-3", "request-1", &epoch, crate::launch_plans::LaunchPlan::new("elsewhere", "/tmp"))).unwrap();
+    store.conn.execute("INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES('task-1','/synthetic/Lumo/.claude/worktrees/goal','task',NULL,1,NULL)", []).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let projects = |state: &DomainState| state.tasks.values().map(|task| (task.id.0.clone(), task.project.clone())).collect::<Vec<_>>();
+    assert_eq!(projects(&store.load().unwrap()), [("next-1".into(), Some("Quill".into())), ("next-2".into(), None), ("next-3".into(), None), ("task-1".into(), None)],
+        "the project each task was created with survives a restart");
+
+    store.conn.execute_batch("DROP TABLE task_projects").unwrap();
+    drop(store);
+    let mut before_projects = DomainStore::open(&fixture.path()).unwrap();
+    assert!(projects(&before_projects.load().unwrap()).iter().all(|(_, project)| project.is_none()), "the old store opens with its tasks as they were");
+    assert_eq!(before_projects.fill_task_projects(Path::new("/synthetic")).unwrap(), 3);
+    assert_eq!(projects(&before_projects.load().unwrap()), [("next-1".into(), Some("App".into())), ("next-2".into(), Some("Kiosk".into())),
+        ("next-3".into(), None), ("task-1".into(), Some("Lumo".into()))],
+        "the request's project first, else the folder of its launch plan, else that of its worktree");
+    assert_eq!(before_projects.fill_task_projects(Path::new("/synthetic")).unwrap(), 0, "a task that has its project keeps it");
+    drop(before_projects);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.load().unwrap().tasks[&"task-1".into()].project.as_deref(), Some("Lumo"), "what was filled in survives a restart");
+}
+
+#[test]
 fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1726,7 +1767,7 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
 fn plan() -> crate::launch_plans::LaunchPlan {
     crate::launch_plans::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation),
+        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation), project: None,
     }
 }
 

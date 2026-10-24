@@ -58,6 +58,10 @@ pub(super) struct InboxOrderFacts<'a> {
 }
 
 impl DomainState {
+    /// The project a request's work belongs to: that of its first task that has one.
+    pub fn request_project(&self, request: &RequestId) -> Option<&str> {
+        self.tasks.values().filter(|task| task.request_id == *request).find_map(|task| task.project.as_deref())
+    }
     /// Whether the user may make `change` to the accounts from Settings, by the guard of its
     /// command.
     pub fn account_action(&self, provider: crate::accounts::Provider, change: crate::accounts::AccountChange) -> AvailableAction {

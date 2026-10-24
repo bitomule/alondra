@@ -176,6 +176,9 @@ pub struct Task {
     /// was allowed on. It is forgotten when the task ends.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub allowed: BTreeMap<InteractionId, TaskGrant>,
+    /// The project it belongs to, set when it was created; absent when Alondra could not tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 /// A command the user allowed for the rest of a task, and how many prompts it answered since.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

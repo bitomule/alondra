@@ -937,6 +937,7 @@ async fn execute_command<H: DomainHost>(
             if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
                 return domain_error(error);
             }
+            crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
             let kept = match crate::result_files::keep(host.home(), &mut envelope.command) {
                 Ok(kept) => kept,
                 Err(error) => return domain_error(error),
