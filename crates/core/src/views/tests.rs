@@ -810,7 +810,7 @@ fn a_message_to_the_orchestrator_is_listed_only_once_it_made_tasks() {
         fn ids(rows: Vec<Row>) -> Vec<String> {
             rows.into_iter().flat_map(|row| std::iter::once(row.id.clone()).chain(ids(row.children))).collect()
         }
-        ["tasks", "tasks?section=finished&after=0", "tasks?section=archived&after=0"].into_iter()
+        ["tasks", "tasks?section=finished&after=0"].into_iter()
             .flat_map(|key| render(state, &live, Client::Ios, Lang::En, key, "2026-09-30T10:00:00Z").sections)
             .flat_map(|section| section.items)
             .flat_map(|item| if let Item::Row(row) = item { ids(vec![row]) } else { vec![] })
@@ -819,7 +819,7 @@ fn a_message_to_the_orchestrator_is_listed_only_once_it_made_tasks() {
     };
     let counted = |state: &DomainState| -> u32 {
         render(state, &live, Client::Ios, Lang::En, "tasks", "2026-09-30T10:00:00Z").sections.iter()
-            .filter(|section| ["active", "finished", "archived"].contains(&section.id.as_str()))
+            .filter(|section| ["active", "finished"].contains(&section.id.as_str()))
             .filter_map(|section| section.count).sum()
     };
     let before = counted(&state);
@@ -1828,11 +1828,9 @@ fn the_ended_tasks_of_a_request_still_under_way_fold_away_from_the_active_list()
         let active = ids(&rows_of(&view, "active"));
         assert!(active.contains(&"t-1".into()) && active.contains(&"t-2".into()), "{client:?}: {active:?}");
         assert!(!active.contains(&"t-3".into()) && !active.contains(&"t-4".into()), "{client:?}: {active:?}");
-        for folded in ["finished", "archived"] {
-            assert!(section(folded).items.is_empty(), "{client:?}: the main view carries no {folded} work");
-            assert_eq!(section(folded).more.as_ref().map(|more| (more.key.as_str(), more.remaining)),
-                Some((format!("tasks?section={folded}&after=0").as_str(), 1)), "{client:?}");
-        }
+        assert!(section("finished").items.is_empty(), "{client:?}: the main view carries no completed work");
+        assert_eq!(section("finished").more.as_ref().map(|more| (more.key.as_str(), more.remaining)),
+            Some(("tasks?section=finished&after=0", 1)), "{client:?}");
         let finished = rows("finished");
         assert_eq!(finished.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["r-1:ended"], "{client:?}");
         assert_eq!(finished[0].title, "Weekly improvement");
@@ -1840,7 +1838,7 @@ fn the_ended_tasks_of_a_request_still_under_way_fold_away_from_the_active_list()
             "{client:?}");
         assert!(section("finished").collapsed);
         assert_eq!(section("finished").count, Some(1));
-        assert_eq!(rows("archived").iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["r-1:ended"], "{client:?}");
+        assert!(!ids(&finished).contains(&"t-4".into()), "{client:?}: a cleared task is in no section");
         if client != Client::Tui {
             assert!(every_text(&finished).iter().all(|text| text != "El resto sigue en marcha"), "{client:?}");
         }
@@ -1900,11 +1898,11 @@ fn task_detail_offers_only_the_actions_its_state_allows() {
         (TaskState::ForYourReview, false, false, &["Cancel Task"]),
         (TaskState::WaitingDependency, false, false, &["Cancel Task"]),
         (TaskState::Closing, false, false, &["Cancel Task"]),
-        (TaskState::Done, false, false, &["Reopen", "Archive"]),
-        (TaskState::Cancelled, false, false, &["Reopen", "Archive"]),
-        (TaskState::Done, true, false, &["Reopen", "Unarchive"]),
-        (TaskState::Done, false, true, &["Archive"]),
-        (TaskState::Cancelled, true, true, &["Unarchive"]),
+        (TaskState::Done, false, false, &["Reopen"]),
+        (TaskState::Cancelled, false, false, &["Reopen"]),
+        (TaskState::Done, true, false, &["Reopen"]),
+        (TaskState::Done, false, true, &[]),
+        (TaskState::Cancelled, true, true, &[]),
     ];
     for (task_state, archived, request_closed, expected) in cases {
         let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -1919,7 +1917,7 @@ fn task_detail_offers_only_the_actions_its_state_allows() {
             let labels: Vec<&str> = actions.iter().map(|action| action.label.as_str())
                 .filter(|label| !["Message", "Priority"].contains(label)).collect();
             assert_eq!(labels, expected, "{case}");
-            assert_eq!(actions.iter().any(|action| action.key.is_some()), client == Client::Tui, "{case}: keys are a terminal thing");
+            assert_eq!(actions.iter().any(|action| action.key.is_some()), client == Client::Tui && !actions.is_empty(), "{case}: keys are a terminal thing");
         }
     }
 }
@@ -1973,18 +1971,55 @@ fn new_schedule_keeps_deterministic_weekday_and_unset_start_date_defaults() {
 }
 
 #[test]
-fn tasks_hide_zero_scheduled_count_and_archive_action_until_completed_tasks_exist() {
+fn tasks_hide_zero_scheduled_count_and_clear_completed_until_completed_work_exists() {
     let mut state = fixture();
+    state.revision = 5;
+    let clear = |state: &DomainState, client: Client| render(state, &LiveSnapshot::default(), client, Lang::Es, "tasks", "")
+        .sections.into_iter().find(|section| section.id == "finished").unwrap()
+        .actions.into_iter().find(|action| action.id.starts_with("clear_completed:view@"));
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks", "");
     let scheduled = view.sections.iter().find(|section| section.id == "scheduled").unwrap();
     assert_eq!(scheduled.count, None);
-    assert!(!view.sections.iter().flat_map(|section| &section.items).any(|item|
-        matches!(item, Item::Actions(actions) if actions.actions.iter().any(|action| action.id.starts_with("archive_done:")))));
+    assert!(clear(&state, Client::Tui).is_none(), "nothing completed, nothing to clear");
 
-    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
-    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks", "");
-    assert!(view.sections.iter().flat_map(|section| &section.items).any(|item|
-        matches!(item, Item::Actions(actions) if actions.actions.iter().any(|action| action.id.starts_with("archive_done:")))));
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Cancelled;
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "tasks", "");
+        let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
+        assert_eq!(finished.title.as_deref(), Some("Completadas"), "{client:?}");
+        assert_eq!(finished.count, Some(1), "{client:?}: a cancelled task is completed work");
+        let action = clear(&state, client).unwrap_or_else(|| panic!("{client:?}: {:?}", finished.actions));
+        assert_eq!(action.label, "Limpiar completadas");
+        assert!(action.resolves_card, "{client:?}: the section empties the moment it is sent");
+        assert_eq!(action.key.as_deref(), (client == Client::Tui).then_some("A"));
+        assert!(!view.sections.iter().any(|section| section.id == "archived" || section.id == "actions"), "{client:?}");
+    }
+    assert_eq!(render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks", "")
+        .sections.iter().find(|section| section.id == "finished").unwrap().title.as_deref(), Some("Completed"));
+
+    state.tasks.get_mut(&"t-1".into()).unwrap().archived = true;
+    let mut request = state.requests[&"r-1".into()].clone();
+    (request.id, request.closed) = ("r-answered".into(), true);
+    state.requests.insert(request.id.clone(), request);
+    let finished = |state: &DomainState| render(state, &LiveSnapshot::default(), Client::Ios, Lang::En, "tasks?section=finished&after=0", "")
+        .sections.into_iter().find(|section| section.id == "finished").unwrap();
+    let rows: Vec<String> = finished(&state).items.iter().filter_map(|item| match item { Item::Row(row) => Some(row.id.clone()), _ => None }).collect();
+    assert!(rows.iter().all(|id| id.contains("r-answered")) && !rows.is_empty(), "the cleared task is gone, the request answered without tasks stays: {rows:?}");
+    assert!(clear(&state, Client::Ios).is_some(), "a request answered without tasks is still there to clear");
+    state.requests.get_mut(&"r-answered".into()).unwrap().cleared = true;
+    assert_eq!(finished(&state).count, Some(0), "a cleared request is in no section");
+    assert!(clear(&state, Client::Ios).is_none());
+}
+
+#[test]
+fn the_archived_page_of_tasks_no_longer_exists() {
+    let state = fixture();
+    let live = LiveSnapshot::default();
+    let index = crate::domain::ReadIndex::build(&state);
+    let context = |key| build(key, RenderContext { domain: &state, index: &index, live: &live, client: Client::Tui, lang: Lang::En,
+        transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z" });
+    assert!(context("tasks?section=finished&after=0").is_ok());
+    assert_eq!(context("tasks?section=archived&after=0").err(), Some(BuildError::InvalidKey));
 }
 
 fn tasks_items(state: &DomainState, client: Client, lang: Lang) -> Vec<Row> {

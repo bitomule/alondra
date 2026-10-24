@@ -925,7 +925,6 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "publish_stack_readiness" => ("POST", format!("/tasks/{}/stack-readiness", id("task_id")?)),
         "cancel_task" => ("POST", format!("/tasks/{}/cancellation", id("task_id")?)),
         "reopen_task" => ("POST", format!("/tasks/{}/reopening", id("task_id")?)),
-        "archive_task" => ("POST", format!("/tasks/{}/archival", id("task_id")?)),
         _ => anyhow::bail!("unknown domain resource operation: {name}"),
     };
     Ok(target)

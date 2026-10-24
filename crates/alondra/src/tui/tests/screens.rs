@@ -267,13 +267,13 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
 }
 
 #[test]
-fn finished_and_archived_start_folded_and_enter_on_the_header_opens_and_folds_them() {
+fn completed_starts_folded_and_enter_on_the_header_opens_and_folds_it() {
     let (mut domain, live) = busy();
     domain.tasks.get_mut(&"t-weekly".into()).unwrap().state = TaskState::Done;
     let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     let folded = rendered(&mut app, 100, 30);
     dump("tasks (finished folded)", &folded);
-    assert!(folded.contains("▸ TERMINADAS"), "{folded}");
+    assert!(folded.contains("▸ COMPLETADAS"), "{folded}");
     assert!(!folded.contains(WEEKLY), "{folded}");
     let finished = app.home_view.as_ref().unwrap().sections.iter().find(|section| section.id == "finished").unwrap();
     assert!(finished.items.is_empty(), "the list view only says how many finished requests there are");
@@ -287,11 +287,11 @@ fn finished_and_archived_start_folded_and_enter_on_the_header_opens_and_folds_th
     });
     let open = rendered(&mut app, 100, 30);
     dump("tasks (finished open)", &open);
-    assert!(open.contains("▾ TERMINADAS") && open.contains(WEEKLY), "{open}");
+    assert!(open.contains("▾ COMPLETADAS") && open.contains(WEEKLY), "{open}");
 
     press(&mut app, KeyCode::Char('o'));
     let again = rendered(&mut app, 100, 30);
-    assert!(again.contains("▸ TERMINADAS") && !again.contains(WEEKLY), "{again}");
+    assert!(again.contains("▸ COMPLETADAS") && !again.contains(WEEKLY), "{again}");
 }
 
 #[test]
@@ -384,7 +384,50 @@ fn task_keys_message_the_node_and_capitals_work_with_shift() {
     app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     let sent = app.posted.borrow().clone();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("archive_done:"), "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("clear_completed:"), "{sent:?}");
+}
+
+#[test]
+fn the_completed_header_offers_clear_completed_and_shift_a_empties_it_at_once() {
+    let (domain, live) = busy();
+    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    open_finished(&mut app, &domain, &live);
+    let before = rendered(&mut app, 100, 30);
+    dump("tasks (completed, before clearing)", &before);
+    let header = lines_with(&before, "COMPLETADAS");
+    assert!(header.len() == 1 && header[0].contains(" A  Limpiar completadas │") && header[0].contains("COMPLETADAS 3"), "{before}");
+    assert!(before.contains(NIGHTLY), "{before}");
+
+    app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("clear_completed:view@"), "{sent:?}");
+    let cleared = rendered(&mut app, 100, 30);
+    dump("tasks (completed, just cleared)", &cleared);
+    assert!(!cleared.contains(NIGHTLY) && !cleared.contains("Limpiar completadas"), "{cleared}");
+    assert!(!cleared.contains("COMPLETADAS"), "an empty section is not drawn: {cleared}");
+    app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+    assert_eq!(app.posted.borrow().len(), 1, "an emptied section offers nothing to clear");
+
+    app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: Err(Delivery::Answered(Some("Nothing completed is left to clear".into()))) });
+    let back = rendered(&mut app, 100, 30);
+    dump("tasks (completed, clearing refused)", &back);
+    assert!(back.contains(NIGHTLY) && back.contains("Limpiar completadas"), "the section comes back when the Mac refuses: {back}");
+    assert!(back.contains("Tu Mac no pudo hacerlo."), "{back}");
+
+    app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+    let again = app.posted.borrow().last().unwrap().1.clone();
+    let done = alondra_core::views::Outcome { kind: OutcomeKind::Done, title: "Completadas limpiadas.".into(), body: None, next: None };
+    app.on_msg(Msg::ViewAction { request: again, result: Ok(ViewActionReply::Outcome(done)) });
+    let mut cleared = domain.clone();
+    cleared.revision += 1;
+    for task in cleared.tasks.values_mut().filter(|task| task.state == TaskState::Done) {
+        task.archived = true;
+    }
+    app.on_msg(Msg::ViewHome(Ok(build(&cleared, &live, "tasks"))));
+    let after = rendered(&mut app, 100, 30);
+    dump("tasks (completed, cleared and confirmed)", &after);
+    assert!(!after.contains(NIGHTLY) && !after.contains("COMPLETADAS"), "the page opened before clearing does not stay: {after}");
 }
 
 #[test]

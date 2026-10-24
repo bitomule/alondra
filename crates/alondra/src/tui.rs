@@ -1403,6 +1403,7 @@ impl App {
             .and_then(|section| section.more.as_ref())
             .map(|more| more.key.clone())
         else {
+            self.section_pages.remove(id);
             return;
         };
         let section = id.to_owned();
@@ -2366,6 +2367,13 @@ impl App {
             if paged(section) && let Some(page) = self.section_pages.get(&section.id) {
                 section.items = page.items.clone();
                 section.more = page.more.clone();
+            }
+            if self.optimistic.hides(&Key(view_render::section_key(&section.id))) {
+                section.items.clear();
+                section.more = None;
+                section.actions.clear();
+                section.count = section.count.map(|_| 0);
+                continue;
             }
             let before = section.items.len();
             section.items.retain(|item| match item {

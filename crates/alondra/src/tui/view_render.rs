@@ -38,7 +38,7 @@ pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
 /// view it opens and whether it hangs under the one above.
 const SECTION_HEADER: &str = "section:";
 
-/// Tasks folds its finished and archived sections; the rest of the lists stay open as they were.
+/// Tasks folds its Completed section; the rest of the lists stay open as they were.
 fn folds(view: &View, section: &Section) -> bool {
     view.key == "tasks" && section.collapsed
 }
@@ -46,7 +46,12 @@ fn folds(view: &View, section: &Section) -> bool {
 /// The list key of a section header the user opens and closes: one the daemon sends folded.
 pub fn header_key(view: &View, section: &Section) -> Option<String> {
     (folds(view, section) && section.title.is_some() && (!section.items.is_empty() || section.more.is_some()))
-        .then(|| format!("{SECTION_HEADER}{}", section.id))
+        .then(|| section_key(&section.id))
+}
+
+/// The key of a section's header, which also names the section an action in that header empties.
+pub fn section_key(id: &str) -> String {
+    format!("{SECTION_HEADER}{id}")
 }
 
 /// The section a header key opens and closes.
@@ -136,7 +141,7 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             items: block.children.into_iter().map(Item::Row).collect(),
             card_ids: vec![],
             card_waits: vec![],
-            more: None, style: None,
+            more: None, style: None, actions: vec![],
         }
     });
     sections.splice(at..at, blocks);

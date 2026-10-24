@@ -100,12 +100,12 @@ fn tasks_of<'a>(request: &RequestId, context: &RenderContext<'a>) -> Vec<&'a Tas
 enum Bucket {
     Active,
     Finished,
-    Archived,
+    Cleared,
 }
 
 fn bucket(request: &Request, tasks: &[&Task]) -> Bucket {
-    if !tasks.is_empty() && tasks.iter().all(|task| task.archived) {
-        Bucket::Archived
+    if request.cleared || (!tasks.is_empty() && tasks.iter().all(|task| task.archived)) {
+        Bucket::Cleared
     } else if request.closed || (!tasks.is_empty() && tasks.iter().all(|task| task.state.terminal())) {
         Bucket::Finished
     } else {
@@ -113,11 +113,12 @@ fn bucket(request: &Request, tasks: &[&Task]) -> Bucket {
     }
 }
 
-/// Where one task is listed: with its whole request when the request is finished or archived; otherwise
-/// a task still under way stays with the active request and the ones that ended fold away at the bottom.
+/// Where one task is listed: with its whole request when the request is completed; otherwise a task still
+/// under way stays with the active request and the ones that ended fold away at the bottom. A cleared task
+/// is in no list.
 fn task_bucket(task: &Task, request: Bucket) -> Bucket {
     match request {
-        Bucket::Active if task.state.terminal() && task.archived => Bucket::Archived,
+        _ if task.archived => Bucket::Cleared,
         Bucket::Active if task.state.terminal() => Bucket::Finished,
         whole => whole,
     }
@@ -769,7 +770,7 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             .strip_prefix("tasks?section=")
             .ok_or(BuildError::InvalidKey)?;
         let (section, after) = tail.split_once("&after=").ok_or(BuildError::InvalidKey)?;
-        if !matches!(section, "active" | "finished" | "archived") || after.parse::<usize>().is_err() {
+        if !matches!(section, "active" | "finished") || after.parse::<usize>().is_err() {
             return Err(BuildError::InvalidKey);
         }
         Some((
@@ -802,8 +803,7 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
     let buckets = request_buckets(context.domain);
     for (id, title, section) in [
         ("active", t!(context.lang, "Active", "Activas"), Bucket::Active),
-        ("finished", t!(context.lang, "Finished", "Terminadas"), Bucket::Finished),
-        ("archived", t!(context.lang, "Archived", "Archivadas"), Bucket::Archived),
+        ("finished", t!(context.lang, "Completed", "Completadas"), Bucket::Finished),
     ] {
         if section == Bucket::Active {
             let (items, count) = active_items(&buckets, context);
@@ -833,6 +833,9 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
         let mut section = common::section(id, Some(title.into()), shown);
         section.count = Some(requests.len() as u32);
         section.collapsed = folded;
+        if !requests.is_empty() {
+            section.actions.extend(clear_completed(context));
+        }
         if folded && !requests.is_empty() {
             section.more = Some(super::More {
                 key: format!("tasks?section={id}&after=0"),
@@ -853,24 +856,24 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             action: None,
         });
     }
-    if context.domain.tasks.values().any(|task| task.state.terminal() && !task.archived)
-        && let Some(mut action) = common::action(
-        Verb::ArchiveDone,
+    Ok(view)
+}
+
+/// The header control that hides everything Completed lists, judged by the rule clearing runs.
+fn clear_completed(context: &RenderContext<'_>) -> Option<super::Action> {
+    if !context.domain.clear_completed_action().enabled {
+        return None;
+    }
+    let mut action = common::action(
+        Verb::ClearCompleted,
         "view",
         context.domain.revision,
-        t!(context.lang, "Archive Completed", "Archivar terminadas"),
+        t!(context.lang, "Clear Completed", "Limpiar completadas"),
         Style::Secondary,
-    ) {
-        action.key = (context.client == super::Client::Tui).then(|| "A".into());
-        view.sections.push(common::section(
-            "actions",
-            None,
-            vec![Item::Actions(super::ActionBar {
-                actions: vec![action],
-            })],
-        ));
-    }
-    Ok(view)
+    )?;
+    action.resolves_card = super::resolves::always_resolves(Verb::ClearCompleted);
+    action.key = (context.client == super::Client::Tui).then(|| "A".into());
+    Some(action)
 }
 
 /// What a task that has no card waits for, as a sentence.
@@ -1258,18 +1261,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 t!(context.lang, "Reopen", "Reabrir"),
                 Style::Secondary,
                 "R",
-            ),
-            "archive_task" => (
-                Verb::Archive,
-                t!(context.lang, "Archive", "Archivar"),
-                Style::Secondary,
-                "a",
-            ),
-            "unarchive_task" => (
-                Verb::Unarchive,
-                t!(context.lang, "Unarchive", "Desarchivar"),
-                Style::Secondary,
-                "a",
             ),
             _ => continue,
         };

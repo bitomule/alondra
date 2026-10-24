@@ -1062,9 +1062,6 @@ fn execute_value(
     if state.data_epoch.0 != request.data_epoch {
         return Ok(no_longer_available(lang, "This item is no longer available"));
     }
-    if action.verb == Verb::ArchiveDone {
-        return archive_done(domain, device, &request, &action, &state, lang, authorize);
-    }
     let (command, stamp) = match map_domain_action(&state, &action, &request, attachments, lang) {
         Ok(mapped) => mapped,
         Err(refusal) => return Ok(refused_value(&refusal, lang)),
@@ -1095,73 +1092,6 @@ fn execute_value(
     };
     let response = json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":outcome.revision});
     Ok(response)
-}
-
-fn archive_done(
-    domain: &crate::domain_runtime::DomainRuntime,
-    device: &str,
-    request: &ActionRequest,
-    action: &ActionId,
-    state: &alondra_core::domain::DomainState,
-    lang: Lang,
-    authorize: impl Fn() -> anyhow::Result<()> + Sync,
-) -> anyhow::Result<Value> {
-    if action.subject != "view" || action.revision > state.revision {
-        return Ok(no_longer_available(lang, "This view has changed"));
-    }
-    let tasks: Vec<_> = archive_targets(state, action.revision)
-        .into_iter()
-        .map(|task| task.id.clone())
-        .collect();
-    let mut revision = state.revision;
-    for task_id in tasks {
-        let current = domain.state()?;
-        let Some(task) = current.tasks.get(&task_id).filter(|task| {
-            task.state == alondra_core::domain::TaskState::Done
-                && !task.archived
-                && task.revision <= action.revision
-        }) else {
-            continue;
-        };
-        let envelope = CommandEnvelope {
-            protocol_version: 2,
-            data_epoch: current.data_epoch.clone(),
-            command_id: archive_command_id(&request.command_id, &task.id),
-            expected_revision: current.revision,
-            command: Command::ArchiveTask { task_id: task.id.clone(), archived: true },
-        };
-        match domain.execute(&Actor::User { user_id: format!("device:{device}") }, &envelope, None,
-            || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
-            Ok(outcome) => revision = outcome.revision,
-            Err(crate::domain_store::StoreError::Domain(error))
-                if matches!(error.code.as_str(), "stale_revision" | "not_found" | "invalid_action_for_kind") =>
-            {
-                return Ok(no_longer_available(lang, "A completed task changed; refresh the view"));
-            }
-            Err(crate::domain_store::StoreError::Domain(error)) => {
-                return Ok(json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":error.code,"message":error.message}));
-            }
-            Err(crate::domain_store::StoreError::Storage(error)) => return Err(error.into()),
-        }
-    }
-    Ok(json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":if lang == Lang::Es {"Archivadas"} else {"Archived"},"revision":revision}))
-}
-
-fn archive_targets(
-    state: &alondra_core::domain::DomainState,
-    action_revision: u64,
-) -> Vec<&alondra_core::domain::Task> {
-    state.tasks.values()
-        .filter(|task| task.state == alondra_core::domain::TaskState::Done
-            && !task.archived && task.revision <= action_revision)
-        .collect()
-}
-
-fn archive_command_id(parent: &str, task: &TaskId) -> CommandId {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(task.0.as_bytes());
-    let suffix: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    CommandId(format!("{parent}/{suffix}"))
 }
 
 /// The command an action asks for, or why Alondra will not do it. Every action is judged against
@@ -1495,9 +1425,8 @@ fn map_action(
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
             Some((Command::ReopenTask { task_id: task.id.clone() }, stamp("Reopened", "Reabierta")))
         }
-        Verb::Archive | Verb::Unarchive => {
-            let task = state.tasks.get(&TaskId(action.subject.clone()))?;
-            Some((Command::ArchiveTask { task_id: task.id.clone(), archived: action.verb == Verb::Archive }, stamp("Updated", "Actualizada")))
+        Verb::ClearCompleted if action.subject == "view" => {
+            Some((Command::ClearCompleted { seen: action.revision }, stamp("Completed cleared", "Completadas limpiadas")))
         }
         Verb::RevokeGrant => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
@@ -1749,8 +1678,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::Read => Outcome::done(say("Marked as read.", "Marcada como leída.")),
         Verb::Reply => Outcome::done(say("Reply sent.", "Respuesta enviada.")),
         Verb::Conflicts => Outcome::done(say("Asked its node to resolve the conflicts.", "Pedido a su nodo que resuelva los conflictos.")),
-        Verb::Archive => Outcome::done(say("Task archived.", "Tarea archivada.")),
-        Verb::Unarchive => Outcome::done(say("Task restored.", "Tarea restaurada.")),
+        Verb::ClearCompleted => Outcome::done(say("Completed cleared.", "Completadas limpiadas.")),
         Verb::RevokeGrant => Outcome::done(say("Revoked: the next time the node needs it, it asks again.", "Revocado: la próxima vez que el nodo lo necesite, volverá a preguntar.")),
         Verb::SchedRun => Outcome::started(say("Run started: its task appears in Tasks.", "Ejecución iniciada: su tarea aparece en Tareas."), None),
         Verb::SchedToggle => Outcome::done(say("Scheduled task updated.", "Tarea programada actualizada.")),
@@ -2261,7 +2189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_done_is_idempotent() {
+    async fn clear_completed_applies_one_command_and_repeating_it_changes_nothing() {
         use alondra_core::domain::DeliveryTarget;
         use std::{fs, path::PathBuf};
 
@@ -2312,7 +2240,7 @@ mod tests {
         }
 
         let before = domain.state().unwrap();
-        let action = ActionId::new(Verb::ArchiveDone, "view", before.revision, None).unwrap();
+        let action = ActionId::new(Verb::ClearCompleted, "view", before.revision, None).unwrap();
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL,
             command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2328,16 +2256,21 @@ mod tests {
         assert_eq!(first["outcome"], "applied", "{first}");
         let archived = domain.state().unwrap();
         assert!(archived.tasks.values().all(|task| task.archived));
-        assert_eq!(semantic_receipt_count(&home), receipts_before + 2,
-            "the first application commits one durable archive command per task");
+        assert_eq!(archived.revision, before.revision + 1, "both tasks are cleared in one revision");
+        assert_eq!(semantic_receipt_count(&home), receipts_before + 1,
+            "the first application commits one durable clear command");
 
-        let second = execute_action(&domain, &client, &home, "test-device", request, None, || Ok(())).await.unwrap();
+        let second = execute_action(&domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
         assert_eq!(second["outcome"], "applied", "{second}");
         let repeated = domain.state().unwrap();
         assert_eq!(repeated.revision, archived.revision, "repeating the action changes no domain revision");
-        assert!(repeated.tasks.values().all(|task| task.archived));
-        assert_eq!(semantic_receipt_count(&home), receipts_before + 2,
+        assert_eq!(semantic_receipt_count(&home), receipts_before + 1,
             "the repeated action creates no duplicate durable commands");
+
+        let again = ActionRequest { command_id: "7a1d3e5f-2b4c-4d6e-8f01-23456789abcd".into(), ..request };
+        let third = execute_action(&domain, &client, &home, "test-device", again, None, || Ok(())).await.unwrap();
+        assert_ne!(third["outcome"], "applied", "nothing is left to clear: {third}");
+        assert_eq!(domain.state().unwrap().revision, archived.revision);
     }
 
     #[test]

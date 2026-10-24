@@ -76,16 +76,6 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
     if !defining.is_empty() {
         rows.insert(rows.len().min(6), group_row("defining", t!(context.lang, "Defining", "Definiendo"), defining));
     }
-    let archived: Vec<_> = context.domain.tasks.values().filter(|task| task.archived)
-        .map(|task| {
-            let mut row = common::row(&task.id.0, &format!("task:{}", task.id), Icon::Task, task.title.clone(), None);
-            row.depth = 1;
-            row.badges.push(Label { text: t!(context.lang, "Archived", "Archivada").into(), tone: common::state_tone("archived") });
-            row
-        }).collect();
-    if !archived.is_empty() {
-        rows.push(group_row("archived", t!(context.lang, "Archived", "Archivadas"), archived));
-    }
     let open_count = context.domain.tasks.values().filter(|task| !task.archived && !task.state.terminal()).count()
         + defining_count;
     let mut section = common::section("tasks", Some(t!(context.lang, "Tasks", "Tareas").into()),
@@ -101,7 +91,7 @@ fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
         "needs_you" => "needs_you", "in_review" => "in_review", "awaiting_blocker" => "awaiting_blocker", "closing" => "closing",
         "running" => "running", "waiting_dependency" => "waiting_dependency",
         "not_started" => "not_started", "done" => "done", "cancelled" => "cancelled",
-        "archived" => "archived", _ => "defining",
+        _ => "defining",
     };
     let icon = match state {
         "needs_you" => super::Icon::Action,

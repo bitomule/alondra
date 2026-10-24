@@ -39,7 +39,7 @@ pub(super) enum Act {
     Pick,
     CloseMenu,
     Server(Box<Action>, Option<Box<ActionOption>>),
-    ScreenAction(Box<Action>),
+    ScreenAction(Box<Action>, Option<String>),
     RowAction(Box<Action>),
     ReaderClose,
     ReaderFind,
@@ -437,10 +437,10 @@ impl App {
     }
 
     fn screen_action_bindings(&self, t: &mut Table) {
-        let Some(home) = self.home_view.as_ref() else { return };
-        for action in super::draw::screen_actions(home) {
+        let Some(home) = self.shown_home() else { return };
+        for (section, action) in super::draw::screen_actions(&home) {
             if let Some(key) = hinted(view_render::action_hint(&action)) {
-                t.add(vec![key], "", action.label.clone(), Act::ScreenAction(Box::new(action)));
+                t.add(vec![key], "", action.label.clone(), Act::ScreenAction(Box::new(action), section));
             }
         }
     }
@@ -621,9 +621,10 @@ impl App {
                 let selected = self.sel.clone().unwrap_or_else(|| Key(view.key.clone()));
                 return self.press_card_action(*action, option.map(|option| *option), &selected, epoch);
             }
-            Act::ScreenAction(action) => {
+            Act::ScreenAction(action, section) => {
                 let Some(home) = self.home_view.as_ref() else { return Flow::Go };
-                let (epoch, selected) = (home.data_epoch.clone(), Key(home.key.clone()));
+                let epoch = home.data_epoch.clone();
+                let selected = Key(section.map_or_else(|| home.key.clone(), |id| view_render::section_key(&id)));
                 return self.press_card_action(*action, None, &selected, epoch);
             }
             Act::RowAction(action) => {

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vb3cce188693bdbb5",
+  "version": "vaf7b1383c1c3cd2c",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -346,43 +346,27 @@
     },
     {
       "id": "finished",
-      "title": "Finished",
+      "title": "Completed",
       "count": 2,
       "collapsed": true,
       "items": [],
       "more": {
         "key": "tasks?section=finished&after=0",
         "remaining": 2
-      }
-    },
-    {
-      "id": "archived",
-      "title": "Archived",
-      "count": 0,
-      "collapsed": true,
-      "items": []
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      },
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@6",
-              "label": "Archive Completed",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "id": "clear_completed:view@6",
+          "label": "Clear Completed",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": true
         }
       ]
     }

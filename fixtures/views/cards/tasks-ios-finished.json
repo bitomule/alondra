@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "ve4e1767ecb798232",
+  "version": "v85cba272c434a8a4",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -412,7 +412,7 @@
     },
     {
       "id": "finished",
-      "title": "Finished",
+      "title": "Completed",
       "count": 2,
       "collapsed": false,
       "items": [
@@ -501,36 +501,20 @@
             }
           ]
         }
-      ]
-    },
-    {
-      "id": "archived",
-      "title": "Archived",
-      "count": 0,
-      "collapsed": true,
-      "items": []
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      ],
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@6",
-              "label": "Archive Completed",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "id": "clear_completed:view@6",
+          "label": "Clear Completed",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": true
         }
       ]
     }

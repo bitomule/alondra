@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v5a8fc2f9314cd313",
+  "version": "v0bb31bb7b9ec9aa4",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -343,44 +343,28 @@
     },
     {
       "id": "finished",
-      "title": "Finished",
+      "title": "Completed",
       "count": 2,
       "collapsed": true,
       "items": [],
       "more": {
         "key": "tasks?section=finished&after=0",
         "remaining": 2
-      }
-    },
-    {
-      "id": "archived",
-      "title": "Archived",
-      "count": 0,
-      "collapsed": true,
-      "items": []
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      },
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@6",
-              "label": "Archive Completed",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "A",
-              "resolves_card": false
-            }
-          ]
+          "id": "clear_completed:view@6",
+          "label": "Clear Completed",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "key": "A",
+          "resolves_card": true
         }
       ]
     }

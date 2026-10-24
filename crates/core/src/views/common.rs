@@ -39,7 +39,7 @@ pub(super) fn section(id: &str, title: Option<String>, items: Vec<Item>) -> Sect
         items,
         card_ids: vec![],
         card_waits: vec![],
-        more: None, style: None,
+        more: None, style: None, actions: vec![],
     }
 }
 
@@ -76,7 +76,7 @@ pub(super) fn state_tone(state: &str) -> super::Tone {
         | "waiting_dependency" | "closing" | "defining" => Tone::Info,
         "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
         "done" | "delivered" => Tone::Success,
-        "cancelled" | "archived" | "not_started" | "connected" | "idle" => Tone::Neutral,
+        "cancelled" | "not_started" | "connected" | "idle" => Tone::Neutral,
         "offline" | "failed" => Tone::Critical,
         _ => Tone::Neutral,
     }

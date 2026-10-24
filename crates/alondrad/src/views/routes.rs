@@ -290,7 +290,7 @@ fn view_key(base: &str, options: &ViewOptions) -> Option<String> {
     if base == "tasks" && focus.is_none() && project.is_none() && q.is_none() && refresh.is_none() {
         return match (section.as_deref(), after.as_deref()) {
             (None, None) => Some(base.into()),
-            (Some("active" | "finished" | "archived"), Some(n)) if n.parse::<usize>().is_ok() => {
+            (Some("active" | "finished"), Some(n)) if n.parse::<usize>().is_ok() => {
                 Some(format!("tasks?section={}&after={n}", section.as_deref()?))
             }
             _ => None,

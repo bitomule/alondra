@@ -249,6 +249,9 @@ pub struct Section {
     /// How a client lays its rows out; without one, as each screen lays them out.
     #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub style: Option<SectionStyle>,
+    /// What its header offers over the whole section, such as clearing the completed work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
 }
 /// A section of rows a client lays out as a settings list: each row a status symbol in its first
 /// label's tone, the label as a chip, its subtitle, its first action as a button and the rest in a

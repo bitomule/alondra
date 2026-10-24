@@ -145,12 +145,13 @@ impl App {
     }
 
     fn screen_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
-        let home = self.home_view.as_ref()?;
-        let action = super::draw::screen_actions(home)
+        let home = self.shown_home()?;
+        let (section, action) = super::draw::screen_actions(&home)
             .into_iter()
-            .find(|action| hint_matches(super::view_render::action_hint(action), key))?;
+            .find(|(_, action)| hint_matches(super::view_render::action_hint(action), key))?;
         let epoch = home.data_epoch.clone();
-        let selected = Key(home.key.clone());
+        let selected = Key(section.map_or_else(|| home.key.clone(), |id| super::view_render::section_key(&id)));
+        drop(home);
         Some(self.press_card_action(action, None, &selected, epoch))
     }
 

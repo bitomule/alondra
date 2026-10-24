@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v0fd19d1dc2b00e14",
+  "version": "v478981e35203307b",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -295,44 +295,28 @@
     },
     {
       "id": "finished",
-      "title": "Terminadas",
+      "title": "Completadas",
       "count": 1,
       "collapsed": true,
       "items": [],
       "more": {
         "key": "tasks?section=finished&after=0",
         "remaining": 1
-      }
-    },
-    {
-      "id": "archived",
-      "title": "Archivadas",
-      "count": 0,
-      "collapsed": true,
-      "items": []
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      },
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@6",
-              "label": "Archivar terminadas",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "A",
-              "resolves_card": false
-            }
-          ]
+          "id": "clear_completed:view@6",
+          "label": "Limpiar completadas",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "key": "A",
+          "resolves_card": true
         }
       ]
     }

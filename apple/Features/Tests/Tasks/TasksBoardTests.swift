@@ -82,7 +82,7 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertNil(board.archiveCompleted)
 
         let daemons = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        XCTAssertNotNil(daemons.archiveCompleted, "the BlurCamera request has finished tasks")
+        XCTAssertNil(daemons.archiveCompleted, "the daemon offers Clear Completed in the Completed header, which this app does not read yet")
         XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
         XCTAssertEqual(daemons.active.requests.count, 8)
         XCTAssertEqual(daemons.active.count, 8, "the active work is counted in tasks")

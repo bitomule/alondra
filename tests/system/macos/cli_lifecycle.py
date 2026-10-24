@@ -199,7 +199,7 @@ def run():
     (home / 'Projects').mkdir(); (home / '.claude').mkdir()
     # Durable synthetic marker is preserved through the exact same state directory.
     (state / 'lifecycle-marker.json').write_text(json.dumps({'run': owner['owner_token']}))
-    (state / 'config.toml').write_text('archived_tasks_days = 37\n')
+    (state / 'config.toml').write_text('device_expiry_days = 37\n')
     brew = '/opt/homebrew/bin/brew'; tap = Path('/opt/homebrew/Library/Taps/bitomule/homebrew-tap')
     prefix = Path('/opt/homebrew/opt/alondra')
     base_env = {**os.environ, 'HOMEBREW_NO_AUTO_UPDATE': '1', 'HOMEBREW_NO_ANALYTICS': '1',
@@ -254,7 +254,7 @@ def run():
         process = subprocess.Popen([str(prefix / 'bin/alondrad')], env=env, stdin=subprocess.DEVNULL,
                                    stdout=daemon_log, stderr=subprocess.STDOUT, preexec_fn=file_bound)
         legacy_readiness(process, port, version, state)
-        cli.require(command([str(prefix / 'bin/alondra'), 'config', '--get', 'archived_tasks_days'],
+        cli.require(command([str(prefix / 'bin/alondra'), 'config', '--get', 'device_expiry_days'],
                             name + '-config', execution_env=env).strip() == '37', 'persisted config was not applied')
         return process.pid
     def stop():

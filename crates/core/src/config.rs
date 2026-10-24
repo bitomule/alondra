@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
-pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
 pub const DEFAULT_DEVICE_EXPIRY_DAYS: f64 = 30.0;
 pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
@@ -48,7 +47,7 @@ pub struct FileConfig {
     /// Compact the on-demand orchestrator after a turn at this context percentage; zero disables.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_orchestrator_at: Option<f64>,
-    /// Days an archived task is kept before Alondra forgets it.
+    /// Accepted so an older file still loads; Alondra no longer reads it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_tasks_days: Option<f64>,
     /// Days a paired device may go unused before Alondra unpairs it on its own; 0 turns it off.
@@ -143,7 +142,6 @@ pub struct Config {
     /// a new task. 30 unless set; `None` is off.
     pub compact_idle_nodes_at: Option<f64>,
     pub compact_orchestrator_at: Option<f64>,
-    pub archived_tasks_days: f64,
     /// Days a paired device may go unused before Alondra unpairs it on its own. 30 unless set;
     /// `None` is off.
     pub device_expiry_days: Option<f64>,
@@ -232,10 +230,6 @@ impl Config {
                     .or(file.compact_orchestrator_at)
                     .unwrap_or(DEFAULT_COMPACT_ORCHESTRATOR_AT),
             ).filter(|p| *p > 0.0),
-            archived_tasks_days: var("ALONDRA_ARCHIVED_TASKS_DAYS")
-                .and_then(|v| v.parse().ok())
-                .or(file.archived_tasks_days)
-                .unwrap_or(DEFAULT_ARCHIVED_TASKS_DAYS),
             device_expiry_days: Some(
                 var("ALONDRA_DEVICE_EXPIRY_DAYS")
                     .and_then(|v| v.parse::<f64>().ok().filter(|d| d.is_finite() && *d >= 0.0))
@@ -490,12 +484,8 @@ mod tests {
     }
 
     #[test]
-    fn archived_tasks_are_kept_thirty_days_unless_the_config_says_otherwise() {
-        assert_eq!(resolve(&FileConfig::default(), &[]).archived_tasks_days, DEFAULT_ARCHIVED_TASKS_DAYS);
-        let file = FileConfig::parse("archived_tasks_days = 7\n").unwrap();
-        assert_eq!(resolve(&file, &[]).archived_tasks_days, 7.0);
-        assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "0.5")]).archived_tasks_days, 0.5);
-        assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "soon")]).archived_tasks_days, 7.0, "a broken env value falls through to the file");
+    fn devices_expire_after_thirty_days_and_updates_wait_unless_the_config_says_otherwise() {
+        assert!(FileConfig::parse("archived_tasks_days = 7\n").is_ok(), "a file from before clearing replaced archiving still loads");
         assert_eq!(resolve(&FileConfig::default(), &[]).device_expiry_days, Some(DEFAULT_DEVICE_EXPIRY_DAYS));
         let file = FileConfig::parse("device_expiry_days = 0\n").unwrap();
         assert_eq!(resolve(&file, &[]).device_expiry_days, None, "0 turns it off");

@@ -35,7 +35,7 @@ no node, no task, no card.
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
-`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `archived_tasks_days`, `auto_update`). An `ALONDRA_*` environment
+`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `auto_update`). An `ALONDRA_*` environment
 variable overrides the file; `alondra config list` shows the values in effect. What Alondra does with
 idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
 [docs/idle-nodes.md](docs/idle-nodes.md).

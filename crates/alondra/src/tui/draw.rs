@@ -631,6 +631,7 @@ fn draw_views_inbox_list(
                 ),
                 Span::styled(count.to_string(), Style::new().fg(DIM)),
             ]);
+            spans.extend(header_actions(section, &spans, inner.width as usize));
             if selected {
                 selected_range = Some((lines.len(), lines.len() + 1));
             }
@@ -1576,18 +1577,39 @@ pub(super) fn action_menu(table: &super::bindings::Table) -> Vec<Line<'static>> 
         .collect()
 }
 
-/// The actions a list screen offers whatever is selected, such as archiving every finished task.
-pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
+/// A section header's actions, each with its key, pushed to the right edge of the line.
+fn header_actions(section: &alondra_core::views::Section, header: &[Span], width: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for action in section.actions.iter().filter(|action| action.enabled) {
+        let hint = super::view_render::action_hint(action);
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(keycap(&hint));
+        spans.push(Span::styled(format!(" {}", action.label), Style::new().fg(DIM)));
+    }
+    let used: usize = header.iter().chain(&spans).map(Span::width).sum();
+    if spans.is_empty() || used >= width {
+        return spans;
+    }
+    spans.insert(0, Span::raw(" ".repeat(width - used - 1)));
+    spans
+}
+
+/// The actions a list screen offers whatever is selected, such as clearing the completed work: each
+/// with the section whose header shows it, if it is one.
+pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<(Option<String>, alondra_core::views::Action)> {
     view.sections
         .iter()
-        .flat_map(|section| &section.items)
-        .filter_map(|item| match item {
-            alondra_core::views::Item::Actions(bar) => Some(bar.actions.iter()),
-            _ => None,
+        .flat_map(|section| {
+            let bars = section.items.iter().filter_map(|item| match item {
+                alondra_core::views::Item::Actions(bar) => Some(bar.actions.iter()),
+                _ => None,
+            }).flatten().map(|action| (None, action));
+            bars.chain(section.actions.iter().map(|action| (Some(section.id.clone()), action)))
         })
-        .flatten()
-        .filter(|action| action.enabled && !super::view_render::action_hint(action).is_empty())
-        .cloned()
+        .filter(|(_, action)| action.enabled && !super::view_render::action_hint(action).is_empty())
+        .map(|(section, action)| (section, action.clone()))
         .collect()
 }
 

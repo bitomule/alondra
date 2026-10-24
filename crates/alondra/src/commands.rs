@@ -359,7 +359,6 @@ fn config_rows() -> Result<Vec<(&'static str, String)>> {
         ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
         ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
-        ("archived_tasks_days", c.archived_tasks_days.to_string()),
         ("device_expiry_days", c.device_expiry_days.map(|d| d.to_string()).unwrap_or_else(|| "off".into())),
         ("auto_update", c.auto_update.to_string()),
         ("max_working_nodes", node_limit(&c.home)),

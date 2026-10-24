@@ -9,9 +9,7 @@ pub enum Verb {
     Merge,
     Cancel,
     Reopen,
-    Archive,
-    Unarchive,
-    ArchiveDone,
+    ClearCompleted,
     Withdraw,
     Clarify,
     Ctx,
@@ -69,7 +67,7 @@ pub enum Verb {
     AccountMoves,
 }
 impl Verb {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 46] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -77,9 +75,7 @@ impl Verb {
         Self::Merge,
         Self::Cancel,
         Self::Reopen,
-        Self::Archive,
-        Self::Unarchive,
-        Self::ArchiveDone,
+        Self::ClearCompleted,
         Self::Withdraw,
         Self::Clarify,
         Self::Ctx,
@@ -128,9 +124,7 @@ impl Verb {
             Self::Merge => "merge",
             Self::Cancel => "cancel",
             Self::Reopen => "reopen",
-            Self::Archive => "archive",
-            Self::Unarchive => "unarchive",
-            Self::ArchiveDone => "archive_done",
+            Self::ClearCompleted => "clear_completed",
             Self::Withdraw => "withdraw",
             Self::Clarify => "clarify",
             Self::Ctx => "ctx",

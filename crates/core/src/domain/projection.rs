@@ -68,8 +68,7 @@ impl DomainState {
         self.task_actions_given(task_id, self)
     }
     pub(super) fn task_actions_given(&self, task_id: &TaskId, holds: &dyn Holds) -> Option<Vec<AvailableAction>> {
-        let task = self.tasks.get(task_id)?;
-        let archive = !task.archived;
+        self.tasks.get(task_id)?;
         Some(vec![
             self.action(
                 "cancel_task",
@@ -84,20 +83,6 @@ impl DomainState {
                 "reopen_task",
                 Command::ReopenTask {
                     task_id: task_id.clone(),
-                },
-                None,
-                None,
-                holds,
-            ),
-            self.action(
-                if archive {
-                    "archive_task"
-                } else {
-                    "unarchive_task"
-                },
-                Command::ArchiveTask {
-                    task_id: task_id.clone(),
-                    archived: archive,
                 },
                 None,
                 None,

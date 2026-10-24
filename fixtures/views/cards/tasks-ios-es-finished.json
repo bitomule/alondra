@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v1f8d3ea2918c4585",
+  "version": "v3a6e4168656853c2",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -412,7 +412,7 @@
     },
     {
       "id": "finished",
-      "title": "Terminadas",
+      "title": "Completadas",
       "count": 2,
       "collapsed": false,
       "items": [
@@ -501,36 +501,20 @@
             }
           ]
         }
-      ]
-    },
-    {
-      "id": "archived",
-      "title": "Archivadas",
-      "count": 0,
-      "collapsed": true,
-      "items": []
-    },
-    {
-      "id": "actions",
-      "collapsed": false,
-      "items": [
+      ],
+      "actions": [
         {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "archive_done:view@6",
-              "label": "Archivar terminadas",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "id": "clear_completed:view@6",
+          "label": "Limpiar completadas",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": true
         }
       ]
     }
