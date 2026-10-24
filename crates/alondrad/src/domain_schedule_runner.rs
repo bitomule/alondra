@@ -137,7 +137,7 @@ async fn launch_through_sdk(
     home: &Path,
 ) -> Result<String, String> {
     let account = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
-        .ok_or_else(|| "no Claude account on this Mac has usage left".to_owned())?;
+        .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
     let profile = alondra_core::accounts::folder(home, &account);
     let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
     let options = crate::sdk_owner::LaunchOptions {

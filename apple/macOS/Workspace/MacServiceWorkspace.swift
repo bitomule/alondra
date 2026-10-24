@@ -67,7 +67,7 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
                         .frame(maxWidth: 640)
                         .padding(.horizontal, 16).padding(.top, 10)
                     }
-                    UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted)
+                    UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted, sessionWait: presentation.sidebarDocument?.status.sessionWait)
                 }
             }
             .overlay(alignment: .bottom) { MacNoticeToast(store: store) }

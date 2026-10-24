@@ -1274,6 +1274,25 @@ fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
 }
 
 #[test]
+fn the_banner_says_work_waits_for_a_claude_session_while_no_account_has_one() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    let mut status = status_with(production_gauges());
+    status.session_wait = Some(alondra_core::views::Notice {
+        text: "Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude".into(),
+        tone: alondra_core::views::Tone::Warning,
+        action: None,
+    });
+    app.view_status = Some(status);
+    let shown = screen(&mut app, 120, 6);
+    let first_row: String = shown.chars().take(120).collect();
+    assert!(first_row.contains("Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude"), "{shown}");
+    assert!(!shown.contains("margen") && !shown.contains("min más"), "no quota and no countdown: {shown}");
+}
+
+#[test]
 fn the_header_shows_the_claude_margin_and_one_line_per_account() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);

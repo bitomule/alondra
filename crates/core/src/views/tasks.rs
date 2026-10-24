@@ -330,7 +330,7 @@ fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>
     } else if without_tasks && orchestrator_asks(context) {
         t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
     } else if without_tasks && context.live.orchestrator.as_ref().is_some_and(|orchestrator| orchestrator.waits_for_sign_in) {
-        t!(context.lang, "Waiting for a Claude sign-in", "Esperando una sesión de Claude")
+        t!(context.lang, "Waiting for a Claude session", "Esperando una sesión de Claude")
     } else if without_tasks {
         t!(context.lang, "Preparing its tasks", "Preparando sus tareas")
     } else {

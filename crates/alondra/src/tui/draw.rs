@@ -23,21 +23,23 @@ const SEL_BG: Color = Color::Indexed(236);
 const COMMENT: Color = Color::LightMagenta;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let usage = app.view_status.as_ref().and_then(|s| s.usage_exhausted.clone());
+    let banner_text = app.view_status.as_ref().and_then(|status| {
+        status.usage_exhausted.as_ref().map(|usage| super::usage_banner::banner_text(usage, now_millis()))
+            .or_else(|| status.session_wait.as_ref().map(|notice| notice.text.clone()))
+    });
     let accounts = if app.loaded { account_lines(app.view_status.as_ref()) } else { vec![] };
     let [banner, head, accounts_area, body, foot] = Layout::vertical([
-        Constraint::Length(u16::from(usage.is_some())),
+        Constraint::Length(u16::from(banner_text.is_some())),
         Constraint::Length(1),
         Constraint::Length(accounts.len() as u16),
         Constraint::Min(3),
         Constraint::Length(foot_height(app, f.area().width)),
     ])
     .areas(f.area());
-    if let Some(usage) = &usage {
-        let text = super::usage_banner::banner_text(usage, now_millis());
+    if let Some(text) = &banner_text {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!(" {} ", truncate(&text, (banner.width as usize).saturating_sub(2))),
+                format!(" {} ", truncate(text, (banner.width as usize).saturating_sub(2))),
                 Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD),
             ))),
             banner,

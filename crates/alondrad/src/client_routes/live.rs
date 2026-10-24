@@ -41,6 +41,8 @@ pub(crate) struct Live {
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
     pub(crate) account_wait: crate::accounts::AccountWait,
+    /// Asks the accounts check to run now.
+    pub(crate) account_check: tokio::sync::Notify,
     pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
@@ -190,6 +192,9 @@ impl Live {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
         let limit = (event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit")).then(|| crate::hook_text::str_field(payload, "error_details"));
+        if event.event == "StopFailure" && event.error_type.as_deref() == Some("authentication_failed") {
+            self.account_check.notify_one();
+        }
         view.apply(self.next(), now, &Event::Hook(event));
         drop(view);
         if let Some(details) = limit {

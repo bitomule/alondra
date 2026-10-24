@@ -526,6 +526,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     domain.live.observe(payload);
     if crate::api_failures::proves_an_answer(&event) {
         domain.live.api_watch.answered(&session_id, alondra_core::now_millis());
+        crate::accounts::answered(domain);
     }
     match event.as_str() {
         event if proves_a_turn(event) => {

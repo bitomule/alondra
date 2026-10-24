@@ -129,19 +129,28 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
 
 /// The account a new launch, batch or scheduled run starts on, as the user's distribution picks it
 /// from what the domain knows at `now`. When none can work, the Mac waits until the soonest one can
-/// again: every launch, batch and schedule holds until then, as for a usage limit.
+/// again, or until one has a session when none has: every launch, batch and schedule holds until
+/// then, as for a usage limit. One that can work ends a wait for a session.
 pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
     let policy = config(home).map(|config| config.distribution.policy).unwrap_or_default();
     let read = domain.read();
     let state = read.state();
     let day = crate::node_reports::local_day(now);
     let chosen = alondra_core::usage::choose_account(policy, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
-    if chosen.is_none() {
-        let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
-        drop(read);
-        domain.live.usage_pause.exhaust_for_margin(until, now);
+    drop(read);
+    match chosen {
+        Some(_) => crate::usage_pause::session_is_back(domain),
+        None => crate::usage_probe::hold(domain, now),
     }
     chosen
+}
+
+/// Claude answered while no account had a session: the accounts are checked now, not at the next
+/// round, so the wait ends as soon as the check sees the session.
+pub(crate) fn answered(domain: &DomainRuntime) {
+    if domain.live.usage_pause.waits_for_session() {
+        domain.live.account_check.notify_one();
+    }
 }
 
 /// The Claude accounts as the domain last checked them, when none has a session to start work
@@ -294,14 +303,18 @@ pub(crate) fn change(domain: &DomainRuntime, home: &Path, actor: &Actor, change:
     Ok(())
 }
 
-/// Checks the accounts when the daemon starts, then every ten minutes.
+/// Checks the accounts when the daemon starts, then every ten minutes, and at once when Claude
+/// answered or refused a sign-in while no account had a session.
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     loop {
         let (checking, at) = (domain.clone(), home.clone());
         if tokio::task::spawn_blocking(move || check(&checking, &at)).await.is_err() {
             log!("the accounts check stopped");
         }
-        tokio::time::sleep(CHECK_EVERY).await;
+        tokio::select! {
+            () = tokio::time::sleep(CHECK_EVERY) => {}
+            () = domain.live.account_check.notified() => {}
+        }
     }
 }
 

@@ -291,16 +291,12 @@ impl Executor {
 
     /// Records for the screens that no batch starts because no Claude account has a session, or
     /// that one has it again, and the line the log says it with: only when that changes.
-    fn account_wait_change(&self, now: alondra_core::Millis) -> Option<String> {
+    fn account_wait_change(&self) -> Option<String> {
         let checked = crate::accounts::none_signed_in(&self.domain.read().state().accounts);
         let wait = &self.domain.live.account_wait;
         match checked {
             Some(checked) if wait.start() => {
-                let next = self.domain.live.usage_pause.current().map_or_else(
-                    || "at the next account check".to_owned(),
-                    |pause| format!("at {}", crate::usage_pause::clock_text(pause.until, now, false)),
-                );
-                Some(format!("orchestrator waits: no Claude account has a session ({checked}); requests stay unprocessed until one is signed in, next try {next}"))
+                Some(format!("orchestrator waits: no Claude account has a session ({checked}); requests stay unprocessed until one is signed in"))
             }
             None if wait.end() => Some("orchestrator: a Claude account has a session again; it still waits for Claude usage".to_owned()),
             _ => None,
@@ -315,9 +311,10 @@ impl Executor {
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
             return Ok(());
         }
-        let account = if self.domain.live.usage_pause.is_active() { None } else { crate::accounts::choose_for_launch(&self.domain, &self.home, now) };
+        let pause = &self.domain.live.usage_pause;
+        let account = if pause.is_active() && !pause.waits_for_session() { None } else { crate::accounts::choose_for_launch(&self.domain, &self.home, now) };
         let Some(account) = account else {
-            if let Some(line) = self.account_wait_change(now) {
+            if let Some(line) = self.account_wait_change() {
                 log!("{line}");
             }
             return Ok(());
@@ -1629,7 +1626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_signed_in_account_the_orchestrator_says_it_waits_once_and_resumes_when_one_signs_in() {
+    async fn without_a_signed_in_account_work_waits_for_a_session_and_resumes_the_moment_one_has_it() {
         use alondra_core::accounts::AccountState;
         let f = fixture();
         let domain = &f.executor.domain;
@@ -1638,23 +1635,38 @@ mod tests {
         f.tick().await;
         assert_eq!(f.starts().len(), 0, "no account can run the batch");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true, "the screens hear why the request sits");
-        let until = domain.live.usage_pause.current().expect("launches hold too").until;
+        assert!(domain.live.usage_pause.waits_for_session(), "launches wait for a session, not for usage: {:?}", domain.live.usage_pause.current());
 
-        domain.live.usage_pause.resume(until);
         f.tick().await;
         assert_eq!(f.starts().len(), 0);
-        assert_eq!(f.executor.account_wait_change(until), None, "the log says it once, not on every tick");
-        assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true);
+        assert!(domain.live.usage_pause.waits_for_session(), "nothing but a session ends the wait");
+        assert_eq!(f.executor.account_wait_change(), None, "the log says it once, not on every tick");
 
         domain.live.account_wait.end();
-        let line = f.executor.account_wait_change(until).expect("a new wait is said");
-        assert!(line.contains("no Claude account has a session (default (signed out))") && line.contains("next try at "), "{line}");
+        let line = f.executor.account_wait_change().expect("a new wait is said");
+        assert!(line.contains("no Claude account has a session (default (signed out))") && line.contains("until one is signed in"), "{line}");
+        assert!(!line.contains("next try"), "no time in the wait: {line}");
 
         accounts_seen(&f, "accounts-in", AccountState::SignedIn);
-        domain.live.usage_pause.resume(now_millis());
         f.tick().await;
-        assert_eq!(f.starts().len(), 1, "an account with a session runs the batch");
+        assert_eq!(f.starts().len(), 1, "the account check seeing a session runs the batch at once");
+        assert!(!domain.live.usage_pause.is_active(), "and nothing holds new work any more");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], false, "and the wait is gone from the screens");
+    }
+
+    #[tokio::test]
+    async fn claude_answering_while_no_account_has_a_session_checks_the_accounts_at_once() {
+        use alondra_core::accounts::AccountState;
+        let f = fixture();
+        let domain = &f.executor.domain;
+        let checked = || async { tokio::time::timeout(Duration::ZERO, domain.live.account_check.notified()).await.is_ok() };
+        crate::accounts::answered(domain);
+        assert!(!checked().await, "with sessions to spare an answer asks for nothing");
+
+        accounts_seen(&f, "accounts-out", AccountState::SignedOut);
+        assert!(crate::accounts::choose_for_launch(domain, &f.executor.home, now_millis()).is_none());
+        crate::accounts::answered(domain);
+        assert!(checked().await, "an answer while waiting for a session checks the accounts now");
     }
 
     #[tokio::test]

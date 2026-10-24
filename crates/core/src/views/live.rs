@@ -53,6 +53,9 @@ pub struct LiveSnapshot {
     pub search_matches: Option<Vec<String>>,
     #[serde(default)]
     pub usage_exhausted: Option<LiveUsageExhausted>,
+    /// New work waits because no Claude account has a session; no time ends it.
+    #[serde(default)]
+    pub waits_for_session: bool,
     /// Why the last launch of a task that has not started was refused, by task id.
     #[serde(default)]
     pub launch_refusals: BTreeMap<String, LiveLaunchRefusal>,

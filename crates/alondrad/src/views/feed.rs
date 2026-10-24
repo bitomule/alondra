@@ -668,7 +668,7 @@ mod tests {
                 version: "v0000000000000000".into(), summary: "Ready".into(), badge: 0,
                 counts: vec![], gauges: vec![], orchestrator: alondra_core::views::Label {
                     text: "Idle".into(), tone: alondra_core::views::Tone::Neutral,
-                }, update: None, usage_exhausted: None,
+                }, update: None, usage_exhausted: None, session_wait: None,
             },
             stale: vec![], epoch: "epoch".into(), clock: ("epoch".into(), 4, "digest".into()),
             wake: 8, live_keys: vec!["home".into()],

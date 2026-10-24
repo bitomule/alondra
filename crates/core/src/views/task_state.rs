@@ -328,6 +328,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return didnt_start(match (refusal.reason.as_str(), refusal.detail.as_deref()) {
             ("workspace_untrusted", Some(folder)) => tf!(lang, "Claude Code doesn't trust {folder}", "Claude Code no confía en {folder}"),
             ("workspace_untrusted", None) => t!(lang, "Claude Code doesn't trust its folder", "Claude Code no confía en su carpeta").into(),
+            ("usage_exhausted", _) if context.live.waits_for_session => t!(lang, "Waiting for a Claude session", "Esperando una sesión de Claude").into(),
             ("usage_exhausted", _) => t!(lang, "Claude usage ran out", "Se acabó el uso de Claude").into(),
             ("disk_low", _) => t!(lang, "The disk is nearly full", "El disco está casi lleno").into(),
             (_, Some(error)) => error.lines().next().unwrap_or(error).to_owned(),
@@ -352,6 +353,9 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return chained(task, context);
     }
     match context.live.start_waits.get(&task.id.0) {
+        Some(_) if context.live.waits_for_session => Presentation::new(
+            t!(lang, "Queued", "En cola"), Tone::Neutral, Waiting,
+            Some(t!(lang, "Waiting for a Claude session · starts once an account has one", "Esperando una sesión de Claude · arranca cuando una cuenta la tenga").into())),
         Some(_) if context.live.usage_exhausted.is_some() => Presentation::new(
             t!(lang, "Queued", "En cola"), Tone::Neutral, Waiting,
             Some(t!(lang, "Claude usage ran out · starts when it is back", "Se acabó el uso de Claude · arranca cuando vuelva").into())),

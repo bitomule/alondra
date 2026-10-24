@@ -123,9 +123,12 @@ public struct ViewStatus: Codable, Equatable, Sendable {
     public let orchestrator: Label
     public let update: Notice?
     public let usageExhausted: UsageExhausted?
+    /// New work waits because no Claude account has a session: the line to show, written by the daemon.
+    public let sessionWait: Notice?
     enum CodingKeys: String, CodingKey {
         case version, summary, badge, counts, gauges, orchestrator, update
         case usageExhausted = "usage_exhausted"
+        case sessionWait = "session_wait"
     }
 }
 /// Claude usage has run out. `scope` is "this_mac" while only the Mac that served the view is known,

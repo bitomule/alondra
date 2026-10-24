@@ -269,7 +269,10 @@ async fn gather_inner(
     clock_only: bool,
     now: Millis,
 ) -> LiveSnapshot {
-    let exhausted = client.domain.live.usage_pause.current();
+    let (exhausted, waits_for_session) = match client.domain.live.usage_pause.current() {
+        Some(standing) if standing.no_session => (None, true),
+        standing => (standing, false),
+    };
     let (launches, refusals, retries) = {
         let store = client.domain.store.lock().expect("domain store poisoned");
         (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default())
@@ -580,6 +583,7 @@ async fn gather_inner(
             until: timestamp(exhausted.until),
             paused_by_user: exhausted.by_user,
         }),
+        waits_for_session,
         launch_refusals,
         start_waits,
         pacing: client.domain.live.gate.live(&client.domain, now),

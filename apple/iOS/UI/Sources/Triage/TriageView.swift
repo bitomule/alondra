@@ -40,6 +40,10 @@ public struct TriageView: View {
                 UsageExhaustedBanner(usage)
                     .padding(.horizontal, 16).padding(.bottom, 10)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let wait = store.status?.sessionWait {
+                SessionWaitBanner(wait)
+                    .padding(.horizontal, 16).padding(.bottom, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
             if let error = store.loadError, indicators.cover == .none {
                 ContentUnavailableView {

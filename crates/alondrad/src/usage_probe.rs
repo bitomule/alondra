@@ -181,20 +181,34 @@ fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, St
 }
 
 /// Brings the live view's copy and the Mac-wide pause in step with what the domain committed: when
-/// no account can work, the Mac waits until the soonest one can; when one can again before that,
-/// the wait ends.
+/// no account can work, the Mac waits until the soonest one can, or until one has a session when
+/// none has; when one can again before that, the wait ends.
 pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     domain.live.measured.sync(state);
     let day = crate::node_reports::local_day(now);
     let can_work = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day).is_some();
+    drop(read);
     if can_work {
-        drop(read);
+        crate::usage_pause::session_is_back(domain);
         domain.live.usage_pause.margin_back(now);
     } else {
-        let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
-        drop(read);
+        hold(domain, now);
+    }
+}
+
+/// No account can work: without a session on any, new work waits for one, with no time to end it;
+/// otherwise until the soonest account's usage resets.
+pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
+    let read = domain.read();
+    let state = read.state();
+    let no_session = crate::accounts::none_signed_in(&state.accounts).is_some();
+    let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
+    drop(read);
+    if no_session {
+        domain.live.usage_pause.wait_for_session(now);
+    } else {
         domain.live.usage_pause.exhaust_for_margin(until, now);
     }
 }
@@ -268,7 +282,10 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
                 continue;
             }
             match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
-                Ok(Ok(reading)) => record(&domain, &account, reading, now_millis()),
+                Ok(Ok(reading)) => {
+                    record(&domain, &account, reading, now_millis());
+                    crate::accounts::answered(&domain);
+                }
                 Ok(Err(why)) => log!("could not measure the usage of account {account}: {why}"),
                 Err(_) => log!("the usage probe of account {account} stopped"),
             }

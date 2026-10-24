@@ -1587,6 +1587,40 @@ fn task_line(state: &DomainState, live: &LiveSnapshot, lang: Lang) -> String {
 }
 
 #[test]
+fn without_a_claude_session_the_banner_and_the_queue_say_so_and_never_that_usage_ran_out() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
+    let waiting = LiveSnapshot { waits_for_session: true, start_waits: [("t-1".into(), LiveStartWait::Room)].into(), ..LiveSnapshot::default() };
+    let status = |live: &LiveSnapshot, lang| render(&state, live, Client::Ios, lang, "tasks", "").status;
+    assert_eq!(status(&waiting, Lang::Es).session_wait.map(|notice| notice.text).as_deref(),
+        Some("Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude"));
+    assert_eq!(status(&waiting, Lang::En).session_wait.map(|notice| notice.text).as_deref(),
+        Some("Waiting for a Claude session · sign in to an account in Claude accounts"));
+    assert_eq!(status(&waiting, Lang::Es).usage_exhausted, None, "no quota banner");
+    assert_eq!(task_line(&state, &waiting, Lang::Es), "En cola · Esperando una sesión de Claude · arranca cuando una cuenta la tenga");
+    assert_eq!(task_line(&state, &waiting, Lang::En), "Queued · Waiting for a Claude session · starts once an account has one");
+    let mut refused = waiting.clone();
+    refused.start_waits.clear();
+    refused.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
+    assert_eq!(task_line(&state, &refused, Lang::Es), "No arrancó · Esperando una sesión de Claude");
+}
+
+#[test]
+fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
+    let out = LiveSnapshot {
+        usage_exhausted: Some(live::LiveUsageExhausted { since: "2026-10-24T10:00:00.000+02:00".into(), until: "2026-10-24T14:30:00.000+02:00".into(), paused_by_user: false }),
+        start_waits: [("t-1".into(), LiveStartWait::Room)].into(),
+        ..LiveSnapshot::default()
+    };
+    let status = render(&state, &out, Client::Ios, Lang::Es, "tasks", "").status;
+    assert_eq!(status.usage_exhausted.map(|usage| usage.until).as_deref(), Some("2026-10-24T14:30:00.000+02:00"));
+    assert_eq!(status.session_wait, None, "usage that ran out is not a missing session");
+    assert_eq!(task_line(&state, &out, Lang::Es), "En cola · Se acabó el uso de Claude · arranca cuando vuelva");
+}
+
+#[test]
 fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
@@ -3047,7 +3081,7 @@ fn a_request_not_split_yet_says_it_waits_for_a_claude_sign_in_while_no_account_h
     }), ..Default::default() };
     let subtitle = |live: &LiveSnapshot, lang| active_row(&state, live, Client::Ios, lang, "r-2").1.subtitle.unwrap();
     assert_eq!(subtitle(&live(true), Lang::Es), "Esperando una sesión de Claude");
-    assert_eq!(subtitle(&live(true), Lang::En), "Waiting for a Claude sign-in");
+    assert_eq!(subtitle(&live(true), Lang::En), "Waiting for a Claude session");
     assert_eq!(subtitle(&live(false), Lang::Es), "Preparando sus tareas", "once an account has a session it says what it does again");
 }
 

@@ -336,6 +336,10 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     };
     if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| pinned.is_none() || exhausted.by_user) {
         remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
+        if exhausted.no_session {
+            return Err(DomainError::new("usage_exhausted", format!(
+                "No Claude account on this Mac has a session: {} stays as it is and starts once one is signed in", body.task)));
+        }
         let why = if exhausted.by_user { "The user paused Claude work" } else { "No Claude account on this Mac has usage left" };
         return Err(DomainError::new("usage_exhausted", format!(
             "{why} until {}: {} stays as it is and can be launched after that",

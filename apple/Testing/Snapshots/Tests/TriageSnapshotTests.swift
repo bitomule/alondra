@@ -635,6 +635,36 @@ final class TriageSnapshotTests: XCTestCase {
         }
     }
 
+    private func sessionWaitHome(spanish: Bool = false) throws -> ViewDocument {
+        try Fixtures.document(spanish ? "home-ios-es" : "home-ios") { object in
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections[0]["card_ids"] = [Fixtures.questionID]
+            object["sections"] = sections
+            var status = try XCTUnwrap(object["status"] as? [String: Any])
+            status["session_wait"] = [
+                "text": spanish
+                    ? "Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude"
+                    : "Waiting for a Claude session · sign in to an account in Claude accounts",
+                "tone": "warning",
+            ] as [String: Any]
+            object["status"] = status
+        }
+    }
+
+    func test_sessionWait() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)], home: try sessionWaitHome()
+        )
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_sessionWait_es() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.spanishCard(Fixtures.questionID)], home: try sessionWaitHome(spanish: true)
+        )
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_usageExhausted() throws {
         let store = try ScreenStores.triage(
             queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)], home: try exhaustedHome(in: 2 * 3600)

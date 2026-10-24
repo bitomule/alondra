@@ -58,5 +58,10 @@ import Testing
         let field = #","usage_exhausted":{"scope":"this_mac","until":"2026-10-05T14:30:00.000+02:00","macs_exhausted":1,"macs_total":2}}"#
         let with = try JSONDecoder().decode(ViewStatus.self, from: Data((base + field).utf8))
         #expect(with.usageExhausted == UsageExhausted(scope: "this_mac", until: "2026-10-05T14:30:00.000+02:00", macsExhausted: 1, macsTotal: 2))
+        #expect(without.sessionWait == nil)
+        let wait = #","session_wait":{"text":"Esperando una sesión de Claude","tone":"warning"}}"#
+        let waiting = try JSONDecoder().decode(ViewStatus.self, from: Data((base + wait).utf8))
+        #expect(waiting.sessionWait?.text == "Esperando una sesión de Claude")
+        #expect(waiting.usageExhausted == nil)
     }
 }

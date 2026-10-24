@@ -182,6 +182,10 @@ pub struct Status {
     /// Present while Claude usage has run out; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_exhausted: Option<UsageExhausted>,
+    /// Present while new work waits because no Claude account has a session: what to show across
+    /// the top, written out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_wait: Option<Notice>,
 }
 /// Claude usage has run out: no account of this Mac can work until `until`. `scope` says what
 /// `macs_exhausted` of `macs_total` covers:

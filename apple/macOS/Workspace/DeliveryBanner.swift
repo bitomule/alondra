@@ -39,15 +39,21 @@ public struct MacNoticeToast: View {
 
 public struct UsageExhaustedWindowBanner: View {
     let usage: UsageExhausted?
-    public init(usage: UsageExhausted?) { self.usage = usage }
+    let sessionWait: Notice?
+    public init(usage: UsageExhausted?, sessionWait: Notice? = nil) { self.usage = usage; self.sessionWait = sessionWait }
     public var body: some View {
         ZStack {
             if let usage {
                 UsageExhaustedBanner(usage)
                     .padding(.horizontal, 16).padding(.vertical, 10)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let sessionWait {
+                SessionWaitBanner(sessionWait)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(.snappy, value: usage)
+        .animation(.snappy, value: sessionWait)
     }
 }

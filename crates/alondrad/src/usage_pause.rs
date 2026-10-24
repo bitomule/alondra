@@ -1,6 +1,8 @@
 //! What the daemon does while Claude usage has run out on this Mac: no account the user has can
 //! work (each ran out of its session or its week, or is signed out), or Claude reported a limit
-//! the accounts' readings do not show yet. One record says until when it lasts; while it stands, the orchestrator starts no
+//! the accounts' readings do not show yet. When no account has a session at all, the wait has no
+//! time: it ends when the accounts check sees one with a session, never by the clock. Otherwise
+//! one record says until when it lasts; while it stands, the orchestrator starts no
 //! batch, no scheduled launch or node revival calls Claude, and nodes the limit stopped wait for
 //! the machine. When the time comes the daemon resumes: it wakes those nodes, and the batch and
 //! the deferred schedules run again, each once. A limit that is still there when they run
@@ -38,6 +40,9 @@ pub(crate) struct Exhausted {
     /// The user paused until tomorrow; Claude did not run out.
     #[serde(default)]
     pub by_user: bool,
+    /// No Claude account has a session: `until` is no time at all, only a session ends the wait.
+    #[serde(default)]
+    pub no_session: bool,
 }
 
 #[derive(Default)]
@@ -116,12 +121,57 @@ impl UsagePause {
         true
     }
 
+    /// No Claude account has a session: new work waits with no time to end it, until an account has
+    /// one. A wait the accounts' readings started becomes this one; the user's pause and a limit
+    /// Claude reported stand.
+    pub(crate) fn wait_for_session(&self, now: Millis) -> Change {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        let by_margin = record.by_margin;
+        let change = match record.exhausted.as_mut() {
+            None => {
+                record.exhausted = Some(Exhausted { until: now, since: now, by_user: false, no_session: true });
+                Change::Started
+            }
+            Some(standing) if by_margin && !standing.by_user && !standing.no_session => {
+                *standing = Exhausted { until: now, since: now, by_user: false, no_session: true };
+                Change::Extended
+            }
+            Some(_) => return Change::Unchanged,
+        };
+        record.announced = false;
+        record.by_margin = true;
+        self.changed.send_replace(record.exhausted.clone());
+        change
+    }
+
+    pub(crate) fn waits_for_session(&self) -> bool {
+        self.current().is_some_and(|standing| standing.no_session)
+    }
+
+    /// An account has a session: a wait for one ends now. Any other pause stands.
+    pub(crate) fn session_back(&self) -> bool {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        if !record.exhausted.as_ref().is_some_and(|standing| standing.no_session) {
+            return false;
+        }
+        record.exhausted = None;
+        record.by_margin = false;
+        record.announced = false;
+        self.changed.send_replace(None);
+        true
+    }
+
     fn exhaust_as(&self, until: Option<Millis>, now: Millis, by_margin: bool) -> Change {
         let mut record = self.record.lock().expect("usage pause poisoned");
         let standing = record.exhausted.is_some();
         let follows_readings = by_margin && record.by_margin;
         let reported = until.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET_WAIT_MS);
         let change = match record.exhausted.as_mut() {
+            Some(standing) if standing.no_session => {
+                *standing = Exhausted { until: reported, since: now, by_user: false, no_session: false };
+                record.announced = false;
+                Change::Extended
+            }
             Some(standing) if follows_readings && !standing.by_user && reported < standing.until => {
                 standing.until = reported;
                 Change::Extended
@@ -141,7 +191,7 @@ impl UsagePause {
                 let flapping = record.resumed_at.is_some_and(|at| now - at < FLAP_WINDOW_MS);
                 record.strikes = if flapping { record.strikes + 1 } else { 0 };
                 let backoff = if record.strikes == 0 || by_margin { 0 } else { (BACKOFF_BASE_MS << record.strikes.min(10)).min(BACKOFF_CAP_MS) };
-                record.exhausted = Some(Exhausted { until: reported.max(now + backoff), since: now, by_user: false });
+                record.exhausted = Some(Exhausted { until: reported.max(now + backoff), since: now, by_user: false, no_session: false });
                 record.announced = false;
                 Change::Started
             }
@@ -164,7 +214,7 @@ impl UsagePause {
             }
             Some(_) => Change::Unchanged,
             None => {
-                record.exhausted = Some(Exhausted { until, since: now, by_user: true });
+                record.exhausted = Some(Exhausted { until, since: now, by_user: true, no_session: false });
                 Change::Started
             }
         };
@@ -285,8 +335,12 @@ pub(crate) fn clock_text(millis: Millis, now: Millis, spanish: bool) -> String {
     format!("{} {time}", days[tm.tm_wday as usize])
 }
 
-pub(crate) fn out_text(until: Millis, now: Millis, spanish: bool) -> String {
-    let clock = clock_text(until, now, spanish);
+pub(crate) fn out_text(exhausted: &Exhausted, now: Millis, spanish: bool) -> String {
+    if exhausted.no_session {
+        return if spanish { "Ninguna cuenta de Claude tiene sesión: el trabajo nuevo espera a que inicies sesión en una".into() }
+            else { "No Claude account has a session: new work waits until you sign in to one".into() };
+    }
+    let clock = clock_text(exhausted.until, now, spanish);
     if spanish { format!("Sin margen hasta {clock}") } else { format!("No Claude margin until {clock}") }
 }
 
@@ -423,9 +477,9 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
     loop {
         if let Some((exhausted, again)) = pause.claim_announcement() {
             let now = now_millis();
-            alerts.tell(move |spanish| out_text(exhausted.until, now, spanish), again).await;
+            alerts.tell(move |spanish| out_text(&exhausted, now, spanish), again).await;
         }
-        let Some(standing) = pause.current() else {
+        let Some(standing) = pause.current().filter(|standing| !standing.no_session) else {
             let _ = changes.changed().await;
             continue;
         };
@@ -447,6 +501,14 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
 
 fn jitter(max_ms: u64) -> u64 {
     u64::from_str_radix(&crate::auth::random_hex(4), 16).unwrap_or_default().checked_rem(max_ms).unwrap_or(0)
+}
+
+/// An account has a session again: a wait for one ends now and what it held carries on.
+pub(crate) fn session_is_back(domain: &crate::domain_runtime::DomainRuntime) {
+    if domain.live.usage_pause.session_back() {
+        log!("a Claude account has a session: resuming what waited for one");
+        wake_nodes(domain);
+    }
 }
 
 /// Puts every node the limit stopped in the admission gate's queue, which tells them to carry on one
@@ -497,11 +559,11 @@ mod tests {
         let pause = UsagePause::default();
         assert!(!pause.is_active());
         assert_eq!(pause.exhaust(Some(5_000_000), 1_000_000), Change::Started);
-        assert_eq!(pause.current(), Some(Exhausted { until: 5_000_000, since: 1_000_000, by_user: false }));
+        assert_eq!(pause.current(), Some(Exhausted { until: 5_000_000, since: 1_000_000, by_user: false, no_session: false }));
         assert_eq!(pause.exhaust(Some(4_000_000), 1_100_000), Change::Unchanged, "an earlier reset changes nothing");
         assert_eq!(pause.exhaust(Some(6_000_000), 1_200_000), Change::Extended);
-        assert_eq!(pause.current(), Some(Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }), "extended, still since the start");
-        assert_eq!(pause.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }, false)));
+        assert_eq!(pause.current(), Some(Exhausted { until: 6_000_000, since: 1_000_000, by_user: false, no_session: false }), "extended, still since the start");
+        assert_eq!(pause.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000, by_user: false, no_session: false }, false)));
         assert_eq!(pause.claim_announcement(), None, "told once");
         assert_eq!(pause.resume(7_000_000), Some(true));
         assert_eq!(pause.resume(7_000_001), None);
@@ -523,6 +585,31 @@ mod tests {
         later.resume(1_100_000);
         later.exhaust(None, 1_100_000 + FLAP_WINDOW_MS + 1);
         assert_eq!(later.record.lock().unwrap().strikes, 0, "a limit long after a resume is a new one");
+    }
+
+    #[test]
+    fn a_wait_for_a_session_has_no_time_to_end_it_and_only_a_session_or_a_real_limit_replace_it() {
+        let pause = UsagePause::default();
+        assert_eq!(pause.exhaust_for_margin(None, 1_000_000), Change::Started);
+        assert_eq!(pause.wait_for_session(1_000_000), Change::Extended, "the readings' wait becomes a wait for a session");
+        assert_eq!(pause.current(), Some(Exhausted { until: 1_000_000, since: 1_000_000, by_user: false, no_session: true }));
+        assert!(!pause.margin_back(1_000_000 + UNKNOWN_RESET_WAIT_MS), "no reset ends it");
+        assert!(pause.waits_for_session());
+        let (told, _) = pause.claim_announcement().unwrap();
+        assert_eq!(out_text(&told, 1_000_000, true), "Ninguna cuenta de Claude tiene sesión: el trabajo nuevo espera a que inicies sesión en una");
+        assert!(pause.session_back(), "a session ends it");
+        assert!(!pause.is_active());
+        assert!(!pause.session_back());
+
+        pause.wait_for_session(2_000_000);
+        assert_eq!(pause.exhaust(Some(9_000_000), 2_000_000), Change::Extended, "Claude reporting a limit is the quota again");
+        assert_eq!(pause.current(), Some(Exhausted { until: 9_000_000, since: 2_000_000, by_user: false, no_session: false }));
+        assert_eq!(pause.wait_for_session(2_100_000), Change::Unchanged, "a limit Claude reported stands");
+        assert!(!pause.session_back());
+
+        let by_user = UsagePause::default();
+        by_user.pause_by_user(9_000_000, 1_000_000);
+        assert_eq!(by_user.wait_for_session(1_000_000), Change::Unchanged, "the user's pause stands");
     }
 
     #[test]
@@ -553,6 +640,7 @@ mod tests {
     #[test]
     fn the_notice_names_the_time_in_the_users_language_and_the_day_when_it_is_not_today() {
         let now = at(7, 14, 0);
+        let out_text = |until, now, spanish| out_text(&Exhausted { until, since: now, by_user: false, no_session: false }, now, spanish);
         assert_eq!(out_text(at(7, 15, 45), now, false), "No Claude margin until 15:45");
         assert_eq!(out_text(at(7, 15, 45), now, true), "Sin margen hasta 15:45");
         assert_eq!(out_text(at(12, 0, 0), now, false), "No Claude margin until Mon 00:00");

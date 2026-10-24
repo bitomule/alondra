@@ -121,3 +121,25 @@ public struct UsageExhaustedBanner: View {
         }
     }
 }
+
+/// One line across the top of a screen while no Claude account has a session and new work waits for one.
+public struct SessionWaitBanner: View {
+    private let notice: Notice
+
+    public init(_ notice: Notice) { self.notice = notice }
+
+    public var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundStyle(Palette.dawn)
+            Text(verbatim: notice.text)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Palette.ink)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .glassEffect(.regular.tint(Palette.dawn.opacity(0.18)), in: .rect(cornerRadius: 18))
+        .accessibilityElement(children: .combine)
+    }
+}
