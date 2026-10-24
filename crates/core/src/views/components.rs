@@ -144,6 +144,9 @@ pub struct View {
     pub cursor: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// What the view holds, in one line, for the row that leads to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub status: Status,
     pub sections: Vec<Section>,
     #[serde(skip_serializing_if = "Option::is_none")]

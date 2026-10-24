@@ -74,6 +74,24 @@ pub struct LiveSnapshot {
     /// project name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_probes: BTreeMap<String, LiveMcpProbe>,
+    /// The MCP servers the user deleted while this daemon runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_removed: Vec<LiveMcpRemoval>,
+}
+
+/// An MCP server the user deleted from the agent's settings. The nodes that had it loaded keep it
+/// until their agent starts again: `loaded` holds each one's execution then, by agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveMcpRemoval {
+    pub key: crate::domain::McpServerKey,
+    pub loaded: BTreeMap<String, u64>,
+}
+
+impl LiveMcpRemoval {
+    /// Whether the node `agent` reported `server` at `generation` from before it was deleted.
+    pub fn hides(&self, agent: &str, generation: u64, server: &crate::domain::McpServerState) -> bool {
+        self.loaded.get(agent) == Some(&generation) && self.key.names(server)
+    }
 }
 
 /// A check of a project's MCP servers: Claude started in the project, asked for nothing.

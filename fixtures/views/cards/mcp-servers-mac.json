@@ -4,9 +4,10 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "mac",
-  "version": "v9211c51237a33798",
+  "version": "v7eafba47789aafa1",
   "cursor": "cursor-1",
   "title": "MCP servers",
+  "summary": "9 servers · 3 need sign-in",
   "status": {
     "version": "ve4008980d1dbc4ce",
     "summary": "2 questions · 3 to read · 2 nodes working",
@@ -155,6 +156,25 @@
               "enabled": true,
               "stamp": "Signed out",
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-261a33ad2940f5cd@6",
+              "label": "Delete",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Delete github?",
+                "message": "Alondra deletes it from your Claude Code settings, for every project. Tasks that already use it keep it until they start again.",
+                "button": "Delete"
+              },
+              "enabled": true,
+              "stamp": "Deleted",
+              "resolves_card": true
             }
           ]
         },
@@ -193,6 +213,25 @@
                 }
               },
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-2696df8ba5973213@6",
+              "label": "Delete",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Delete linear?",
+                "message": "Alondra deletes it from your Claude Code settings, for every project. Tasks that already use it keep it until they start again.",
+                "button": "Delete"
+              },
+              "enabled": true,
+              "stamp": "Deleted",
+              "resolves_card": true
             }
           ]
         },
@@ -209,7 +248,28 @@
             }
           ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_remove:mcp-server-d70fca280fdb7759@6",
+              "label": "Delete",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Delete notion?",
+                "message": "Alondra deletes it from your Claude Code settings, for every project. Tasks that already use it keep it until they start again.",
+                "button": "Delete"
+              },
+              "enabled": true,
+              "stamp": "Deleted",
+              "resolves_card": true
+            }
+          ]
         },
         {
           "type": "row",
@@ -224,7 +284,28 @@
             }
           ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_remove:mcp-server-b8475db4bb355e28@6",
+              "label": "Delete",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Delete revenuecat?",
+                "message": "Alondra deletes it from your Claude Code settings, for every project. Tasks that already use it keep it until they start again.",
+                "button": "Delete"
+              },
+              "enabled": true,
+              "stamp": "Deleted",
+              "resolves_card": true
+            }
+          ]
         }
       ],
       "style": "list"
@@ -322,7 +403,7 @@
           "id": "mcp-server-6a1eff41a1ccc3b6",
           "icon": "machine",
           "title": "db",
-          "subtitle": "Project settings\nUsed by «Wire the badge after the review»",
+          "subtitle": "Your settings for this project\nUsed by «Wire the badge after the review»",
           "badges": [
             {
               "text": "Connected",
@@ -351,6 +432,25 @@
                 }
               },
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-6a1eff41a1ccc3b6.mcp-project-85da55e4e72db083@6",
+              "label": "Delete",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Delete db?",
+                "message": "Alondra deletes it from your Claude Code settings for quill. Tasks that already use it keep it until they start again.",
+                "button": "Delete"
+              },
+              "enabled": true,
+              "stamp": "Deleted",
+              "resolves_card": true
             }
           ]
         }

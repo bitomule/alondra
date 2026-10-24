@@ -285,7 +285,7 @@ impl LocalActionResource {
             Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
             | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves => add(Self::AccountSettings, true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
-            Verb::McpSignOut | Verb::McpCheck => add(Self::Mcp(action.subject.clone()), true),
+            Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
             _ => {},
         }
         keys.into_iter().collect()
@@ -355,7 +355,7 @@ fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
-        Verb::McpSignOut | Verb::McpCheck | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
+        Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
         | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves)
 }
 
@@ -474,6 +474,7 @@ async fn execute_external(
         Verb::RemoveRule => "Removed",
         Verb::McpSignOut => "Signed out",
         Verb::McpCheck => "Checking",
+        Verb::McpRemove => "Deleted",
         Verb::AccountEnable => "Turned on",
         Verb::AccountDisable => "Turned off",
         Verb::AccountRemove => "Removed",
@@ -492,7 +493,7 @@ async fn execute_external(
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
         Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado",
-        Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando",
+        Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
         Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado", _ => stamp,
     }} else { stamp };
@@ -757,6 +758,22 @@ async fn execute_external(
                 client.feeds.wake();
             }
             Ok(to_applied(200, json!({"checking": project.name})))
+        }
+        Verb::McpRemove => {
+            let (_, projects, _) = client.project_list();
+            let Some((backend, _)) = domain.sdk() else {
+                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
+            };
+            let (nodes, probes, backend, subject) = (state.mcp_nodes(), client.mcp_probes.clone(), backend.clone(), action.subject.clone());
+            let removed = tokio::task::spawn_blocking(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &backend, &subject)).await?;
+            match removed {
+                Ok(server) => {
+                    client.feeds.wake();
+                    Ok(to_applied(200, json!({"removed": server})))
+                }
+                Err((name, refused @ crate::mcp_remove::Refused::Gone)) => Ok(no_longer_available(lang, &refused.message(name.as_deref().unwrap_or_default(), lang))),
+                Err((name, refused)) => Ok(error_value("conflict", &refused.message(name.as_deref().unwrap_or("this MCP server"), lang))),
+            }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
             let runtime = crate::domain_orchestrator::load(home)?;

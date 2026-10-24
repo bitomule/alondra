@@ -50,6 +50,9 @@ pub enum Verb {
     McpSignOut,
     /// Check the MCP servers of a project no node runs in, named by its target.
     McpCheck,
+    /// Delete an MCP server from the agent's settings, named by its target, and for one of a
+    /// project's own by the project's after a dot.
+    McpRemove,
     /// Turn an account on or off, take it away, or move it in the order, named by its id.
     AccountEnable,
     AccountDisable,
@@ -67,7 +70,7 @@ pub enum Verb {
     AccountMoves,
 }
 impl Verb {
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -105,6 +108,7 @@ impl Verb {
         Self::ForceStop,
         Self::McpSignOut,
         Self::McpCheck,
+        Self::McpRemove,
         Self::SetMergeMethod,
         Self::AccountEnable,
         Self::AccountDisable,
@@ -154,6 +158,7 @@ impl Verb {
             Self::ForceStop => "force_stop",
             Self::McpSignOut => "mcp_sign_out",
             Self::McpCheck => "mcp_check",
+            Self::McpRemove => "mcp_remove",
             Self::SetMergeMethod => "set_merge_method",
             Self::AccountEnable => "account_enable",
             Self::AccountDisable => "account_disable",

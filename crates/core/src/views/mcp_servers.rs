@@ -1,6 +1,7 @@
 //! The MCP servers screen: per project, each server its tasks' nodes use, how it is, where it is
 //! configured and which tasks use it, with what can be done about it now. A project no node runs
-//! in is checked on demand, by starting the agent there without asking it anything.
+//! in is checked on demand, by starting the agent there without asking it anything. A server in the
+//! user's own settings can be deleted from them; the rest are deleted where they are configured.
 use super::action_id::Verb;
 use super::text::{t, tf};
 use super::{common, Action, Icon, Item, Label, Lang, Link, LocalLink, RenderContext, Role, Style, Tone, View};
@@ -84,7 +85,35 @@ fn local_button(label: &str, local: LocalLink) -> Action {
     action
 }
 
-fn server_row(used: &Used<'_>, waiting: usize, context: &RenderContext<'_>) -> Item {
+/// Delete, for a server in the user's own settings: of every project, or of `project`'s.
+fn remove_action(server: &McpServerState, project: Option<&str>, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    if !server.traits.remove {
+        return None;
+    }
+    let target = McpServerKey::of(server).target();
+    let (subject, message) = match (server.traits.origin, project) {
+        (McpOrigin::UserSettings, _) => (target, t!(lang,
+            "Alondra deletes it from your Claude Code settings, for every project. Tasks that already use it keep it until they start again.",
+            "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.").to_owned()),
+        (McpOrigin::LocalSettings, Some(project)) => (format!("{target}.{}", project_target(project)), tf!(lang,
+            "Alondra deletes it from your Claude Code settings for {project}. Tasks that already use it keep it until they start again.",
+            "Alondra lo borra de tu configuración de Claude Code para {project}. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.")),
+        _ => return None,
+    };
+    let mut remove = common::action(Verb::McpRemove, &subject, context.domain.revision, t!(lang, "Delete", "Borrar"), Style::Destructive)?;
+    let name = &server.name;
+    remove.confirm = Some(super::Confirm {
+        title: tf!(lang, "Delete {name}?", "¿Borrar {name}?"),
+        message,
+        button: t!(lang, "Delete", "Borrar").into(),
+    });
+    remove.stamp = Some(t!(lang, "Deleted", "Borrado").into());
+    remove.resolves_card = true;
+    Some(remove)
+}
+
+fn server_row(used: &Used<'_>, waiting: usize, project: Option<&str>, context: &RenderContext<'_>) -> Item {
     let lang = context.lang;
     let server = used.first();
     let status = used.status();
@@ -139,6 +168,7 @@ fn server_row(used: &Used<'_>, waiting: usize, context: &RenderContext<'_>) -> I
         }
         McpStatus::Pending | McpStatus::Disabled | McpStatus::Unknown => {}
     }
+    row.actions.extend(remove_action(server, project, context));
     Item::Row(row)
 }
 
@@ -156,7 +186,7 @@ fn connect(row: &mut super::Row, target: &str, server: &str, connector: bool, la
 /// A server a check of a project found, with no node to act through.
 /// With `idle`, a server of the user's that no task uses: nothing can act on it from here, and the
 /// row says so.
-fn probed_row(server: &McpServerState, idle: bool, context: &RenderContext<'_>) -> Item {
+fn probed_row(server: &McpServerState, idle: bool, context: &RenderContext<'_>) -> super::Row {
     let lang = context.lang;
     let mut facts = vec![];
     if let Some(origin) = origin_text(server.traits.origin, lang) {
@@ -175,7 +205,7 @@ fn probed_row(server: &McpServerState, idle: bool, context: &RenderContext<'_>) 
         (!subtitle.is_empty()).then_some(subtitle));
     row.link = None;
     row.badges.push(status_label(server.status, false, server.traits.connect != McpConnect::None, lang));
-    Item::Row(row)
+    row
 }
 
 /// A server that is the user's own wherever the agent runs, as its provider says; every other one is
@@ -212,7 +242,8 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
     let mut projects: BTreeMap<String, Vec<Used<'_>>> = BTreeMap::new();
     for node in context.index.mcp_nodes() {
         let project = project_of(&node.task, &node.agent, context).unwrap_or_else(|| other.clone());
-        for server in node.servers.iter().filter(|server| server.name != crate::domain::ALONDRA_MCP_SERVER) {
+        let removed = |server: &McpServerState| context.live.mcp_removed.iter().any(|removal| removal.hides(&node.agent.0, node.generation, server));
+        for server in node.servers.iter().filter(|server| server.name != crate::domain::ALONDRA_MCP_SERVER && !removed(server)) {
             let used = if personal(server) { &mut yours } else { projects.entry(project.clone()).or_default() };
             let key = McpServerKey::of(server);
             let open = node.signing_in.contains(&server.name);
@@ -230,12 +261,14 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
         let listed = yours.iter().any(|used| used.key.names(server))
             || checked.iter().any(|item| matches!(item, Item::Row(row) if row.title == server.name));
         if !listed {
-            checked.push(probed_row(server, true, context));
+            let mut row = probed_row(server, true, context);
+            row.actions.extend(remove_action(server, None, context));
+            checked.push(Item::Row(row));
         }
     }
     if !yours.is_empty() || !checked.is_empty() {
         yours.sort_by(|a, b| a.key.cmp(&b.key));
-        let mut rows: Vec<Item> = yours.iter().map(|used| server_row(used, context.index.mcp_waiting_for(&used.key).count(), context)).collect();
+        let mut rows: Vec<Item> = yours.iter().map(|used| server_row(used, context.index.mcp_waiting_for(&used.key).count(), None, context)).collect();
         rows.extend(checked);
         view.sections.push(list(common::section("yours", Some(t!(lang, "Your servers", "Tus servidores").into()), rows)));
     }
@@ -245,7 +278,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
         servers.sort_by(|a, b| a.key.cmp(&b.key));
         let rows = servers.iter().map(|used| {
             let waiting = context.index.mcp_waiting_for(&used.key).count();
-            server_row(used, waiting, context)
+            server_row(used, waiting, (project != other).then_some(project.as_str()), context)
         }).collect();
         view.sections.push(list(common::section(&format!("project:{project}"), Some(project), rows)));
     }
@@ -277,12 +310,10 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
             row.actions.push(check);
         }
         if let Some(servers) = servers {
-            row.children = servers.into_iter().filter_map(|server| match probed_row(server, false, context) {
-                Item::Row(mut child) => {
-                    child.depth = 1;
-                    Some(child)
-                }
-                _ => None,
+            row.children = servers.into_iter().map(|server| {
+                let mut child = probed_row(server, false, context);
+                child.depth = 1;
+                child
             }).collect();
         }
         idle.push(Item::Row(row));
@@ -296,6 +327,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
         }));
         view.sections.push(list(common::section("idle_projects", Some(t!(lang, "Other projects", "Otros proyectos").into()), idle)));
     }
+    view.summary = Some(summary(&view, lang));
     if view.sections.is_empty() {
         view.empty = Some(super::Notice {
             text: t!(lang, "No task uses an MCP server now", "Ahora ninguna tarea usa un servidor MCP").into(),
@@ -304,4 +336,27 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
         });
     }
     view
+}
+
+/// How many servers the screen lists and how many wait for the user to sign in to them.
+fn summary(view: &View, lang: Lang) -> String {
+    let servers: Vec<&super::Row> = view.sections.iter().flat_map(|section| {
+        let idle = section.id == "idle_projects";
+        section.items.iter().filter_map(|item| match item {
+            Item::Row(row) => Some(row),
+            _ => None,
+        }).flat_map(move |row| if idle { row.children.iter().collect::<Vec<_>>() } else { vec![row] })
+    }).collect();
+    let needs = servers.iter().filter(|row| row.badges.first().is_some_and(|badge| badge.tone == Tone::YourTurn)).count();
+    let count = servers.len();
+    let listed = match count {
+        0 => return t!(lang, "None in use", "Ninguno en uso").into(),
+        1 => t!(lang, "1 server", "1 servidor").to_owned(),
+        count => tf!(lang, "{count} servers", "{count} servidores"),
+    };
+    match needs {
+        0 => listed,
+        1 => format!("{listed} · {}", t!(lang, "1 needs sign-in", "1 pide iniciar sesión")),
+        needs => format!("{listed} · {}", tf!(lang, "{needs} need sign-in", "{needs} piden iniciar sesión")),
+    }
 }

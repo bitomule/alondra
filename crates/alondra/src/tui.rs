@@ -2600,7 +2600,7 @@ impl App {
             }
             "settings" | "ajustes" | "mcp" => {
                 self.reader = None;
-                self.open_mcp_servers();
+                self.open_mcp_servers(line == "mcp");
             }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;

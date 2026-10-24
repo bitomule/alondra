@@ -840,7 +840,7 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.mcp_servers.as_mut() else { return };
-    let title = match screen.general.is_some() || screen.accounts.is_some() {
+    let title = match !screen.detail {
         true => tr!("Settings", "Ajustes").to_owned(),
         false => format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP"))),
     };

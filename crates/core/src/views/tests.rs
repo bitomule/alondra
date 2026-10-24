@@ -7258,6 +7258,7 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
         let (scope, origin, connect) = match source {
             "claudeai" => (McpScope::User, McpOrigin::Connector, McpConnect::Connector),
             "user" => (McpScope::User, McpOrigin::UserSettings, McpConnect::None),
+            "local" => (McpScope::Project, McpOrigin::LocalSettings, McpConnect::None),
             "plugin" => (McpScope::User, McpOrigin::Plugin, McpConnect::None),
             _ => (McpScope::Project, McpOrigin::ProjectSettings, McpConnect::None),
         };
@@ -7265,7 +7266,7 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
         let connect = if remote { McpConnect::SignIn } else { connect };
         McpServerState {
             name: name.into(), status, error: error.map(Into::into), source: Some(source.into()), transport: Some(transport.into()),
-            url: url.map(Into::into), traits: McpTraits { scope, origin, connect, reconnect: true, sign_out: remote && source != "claudeai" },
+            url: url.map(Into::into), traits: McpTraits { scope, origin, connect, reconnect: true, sign_out: remote && source != "claudeai", remove: matches!(source, "user" | "local") },
         }
     };
     let linear = |status| server("linear", status, "http", "user", Some("https://mcp.linear.app/mcp"), None);
@@ -7308,13 +7309,16 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
 #[test]
 fn mcp_servers_views_match_goldens() {
     let (state, live) = mcp_servers_fixture();
+    let mut rendered = vec![];
     for (filename, client, lang) in MCP_SERVERS_GOLDENS {
         let expected = match filename {
             "mcp-servers-ios.json" => include_str!("../../../../fixtures/views/cards/mcp-servers-ios.json"),
             "mcp-servers-ios-es.json" => include_str!("../../../../fixtures/views/cards/mcp-servers-ios-es.json"),
             _ => include_str!("../../../../fixtures/views/cards/mcp-servers-mac.json"),
         };
-        let actual = render(&state, &live, client, lang, "mcp_servers", "2026-09-30T10:00:00Z");
+        rendered.push((filename, render(&state, &live, client, lang, "mcp_servers", "2026-09-30T10:00:00Z"), expected));
+    }
+    for (filename, actual, expected) in rendered {
         assert_golden(filename, &actual, expected);
     }
 }
@@ -7343,11 +7347,12 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
     let linear = row("yours", "linear");
     assert_eq!(linear.badges[0].text, "Necesita iniciar sesión");
     assert_eq!(linear.subtitle.as_deref(), Some("Tu configuración\nLo usa «Build the importer»"), "where it comes from, then who uses it");
-    assert_eq!(linear.actions.iter().map(|a| format!("{:?}", a.link)).collect::<Vec<_>>(),
-        [format!("Some(Local {{ local: McpSignIn {{ card: \"{target}\", server: \"linear\" }} }})")],
-        "a server that needs a sign-in has one thing to do: connect it");
-    assert_eq!((row("yours", "notion").badges[0].text.clone(), labels(&row("yours", "notion"))), ("Iniciando sesión".to_owned(), vec![]),
-        "a sign-in in progress offers nothing else to do");
+    assert_eq!(format!("{:?}", linear.actions[0].link),
+        format!("Some(Local {{ local: McpSignIn {{ card: \"{target}\", server: \"linear\" }} }})"),
+        "a server that needs a sign-in has one thing to do first: connect it");
+    assert_eq!(labels(&linear), ["Conectar", "Borrar"], "one of the user's own settings can also be deleted");
+    assert_eq!((row("yours", "notion").badges[0].text.clone(), labels(&row("yours", "notion"))), ("Iniciando sesión".to_owned(), vec!["Borrar".to_owned()]),
+        "a sign-in in progress offers nothing else to do but deleting the server");
     let sentry = row("project:alondra", "sentry");
     assert_eq!(sentry.badges[0].text, "No se pudo iniciar sesión", "a failed attempt reads as failed, even with a sign-in open");
     assert_eq!(sentry.subtitle.as_deref(), Some("Configuración del proyecto · 401 Unauthorized\nLo usa «Build the importer»"));
@@ -7357,13 +7362,13 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
     assert_eq!(row("yours", "claude.ai Gmail").subtitle.as_deref(), Some("Conector de tu cuenta\nLo usa «Build the importer»"));
 
     let github = row("yours", "github");
-    assert_eq!((github.badges[0].text.as_str(), labels(&github)), ("Conectado", vec!["Reconectar".to_owned(), "Cerrar sesión".to_owned()]));
+    assert_eq!((github.badges[0].text.as_str(), labels(&github)), ("Conectado", vec!["Reconectar".to_owned(), "Cerrar sesión".to_owned(), "Borrar".to_owned()]));
     let sign_out = github.actions.iter().find(|a| a.label == "Cerrar sesión").unwrap();
     let github_target = McpServerKey { name: "github".into(), url: Some("https://api.githubcopilot.com/mcp".into()) }.target();
     assert_eq!(sign_out.id, format!("mcp_sign_out:{github_target}@{}", state.revision));
     assert_eq!(sign_out.confirm.as_ref().map(|c| c.title.as_str()), Some("¿Cerrar sesión en github?"));
     let revenuecat = row("yours", "revenuecat");
-    assert!(revenuecat.actions.is_empty(), "found by a check, with no task to act through: only its state");
+    assert_eq!(labels(&revenuecat), ["Borrar"], "found by a check, with no task to act through: only deleting it from the user's settings");
     assert_eq!(revenuecat.subtitle.as_deref(), Some("Tu configuración\nAhora no lo usa ninguna tarea: podrás conectarlo cuando alguna lo use"),
         "a server that cannot be connected from here says why and what to do");
     assert!(view.sections.iter().all(|section| section.style == Some(SectionStyle::List)), "every section is a settings list");
@@ -7386,7 +7391,56 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
     assert_eq!((blurcamera.subtitle.as_deref(), blurcamera.actions.len()), (Some("Checking…"), 0), "no second check while one runs");
 
     let empty = render(&DomainState::new("test-epoch"), &LiveSnapshot::default(), Client::Tui, Lang::En, "mcp_servers", "");
+    assert_eq!(empty.summary.as_deref(), Some("None in use"));
     assert_eq!(empty.empty.map(|notice| notice.text), Some("No task uses an MCP server now".into()));
+}
+
+#[test]
+fn only_a_server_in_the_user_s_own_settings_offers_delete_and_says_what_it_deletes() {
+    use crate::domain::McpServerKey;
+    let (state, live) = mcp_servers_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::Es, "mcp_servers", "");
+    let rows: Vec<&Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+    let deletes = |row: &&Row| row.actions.iter().find(|action| action.label == "Borrar").cloned();
+    let offered: Vec<&str> = rows.iter().filter(|row| deletes(row).is_some()).map(|row| row.title.as_str()).collect();
+    assert_eq!(offered, ["github", "linear", "notion", "revenuecat", "db"],
+        "the user's and their project's own: never a repo's .mcp.json (files, sentry), a connector (Gmail) or a plugin");
+
+    let github = deletes(&rows.iter().find(|row| row.title == "github").unwrap()).unwrap();
+    let github_target = McpServerKey { name: "github".into(), url: Some("https://api.githubcopilot.com/mcp".into()) }.target();
+    assert_eq!(github.id, format!("mcp_remove:{github_target}@{}", state.revision));
+    assert_eq!((github.style, github.resolves_card, github.stamp.as_deref()), (Style::Destructive, true, Some("Borrado")),
+        "red, and the row goes the moment it is confirmed");
+    let confirm = github.confirm.unwrap();
+    assert_eq!(confirm.title, "¿Borrar github?");
+    assert_eq!(confirm.message, "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.");
+
+    let db = deletes(&rows.iter().find(|row| row.title == "db").unwrap()).unwrap();
+    let db_target = McpServerKey { name: "db".into(), url: None }.target();
+    assert_eq!(db.id, format!("mcp_remove:{db_target}.{}@{}", mcp_servers::project_target("quill"), state.revision),
+        "a project's own server names its project");
+    assert_eq!(db.confirm.unwrap().message, "Alondra lo borra de tu configuración de Claude Code para quill. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.");
+    assert_eq!(view.summary.as_deref(), Some("9 servidores · 3 piden iniciar sesión"),
+        "every server listed, a checked project's included, and those waiting for a sign-in");
+    let english = render(&state, &live, Client::Mac, Lang::En, "mcp_servers", "");
+    assert_eq!(english.summary.as_deref(), Some("9 servers · 3 need sign-in"));
+}
+
+#[test]
+fn a_deleted_server_leaves_the_screen_until_a_node_that_starts_again_reports_it() {
+    use crate::domain::McpServerKey;
+    use crate::views::LiveMcpRemoval;
+    let (mut state, mut live) = mcp_servers_fixture();
+    let github = McpServerKey { name: "github".into(), url: Some("https://api.githubcopilot.com/mcp".into()) };
+    live.mcp_removed.push(LiveMcpRemoval { key: github, loaded: [("queued".to_owned(), 1)].into() });
+    let titles = |state: &DomainState, live: &LiveSnapshot| -> Vec<String> {
+        let view = render(state, live, Client::Ios, Lang::En, "mcp_servers", "");
+        view.sections.iter().find(|section| section.id == "yours").unwrap().items.iter()
+            .filter_map(|item| match item { Item::Row(row) => Some(row.title.clone()), _ => None }).collect()
+    };
+    assert!(!titles(&state, &live).contains(&"github".to_owned()), "the node that still has it loaded no longer lists it");
+    state.mcp.get_mut(&crate::domain::AgentId::from("queued")).unwrap().generation = 2;
+    assert!(titles(&state, &live).contains(&"github".to_owned()), "its agent started again and still has it: it was added back");
 }
 
 const ACCOUNTS_GOLDENS: [(&str, Client, Lang); 4] = [

@@ -117,6 +117,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         notices: vec![],
         service: None,
         first_cards,
+        summary: None,
     })
 }
 /// What a waiting card asks of the user: an answer ("question") or only to be read ("read").

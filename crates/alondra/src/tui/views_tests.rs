@@ -461,7 +461,7 @@ fn mcp_servers_open() -> App {
     let mut app = app();
     app.screen = Screen::Inbox;
     press(&mut app, KeyCode::Char(','));
-    assert!(app.mcp_servers.is_some(), ", opens Settings › MCP servers from any screen");
+    assert!(app.mcp_servers.is_some(), ", opens Settings from any screen");
     let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("mcp-servers-ios.json")).unwrap();
     app.on_msg(Msg::ViewCard { key: "mcp_servers".into(), result: Ok(view) });
     app
@@ -474,10 +474,11 @@ fn settings_open_on_general_where_the_merge_method_set_in_settings_is_picked_wit
     let machine: ViewDocument = serde_json::from_value(super::parity::view_fixture("machine-settings-ios.json")).unwrap();
     app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
     let screen = drawn(&mut app, 140, 60);
-    for shown in ["GENERAL", "PR merges", "Squash and merge · if the repository allows it", "1 Change…", "Nodes at once", "MCP SERVERS", "linear  Needs sign-in"] {
+    for shown in ["GENERAL", "PR merges", "Squash and merge · if the repository allows it", "1 Change…", "Nodes at once", "MCP SERVERS", "9 servers · 3 need sign-in"] {
         assert!(screen.contains(shown), "{shown}: {screen}");
     }
-    assert!(screen.find("PR merges") < screen.find("linear"), "General comes first: {screen}");
+    assert!(!screen.contains("linear"), "the servers themselves are on their own screen: {screen}");
+    assert!(screen.find("PR merges") < screen.find("MCP SERVERS"), "General comes first: {screen}");
     assert_eq!(app.mcp_servers.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("merge_method"));
 
     press(&mut app, KeyCode::Enter);
@@ -504,6 +505,11 @@ fn settings_open_on_general_where_the_merge_method_set_in_settings_is_picked_wit
 fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one_s_buttons() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = mcp_servers_open();
+    assert!(app.mcp_servers.as_ref().unwrap().on_servers_row(), "with nothing else loaded, the MCP servers' row is the one selected");
+    let settings = drawn(&mut app, 140, 60);
+    assert!(settings.contains("Enter open") && !settings.contains("Settings ›"), "{settings}");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.mcp_servers.as_ref().unwrap().detail, "Enter on the row opens the MCP servers' screen");
     let screen = app.mcp_servers.as_mut().unwrap();
     screen.sel = screen.rows().iter().position(|row| row.title == "linear").expect("linear");
     let screen = drawn(&mut app, 140, 60);
@@ -525,8 +531,39 @@ fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one
     assert_eq!(app.modal.as_ref().map(|modal| modal.title.as_str()), Some("Sign out of github?"), "signing out asks first");
     press(&mut app, KeyCode::Esc);
     assert!(app.mcp_servers.is_some());
+
+    select(&mut app, "linear");
+    let deletes = drawn(&mut app, 140, 60);
+    assert!(deletes.contains("1 Connect   2 Delete"), "{deletes}");
+    press(&mut app, KeyCode::Char('2'));
+    let modal = app.modal.as_ref().expect("deleting asks first");
+    assert_eq!((modal.title.as_str(), modal.destructive), ("Delete linear?", true));
+    assert!(modal.body.contains("Tasks that already use it keep it until they start again"), "{}", modal.body);
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(sent.0, "/actions");
+    assert!(sent.1["action_id"].as_str().is_some_and(|id| id.starts_with("mcp_remove:mcp-server-")), "{sent:?}");
+
+    press(&mut app, KeyCode::Esc);
+    let screen = app.mcp_servers.as_ref().expect("Esc goes back to Settings");
+    assert!(!screen.detail && screen.on_servers_row(), "on the row it came from");
     press(&mut app, KeyCode::Esc);
     assert!(app.mcp_servers.is_none());
+}
+
+#[test]
+fn colon_mcp_opens_the_mcp_servers_screen_directly() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let mut app = app();
+    app.screen = Screen::Inbox;
+    app.run_command("mcp");
+    let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("mcp-servers-ios-es.json")).unwrap();
+    app.on_msg(Msg::ViewCard { key: "mcp_servers".into(), result: Ok(view) });
+    let screen = drawn(&mut app, 140, 60);
+    assert!(screen.contains("Ajustes › Servidores MCP") && screen.contains("linear  Necesita iniciar sesión"), "{screen}");
+    press(&mut app, KeyCode::Esc);
+    let settings = drawn(&mut app, 140, 60);
+    assert!(settings.contains("SERVIDORES MCP") && settings.contains("9 servidores · 3 piden iniciar sesión"), "{settings}");
 }
 
 fn accounts_open(fixture: &str) -> App {
@@ -558,7 +595,7 @@ fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_the
         "1 Weight   2 Move up   3 Move down   4 Turn off", "MCP SERVERS"] {
         assert!(screen.contains(shown), "{shown}: {screen}");
     }
-    assert!(screen.find("Add an account") < screen.find("linear"), "the accounts come before the MCP servers: {screen}");
+    assert!(screen.find("Add an account") < screen.find("MCP SERVERS"), "the accounts come before the MCP servers: {screen}");
     assert!(!screen.contains("Remove"), "a node runs on Work, so it can't be removed: {screen}");
 
     press(&mut app, KeyCode::Char('1'));

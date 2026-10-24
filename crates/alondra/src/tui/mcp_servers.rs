@@ -1,16 +1,17 @@
 //! Settings, the terminal's settings screen (`,` or `:settings` from any screen). General first:
 //! this Mac's settings, the `settings` section of the machine view (how PRs merge, nodes at once),
 //! each picked from its menu. Then Claude accounts: each account with how it is and what it takes,
-//! how new work is spread, and adding one, whose sign-in runs on this screen. Then MCP servers: per
+//! how new work is spread, and adding one, whose sign-in runs on this screen. Then MCP servers, one
+//! row with how many there are, that opens their own screen (`:mcp` opens it directly): per
 //! project, each server its nodes use with how it is, and the projects no node runs in, each checked
 //! on demand. Its buttons are the view's: Connect opens the sign-in as a card's does, Reconnect,
-//! Sign out and Check go to the daemon.
+//! Sign out, Delete and Check go to the daemon.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use alondra_core::views::{Action, Item, Row, View};
+use alondra_core::views::{Action, Icon, Item, Row, View};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
@@ -21,6 +22,7 @@ pub const VIEW: &str = alondra_core::views::mcp_servers::KEY;
 pub const GENERAL: &str = "machine";
 pub const ACCOUNTS: &str = alondra_core::views::accounts::KEY;
 const GENERAL_SECTION: &str = "settings";
+const SERVERS_ROW: &str = "mcp_servers";
 const ACCENT: Color = Color::LightCyan;
 
 /// A line of the screen: a project's heading, what a section says of itself, or one of its rows.
@@ -39,6 +41,9 @@ pub struct McpServers {
     pub failed: Option<String>,
     pub sel: usize,
     pub scroll: usize,
+    /// The MCP servers' own screen, instead of Settings.
+    pub detail: bool,
+    servers: Option<Row>,
     /// What the user just picked on a General row, by the action's id: the row says it at once,
     /// until the Mac refuses it or a view of the Mac says how it is now.
     pub chosen: HashMap<String, Chosen>,
@@ -58,6 +63,9 @@ impl McpServers {
     }
 
     pub fn entries(&self) -> Vec<Entry<'_>> {
+        if self.detail {
+            return sections(self.view.as_ref());
+        }
         let mut entries = vec![];
         let general: Vec<&Row> = self.general.iter().flat_map(|view| &view.sections)
             .filter(|section| section.id == GENERAL_SECTION)
@@ -75,11 +83,38 @@ impl McpServers {
             entries.push(Entry::Group(tr!("Claude accounts", "Cuentas de Claude")));
             entries.extend(sections(self.accounts.as_ref()));
         }
-        if !entries.is_empty() && self.view.as_ref().is_some_and(|view| !view.sections.is_empty()) {
+        if let Some(servers) = &self.servers {
             entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
+            entries.push(Entry::Row(servers));
         }
-        entries.extend(sections(self.view.as_ref()));
         entries
+    }
+
+    /// Whether the selected row is the one that opens the MCP servers' screen.
+    pub fn on_servers_row(&self) -> bool {
+        !self.detail && self.selected().is_some_and(|row| row.id == SERVERS_ROW)
+    }
+
+    /// Opens the MCP servers' screen, or goes back from it to Settings, on its row.
+    pub fn show_detail(&mut self, detail: bool) {
+        self.detail = detail;
+        self.scroll = 0;
+        self.sel = match detail {
+            true => 0,
+            false => self.rows().iter().position(|row| row.id == SERVERS_ROW).unwrap_or(0),
+        };
+    }
+
+    /// The row Settings leads to the MCP servers with: what their view says of itself.
+    fn servers_row(view: Option<&View>) -> Row {
+        let title = match view {
+            Some(view) => view.summary.clone().unwrap_or_else(|| tr!("Open to see them", "Ábrelo para verlos").to_owned()),
+            None => tr!("Loading…", "Cargando…").to_owned(),
+        };
+        Row {
+            id: SERVERS_ROW.into(), link: None, icon: Icon::Machine, title, subtitle: None, badges: vec![], trailing: None, depth: 0,
+            struck: false, kind: None, children: vec![], folded: false, actions: vec![],
+        }
     }
 
     pub fn rows(&self) -> Vec<&Row> {
@@ -213,8 +248,8 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
 }
 
 impl App {
-    pub(super) fn open_mcp_servers(&mut self) {
-        self.mcp_servers = Some(McpServers::default());
+    pub(super) fn open_mcp_servers(&mut self, detail: bool) {
+        self.mcp_servers = Some(McpServers { detail, servers: Some(McpServers::servers_row(None)), ..McpServers::default() });
         self.load_mcp_servers();
         self.load_general();
         self.load_accounts();
@@ -299,9 +334,21 @@ impl App {
         self.load_general();
     }
 
+    /// Back: from the MCP servers' screen to Settings, and from Settings out.
     pub(super) fn close_mcp_servers(&mut self) {
-        self.mcp_servers = None;
-        self.sync_open_views();
+        match self.mcp_servers.as_mut() {
+            Some(screen) if screen.detail => screen.show_detail(false),
+            _ => {
+                self.mcp_servers = None;
+                self.sync_open_views();
+            }
+        }
+    }
+
+    pub(super) fn open_mcp_detail(&mut self) {
+        if let Some(screen) = self.mcp_servers.as_mut() {
+            screen.show_detail(true);
+        }
     }
 
     fn load_mcp_servers(&mut self) {
@@ -318,6 +365,7 @@ impl App {
         match result {
             Ok(view) => {
                 screen.view = Some(view.clone());
+                screen.servers = Some(McpServers::servers_row(Some(view)));
                 screen.failed = None;
                 screen.clamp();
                 self.sync_open_views();

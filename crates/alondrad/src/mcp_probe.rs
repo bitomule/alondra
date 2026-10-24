@@ -3,7 +3,8 @@
 //! called, and Claude keeps no session of it. Each check is the user's: nothing checks on its own.
 use crate::sdk_owner::SdkBackend;
 use alondra_core::domain::{McpServerState, McpStatus};
-use alondra_core::views::LiveMcpProbe;
+use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
+use alondra_foundation::McpOrigin;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -18,14 +19,39 @@ const FLAG: &str = "--mcp-probe";
 const DEADLINE: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: u64 = 512 * 1024;
 
+/// What the MCP servers screen knows beyond the domain while this daemon runs: each check, and the
+/// servers the user deleted (`mcp_remove`).
 #[derive(Default)]
 pub(crate) struct McpProbes {
     probes: Mutex<BTreeMap<String, LiveMcpProbe>>,
+    removed: Mutex<Vec<LiveMcpRemoval>>,
 }
 
 impl McpProbes {
     pub(crate) fn snapshot(&self) -> BTreeMap<String, LiveMcpProbe> {
         self.probes.lock().expect("MCP probes poisoned").clone()
+    }
+
+    pub(crate) fn removals(&self) -> Vec<LiveMcpRemoval> {
+        self.removed.lock().expect("MCP removals poisoned").clone()
+    }
+
+    /// Keeps that the user deleted a server: of `project`'s own settings, or of their own for every
+    /// project. The checks that found it there no longer list it.
+    pub(crate) fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
+        for (checked, probe) in self.probes.lock().expect("MCP probes poisoned").iter_mut() {
+            let origin = match project {
+                None => McpOrigin::UserSettings,
+                Some(project) if project == checked => McpOrigin::LocalSettings,
+                Some(_) => continue,
+            };
+            if let LiveMcpProbe::Checked { servers, .. } = probe {
+                servers.retain(|server| !removal.key.names(server) || server.traits.origin != origin);
+            }
+        }
+        let mut removed = self.removed.lock().expect("MCP removals poisoned");
+        removed.retain(|kept| kept.key != removal.key);
+        removed.push(removal);
     }
 
     /// Marks the project as being checked, unless it already is.
@@ -38,7 +64,7 @@ impl McpProbes {
         true
     }
 
-    fn finish(&self, project: &str, probe: LiveMcpProbe) {
+    pub(crate) fn finish(&self, project: &str, probe: LiveMcpProbe) {
         self.probes.lock().expect("MCP probes poisoned").insert(project.to_owned(), probe);
     }
 }

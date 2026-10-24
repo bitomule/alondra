@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "foundation",
-    srcs = ["src/lib.rs", "src/execution.rs"],
+    srcs = ["src/lib.rs", "src/execution.rs", "src/mcp.rs"],
     crate_name = "alondra_foundation",
     edition = "2024",
     version = "0.1.0",

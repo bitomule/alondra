@@ -4,9 +4,10 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "vccfab32c3ceca22e",
+  "version": "v9e5df7eff5eb5024",
   "cursor": "cursor-1",
   "title": "Servidores MCP",
+  "summary": "9 servidores · 3 piden iniciar sesión",
   "status": {
     "version": "vcd5734cedae79f4a",
     "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
@@ -155,6 +156,25 @@
               "enabled": true,
               "stamp": "Sesión cerrada",
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-261a33ad2940f5cd@6",
+              "label": "Borrar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Borrar github?",
+                "message": "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.",
+                "button": "Borrar"
+              },
+              "enabled": true,
+              "stamp": "Borrado",
+              "resolves_card": true
             }
           ]
         },
@@ -193,6 +213,25 @@
                 }
               },
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-2696df8ba5973213@6",
+              "label": "Borrar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Borrar linear?",
+                "message": "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.",
+                "button": "Borrar"
+              },
+              "enabled": true,
+              "stamp": "Borrado",
+              "resolves_card": true
             }
           ]
         },
@@ -209,7 +248,28 @@
             }
           ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_remove:mcp-server-d70fca280fdb7759@6",
+              "label": "Borrar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Borrar notion?",
+                "message": "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.",
+                "button": "Borrar"
+              },
+              "enabled": true,
+              "stamp": "Borrado",
+              "resolves_card": true
+            }
+          ]
         },
         {
           "type": "row",
@@ -224,7 +284,28 @@
             }
           ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "actions": [
+            {
+              "id": "mcp_remove:mcp-server-b8475db4bb355e28@6",
+              "label": "Borrar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Borrar revenuecat?",
+                "message": "Alondra lo borra de tu configuración de Claude Code, en todos tus proyectos. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.",
+                "button": "Borrar"
+              },
+              "enabled": true,
+              "stamp": "Borrado",
+              "resolves_card": true
+            }
+          ]
         }
       ],
       "style": "list"
@@ -322,7 +403,7 @@
           "id": "mcp-server-6a1eff41a1ccc3b6",
           "icon": "machine",
           "title": "db",
-          "subtitle": "Configuración del proyecto\nLo usa «Wire the badge after the review»",
+          "subtitle": "Tu configuración de este proyecto\nLo usa «Wire the badge after the review»",
           "badges": [
             {
               "text": "Conectado",
@@ -351,6 +432,25 @@
                 }
               },
               "resolves_card": false
+            },
+            {
+              "id": "mcp_remove:mcp-server-6a1eff41a1ccc3b6.mcp-project-85da55e4e72db083@6",
+              "label": "Borrar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Borrar db?",
+                "message": "Alondra lo borra de tu configuración de Claude Code para quill. Las tareas que ya lo usan lo mantienen hasta que vuelvan a arrancar.",
+                "button": "Borrar"
+              },
+              "enabled": true,
+              "stamp": "Borrado",
+              "resolves_card": true
             }
           ]
         }

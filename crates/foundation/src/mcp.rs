@@ -62,4 +62,8 @@ pub struct McpTraits {
     /// The agent can forget, and revoke, the sign-in it keeps for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sign_out: bool,
+    /// The user can delete it from the agent's configuration through Alondra: it is in their own
+    /// settings, not in a repository, a plugin, their account or their organization's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove: bool,
 }

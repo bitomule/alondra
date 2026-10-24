@@ -27,6 +27,7 @@ pub(super) fn view(
         notices: vec![],
         service: None,
         first_cards: vec![],
+        summary: None,
     }
 }
 

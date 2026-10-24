@@ -636,7 +636,7 @@ impl Native<'_> {
                 "type": "system", "subtype": "init", "session_id": self.session.session_id, "uuid": uuid()?,
                 "claude_code_version": VERSION, "model": "sandbox", "cwd": self.session.cwd,
                 "tools": ["Bash", "Read", "Write", "mcp__plugin_alondra_alondra__present_result", "mcp__plugin_alondra_alondra__ask"],
-                "mcp_servers": self.servers.statuses().iter().map(|server| json!({"name": server["name"], "status": server["status"]})).collect::<Vec<_>>(),
+                "mcp_servers": self.servers.statuses().iter().map(|server| json!({"name": server["name"], "status": server["status"], "source": server["source"]})).collect::<Vec<_>>(),
                 "permissionMode": "default", "slash_commands": [], "output_style": "default", "skills": ["alondra:alondra"],
                 "plugins": [], "apiKeySource": "none",
             }))?;

@@ -133,6 +133,8 @@ impl NodeMcp {
 pub struct McpNodeReading {
     pub task: TaskId,
     pub agent: AgentId,
+    /// The node's SDK execution the servers are of.
+    pub generation: u64,
     pub servers: Vec<McpServerState>,
     pub signing_in: Vec<String>,
 }
@@ -191,7 +193,7 @@ impl DomainState {
         self.tasks.values().filter(|task| !task.over()).filter_map(|task| {
             let agent = task.agent_id.clone()?;
             let node = self.mcp.get(&agent)?;
-            Some(McpNodeReading { task: task.id.clone(), agent, servers: node.servers.clone(), signing_in: node.sign_ins.keys().cloned().collect() })
+            Some(McpNodeReading { task: task.id.clone(), agent, generation: node.generation, servers: node.servers.clone(), signing_in: node.sign_ins.keys().cloned().collect() })
         }).collect()
     }
 

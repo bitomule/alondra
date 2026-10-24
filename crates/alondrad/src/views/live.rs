@@ -590,6 +590,7 @@ async fn gather_inner(
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
+        mcp_removed: keyed.mcp_removed,
     }
 }
 
@@ -607,6 +608,7 @@ struct Keyed {
     allowed_rules: Vec<alondra_core::views::LiveAllowedRule>,
     allow_always_missing: Vec<String>,
     mcp_probes: BTreeMap<String, alondra_core::views::LiveMcpProbe>,
+    mcp_removed: Vec<alondra_core::views::LiveMcpRemoval>,
 }
 
 impl Keyed {
@@ -622,6 +624,7 @@ impl Keyed {
         live.allowed_rules = self.allowed_rules;
         live.allow_always_missing = self.allow_always_missing;
         live.mcp_probes = self.mcp_probes;
+        live.mcp_removed = self.mcp_removed;
     }
 }
 
@@ -732,8 +735,8 @@ async fn gather_keyed(
         }
     }
     let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
-    let mcp_probes = if wants_mcp { client.mcp_probes.snapshot() } else { BTreeMap::new() };
-    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes }
+    let (mcp_probes, mcp_removed) = if wants_mcp { (client.mcp_probes.snapshot(), client.mcp_probes.removals()) } else { Default::default() };
+    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes, mcp_removed }
 }
 
 /// This Mac's rules «allow always», checked against their files only when its settings are on

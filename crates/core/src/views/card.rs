@@ -131,6 +131,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         notices: vec![],
         service: None,
         first_cards: vec![],
+        summary: None,
     })
 }
 
@@ -164,6 +165,7 @@ fn settled_view(key: String, settled: Settled, context: &RenderContext<'_>) -> V
         notices: vec![],
         service: None,
         first_cards: vec![],
+        summary: None,
     }
 }
 

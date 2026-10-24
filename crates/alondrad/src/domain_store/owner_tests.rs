@@ -879,7 +879,7 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
 fn mcp_report(status: &str) -> Observation {
     Observation::McpServers { servers: vec![alondra_provider_contract::McpServerReport {
         name: "linear".into(), status: status.into(), error: None, source: Some("user".into()),
-        transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_foundation::McpTraits { scope: alondra_foundation::McpScope::User, origin: alondra_foundation::McpOrigin::UserSettings, connect: alondra_foundation::McpConnect::SignIn, reconnect: true, sign_out: true },
+        transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_foundation::McpTraits { scope: alondra_foundation::McpScope::User, origin: alondra_foundation::McpOrigin::UserSettings, connect: alondra_foundation::McpConnect::SignIn, reconnect: true, sign_out: true, remove: true },
     }] }
 }
 /// Every byte under `root`, for whether something was ever written there.

@@ -27,6 +27,7 @@ pub(super) enum Act {
     RemoveRule,
     McpServers,
     CloseMcpServers,
+    OpenMcpDetail,
     McpAction(usize),
     Search,
     Quit,
@@ -427,7 +428,9 @@ impl App {
         if screen.rows().len() > 1 {
             t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
         }
-        if let Some(row) = screen.selected() {
+        if screen.on_servers_row() {
+            t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::OpenMcpDetail);
+        } else if let Some(row) = screen.selected() {
             for (index, action) in super::mcp_servers::actions(row).into_iter().enumerate() {
                 let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
                 if index == 0 {
@@ -591,8 +594,9 @@ impl App {
             Act::TaskRules(task) => self.open_rules(super::rules::Source::Task(task)),
             Act::CloseRules => self.close_rules(),
             Act::RemoveRule => self.remove_rule(),
-            Act::McpServers => self.open_mcp_servers(),
+            Act::McpServers => self.open_mcp_servers(false),
             Act::CloseMcpServers => self.close_mcp_servers(),
+            Act::OpenMcpDetail => self.open_mcp_detail(),
             Act::McpAction(index) => return self.mcp_server_action(index),
             Act::Search => {
                 self.search = Some(super::Search {

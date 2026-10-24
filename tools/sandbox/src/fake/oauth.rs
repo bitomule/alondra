@@ -8,6 +8,9 @@
 //! signed out: the session that signed in connects it, as every other one, once it connects it
 //! again. Clearing the sign-in forgets it
 //! for every session, and the session that cleared it reports the server failed until it connects again.
+//! A server's `source` (`user` unless the file says another, such as `local`, `project` or
+//! `plugin`) is the settings Claude lists it from; `claude mcp remove` takes one out of the file as
+//! Claude takes it out of its settings, and running sessions keep it until they start again.
 use std::{
     collections::BTreeSet,
     fs,
@@ -17,16 +20,44 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Fakes;
 use crate::sandbox::{hex, random};
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 struct Server {
     name: String,
     url: String,
+    #[serde(default = "user")]
+    source: String,
+}
+
+fn user() -> String {
+    "user".into()
+}
+
+/// `claude mcp remove --scope <scope> -- <name>`: what Claude Code writes, and its exit code.
+pub fn remove(fakes: &Fakes, scope: &str, name: &str) -> i32 {
+    let path = fakes.dir.join("mcp-servers.json");
+    let mut servers: Vec<Server> = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let before = servers.len();
+    servers.retain(|server| !(server.name == name && server.source == scope));
+    if servers.len() == before {
+        eprintln!("No MCP server named \"{name}\" in {scope} scope");
+        return 1;
+    }
+    match serde_json::to_vec_pretty(&servers).map_err(std::io::Error::other).and_then(|bytes| fs::write(&path, bytes)) {
+        Ok(()) => {
+            println!("Removed MCP server {name} from {scope} config");
+            0
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            1
+        }
+    }
 }
 
 pub struct Servers {
@@ -51,15 +82,15 @@ impl Servers {
 
     /// How every server is, as `mcp_status` and init list them.
     pub fn statuses(&self) -> Vec<Value> {
-        let mut listed = vec![json!({"name": "plugin:alondra:alondra", "status": "connected"})];
+        let mut listed = vec![json!({"name": "plugin:alondra:alondra", "status": "connected", "source": "plugin"})];
         for server in &self.servers {
             let config = json!({"type": "http", "url": server.url});
             if self.cleared.lock().is_ok_and(|cleared| cleared.contains(&server.name)) {
-                listed.push(json!({"name": server.name, "status": "failed", "error": "Authentication cleared", "scope": "user", "source": "user", "config": config}));
+                listed.push(json!({"name": server.name, "status": "failed", "error": "Authentication cleared", "scope": server.source, "source": server.source, "config": config}));
                 continue;
             }
             let status = if self.connected(&server.name) { "connected" } else { "needs-auth" };
-            listed.push(json!({"name": server.name, "status": status, "scope": "user", "source": "user", "config": config}));
+            listed.push(json!({"name": server.name, "status": status, "scope": server.source, "source": server.source, "config": config}));
         }
         listed
     }
