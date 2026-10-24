@@ -898,34 +898,57 @@ mod tests {
         crate::admission::decide(&head, 0, 4, &domain.live.machine_watch.mac(), 0, None, 0, now).is_err()
     }
 
+    /// The Mac the watcher samples: `at` and `under` are set by the test; `done` is the last
+    /// sample the watcher finished with, known when it asks for the next one.
+    struct Clock { at: Millis, under: bool, handed: Millis, done: Millis }
+
+    /// Samples every `SAMPLE` up to `to`, each one only once the watcher is done with the one before.
+    async fn sample_until(clock: &Mutex<Clock>, asked: &tokio::sync::Notify, to: Millis) {
+        loop {
+            let at = {
+                let mut clock = clock.lock().unwrap();
+                if clock.at >= to {
+                    return;
+                }
+                clock.at += SAMPLE;
+                clock.at
+            };
+            while clock.lock().unwrap().done != at {
+                asked.notified().await;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn sustained_memory_pressure_puts_no_card_and_no_push_while_the_nodes_are_held_and_resumed() {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("s1", "killed for lack of memory", 0, now_millis());
-        let clock = Arc::new(Mutex::new((0 as Millis, true)));
-        let reading = clock.clone();
+        let clock = Arc::new(Mutex::new(Clock { at: 0, under: true, handed: 0, done: 0 }));
+        let asked = Arc::new(tokio::sync::Notify::new());
+        let (reading, asking) = (clock.clone(), asked.clone());
         let told = Arc::new(Told(Mutex::new(vec![])));
         let watcher = tokio::spawn(watch(domain.clone(), move || {
             let mut clock = reading.lock().unwrap();
-            clock.0 += 10_000;
-            Some(pressed(clock.0, clock.1))
+            let at = clock.at;
+            let done = std::mem::replace(&mut clock.handed, at);
+            clock.done = done;
+            asking.notify_one();
+            (at != 0).then(|| pressed(at, clock.under))
         }, told.clone(), Duration::from_millis(1)));
 
-        let now = || clock.lock().unwrap().0;
-        until("a minute of pressure", || now() >= 2 * MIN).await;
-        assert!(holds(&domain, now()), "the gate holds starts while memory has no room");
-        until("an hour of pressure", || now() >= 60 * MIN).await;
-        assert!(holds(&domain, now()));
+        sample_until(&clock, &asked, 2 * MIN).await;
+        assert!(holds(&domain, 2 * MIN), "the gate holds starts while memory has no room");
+        sample_until(&clock, &asked, 60 * MIN).await;
+        assert!(holds(&domain, 60 * MIN));
         assert!(domain.live.machine_watch.incident().is_none());
         assert!(open_machine_cards(&domain).is_empty(), "{:?}", open_machine_cards(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "no push: {:?}", told.0.lock().unwrap());
         assert!(orchestrator_inbox(&domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&domain));
 
-        clock.lock().unwrap().1 = false;
-        let back = now();
-        until("a minute of room", || now() >= back + 2 * MIN).await;
+        clock.lock().unwrap().under = false;
+        sample_until(&clock, &asked, 62 * MIN).await;
         watcher.abort();
-        assert!(!holds(&domain, now()), "the gate lets nodes start and resume once memory is back");
+        assert!(!holds(&domain, 62 * MIN), "the gate lets nodes start and resume once memory is back");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
         let state = domain.state().unwrap();
         let cards = state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && matches!(card.payload, InteractionPayload::Question { .. })).count();
