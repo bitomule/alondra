@@ -187,9 +187,10 @@ impl SdkLaunches {
             .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{flag}=")).map(str::to_owned)))
     }
 
-    /// Every prompt the native Claudes got, in order.
+    /// Every prompt the native Claudes got, in order, besides the wake Alondra sends after a turn
+    /// that ended empty.
     pub(crate) fn prompts(&self) -> Vec<String> {
-        std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     /// Each native Claude the hosts started: its session, the one it resumed and its folder.
@@ -216,6 +217,19 @@ impl SdkLaunches {
     pub(crate) async fn until_answered(&self, task: &str) {
         self.until_turns_ended(task, 1).await;
     }
+}
+
+/// One move of the owner: send what the store issued, else read the host.
+fn advance(driver: &mut Driver) {
+    if driver.pending_permits() > 0 {
+        driver.step(&|| false).unwrap();
+    } else {
+        driver.observe().unwrap();
+    }
+}
+
+pub(crate) fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
+    prompts.filter(|prompt| prompt != alondra_core::domain::WAKE_INSTRUCTION).collect()
 }
 
 impl Drop for SdkLaunches {
@@ -429,16 +443,18 @@ impl Slice {
         }
     }
 
-    /// Reads the host until the task's lifecycle no longer waits for it.
+    /// Reads the host until the task's lifecycle no longer waits for it, sending what the store
+    /// issues meanwhile: the wake after an empty turn reaches Claude, whose next turn ends too.
     fn settle(&self, driver: &mut Driver) {
-        while driver.waits_for_host() {
-            driver.observe().unwrap();
+        while driver.pending_permits() > 0 || driver.waits_for_host() {
+            advance(driver);
         }
     }
 
+    /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     fn prompts(&self) -> Vec<String> {
         let path = PathBuf::from(format!("{}.prompts", self.capture.display()));
-        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        not_wakes(std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     fn observer(&self) -> Connection {
@@ -656,8 +672,12 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     let mut driver = slice.launch_working();
     let turns = |domain: &DomainRuntime| {
         let read = domain.read();
-        read.state().lifecycle_journal[&TaskId::from(TASK)].iter()
-            .filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { .. })).count()
+        let journal = &read.state().lifecycle_journal[&TaskId::from(TASK)];
+        let wakes: Vec<&String> = journal.iter().filter_map(|record| match record {
+            alondra_core::domain::LifecycleRecord::TurnEnded { wake: Some(wake), .. } => Some(wake),
+            _ => None,
+        }).collect();
+        journal.iter().filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { input, .. } if !wakes.contains(&input))).count()
     };
     assert_eq!(turns(&slice.domain), 1);
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
@@ -675,9 +695,8 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     driver.stop().unwrap();
 }
 
-// The node asks the user during its turn and the turn ends: the card that asks how it goes on
-// waits out of sight behind the node's question, the user's answer reaches Claude as its next
-// input, and that card goes with it.
+// The node asks the user during its turn and the turn ends: the turn waits on that question and no
+// card says it stopped; the user's answer reaches Claude as its next input and ends the wait.
 #[test]
 fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_the_answer_reaches_claude() {
     use alondra_core::domain::{CardKind, CardSpec, QuestionOption, Recipient, Scope};
@@ -696,7 +715,8 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     slice.settle(&mut driver);
     let inbox = |domain: &DomainRuntime| domain.read().index().waiting().iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     assert_eq!(inbox(&slice.domain), ["interaction:q-name"], "only the node's question waits for the user");
-    let behind = open_card(&slice.domain, TURN_ENDED_PREFIX).expect("the lifecycle still requires its card").id;
+    assert!(open_card(&slice.domain, TURN_ENDED_PREFIX).is_none(), "no card says it stopped");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::User("q-name".into())), "the turn waits on its question");
 
     answer(&slice.domain, &"q-name".into(), "short");
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
@@ -704,7 +724,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     slice.settle(&mut driver);
     let prompts = slice.prompts();
     assert!(prompts.last().is_some_and(|last| last.contains("Short.")), "{prompts:?}");
-    assert!(slice.domain.read().state().interactions[&behind].withdrawn, "the card behind the question went with the answer");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), None, "the answer ended the wait");
     driver.stop().unwrap();
 }
 
@@ -726,7 +746,7 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
         }
     });
     let crash = loop {
-        if let Err(crash) = catch_unwind(AssertUnwindSafe(|| driver.observe().unwrap())) {
+        if let Err(crash) = catch_unwind(AssertUnwindSafe(|| advance(&mut driver))) {
             break crash;
         }
     };
@@ -781,13 +801,13 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     let (mut driver, launch) = measured(&slice.domain, || slice.launch());
     eprintln!("launch: {launch:?}");
     let mut observations = vec![];
-    while driver.waits_for_host() {
+    while driver.pending_permits() == 0 && driver.waits_for_host() {
         let (_, work) = measured(&slice.domain, || driver.observe().unwrap());
         eprintln!("observation: {work:?}");
         observations.push(work);
     }
     let turn_end = observations.last().unwrap();
-    assert_eq!(turn_end.index_builds, 1, "the turn end publishes its card once");
+    assert_eq!(turn_end.index_builds, 1, "the turn end publishes the wake it sends once");
     let (traces, facts): (Vec<&Work>, Vec<&Work>) = observations.iter().partition(|work| work.writes == 0);
     assert_eq!(traces.len(), 5, "the native trace of the first prompt, queued and started, its title before init and two system messages no SDK release declares: {observations:?}");
     assert!(traces.iter().all(|work| work.index_builds == 0), "an observation that changes nothing for readers builds no index: {observations:?}");
@@ -1400,7 +1420,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
         }
     });
     let crash = loop {
-        if let Err(crash) = catch_unwind(AssertUnwindSafe(|| driver.observe().unwrap())) {
+        if let Err(crash) = catch_unwind(AssertUnwindSafe(|| advance(&mut driver))) {
             break crash;
         }
     };
@@ -1517,6 +1537,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     slice.settle(&mut driver);
     carry_on(&slice.domain, "Add the tests first stall-before-starting");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
+    while !driver.worker.readable(Duration::from_secs(1)).unwrap() {}
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
@@ -1972,7 +1993,7 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     let starts = slice.starts();
     assert_eq!(starts.len(), 2, "{starts:?}");
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
-    assert_eq!(starts[1]["history"], 1, "with the transcript of the first turn");
+    assert_eq!(starts[1]["history"], 2, "with the transcript of the first turn and of the one its wake opened");
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
@@ -2588,6 +2609,7 @@ fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_w
     let mut driver = slice.launch_with("foreground-command");
     slice.read_turn_result(&mut driver);
     assert_eq!(slice.observations_with("\"subtype\":\"task_notification\""), 1, "the command's work ended");
+    slice.settle(&mut driver);
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing waits for the command any more");
     let cards = Slice::read_cards(&slice.domain);
     assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
@@ -3682,7 +3704,8 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     let owner = Owner::spawn(adopted);
     slice.release_background_command();
     let reader = Arc::clone(&upgraded);
-    changed.wait_for(|_| lifecycle(&reader).activity() == ActivityView::Resting).await.unwrap();
+    let gone = |old: &[alondra_process_group::Member]| old.iter().all(|process| !alondra_process_group::alive(process).unwrap());
+    changed.wait_for(|_| lifecycle(&reader).activity() == ActivityView::Resting && gone(&old_host)).await.unwrap();
     let rested = Slice::read_cards(&upgraded).len();
     carry_on(&upgraded, "Add the tests first");
     changed.wait_for(|_| Slice::read_cards(&reader).len() > rested).await.unwrap();

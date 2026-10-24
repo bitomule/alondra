@@ -1497,13 +1497,17 @@ impl DomainState {
     }
     /// The titles of the Tasks `t` depends on that are not done yet, whatever its state says.
     pub fn unmet_dependencies(&self, t: &Task) -> Vec<String> {
+        self.unmet_dependency_ids(t).into_iter()
+            .map(|dep| self.tasks.get(dep).map_or_else(|| dep.0.clone(), |d| d.title.clone()))
+            .collect()
+    }
+    /// The tasks `t` still waits on, by id.
+    pub fn unmet_dependency_ids<'a>(&'a self, t: &'a Task) -> Vec<&'a TaskId> {
         let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| !self.landed(d)));
         let undelivered = t.delivered_dependencies.iter()
             .filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.final_presentation.is_none() || d.state == TaskState::Cancelled));
         let upstream = t.stack.iter().map(|s| &s.upstream_task).filter(|_| self.stack_ready(t).is_err());
-        undone.chain(undelivered).chain(upstream)
-            .map(|dep| self.tasks.get(dep).map_or_else(|| dep.0.clone(), |d| d.title.clone()))
-            .collect()
+        undone.chain(undelivered).chain(upstream).collect()
     }
     /// What a node is told when it presents a plan while its Task waits for others: the plan is
     /// not reviewed, and only the orchestrator ends a wait.
@@ -1779,7 +1783,6 @@ impl DomainState {
                 InteractionPayload::Question { answer: None, .. }
                     | InteractionPayload::ActionRequest { answer: None, .. }
             )
-            && !self.covered_by_recorded_wait(i)
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
         self.merged_delivery(p)
@@ -2268,6 +2271,7 @@ impl DomainState {
         let mut created = vec![];
         let mut lifecycles = Lifecycles::new();
         next.apply(actor, &envelope.command, &mut effects, &mut created, &mut lifecycles)?;
+        next.end_lapsed_awaits(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
         next.adopt_declared_post_merge(&mut lifecycles)?;

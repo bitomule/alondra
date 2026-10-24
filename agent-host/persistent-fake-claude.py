@@ -421,7 +421,10 @@ for raw in sys.stdin:
             for state in ('queued', 'completed'):
                 lifecycle(message, state)
             continue
-        if own_turn == 'next':
+        # Like a native Claude with nothing more to do: it answers Alondra's wake after an empty turn
+        # with another turn that ends the same way, whatever the next prompt is scripted to do.
+        wake = text.startswith('Your turn ended without a result') and len(pending) == 1
+        if own_turn == 'next' and not wake:
             own_turn_started(message)
             continue
         # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
@@ -434,6 +437,9 @@ for raw in sys.stdin:
             # Like the native Claude 2.1.291: system messages no SDK release declares yet.
             send(dict(type='system', subtype='dev_intent', session_id=session_id, uuid='00000000-0000-4000-8000-000000000104'))
             send(dict(type='system', subtype='future_subtype', session_id=session_id, uuid='00000000-0000-4000-8000-000000000105'))
+        if wake:
+            result(message)
+            continue
         if text.endswith('signed-out'):
             refused = 401
         elif text.endswith('overloaded'):

@@ -186,8 +186,7 @@ fn feedback_hands_back_an_accepted_delivery_a_question_followed_while_its_turn_e
     for (n, step) in [Step::Ask(2), Step::TurnEnded, Step::Answer(2), Step::Deliver(2), Step::Accept(2), Step::Ask(2)].iter().enumerate() {
         run(&mut s, step, n).unwrap_or_else(|error| panic!("{step:?} was refused: {error}"));
     }
-    let unheard: Vec<InteractionId> = s.lifecycle_of(&SDK.into()).unwrap().cards().into_iter().map(|(card, _)| card.clone()).collect();
-    assert!(!unheard.is_empty(), "the delivery stands over the card of the unheard turn");
+    assert!(s.lifecycle_of(&SDK.into()).unwrap().awaits().is_some(), "the delivery stands over the wait of the turn that ended on the question");
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "feedback".into(), expected_revision: s.revision,
         command: Command::SubmitFeedback {
@@ -198,7 +197,7 @@ fn feedback_hands_back_an_accepted_delivery_a_question_followed_while_its_turn_e
     s.execute(&user(), &envelope).unwrap();
     assert!(s.interactions[&delivery(SDK, 3)].withdrawn, "the question withdraws the delivery");
     assert_eq!(s.lifecycle_of(&SDK.into()).unwrap().phase(), alondra_domain::TaskPhase::InProgress);
-    assert!(unheard.iter().all(|card| !s.open(&s.interactions[card])), "the handed back delivery answers the unheard turn");
+    assert_eq!(s.lifecycle_of(&SDK.into()).unwrap().awaits(), None, "the handed back delivery is what the turn waited for");
     assert_eq!(s.kept_lifecycles_match_journals(), Ok(()));
 }
 

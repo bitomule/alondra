@@ -24,6 +24,7 @@ impl TaskLifecycle {
         let mut requested_card = None;
         let mut resting_card = None;
         let mut resume_instead = None;
+        let mut wake_instead = None;
         let mut ended_callbacks = Vec::new();
         let mut host_end = None;
         let mut cut_by_end = false;
@@ -172,7 +173,7 @@ impl TaskLifecycle {
                         execution.inbox.pop_front();
                         (BTreeSet::new(), pending.values())
                     }
-                    (Activity::Resting, Trigger::Unprompted) => (BTreeSet::new(), BTreeSet::new()),
+                    (Activity::Awaiting(_) | Activity::Resting, Trigger::Unprompted) => (BTreeSet::new(), BTreeSet::new()),
                     (Activity::InputPending(input), Trigger::Unprompted) => {
                         execution.inbox.push_front(input.clone());
                         (BTreeSet::new(), BTreeSet::new())
@@ -250,7 +251,7 @@ impl TaskLifecycle {
                     return Err(Refusal::UnknownObligation);
                 }
             }
-            RuntimeFact::TurnEnded { turn, unheard_card } => {
+            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits } => {
                 let Activity::Turn {
                     id,
                     work,
@@ -270,11 +271,23 @@ impl TaskLifecycle {
                     }
                 } else if !continuations.is_empty() {
                     Activity::Continuation(NonEmpty::new(continuations.clone())?)
+                } else if let Some(awaits) = awaits {
+                    match &awaits {
+                        Await::User(card) | Await::Orchestrator(card) => valid_id(&card.0)?,
+                        Await::Tasks(tasks) if tasks.iter().any(|task| *task == self.task) => return Err(Refusal::SelfDependency),
+                        Await::Tasks(_) | Await::Machine => {}
+                    }
+                    self.woken = None;
+                    Activity::Awaiting(awaits)
                 } else {
                     Activity::Resting
                 };
                 valid_id(&unheard_card.0)?;
+                if wake.as_ref().is_some_and(|input| self.settled.contains(input)) {
+                    return Err(Refusal::InvalidState);
+                }
                 resting_card = Some(unheard_card);
+                wake_instead = wake;
             }
             RuntimeFact::ConnectionLost { problem_card } => {
                 valid_id(&problem_card.0)?;
@@ -348,7 +361,7 @@ impl TaskLifecycle {
                         }
                         Activity::Continuation(NonEmpty::new(pending)?)
                     }
-                    Activity::Resting => {
+                    Activity::Awaiting(_) | Activity::Resting => {
                         Activity::Continuation(NonEmpty::new([Wake::Owned(continuation)])?)
                     }
                     Activity::InputPending(input) => Activity::InputPending(input.clone()),
@@ -427,7 +440,7 @@ impl TaskLifecycle {
             .iter()
             .any(|(_, reason)| *reason == WaitReason::Pause)
             || matches!(self.state, State::InProgress(Progress::Dependency { .. }));
-        if matches!(execution.activity, Activity::Resting)
+        if execution.activity.rests()
             && execution.resource == ResourceEvidence::Available
             && !held
         {
@@ -442,7 +455,11 @@ impl TaskLifecycle {
         {
             if let Some(input) = resume_instead.take() {
                 queue_input(&mut execution, input)?;
+            } else if let Some(input) = wake_instead.take_if(|_| self.woken.is_none()) {
+                queue_input(&mut execution, input.clone())?;
+                self.woken = Some(input);
             } else {
+                self.woken = None;
                 let id = resting_card
                     .clone()
                     .or_else(|| aborted_callback.as_ref().map(|(_, id)| id.clone()))
@@ -615,7 +632,7 @@ impl TaskLifecycle {
             | State::Completed
             | State::Cancelled => return Err(Refusal::InvalidState),
         }
-        if resume_instead.is_some() {
+        if resume_instead.is_some() || wake_instead.is_some() {
             return Err(Refusal::InvalidState);
         }
         Ok(())

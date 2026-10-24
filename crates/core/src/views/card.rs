@@ -1067,6 +1067,13 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.",
             "Claude Code terminó su turno como fallido. Dile cómo seguir, escríbele qué hacer o cancela la tarea.").into()));
     }
+    if interaction.card.why == crate::domain::TURN_ENDED_TWICE_WHY {
+        let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” ended two turns without delivering or asking: what next?",
+            "«{title}» acabó dos turnos sin entregar ni preguntar: ¿cómo sigue?"));
+        return Some((need, t!(lang,
+            "A turn of it ended without a result, a question or work of its own, Alondra told it so, and its next turn ended the same way. Tell it to go on, write to it what to do, or cancel the task.",
+            "Un turno acabó sin resultado, sin pregunta y sin trabajo propio en marcha, Alondra se lo dijo y el siguiente acabó igual. Dile que siga, escríbele qué hacer o cancela la tarea.").into()));
+    }
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped without delivering or asking: tell it how to go on", "«{title}» paró sin entregar ni preguntar: dile cómo seguir"));
     Some((need, t!(lang,
         "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.",

@@ -405,6 +405,42 @@ impl DrainRecord {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+pub(super) enum AwaitRecord {
+    User(String),
+    Orchestrator(String),
+    Machine,
+    Tasks(Vec<String>),
+}
+impl From<&Await> for AwaitRecord {
+    fn from(event: &Await) -> Self {
+        match event {
+            Await::User(card) => Self::User(card.0.clone()),
+            Await::Orchestrator(card) => Self::Orchestrator(card.0.clone()),
+            Await::Machine => Self::Machine,
+            Await::Tasks(tasks) => Self::Tasks(tasks.iter().map(|task| task.0.clone()).collect()),
+        }
+    }
+}
+impl AwaitRecord {
+    fn decode(self) -> Result<Await> {
+        Ok(match self {
+            AwaitRecord::User(card) => Await::User(InteractionId(card)),
+            AwaitRecord::Orchestrator(card) => Await::Orchestrator(InteractionId(card)),
+            AwaitRecord::Machine => Await::Machine,
+            AwaitRecord::Tasks(tasks) => {
+                Await::Tasks(Several::new(tasks.into_iter().map(TaskId)).ok_or(Error::CorruptJournal)?)
+            }
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub(super) enum TriggerRecord {
     Input(String),
     OwnedContinuation(String),
@@ -472,6 +508,10 @@ pub(super) enum FactRecord {
     TurnEnded {
         turn: String,
         unheard_card: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        awaits: Option<AwaitRecord>,
     },
     ConnectionLost {
         problem_card: String,
@@ -542,9 +582,11 @@ impl From<&RuntimeFact> for FactRecord {
             RuntimeFact::ContinuationConsumed { continuation } => Self::ContinuationConsumed {
                 continuation: continuation.as_str().to_owned(),
             },
-            RuntimeFact::TurnEnded { turn, unheard_card } => Self::TurnEnded {
+            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits } => Self::TurnEnded {
                 turn: turn.as_str().to_owned(),
                 unheard_card: unheard_card.0.clone(),
+                wake: wake.as_ref().map(|input| input.as_str().to_owned()),
+                awaits: awaits.as_ref().map(AwaitRecord::from),
             },
             RuntimeFact::ConnectionLost { problem_card } => Self::ConnectionLost {
                 problem_card: problem_card.0.clone(),
@@ -624,9 +666,11 @@ impl FactRecord {
                     continuation: ContinuationId::new(continuation).map_err(Error::from)?,
                 }
             }
-            FactRecord::TurnEnded { turn, unheard_card } => RuntimeFact::TurnEnded {
+            FactRecord::TurnEnded { turn, unheard_card, wake, awaits } => RuntimeFact::TurnEnded {
                 turn: TurnId::new(turn).map_err(Error::from)?,
                 unheard_card: InteractionId(unheard_card),
+                wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
+                awaits: awaits.map(AwaitRecord::decode).transpose()?,
             },
             FactRecord::ConnectionLost { problem_card } => RuntimeFact::ConnectionLost {
                 problem_card: InteractionId(problem_card),
@@ -798,6 +842,11 @@ pub(super) enum EventRecord {
         card: String,
         unheard_card: String,
     },
+    AwaitEnded {
+        unheard_card: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<String>,
+    },
     RequestControl {
         control: String,
         kind: ControlRecord,
@@ -946,6 +995,10 @@ impl From<&Event> for EventRecord {
             Event::Discard { card, unheard_card } => Self::Discard {
                 card: card.0.clone(),
                 unheard_card: unheard_card.0.clone(),
+            },
+            Event::AwaitEnded { unheard_card, wake } => Self::AwaitEnded {
+                unheard_card: unheard_card.0.clone(),
+                wake: wake.as_ref().map(|input| input.as_str().to_owned()),
             },
             Event::ResendUntaken { input, resend } => Self::ResendUntaken {
                 input: input.as_str().to_owned(),
@@ -1114,6 +1167,10 @@ impl EventRecord {
             EventRecord::Discard { card, unheard_card } => Event::Discard {
                 card: InteractionId(card),
                 unheard_card: InteractionId(unheard_card),
+            },
+            EventRecord::AwaitEnded { unheard_card, wake } => Event::AwaitEnded {
+                unheard_card: InteractionId(unheard_card),
+                wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
             },
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
                 input: InputId::new(input).map_err(Error::from)?,
@@ -1545,9 +1602,29 @@ mod tests {
                 fact: RuntimeFact::TurnEnded {
                     turn: TurnId::new("turn").unwrap(),
                     unheard_card: "unheard_card".into(),
+                    wake: None,
+                    awaits: None,
                 },
             },
         );
+        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: Some(InputId::new("wake").unwrap()) });
+        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: None });
+        for (wake, awaits) in [
+            (Some(InputId::new("wake").unwrap()), None),
+            (None, Some(Await::User("question".into()))),
+            (None, Some(Await::Orchestrator("message".into()))),
+            (None, Some(Await::Machine)),
+            (None, Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap()))),
+        ] {
+            roundtrip(
+                &current,
+                Event::Runtime {
+                    stamp: current.execution().unwrap().clone(),
+                    cursor: 1,
+                    fact: RuntimeFact::TurnEnded { turn: TurnId::new("turn").unwrap(), unheard_card: "unheard_card".into(), wake, awaits },
+                },
+            );
+        }
         roundtrip(
             &current,
             Event::Runtime {

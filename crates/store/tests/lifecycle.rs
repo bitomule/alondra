@@ -939,6 +939,8 @@ fn replay_preserves_own_background_work_as_working_while_permission_waits() {
         RuntimeFact::TurnEnded {
             turn: TurnId::new("turn").unwrap(),
             unheard_card: "not-created".into(),
+            wake: None,
+            awaits: None,
         },
     );
     let tx = fixture.transaction();
@@ -3118,7 +3120,7 @@ fn an_interrupt_whose_turn_ended_is_revoked_instead_of_claimed() {
     running_sdk(&mut fixture, &control_binding(every_control()));
     let permit = request(&mut fixture, "interrupt", Control::Interrupt { turn: Some(TurnId::new("root").unwrap()) }).unwrap().control_permits.pop().unwrap();
     fixture.card("task", "unheard");
-    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into(), wake: None, awaits: None });
     let mut tx = fixture.transaction();
     assert!(!tx.claim_control(permit).unwrap(), "nothing runs to interrupt");
     let committed = tx.commit().unwrap();
@@ -3134,7 +3136,7 @@ fn an_interrupt_of_the_wait_for_background_work_is_claimed() {
     running_sdk(&mut fixture, &control_binding(every_control()));
     fixture.runtime("task", RuntimeFact::WorkStarted { turn: TurnId::new("root").unwrap(), work: WorkId::new("child").unwrap() });
     fixture.card("task", "unheard");
-    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+    fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into(), wake: None, awaits: None });
     fixture.runtime("task", RuntimeFact::WorkEnded { work: WorkId::new("child").unwrap(), continuation: ContinuationId::new("wake").unwrap() });
     assert_eq!(fixture.transaction().load(&"task".into()).unwrap().activity(), ActivityView::Continuation);
     let permit = request(&mut fixture, "interrupt", Control::Interrupt { turn: None }).unwrap().control_permits.pop().unwrap();
@@ -3179,7 +3181,7 @@ fn compaction_is_an_input_staged_only_when_the_binding_can_compact() {
         let mut fixture = Fixture::new();
         running_sdk(&mut fixture, &binding);
         fixture.card("task", "unheard");
-        fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into() });
+        fixture.runtime("task", RuntimeFact::TurnEnded { turn: TurnId::new("root").unwrap(), unheard_card: "unheard".into(), wake: None, awaits: None });
         let before = (fixture.count("lifecycle_events"), fixture.count("lifecycle_dispatches"));
         let mut tx = fixture.transaction();
         let revision = tx.load(&"task".into()).unwrap().revision();

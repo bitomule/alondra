@@ -127,6 +127,7 @@ impl TaskLifecycle {
             }
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
             Event::Discard { card, unheard_card } => self.discard(card, unheard_card)?,
+            Event::AwaitEnded { unheard_card, wake } => self.await_ended(unheard_card, wake)?,
             Event::ResendUntaken { input, resend } => self.resend(&input, resend)?,
             Event::ResendDoubtful { input, resend } => {
                 self.resend(&input, resend)?;
@@ -563,7 +564,7 @@ impl TaskLifecycle {
                 };
                 let execution = session.execution_mut().ok_or(Refusal::InvalidState)?;
                 if execution.resource != ResourceEvidence::Available
-                    || !matches!(execution.activity, Activity::Resting)
+                    || !execution.activity.rests()
                 {
                     return Err(Refusal::InvalidState);
                 }
@@ -834,6 +835,39 @@ impl TaskLifecycle {
             return Err(Refusal::CorrelationMismatch);
         }
         self.leave_card(stage, cards, session, unheard)
+    }
+
+    fn await_ended(&mut self, unheard: InteractionId, wake: Option<InputId>) -> Result<(), Refusal> {
+        valid_id(&unheard.0)?;
+        if wake.as_ref().is_some_and(|input| self.settled.contains(input)) {
+            return Err(Refusal::InvalidState);
+        }
+        let execution = self.session_mut().ok_or(Refusal::InvalidState)?;
+        if !matches!(execution.activity, Activity::Awaiting(_)) {
+            return Err(Refusal::InvalidState);
+        }
+        execution.activity = Activity::Resting;
+        let State::InProgress(Progress::Executing { stage, execution }) = &self.state else {
+            return if wake.is_some() { Err(Refusal::InvalidState) } else { Ok(()) };
+        };
+        let (stage, mut execution) = (*stage, execution.0.clone());
+        let woken = match wake {
+            Some(_) if self.woken.is_some() => return Err(Refusal::InvalidState),
+            wake => wake,
+        };
+        self.state = match &woken {
+            Some(input) => {
+                queue_input(&mut execution, input.clone())?;
+                State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? })
+            }
+            None => State::InProgress(Progress::Waiting {
+                stage,
+                cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::User, callback: None }),
+                session: Session::Present(execution),
+            }),
+        };
+        self.woken = woken;
+        Ok(())
     }
 
     /// The task without the card it no longer waits on: the cards left, else what it goes on with,

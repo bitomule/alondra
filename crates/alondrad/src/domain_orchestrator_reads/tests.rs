@@ -145,9 +145,9 @@ fn apply(state: &mut DomainState, actor: Actor, command: Command) {
 }
 
 /// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
-/// and ended its turn. Its turn-ended card stayed out of David's sight, but the tasks_in_progress answer the
-/// orchestrator and Claude read listed it as an open question, “…” stopped without del…. A card
-/// the node's wait covers waits on nobody; once nothing covers it, it does.
+/// and ended its turn, and the tasks_in_progress answer the orchestrator and Claude read listed a
+/// stop card as an open question, “…” stopped without del…. The turn waits on the question and
+/// creates no card; once nothing explains the stop and the woken node stops again, the card is listed.
 #[test]
 fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_nothing_explains_the_stop() {
     use alondra_core::domain::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX};
@@ -169,11 +169,16 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_
             QuestionOption { id: "reset".into(), label: "Reset the keyboard".into(), description: None }],
         card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose what simpool does with the keyboard") });
     apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    let card = format!("{TURN_ENDED_PREFIX}t3-1-turn-1");
-    assert!(state.interactions.contains_key(&card.as_str().into()), "the lifecycle keeps its card, out of sight");
+    assert!(!state.interactions.contains_key(&format!("{TURN_ENDED_PREFIX}t3-1-turn-1").as_str().into()), "the turn waits on the question: no card says it stopped");
     let open = |state: &DomainState| -> Vec<String> { open_questions(state).iter().map(|q| q["id"].as_str().unwrap().to_owned()).collect() };
     assert_eq!(open(&state), ["q-keyboard"], "the node waits on David's answer, not on a stop");
 
     apply(&mut state, Actor::Agent { agent_id: "agent-b".into() }, Command::Withdraw { interaction_id: "q-keyboard".into() });
-    assert_eq!(open(&state), [card], "with nothing to wait for, the stop waits on someone");
+    assert!(open(&state).is_empty(), "with nothing to wait for, Alondra wakes the node first: {:?}", open(&state));
+    let Some(LifecycleRecord::AwaitEnded { wake: Some(wake), .. }) = state.lifecycle_journal[&TaskId::from("t3")].last().cloned() else { panic!("woken") };
+    apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: wake },
+    ] });
+    apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
+    assert_eq!(open(&state), [format!("{TURN_ENDED_PREFIX}t3-1-turn-2")], "the next empty turn waits on someone");
 }

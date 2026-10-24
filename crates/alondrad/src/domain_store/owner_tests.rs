@@ -714,36 +714,57 @@ fn pending_input(store: &mut DomainStore) -> InputId {
 /// The card the end of turn "turn-1" of the running execution would ask with; its `claude --bg`
 /// node was released, so the SDK's execution is the second.
 fn turn_ended_card() -> InteractionId {
-    InteractionId::from(format!("{TURN_ENDED_PREFIX}{TASK}-2-turn-1").as_str())
+    turn_ended_card_of("turn-1")
+}
+fn turn_ended_card_of(turn: &str) -> InteractionId {
+    InteractionId::from(format!("{TURN_ENDED_PREFIX}{TASK}-2-{turn}").as_str())
+}
+/// Ends the first turn of the running execution with nothing that explains its next step (the
+/// fixture's question withdrawn first), which wakes its node, and returns the normalizer of the turn that wake opens, `turn-2`, ending the same way.
+fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
+    let state = store.load().unwrap();
+    let withdraw = Command::Withdraw { interaction_id: "composite-card".into() };
+    store.execute_filling_revision(&agent(), &envelope(&state, "withdraw-composite", withdraw)).unwrap();
+    let input = pending_input(store);
+    let state = store.load().unwrap();
+    store
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(execution, 1), &Normalizer::Turn { input, work: false }, no_home(), false))
+        .unwrap();
+    let turn = TurnId::new("turn-2").unwrap();
+    Normalizer::Facts(vec![
+        Observation::TurnStarted { input: pending_input(store), turn: turn.clone() },
+        Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed },
+    ])
 }
 
-// 3d: a new task's turn ends with nothing that explains its next step. The raw observation, its
-// facts, the card that asks the user, the journal and the checkpoint commit together; readers see
-// the card before the acknowledgement; the same observation again adds nothing.
+// 3d: a new task's turn ends with nothing that explains its next step, and so does the turn the
+// wake opens. The raw observation, its facts, the card that asks the user, the journal and the
+// checkpoint commit together; readers see the card before the acknowledgement; the same
+// observation again adds nothing.
 #[test]
 fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_after_publication() {
     let (fixture, mut store, execution) = running();
-    let input = pending_input(&mut store);
+    let normalizer = woken(&mut store, &execution);
     let runtime = runtime(&fixture, store);
     let observer = observer(&fixture);
     let state = Arc::clone(runtime.read().state());
-    let normalizer = Normalizer::Turn { input, work: false };
+    let card_id = turn_ended_card_of("turn-2");
     let (acceptance, outcomes) = runtime
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer, no_home(), false))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false))
         .unwrap();
     assert_eq!(acceptance, ObservationAcceptance::Accepted);
     assert_eq!(outcomes.len(), 2, "the technical facts and the end of the turn");
     let published = runtime.read();
-    assert!(published.state().interactions.contains_key(&turn_ended_card()), "readers see the card");
+    assert!(published.state().interactions.contains_key(&card_id), "readers see the card");
     assert_eq!(published.state().tasks[&task()].final_presentation, None, "a native result is not a delivery");
-    assert_eq!(card(&observer, turn_ended_card().0.as_str()), Some((None, false)), "the card committed with the observation");
+    assert_eq!(card(&observer, card_id.0.as_str()), Some((None, false)), "the card committed with the observation");
     let acknowledged = runtime.take_acknowledgements();
     assert_eq!(acknowledged.len(), 1);
-    assert!(acknowledged[0].observations[0].matches_evidence(b"raw observation 1"));
+    assert!(acknowledged[0].observations[0].matches_evidence(b"raw observation 2"));
     let committed = counts(&observer);
 
     let (again, replayed) = runtime
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &normalizer, no_home(), false))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false))
         .unwrap();
     assert_eq!(again, ObservationAcceptance::Duplicate);
     assert!(replayed.is_empty(), "a duplicate records nothing");
@@ -796,14 +817,14 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
 #[test]
 fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
     let (fixture, mut store, execution) = running();
-    let input = pending_input(&mut store);
+    let normalizer = woken(&mut store, &execution);
     let state = store.load().unwrap();
     store
-        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Turn { input, work: false }, no_home(), false))
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false))
         .unwrap();
     let state = store.load().unwrap();
     let carry_on = Command::AnswerQuestion {
-        interaction_id: turn_ended_card(),
+        interaction_id: turn_ended_card_of("turn-2"),
         option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]),
         attachments: vec![],
@@ -815,7 +836,7 @@ fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
         .query_row("SELECT d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.task_id=?1 AND d.kind='input' AND i.body LIKE 'Go on with your task%'", [TASK], |r| r.get(0))
         .unwrap();
     assert_eq!(prepared, "prepared");
-    assert!(card(&store.conn, turn_ended_card().0.as_str()).unwrap().0.is_some(), "the card is answered");
+    assert!(card(&store.conn, turn_ended_card_of("turn-2").0.as_str()).unwrap().0.is_some(), "the card is answered");
     let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
     assert_eq!(held, 0, "the lifecycle no longer requires it");
     let text: String = store.conn

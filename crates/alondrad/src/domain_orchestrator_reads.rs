@@ -156,11 +156,10 @@ fn requests(state: &DomainState) -> Vec<Value> {
     }).collect()
 }
 
-/// The questions that wait on the user or the orchestrator. A card that asks the user how a task
-/// goes on while its node waits on something recorded waits on nobody.
+/// The questions that wait on the user or the orchestrator.
 fn open_questions(state: &DomainState) -> Vec<Value> {
     state.interactions.values()
-        .filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator) && !state.covered_by_recorded_wait(i))
+        .filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator))
         .filter_map(|i| question(i, state))
         .filter(|q| q["status"] == "open").collect()
 }

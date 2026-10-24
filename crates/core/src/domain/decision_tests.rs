@@ -338,9 +338,10 @@ fn a_background_subagents_answered_permission_goes_on_in_it_and_the_turn_it_wake
         RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
         RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:agent".into() },
     ] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
+    super::lifecycle_tests::woken(&mut s, "t", "turn-2", "turn-3");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-3".into(), failure: None, failed: None });
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(TURN_ENDED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
-        [format!("{TURN_ENDED_PREFIX}t-1-turn-2")]);
+        [format!("{TURN_ENDED_PREFIX}t-1-turn-3")]);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou, "the task waits on the user, not on a turn that never comes");
     assert_aggregate_rules(&s);
 }

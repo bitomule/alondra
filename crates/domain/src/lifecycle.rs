@@ -265,6 +265,20 @@ impl<T: Ord> Several<T> {
     }
 }
 
+/// What a node's turn ended waiting for, as Alondra recorded it: the turn delivered nothing, but
+/// it is not empty, and the fact that ends the wait reaches the node as an input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Await {
+    /// The user answers the node's question `0`.
+    User(InteractionId),
+    /// The orchestrator answers what the node asked it with `0`.
+    Orchestrator(InteractionId),
+    /// The machine has room again (`wait_for_machine`).
+    Machine,
+    /// The tasks its task depends on are done.
+    Tasks(Several<TaskId>),
+}
+
 /// What a live task is doing, and who it waits on when it waits. Every live task is in exactly
 /// one of these; none says that nobody owns its next step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -622,6 +636,13 @@ pub enum Event {
         card: InteractionId,
         unheard_card: InteractionId,
     },
+    /// What the execution's last turn ended waiting for no longer holds, and nothing reached the
+    /// node for it: the turn is empty after all, so it wakes the node with `wake` or, when that
+    /// already happened with nothing new since, waits on `unheard_card`.
+    AwaitEnded {
+        unheard_card: InteractionId,
+        wake: Option<InputId>,
+    },
     /// The intent to run `kind` on the current execution, recorded before anything reaches it.
     RequestControl {
         control: OperationId,
@@ -648,11 +669,13 @@ impl Event {
             | Self::Reopen { input }
             | Self::DoubtHandoff { input, .. }
             | Self::Compact { input }
+            | Self::AwaitEnded { wake: Some(input), .. }
             | Self::Runtime {
                 fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. }
                     | RuntimeFact::InputConsumed { input }
                     | RuntimeFact::InputDropped { input, .. }
-                    | RuntimeFact::HostEnded { resume: Some(input), .. },
+                    | RuntimeFact::HostEnded { resume: Some(input), .. }
+                    | RuntimeFact::TurnEnded { wake: Some(input), .. },
                 ..
             } => vec![input],
             Self::ResendUntaken { input, resend } | Self::ResendDoubtful { input, resend } => vec![input, resend],
@@ -677,6 +700,7 @@ impl Event {
             | Self::HoldForPlanReview { .. }
             | Self::PlanReviewSettled { .. }
             | Self::Discard { .. }
+            | Self::AwaitEnded { wake: None, .. }
             | Self::RequestControl { .. } => vec![],
         }
     }
@@ -714,9 +738,15 @@ pub enum RuntimeFact {
     ContinuationConsumed {
         continuation: ContinuationId,
     },
+    /// The root `turn` ended. When it leaves nothing that explains the task's next step, the turn
+    /// is empty unless it `awaits` something Alondra recorded: the first empty turn wakes the node
+    /// with `wake`, and the next one, with no new fact between them, waits on `unheard_card`. A
+    /// turn without `wake` waits on `unheard_card` at once.
     TurnEnded {
         turn: TurnId,
         unheard_card: InteractionId,
+        wake: Option<InputId>,
+        awaits: Option<Await>,
     },
     ConnectionLost {
         problem_card: InteractionId,
@@ -823,6 +853,8 @@ enum Activity {
         continuations: BTreeSet<Wake>,
     },
     Continuation(NonEmpty<Wake>),
+    /// Nothing runs, and what the turn ended waiting for moves it on.
+    Awaiting(Await),
     Resting,
 }
 impl Activity {
@@ -832,8 +864,12 @@ impl Activity {
             Self::Turn { .. } => ActivityView::Working,
             Self::OwnWork { .. } => ActivityView::OwnWork,
             Self::Continuation(_) => ActivityView::Continuation,
-            Self::Resting => ActivityView::Resting,
+            Self::Awaiting(_) | Self::Resting => ActivityView::Resting,
         }
+    }
+    /// Nothing runs: the execution takes the next input as a turn of its own.
+    fn rests(&self) -> bool {
+        matches!(self, Self::Awaiting(_) | Self::Resting)
     }
     fn owns_work(&self) -> bool {
         match self {
@@ -867,8 +903,7 @@ impl Execution {
             self.resource,
             ResourceEvidence::Reserved | ResourceEvidence::ObservationPending
         ) || self.activity.owns_work()
-            || (self.resource == ResourceEvidence::Available
-                && !matches!(self.activity, Activity::Resting))
+            || (self.resource == ResourceEvidence::Available && !self.activity.rests())
     }
 }
 
@@ -882,7 +917,17 @@ impl Execution {
             Activity::Turn { .. } => Some(Worker::Turn),
             Activity::OwnWork { .. } => Some(Worker::OwnWork),
             Activity::Continuation(_) => Some(Worker::Alondra(Step::Waking)),
-            Activity::Resting => None,
+            Activity::Awaiting(Await::Orchestrator(_)) => Some(Worker::Alondra(Step::Answering)),
+            Activity::Awaiting(_) | Activity::Resting => None,
+        }
+    }
+    /// What an execution the task runs is doing, or who it waits on.
+    fn live(&self) -> Option<LiveState> {
+        match &self.activity {
+            Activity::Awaiting(Await::User(card)) => Several::new([card.clone()]).map(LiveState::WaitingUser),
+            Activity::Awaiting(Await::Machine) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
+            Activity::Awaiting(Await::Tasks(tasks)) => Some(LiveState::WaitingTask(tasks.clone())),
+            _ => self.worker().map(LiveState::Working),
         }
     }
 }
@@ -908,7 +953,7 @@ impl ActiveExecution {
             && matches!(execution.activity, Activity::Launching(_));
         if !reserved
             && (execution.resource != ResourceEvidence::Available
-                || matches!(execution.activity, Activity::Resting))
+                || execution.activity == Activity::Resting)
         {
             return Err(Refusal::InvalidState);
         }
@@ -1024,6 +1069,9 @@ pub struct TaskLifecycle {
     /// Inputs the user settled (sent again, taken as received, or dropped with the task), whose
     /// uncertain handoff no longer holds the task.
     settled: BTreeSet<InputId>,
+    /// The input that woke the node after a turn that ended empty, while no new fact came since:
+    /// the next empty turn asks the user instead of waking it again.
+    woken: Option<InputId>,
 }
 
 impl TaskLifecycle {
@@ -1039,6 +1087,7 @@ impl TaskLifecycle {
             post_merge: None,
             doubts: BTreeMap::new(),
             settled: BTreeSet::new(),
+            woken: None,
         })
     }
     pub fn task(&self) -> &TaskId {
@@ -1119,6 +1168,13 @@ impl TaskLifecycle {
             _ => None,
         }
     }
+    /// What the execution's last turn ended waiting for, while nothing has moved it on since.
+    pub fn awaits(&self) -> Option<&Await> {
+        match &self.session()?.activity {
+            Activity::Awaiting(awaits) => Some(awaits),
+            _ => None,
+        }
+    }
     /// How far stopping the root turn the execution runs went, if it is in one.
     pub fn turn_stop(&self) -> Option<TurnStop> {
         match &self.session()?.activity {
@@ -1185,7 +1241,7 @@ impl TaskLifecycle {
         match &self.state {
             State::Unstarted(_) | State::Completed | State::Cancelled => None,
             State::InProgress(Progress::Queued { .. }) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
-            State::InProgress(Progress::Executing { execution, .. }) => execution.0.worker().map(LiveState::Working),
+            State::InProgress(Progress::Executing { execution, .. }) => execution.0.live(),
             State::InProgress(Progress::Waiting { cards, .. }) => waits_on(cards.iter()),
             State::InProgress(Progress::Dependency { tasks, decisions, .. }) => {
                 waits_on(decisions.values()).or_else(|| Several::new(tasks.iter().cloned()).map(LiveState::WaitingTask))
@@ -1338,10 +1394,45 @@ impl TaskLifecycle {
             post_merge: self.post_merge.clone(),
             doubts: self.doubts.clone(),
             settled: self.settled.clone(),
+            woken: self.woken.clone(),
         };
+        let keeps_wake = keeps_wake(&event, self.woken.as_ref());
         candidate.transition(event)?;
+        if !keeps_wake {
+            candidate.woken = None;
+        }
         candidate.revision += 1;
         Ok(candidate)
+    }
+}
+
+/// Whether `event` leaves the count of empty turns as it was: only the wake itself starting its
+/// turn, the turn's end (which counts it), and what neither the node nor anyone told the task.
+/// Any card, delivery, work of the node's own, input or new execution starts the count again.
+fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
+    let Event::Runtime { fact, .. } = event else {
+        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. });
+    };
+    match fact {
+        RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input } => Some(input) == woken,
+        RuntimeFact::TurnEnded { .. }
+        | RuntimeFact::ResourceAvailable
+        | RuntimeFact::EffectAccepted { .. }
+        | RuntimeFact::EffectObserved { .. }
+        | RuntimeFact::InterruptAccepted { .. }
+        | RuntimeFact::Notification => true,
+        RuntimeFact::Ask { .. }
+        | RuntimeFact::TurnStarted { .. }
+        | RuntimeFact::InputDropped { .. }
+        | RuntimeFact::WorkStarted { .. }
+        | RuntimeFact::WorkEnded { .. }
+        | RuntimeFact::ContinuationConsumed { .. }
+        | RuntimeFact::ConnectionLost { .. }
+        | RuntimeFact::ResourceReleased { .. }
+        | RuntimeFact::CallbackSettled { .. }
+        | RuntimeFact::CallbackAborted { .. }
+        | RuntimeFact::AnsweredByPolicy { .. }
+        | RuntimeFact::HostEnded { .. } => false,
     }
 }
 
@@ -1431,7 +1522,7 @@ fn queue_input(execution: &mut Execution, input: InputId) -> Result<(), Refusal>
         return Err(Refusal::DuplicateObligation);
     }
     execution.inbox.push_back(input);
-    if matches!(execution.activity, Activity::Resting) {
+    if execution.activity.rests() {
         let first = execution
             .inbox
             .pop_front()
@@ -1456,7 +1547,7 @@ fn add_callback_wake(activity: &mut Activity, callback: CallbackId) -> Result<()
             }
             *pending = NonEmpty::new(values)?;
         }
-        Activity::Resting => *activity = Activity::Continuation(NonEmpty::new([wake])?),
+        Activity::Awaiting(_) | Activity::Resting => *activity = Activity::Continuation(NonEmpty::new([wake])?),
         // Claude asks from a turn the task did not see start, before it reads the pending input:
         // it goes on inside that turn, so nothing has to wake it.
         Activity::InputPending(_) => {}

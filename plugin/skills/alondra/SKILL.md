@@ -213,8 +213,9 @@ Pick the tool by what you need:
   task registered (`owner/repo#123`). End your turn: Alondra wakes you with its result and merged
   pull request when it lands. A wait written only in `reason` has nothing that wakes you. If no
   Alondra task delivers what you wait for, `ask` the orchestrator for one, then wait on it.
-- Do not end your turn while your task is open with no result and no question: Alondra sends you
-  back to work with the reason, and after three times it tells the user you cannot deliver.
+- Do not end your turn while your task is open with no result, no question, no work of your own
+  running and nothing you wait on through an Alondra tool: Alondra wakes you once with the reason,
+  and if your next turn ends the same way, it asks the user how you go on.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
   folder (`$ALONDRA_HOME/files/`) and pass that path with its
   SHA256; each revision is reviewed as it is. Creating it shows the user nothing by itself.

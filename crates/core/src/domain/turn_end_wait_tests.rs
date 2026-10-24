@@ -1,8 +1,9 @@
 //! A turn that ends while its node waits on something Alondra recorded (the orchestrator's answer
-//! to its message, a suggestion, another task) is that wait: the card that asks the user how the
-//! task goes on stays out of sight, nobody hears of it, every client says what the task waits
-//! for, and the fact that ends the wait reaches the node and ends the card with it.
-use super::lifecycle_tests::{assert_aggregate_rules, must, node, sdk_turn, task, user, world};
+//! to its message, a suggestion, a question to the user, another task) is not empty: its lifecycle
+//! records that wait, no card says it stopped, nobody hears of it, every client says what the task
+//! waits for, and the fact that ends the wait reaches the node and moves the task on. A turn with
+//! nothing of that kind wakes the node once, and only the next one asks the user.
+use super::lifecycle_tests::{assert_aggregate_rules, must, node, sdk_turn, task, user, woken, world};
 use super::*;
 use crate::views::text::Lang;
 use crate::views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
@@ -46,6 +47,14 @@ fn shows_waiting(s: &DomainState, waits: &str) {
         }
     }
 }
+/// Starts the turn the last wake opened, `turn-2`, and returns the card its empty end asks on.
+fn woken_again(s: &mut DomainState) -> String {
+    let LifecycleRecord::TurnEnded { wake: Some(input), .. } = super::lifecycle_tests::last(s, "t") else { panic!("woken") };
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
+    ] });
+    format!("{TURN_ENDED_PREFIX}t-1-turn-2")
+}
 fn approve_plan(s: &mut DomainState) {
     must(s, Actor::System, Command::RecordDecisionRequest {
         task_id: "t".into(), generation: 1, epoch: 3, hold: Hold::Plan, tool: Some("ExitPlanMode".into()), input: json!({}), mcp_server: None,
@@ -72,12 +81,28 @@ fn ask_orchestrator(s: &mut DomainState, id: &str, blocking: bool) {
 fn answer_as_orchestrator(s: &mut DomainState, id: &str) -> CommandOutcome {
     must(s, orchestrator(), Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(), option_id: "create".into(), inputs: BTreeMap::new() })
 }
-/// What ended the wait reached the node: the card is gone and the node goes on.
+fn lifecycle(s: &DomainState) -> alondra_domain::TaskLifecycle {
+    replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap()
+}
+/// The turn ended on what the node waits for: its lifecycle records that wait and no card exists.
+fn awaits(s: &DomainState, card: &InteractionId, awaits: alondra_domain::Await) {
+    assert!(!s.interactions.contains_key(card), "no card says it stopped");
+    assert_eq!(lifecycle(s).awaits(), Some(&awaits));
+}
+/// The turn ended empty: the node is woken with what happened, and no card exists yet.
+fn wakes(s: &DomainState, outcome: &CommandOutcome, card: &InteractionId) {
+    assert!(!notified(outcome, card) && !s.interactions.contains_key(card), "nobody hears of it yet");
+    let (LifecycleRecord::TurnEnded { wake: Some(_), text: Some(text), .. } | LifecycleRecord::AwaitEnded { wake: Some(_), text: Some(text), .. }) = super::lifecycle_tests::last(s, "t")
+        else { panic!("the node is woken: {:?}", super::lifecycle_tests::last(s, "t")) };
+    assert_eq!(text, WAKE_INSTRUCTION);
+    assert_eq!(lifecycle(s).activity(), alondra_domain::ActivityView::Starting);
+}
+/// What ended the wait reached the node: nothing holds the task and the node goes on.
 fn resumes(s: &mut DomainState, card: &InteractionId) {
     must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered.".into() });
-    assert!(s.interactions[card].withdrawn, "what the node is told ends the card");
-    assert!(!pending(s).contains(&card.0));
-    let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(!s.interactions.contains_key(card), "no card ever said it stopped");
+    let lifecycle = lifecycle(s);
+    assert_eq!(lifecycle.awaits(), None, "what the node is told ends the wait");
     assert!(lifecycle.cards().is_empty(), "nothing holds the task: {:?}", lifecycle.cards());
     assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::Starting, "its next turn starts with what it was told");
     assert_aggregate_rules(s);
@@ -94,6 +119,7 @@ fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it(
     ask_orchestrator(&mut s, "t-rename-queue-1", false);
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card), "David hears of nothing");
+    awaits(&s, &card, alondra_domain::Await::Orchestrator("t-rename-queue-1".into()));
     assert!(pending(&s).is_empty(), "nothing waits for David: {:?}", pending(&s));
     shows_waiting(&s, "Trabajando");
     assert_aggregate_rules(&s);
@@ -111,6 +137,7 @@ fn a_turn_that_ends_on_a_blocking_question_to_the_orchestrator_waits_for_it() {
     ask_orchestrator(&mut s, "q", true);
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
+    awaits(&s, &card, alondra_domain::Await::Orchestrator("q".into()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     shows_waiting(&s, "Trabajando");
     answer_as_orchestrator(&mut s, "q");
@@ -118,7 +145,7 @@ fn a_turn_that_ends_on_a_blocking_question_to_the_orchestrator_waits_for_it() {
 }
 
 /// An answer the orchestrator gave before the turn ended already reached the node: it explains
-/// nothing about a later turn end.
+/// nothing about a later turn end, which is empty.
 #[test]
 fn an_orchestrator_answer_given_before_the_turn_ended_explains_nothing() {
     let mut s = world();
@@ -126,8 +153,7 @@ fn an_orchestrator_answer_given_before_the_turn_ended_explains_nothing() {
     ask_orchestrator(&mut s, "q", false);
     answer_as_orchestrator(&mut s, "q");
     let ended = end_turn(&mut s, "turn-1");
-    assert!(notified(&ended, &card), "nothing is pending: the user hears of it");
-    assert!(pending(&s).contains(&card.0));
+    wakes(&s, &ended, &card);
 }
 
 #[test]
@@ -142,7 +168,9 @@ fn a_turn_that_ends_with_a_suggestion_pending_waits_for_the_orchestrator() {
     });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
+    awaits(&s, &card, alondra_domain::Await::Orchestrator("p".into()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Alondra(alondra_domain::Step::Answering))));
     shows_waiting(&s, "Trabajando");
     let settled = must(&mut s, orchestrator(), Command::SettleSuggestion {
         interaction_id: "p".into(), decision: SuggestionDecision::CurrentTask { note: "Fix it here".into() },
@@ -161,6 +189,7 @@ fn a_turn_that_ends_while_the_task_depends_on_another_waits_for_it_and_goes_on_w
     must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
+    awaits(&s, &card, alondra_domain::Await::Tasks(alondra_domain::Several::new(["d".into()]).unwrap()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     shows_waiting(&s, "Task d");
     assert_aggregate_rules(&s);
@@ -178,15 +207,96 @@ fn a_turn_that_ends_while_the_task_depends_on_another_waits_for_it_and_goes_on_w
     resumes(&mut s, &card);
 }
 
-/// The node took back what it waited for: nothing explains its next step, so the card shows.
+/// The node's message was taken back unanswered: nothing explains its next step any more, so the
+/// turn is empty after all and the node is woken; the next empty turn asks the user.
 #[test]
-fn a_message_to_the_orchestrator_the_node_withdraws_leaves_the_card_in_sight() {
+fn a_message_to_the_orchestrator_withdrawn_unanswered_leaves_the_turn_empty() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     ask_orchestrator(&mut s, "q", false);
     end_turn(&mut s, "turn-1");
-    must(&mut s, node("a"), Command::Withdraw { interaction_id: "q".into() });
-    assert!(pending(&s).contains(&card.0), "{:?}", pending(&s));
+    let withdrawn = must(&mut s, node("a"), Command::Withdraw { interaction_id: "q".into() });
+    wakes(&s, &withdrawn, &card);
+    assert_aggregate_rules(&s);
+    let LifecycleRecord::AwaitEnded { wake: Some(input), .. } = super::lifecycle_tests::last(&s, "t") else { panic!("woken") };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
+    ] });
+    let second = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    let ended = end_turn(&mut s, "turn-2");
+    assert!(notified(&ended, &second), "the second empty turn asks David");
+    assert_eq!(pending(&s), [second.0.clone()]);
+}
+
+/// The tasks the node waited on are no longer its dependencies, and nobody told it: the turn is
+/// empty after all, and the node is woken.
+#[test]
+fn a_dependency_taken_away_while_the_node_waits_for_it_leaves_the_turn_empty() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
+    end_turn(&mut s, "turn-1");
+    let cleared = must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::new(), stack: None });
+    wakes(&s, &cleared, &card);
+    assert_aggregate_rules(&s);
+}
+
+/// 24 October: “Informe: qué aprender del IDE de BB” started two subagents in the background and
+/// ended turns saying it waited for them. While a task_started of its own has no task_notification
+/// yet, its turn is not empty: no card and no wake. Once the last one ended and the turn that took
+/// it up ends with nothing more, the turn is empty and the node is woken.
+#[test]
+fn the_24_october_turn_that_ended_with_its_subagents_running_waits_for_them() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let facts = |s: &mut DomainState, facts: Vec<RuntimeObservation>| {
+        must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts });
+    };
+    let no_card = |s: &DomainState, turn: &str| {
+        assert!(!s.interactions.contains_key(&InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-{turn}").as_str())), "{turn}: no card");
+        assert!(matches!(super::lifecycle_tests::last(s, "t"), LifecycleRecord::TurnEnded { wake: None, .. }), "{turn}: no wake");
+        assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(alondra_domain::Worker::OwnWork)), "{turn}: its subagents work");
+    };
+    facts(&mut s, vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:plugins".into() },
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:ide".into() },
+    ]);
+    end_turn(&mut s, "turn-1");
+    no_card(&s, "turn-1");
+    facts(&mut s, vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:ide".into(), continuation: "claude-notification:ide".into() },
+        RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:ide".into() },
+    ]);
+    end_turn(&mut s, "turn-2");
+    no_card(&s, "turn-2");
+    facts(&mut s, vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:plugins".into(), continuation: "claude-notification:plugins".into() },
+        RuntimeObservation::TurnResumed { turn: "turn-3".into(), continuation: "claude-notification:plugins".into() },
+    ]);
+    let ended = end_turn(&mut s, "turn-3");
+    wakes(&s, &ended, &InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-3").as_str()));
+    assert_aggregate_rules(&s);
+}
+
+/// 24 October: “Parcel: el permiso de la app de GitHub” asked David to do something outside
+/// Alondra and ended its turn; David also got a card saying it stopped without asking. A request
+/// to the user is a question too: the turn waits for it.
+#[test]
+fn the_24_october_turn_that_ended_on_a_request_to_the_user_waits_for_it() {
+    let mut s = world();
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    must(&mut s, node("a"), Command::RequestAction {
+        attachments: vec![], interaction_id: "t-parcel-pr-perm-remove-1".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User,
+        body: "Remove the pull request permission from the GitHub app".into(), blocking: true,
+        options: vec![QuestionOption { id: "done".into(), label: "Done".into(), description: None }],
+        card: CardSpec { verify: Some("I read the app's permissions".into()), ..CardSpec::new(CardKind::Do, "Remove the pull request permission").why("The app must not open pull requests") },
+    });
+    let ended = end_turn(&mut s, "turn-1");
+    assert!(!notified(&ended, &card), "David hears of no stop");
+    awaits(&s, &card, alondra_domain::Await::User("t-parcel-pr-perm-remove-1".into()));
+    assert_eq!(pending(&s), ["t-parcel-pr-perm-remove-1"], "only the request waits for him");
+    assert_eq!(s.live_state(&"t".into()), alondra_domain::Several::new(["t-parcel-pr-perm-remove-1".into()]).map(alondra_domain::LiveState::WaitingUser));
     assert_aggregate_rules(&s);
 }
 
@@ -197,8 +307,11 @@ fn a_turn_that_ends_right_after_its_plan_is_approved_with_nothing_pending_asks_t
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     approve_plan(&mut s);
     let ended = end_turn(&mut s, "turn-1");
-    assert!(notified(&ended, &card));
-    assert!(pending(&s).contains(&card.0));
+    wakes(&s, &ended, &card);
+    let second = InteractionId::from(woken_again(&mut s).as_str());
+    let ended = end_turn(&mut s, "turn-2");
+    assert!(notified(&ended, &second));
+    assert!(pending(&s).contains(&second.0));
 }
 
 /// Work of its own (a subagent, a background shell, a Monitor) is what the task does next: the
@@ -280,6 +393,7 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
+    awaits(&s, &card, alondra_domain::Await::Machine);
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert!(!render(&s, "tasks", client).contains("sin entregar ni preguntar"), "{client:?}");
@@ -317,6 +431,7 @@ fn the_22_october_turn_that_ended_on_a_question_to_the_user_waits_for_the_answer
     ask_user(&mut s, "t-simpool-slot-keyboard-state-ask-1");
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card), "David hears of no stop");
+    awaits(&s, &card, alondra_domain::Await::User("t-simpool-slot-keyboard-state-ask-1".into()));
     assert_eq!(pending(&s), ["t-simpool-slot-keyboard-state-ask-1"], "only his question waits for him");
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         for said in [render(&s, "task:t", client), render(&s, "tasks", client)] {
@@ -344,7 +459,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
     answer_as_orchestrator(&mut s, "t-85fa-ask-depend-1");
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into() });
-    assert!(s.interactions[&first].withdrawn);
+    assert!(!s.interactions.contains_key(&first), "no card ever said it stopped");
     let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
@@ -352,6 +467,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     let card = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
     let ended = end_turn(&mut s, "turn-2");
     assert!(!notified(&ended, &card), "David hears of no stop");
+    awaits(&s, &card, alondra_domain::Await::Tasks(alondra_domain::Several::new(["d".into()]).unwrap()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     shows_waiting(&s, "Task d");
     assert_aggregate_rules(&s);
@@ -376,14 +492,35 @@ fn a_turn_that_ends_behind_an_open_plan_or_permission_creates_no_card() {
     }
 }
 
-/// With nothing open, the stop is the user's to decide: the card shows and David hears of it.
+/// With nothing open, the node is woken with what happened; when its next turn ends the same
+/// way, the stop is the user's to decide: the card shows and David hears of it.
 #[test]
-fn a_turn_that_ends_with_nothing_open_asks_the_user() {
+fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_asks_the_user() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     let ended = end_turn(&mut s, "turn-1");
-    assert!(notified(&ended, &card));
-    assert_eq!(pending(&s), [card.0.clone()]);
+    wakes(&s, &ended, &card);
+    assert!(pending(&s).is_empty(), "{:?}", pending(&s));
+    let second = InteractionId::from(woken_again(&mut s).as_str());
+    let ended = end_turn(&mut s, "turn-2");
+    assert!(notified(&ended, &second));
+    assert_eq!(pending(&s), [second.0.clone()]);
+    assert_eq!(s.interactions[&second].card.need, "“Task t” ended two turns without delivering or asking: what next?");
+    assert!(matches!(super::lifecycle_tests::last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, .. }), "the second end names no wake: nothing is sent");
+    assert_aggregate_rules(&s);
+}
+
+/// A turn recorded before turns woke the node, read back from its journal, still asks the user at once.
+#[test]
+fn a_turn_end_recorded_before_wakes_existed_reads_back_as_the_card() {
+    let mut s = world();
+    let card = sdk_turn(&mut s, "t", "a");
+    let journal = s.lifecycle_journal.get_mut(&TaskId::from("t")).unwrap();
+    let old: LifecycleRecord = serde_json::from_value(json!({"kind": "turn_ended", "turn": "turn-1", "unheard_card": card})).unwrap();
+    journal.push(old);
+    let lifecycle = lifecycle(&s);
+    assert_eq!(lifecycle.live(), alondra_domain::Several::new([InteractionId::from(card.as_str())]).map(alondra_domain::LiveState::WaitingUser));
+    assert!(lifecycle.pending_inputs().len() == 0, "nothing wakes the node");
 }
 
 /// The card and its notification on the iPhone say all they ask in Spanish: the task's title is
@@ -391,15 +528,16 @@ fn a_turn_that_ends_with_nothing_open_asks_the_user() {
 #[test]
 fn the_stop_of_a_task_with_a_long_title_reads_whole_in_spanish_on_the_card_and_its_notification() {
     let mut s = world();
-    let card = sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "t", "a");
     s.tasks.get_mut(&TaskId::from("t")).unwrap().title = "simpool: un simulador reutilizado no arrastra el estado del teclado".into();
-    end_turn(&mut s, "turn-1");
+    let card = woken(&mut s, "t", "turn-1", "turn-2");
+    end_turn(&mut s, "turn-2");
     let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
     let alert = crate::views::push_content(&read, &card, Lang::Es).unwrap().alert.expect("an alert");
     let shown = [alert.title.clone(), render(&s, &format!("card:{card}"), Client::Ios)];
     for said in &shown {
-        assert!(said.contains("«simpool: un simulador") && said.contains("…» paró sin entregar ni preguntar: dile cómo seguir"), "{said}");
-        assert!(!said.contains("stopped"), "{said}");
+        assert!(said.contains("«simpool: un") && said.contains("…» acabó dos turnos sin entregar ni preguntar: ¿cómo sigue?"), "{said}");
+        assert!(!said.contains("ended two turns"), "{said}");
     }
     assert!(alert.title.chars().count() <= CardSpec::TITLED_NEED_MAX, "{}", alert.title);
 }
