@@ -5510,7 +5510,7 @@ fn node_states_fixture() -> (DomainState, LiveSnapshot) {
         state.tasks.insert(task.id.clone(), task);
         live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), project: Some("Zeta".into()), ..LiveNode::default() });
     }
-    live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false, queued: vec![],
+    live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(40), tight: false, queued: vec![],
         paused: vec![LivePaused { task_id: "t-paused-builder".into(), session: Some("paused-builder".into()), at: "09:40".into(),
             reason: LivePauseReason::Machine, fine_minutes: None, next: false, waits_for: Some("The build queue is full".into()), retry: None }] });
     (state, live)
@@ -5562,7 +5562,7 @@ fn the_sidebar_lists_only_tasks_whose_node_has_a_session() {
     }
     state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
     live.pacing = Some(LivePacing {
-        working: 1, limit: 2, fixed: None, auto: 2, memory_free: Some(40), tight: false,
+        working: 1, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false,
         queued: vec![LiveQueued { pausable: true, task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
         paused: vec![],
     });
@@ -5998,7 +5998,7 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = LiveSnapshot {
         pacing: Some(LivePacing {
-            working: 6, limit: 6, fixed: None, auto: 6, memory_free: Some(12), tight: true,
+            working: 6, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(12), tight: true,
             queued: vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
             paused: vec![],
         }),
@@ -6047,7 +6047,7 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
     let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
     let live = LiveSnapshot {
-        pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
+        pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
         ..LiveSnapshot::default()
     };
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
@@ -6074,7 +6074,7 @@ fn a_node_an_api_error_stopped_says_when_alondra_sends_it_back_and_an_outage_say
     let outage = LivePaused { reason: LivePauseReason::ApiOutage, retry: Some(crate::views::LiveRetry { at: "23:40".into(), attempt: 3 }), ..failed.clone() };
     assert_eq!(common::paused_label(&outage, Lang::Es), "Esperando al servicio de Claude desde las 23:26 · vuelve a probar a las 23:40");
     let live = LiveSnapshot {
-        pacing: Some(LivePacing { working: 1, limit: 4, fixed: None, auto: 4, memory_free: Some(60), tight: false, queued: vec![], paused: vec![failed] }),
+        pacing: Some(LivePacing { working: 1, limit: 4, fixed: None, auto: 4, most: 12, memory_free: Some(60), tight: false, queued: vec![], paused: vec![failed] }),
         ..LiveSnapshot::default()
     };
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
@@ -6113,7 +6113,7 @@ fn find_action<'a>(view: &'a View, prefix: &str) -> Option<&'a super::Action> {
 
 fn pacing_live(queued: Vec<LiveQueued>, paused: Vec<LivePaused>, fixed: Option<u32>) -> LiveSnapshot {
     LiveSnapshot {
-        pacing: Some(LivePacing { working: 6, limit: fixed.unwrap_or(6), fixed, auto: 6, memory_free: Some(30), tight: false, queued, paused }),
+        pacing: Some(LivePacing { working: 6, limit: fixed.unwrap_or(6), fixed, auto: 6, most: 12, memory_free: Some(30), tight: false, queued, paused }),
         ..LiveSnapshot::default()
     }
 }
@@ -6248,7 +6248,7 @@ fn pacing_fixture() -> (DomainState, LiveSnapshot) {
         state.tasks.insert(task.id.clone(), task);
     }
     live.pacing = Some(LivePacing {
-        working: 6, limit: 6, fixed: None, auto: 6, memory_free: Some(12), tight: true,
+        working: 6, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(12), tight: true,
         queued: vec![
             LiveQueued { pausable: true, task_id: "t-queued-next".into(), position: 1, of: 2, hold: LiveHold::Memory { free: Some(12) } },
             LiveQueued { pausable: true, task_id: "t-queued-later".into(), position: 2, of: 2, hold: LiveHold::Memory { free: Some(12) } },
@@ -6369,7 +6369,7 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
         live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), working: true, tool: Some("Read: src/lib.rs".into()),
             state_since: Some(since.into()), ..LiveNode::default() });
     }
-    live.pacing = Some(LivePacing { working: 2, limit: 2, fixed: None, auto: 2, memory_free: Some(40), tight: false, paused: vec![],
+    live.pacing = Some(LivePacing { working: 2, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false, paused: vec![],
         queued: ["t-q1", "t-q2"].iter().enumerate().map(|(index, id)| LiveQueued {
             pausable: true, task_id: (*id).into(), position: index + 1, of: 2, hold: LiveHold::Slots { working: 2, limit: 2 } }).collect() });
     assert_eq!(block_ids(&state, &live), [

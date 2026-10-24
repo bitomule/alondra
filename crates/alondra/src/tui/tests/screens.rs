@@ -1047,7 +1047,7 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
 #[test]
 fn l_on_the_tasks_never_changes_the_limit() {
     let (domain, mut live) = busy();
-    live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
+    live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(40), tight: false,
         queued: vec![], paused: vec![] });
     let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));

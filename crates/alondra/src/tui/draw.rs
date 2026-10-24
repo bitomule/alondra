@@ -733,7 +733,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     let Some(document) = document else {
         if let Some(menu) = &app.card_menu {
-            f.render_widget(Paragraph::new(super::view_render::menu_lines(menu)), inner);
+            f.render_widget(Paragraph::new(super::view_render::menu_lines(menu, inner.height as usize)), inner);
             return;
         }
         let message = if app.card_view_asked.is_some() {
@@ -755,7 +755,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     let mut keys = Vec::new();
     if let Some(card) = super::view_render::typed_card(document) {
         keys = match &app.card_menu {
-            Some(menu) => super::view_render::menu_lines(menu),
+            Some(menu) => super::view_render::menu_lines(menu, inner.height.saturating_sub(4) as usize),
             None => super::view_render::button_lines(card, inner.width as usize),
         };
     } else {
@@ -765,7 +765,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
             Line::from(Span::styled(format!("    {}{why}", action.label), Style::new().fg(DIM)))
         }));
         if let Some(menu) = &app.card_menu {
-            keys = super::view_render::menu_lines(menu);
+            keys = super::view_render::menu_lines(menu, inner.height.saturating_sub(4) as usize);
         } else if !actions.is_empty() {
             lines.push(Line::default());
             lines.extend(actions);
@@ -868,7 +868,7 @@ fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
             super::mcp_servers::Entry::Note(text) => lines.push(Line::from(text.to_owned().fg(DIM))),
             super::mcp_servers::Entry::Row(row) => {
                 let start = lines.len();
-                lines.extend(super::mcp_servers::row_lines(row, width, index == screen.sel));
+                lines.extend(super::mcp_servers::row_lines(&screen.shown(row), width, index == screen.sel));
                 if index == screen.sel {
                     selected = (start, lines.len());
                 }
@@ -887,7 +887,7 @@ fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let (inner, menu) = match &app.card_menu {
         Some(menu) => {
-            let menu = super::view_render::menu_lines(menu);
+            let menu = super::view_render::menu_lines(menu, (inner.height / 2).saturating_sub(1) as usize);
             let height = (menu.len() as u16 + 1).min(inner.height / 2);
             let [list, keys] = Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(inner);
             (list, Some((menu, keys)))

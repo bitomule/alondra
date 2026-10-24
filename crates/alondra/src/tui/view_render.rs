@@ -484,55 +484,85 @@ fn button_description(description: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A numbered list the user picks from: the rest of a card's actions, or the options of one.
+/// A list the user picks from: the rest of a card's actions, or the options of one. 1 to 9 pick the
+/// first nine; in a longer one ↑↓ move `sel` through all of them and ⏎ picks it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Menu {
     pub title: String,
     pub entries: Vec<(Action, Option<alondra_core::views::ActionOption>)>,
+    pub sel: usize,
+}
+
+impl Menu {
+    pub fn scrolls(&self) -> bool {
+        self.entries.len() > 9
+    }
 }
 
 pub fn more_menu(card: &Card) -> Menu {
     Menu {
         title: tr!("More", "Más").into(),
-        entries: card.more.iter().take(9).map(|action| (Action::from(action.clone()), None)).collect(),
+        entries: card.more.iter().map(|action| (Action::from(action.clone()), None)).collect(),
+        sel: 0,
     }
 }
 
 pub fn option_menu(action: &Action) -> Menu {
     Menu {
         title: action.label.clone(),
-        entries: action
-            .options
-            .iter()
-            .take(9)
-            .map(|option| (action.clone(), Some(option.clone())))
-            .collect(),
+        entries: action.options.iter().map(|option| (action.clone(), Some(option.clone()))).collect(),
+        sel: 0,
     }
 }
 
-pub fn menu_lines(menu: &Menu) -> Vec<Line<'static>> {
+/// The menu in at most `room` lines: its title, the entries around `sel` and how to leave.
+pub fn menu_lines(menu: &Menu, room: usize) -> Vec<Line<'static>> {
+    let entry_lines: Vec<Vec<Line<'static>>> = menu.entries.iter().enumerate().map(|(index, (action, option))| {
+        let key = if index < 9 { (index + 1).to_string() } else { " ".into() };
+        let mut entry = action.clone();
+        if let Some(option) = option {
+            entry.label = super::draw::option_label(option);
+        }
+        let mut lines = button_line(&key, &entry);
+        if index == menu.sel && menu.scrolls() {
+            for span in lines.iter_mut().flat_map(|line| line.spans.iter_mut()).skip(1) {
+                span.style = span.style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        if let Some(description) = option.as_ref().and_then(|option| option.description.as_ref()) {
+            lines.push(Line::from(Span::styled(format!("    {description}"), Style::new().fg(DIM))));
+        }
+        lines
+    }).collect();
+    let room = room.saturating_sub(2).max(1);
+    let sel = menu.sel.min(entry_lines.len().saturating_sub(1));
+    let (mut start, mut end, mut used) = (sel, sel, 0);
+    while end < entry_lines.len() && used + entry_lines[end].len() <= room {
+        used += entry_lines[end].len();
+        end += 1;
+    }
+    while start > 0 && used + entry_lines[start - 1].len() <= room {
+        start -= 1;
+        used += entry_lines[start].len();
+    }
     let mut lines = vec![Line::from(Span::styled(
         menu.title.to_uppercase(),
         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
     ))];
-    for (index, (action, option)) in menu.entries.iter().enumerate() {
-        let key = (index + 1).to_string();
-        match option {
-            Some(option) => {
-                let mut entry = action.clone();
-                entry.label = super::draw::option_label(option);
-                lines.extend(button_line(&key, &entry));
-                if let Some(description) = &option.description {
-                    lines.push(Line::from(Span::styled(format!("    {description}"), Style::new().fg(DIM))));
-                }
-            }
-            None => lines.extend(button_line(&key, action)),
-        }
-    }
-    lines.push(Line::from(vec![
+    lines.extend(entry_lines[start..end.max(start + 1).min(entry_lines.len())].iter().flatten().cloned());
+    let mut leave = vec![
         Span::styled(" Esc ", Style::new().fg(DIM)),
         Span::styled(tr!("back", "volver"), Style::new().fg(DIM)),
-    ]));
+    ];
+    if menu.scrolls() {
+        let (at, of) = (sel + 1, menu.entries.len());
+        let hint = match start > 0 || end < entry_lines.len() {
+            true => trf!(" · ↑↓ {at} of {of} · ⏎ pick", " · ↑↓ {at} de {of} · ⏎ elige"),
+            false => tr!(" · ↑↓ · ⏎ pick", " · ↑↓ · ⏎ elige").to_string(),
+        };
+        leave.push(Span::styled(hint, Style::new().fg(DIM)));
+    }
+    lines.push(Line::from(leave));
     lines
 }
 

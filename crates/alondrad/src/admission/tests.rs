@@ -593,3 +593,39 @@ fn the_previous_gate_file_is_read_when_it_could_not_move() {
 
     assert!(gate.lock().saved.pauses.held.contains_key(&TaskId::from("t-held")));
 }
+
+/// What Settings offers is what the gate applies: automatic, from the node cost the Mac measures,
+/// and the most this Mac takes, also for a number over it in `options.toml`.
+#[test]
+fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
+    let (cores, memory) = machine_size();
+    let most = NodeLimits::of(cores, memory, 0).most;
+    let over_4_gb = memory.saturating_sub(4 << 30);
+    for (cost, auto) in [(over_4_gb / 2, 2.min(cores as u32)), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
+        let (home, domain) = world();
+        domain.live.gate.tune(Tuning { spacing: 0, limit: None });
+        let now = alondra_core::now_millis();
+        domain.live.machine_watch.measure_nodes(now - MIN, vec![cost; 30]);
+        let pacing = domain.live.gate.live(&domain, now).unwrap();
+        assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
+
+        let state = domain.state().unwrap();
+        let index = alondra_core::domain::ReadIndex::build(&state);
+        let live = alondra_core::views::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
+        let context = alondra_core::views::RenderContext { domain: &state, index: &index, live: &live, client: alondra_core::views::Client::Ios,
+            lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+        let view = alondra_core::views::build("machine", context).unwrap();
+        let menu = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            alondra_core::views::Item::Row(row) => row.actions.iter().find(|action| action.id.starts_with("set_limit:")).cloned(),
+            _ => None,
+        }).expect("Settings offer the limit");
+        let ids: Vec<&str> = menu.options.iter().map(|option| option.id.as_str()).collect();
+        let offered: Vec<String> = std::iter::once("auto".to_string()).chain((1..=most).map(|count| count.to_string())).collect();
+        assert_eq!(ids, offered);
+        assert_eq!(menu.options[0].label, format!("Automatic ({auto}) · now"));
+
+        std::fs::write(alondra_core::options::path_in(&home.0), format!("max_working_nodes = {}\n", most + 5)).unwrap();
+        let pacing = domain.live.gate.live(&domain, now).unwrap();
+        assert_eq!((pacing.fixed, pacing.limit), (Some(most + 5), most), "a number over the most works as the most");
+    }
+}

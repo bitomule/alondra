@@ -607,3 +607,62 @@ fn adding_an_account_asks_its_name_then_signs_it_in_on_this_screen() {
     app.account_signed_in(Err(anyhow::anyhow!("That Claude account is already in Alondra as Default")));
     assert!(drawn(&mut app, 140, 50).contains("That Claude account is already in Alondra as Default"));
 }
+
+/// A Mac that takes 22 nodes offers 23 choices: the first nine have a number, ↑↓ reach the rest.
+#[test]
+fn every_node_limit_the_mac_offers_is_reached_with_the_arrows_and_picked_with_enter() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = mcp_servers_open();
+    let mut machine = super::parity::view_fixture("machine-settings-ios.json");
+    let limit = machine["sections"].as_array_mut().unwrap().iter_mut()
+        .flat_map(|section| section["items"].as_array_mut().unwrap().iter_mut())
+        .flat_map(|item| item["actions"].as_array_mut().into_iter().flatten())
+        .find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("set_limit:"))).unwrap();
+    let template = limit["options"][1].clone();
+    let options = limit["options"].as_array_mut().unwrap();
+    options.truncate(1);
+    options.extend((1..=22).map(|count| {
+        let mut option = template.clone();
+        option["id"] = json!(count.to_string());
+        option["label"] = json!(count.to_string());
+        option
+    }));
+    let machine: ViewDocument = serde_json::from_value(machine).unwrap();
+    app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.mcp_servers.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("node_limit"));
+    press(&mut app, KeyCode::Enter);
+    let menu = drawn(&mut app, 140, 40);
+    assert!(menu.contains(" 1  Automatic (6) · now") && menu.contains("↑↓ 1 of 23 · ⏎ pick") && !menu.contains(" 22"), "{menu}");
+    for _ in 0..30 {
+        press(&mut app, KeyCode::Down);
+    }
+    let menu = drawn(&mut app, 140, 40);
+    assert!(menu.contains("22") && menu.contains("↑↓ 23 of 23 · ⏎ pick") && !menu.contains("Automatic (6)"), "{menu}");
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().is_some_and(|id| id.starts_with("set_limit:")), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "21");
+    let picked = drawn(&mut app, 140, 40);
+    assert!(picked.contains("Nodes at once: 21") && !picked.contains("Limit: automatic (6)"), "the row says the pick at once: {picked}");
+    app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: Err(crate::client::Delivery::Answered(Some("Choose an option".into()))) });
+    let refused = drawn(&mut app, 140, 40);
+    assert!(refused.contains("Limit: automatic (6)") && !refused.contains("Nodes at once: 21"), "refused, the row says how it is: {refused}");
+
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('9'));
+    let sent = app.posted.borrow().last().unwrap().1.clone();
+    assert_eq!(sent["option_id"], "8", "9 picks the ninth choice");
+    let done = alondra_core::views::Outcome { kind: alondra_core::views::OutcomeKind::Done, title: "Done".into(), body: None, next: None };
+    app.on_msg(Msg::ViewAction { request: sent, result: Ok(ViewActionReply::Outcome(done)) });
+    assert!(drawn(&mut app, 140, 40).contains("Nodes at once: 8"), "done, the pick stays until the Mac's view says how it is");
+    let mut machine = super::parity::view_fixture("machine-settings-ios.json");
+    let text = serde_json::to_string(&machine).unwrap().replace("Limit: automatic (6)", "Limit: 8, set by you · automatic would be 6");
+    machine = serde_json::from_str(&text).unwrap();
+    let machine: ViewDocument = serde_json::from_value(machine).unwrap();
+    app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
+    let confirmed = drawn(&mut app, 140, 40);
+    assert!(confirmed.contains("Limit: 8, set by you · automatic would be 6") && !confirmed.contains("Nodes at once: 8"), "{confirmed}");
+}

@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "vd63342fca3140793",
+  "version": "v549fa637298675e2",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
@@ -156,7 +156,7 @@
                 {
                   "id": "auto",
                   "label": "Automático (6) · ahora",
-                  "description": "Según los núcleos y la memoria de este Mac",
+                  "description": "Según los núcleos de este Mac y la memoria que usan sus nodos",
                   "style": "secondary",
                   "input": {
                     "kind": "none"

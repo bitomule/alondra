@@ -97,7 +97,8 @@ pub struct OptionsFile {
     pub accounts: crate::accounts::AccountsConfig,
 }
 
-/// `max_working_nodes`: a number from 1 to `MAX_WORKING_NODES`, or `"auto"`.
+/// `max_working_nodes`: a number from 1, or `"auto"`. A number over what this Mac takes
+/// (`NodeLimits::most`) works as that most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NodeLimit {
     #[default]
@@ -105,20 +106,33 @@ pub enum NodeLimit {
     Fixed(u32),
 }
 
-pub const MAX_WORKING_NODES: u32 = 12;
+/// What macOS and the user's apps keep for themselves before any node counts.
+const KEPT_FOR_MACOS: u64 = 4 << 30;
 
-impl NodeLimit {
-    /// `min(ceil(cores / 2), floor((GB of RAM - 4) / 2))`, from 1 to `MAX_WORKING_NODES`: 4 GB
-    /// for macOS and the user's apps, 2 GB for what a node runs.
-    pub fn resolve(self, cores: usize, memory_bytes: u64) -> u32 {
-        match self {
-            NodeLimit::Fixed(count) => count.clamp(1, MAX_WORKING_NODES),
-            NodeLimit::Auto => {
-                let by_cores = (cores as u32).div_ceil(2);
-                let gigabytes = memory_bytes / (1 << 30);
-                let by_memory = (gigabytes.saturating_sub(4) / 2) as u32;
-                by_cores.min(by_memory).clamp(1, MAX_WORKING_NODES)
-            }
+/// The working-node limits of one Mac: the most it takes and what automatic gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeLimits {
+    /// Two nodes per core.
+    pub most: u32,
+    /// One node per core, as many as fit in the memory over 4 GB at `node_cost` bytes each,
+    /// from 1 to `most`.
+    pub auto: u32,
+}
+
+impl NodeLimits {
+    pub fn of(cores: usize, memory_bytes: u64, node_cost: u64) -> Self {
+        let cores = u32::try_from(cores).unwrap_or(u32::MAX).max(1);
+        let most = cores.saturating_mul(2);
+        let by_memory = memory_bytes.saturating_sub(KEPT_FOR_MACOS) / node_cost.max(1);
+        let by_memory = u32::try_from(by_memory).unwrap_or(u32::MAX);
+        Self { most, auto: cores.min(by_memory).clamp(1, most) }
+    }
+
+    /// The limit `setting` gives on this Mac.
+    pub fn applied(self, setting: NodeLimit) -> u32 {
+        match setting {
+            NodeLimit::Fixed(count) => count.clamp(1, self.most),
+            NodeLimit::Auto => self.auto,
         }
     }
 }
@@ -142,8 +156,8 @@ impl<'de> Deserialize<'de> for NodeLimit {
         }
         match Raw::deserialize(deserializer)? {
             Raw::Word(word) if word == AUTO => Ok(NodeLimit::Auto),
-            Raw::Count(count) if (1..=MAX_WORKING_NODES as i64).contains(&count) => Ok(NodeLimit::Fixed(count as u32)),
-            _ => Err(serde::de::Error::custom(format!("max_working_nodes is \"auto\" or a number from 1 to {MAX_WORKING_NODES}"))),
+            Raw::Count(count) if count >= 1 => Ok(NodeLimit::Fixed(u32::try_from(count).unwrap_or(u32::MAX))),
+            _ => Err(serde::de::Error::custom("max_working_nodes is \"auto\" or a number from 1")),
         }
     }
 }
@@ -949,25 +963,35 @@ mod node_limit_tests {
     use super::*;
 
     const GB: u64 = 1 << 30;
+    const MB: u64 = 1 << 20;
 
     #[test]
-    fn auto_takes_the_smaller_of_half_the_cores_and_2_gb_per_node_over_4_gb() {
-        assert_eq!(NodeLimit::Auto.resolve(11, 18 * GB), 6);
-        assert_eq!(NodeLimit::Auto.resolve(16, 16 * GB), 6);
-        assert_eq!(NodeLimit::Auto.resolve(2, 8 * GB), 1);
-        assert_eq!(NodeLimit::Auto.resolve(4, 4 * GB), 1);
-        assert_eq!(NodeLimit::Auto.resolve(64, 512 * GB), 12);
+    fn auto_is_one_node_per_core_while_the_memory_over_4_gb_holds_each_at_what_a_node_measures() {
+        assert_eq!(NodeLimits::of(11, 18 * GB, 520 * MB), NodeLimits { most: 22, auto: 11 });
+        assert_eq!(NodeLimits::of(11, 18 * GB, 2 * GB), NodeLimits { most: 22, auto: 7 });
+        assert_eq!(NodeLimits::of(16, 16 * GB, 512 * MB), NodeLimits { most: 32, auto: 16 });
+        assert_eq!(NodeLimits::of(8, 8 * GB, 1536 * MB), NodeLimits { most: 16, auto: 2 });
+        assert_eq!(NodeLimits::of(4, 4 * GB, 512 * MB), NodeLimits { most: 8, auto: 1 });
+        assert_eq!(NodeLimits::of(1, 512 * GB, 0), NodeLimits { most: 2, auto: 1 });
     }
 
     #[test]
-    fn the_file_takes_auto_or_a_number_from_1_to_12() {
+    fn a_number_over_the_most_this_mac_takes_works_as_that_most() {
+        let limits = NodeLimits::of(11, 18 * GB, 520 * MB);
+        assert_eq!(limits.applied(NodeLimit::Fixed(30)), 22);
+        assert_eq!(limits.applied(NodeLimit::Fixed(10)), 10);
+        assert_eq!(limits.applied(NodeLimit::Auto), 11);
+    }
+
+    #[test]
+    fn the_file_takes_auto_or_any_number_from_1() {
         assert_eq!(OptionsFile::parse("").unwrap().max_working_nodes, NodeLimit::Auto);
         assert_eq!(OptionsFile::parse("max_working_nodes = \"auto\"").unwrap().max_working_nodes, NodeLimit::Auto);
         assert_eq!(OptionsFile::parse("max_working_nodes = 3").unwrap().max_working_nodes, NodeLimit::Fixed(3));
-        for wrong in ["max_working_nodes = 0", "max_working_nodes = 13", "max_working_nodes = \"many\""] {
+        assert_eq!(OptionsFile::parse("max_working_nodes = 20").unwrap().max_working_nodes, NodeLimit::Fixed(20));
+        for wrong in ["max_working_nodes = 0", "max_working_nodes = -1", "max_working_nodes = \"many\""] {
             assert!(OptionsFile::parse(wrong).unwrap_err().contains("max_working_nodes"), "{wrong}");
         }
-        assert_eq!(NodeLimit::Fixed(3).resolve(64, 512 * GB), 3);
     }
 
     #[test]
@@ -979,7 +1003,7 @@ mod node_limit_tests {
         assert_eq!(auto, "# my options\nmax_working_nodes = \"auto\"\n\n[defaults]\neffort = \"light\" # keep\n");
         assert!(OptionsFile::parse(&auto).unwrap().defaults.contains_key("effort"));
         assert_eq!(with_node_limit("", NodeLimit::Fixed(12)).unwrap(), "max_working_nodes = 12\n");
-        assert!(with_node_limit("", NodeLimit::Fixed(13)).is_err());
+        assert!(with_node_limit("", NodeLimit::Fixed(0)).is_err());
         assert!(with_node_limit("[defaults\n", NodeLimit::Fixed(2)).is_err());
     }
 }

@@ -249,31 +249,43 @@ impl App {
         let Some(menu) = self.card_menu.clone() else {
             return Flow::Go;
         };
-        match key.code {
-            KeyCode::Esc => self.card_menu = None,
-            KeyCode::Char(character @ '1'..='9') if key.modifiers.is_empty() => {
-                let Some((action, option)) = menu.entries.get(character as usize - '1' as usize) else {
-                    return Flow::Go;
-                };
-                let (action, option) = (action.clone(), option.clone());
+        let index = match key.code {
+            KeyCode::Esc => {
                 self.card_menu = None;
-                if let Some(screen) = self.mcp_servers.as_ref() {
-                    let (Some(epoch), Some(row)) = (screen.epoch(), screen.selected()) else { return Flow::Go };
-                    let selected = Key(row.id.clone());
-                    return self.press_card_action(action, option, &selected, epoch);
-                }
-                let Some(view) = self.card_view.as_ref().or(self.home_view.as_ref()) else {
-                    return Flow::Go;
-                };
-                let epoch = view.data_epoch.clone();
-                let selected = self.sel.clone().unwrap_or_else(|| Key(view.key.clone()));
-                return self.press_card_action(action, option, &selected, epoch);
+                return Flow::Go;
             }
-            _ => {}
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') if menu.scrolls() => {
+                let up = matches!(key.code, KeyCode::Up | KeyCode::Char('k'));
+                let last = menu.entries.len().saturating_sub(1);
+                if let Some(open) = self.card_menu.as_mut() {
+                    open.sel = if up { open.sel.saturating_sub(1) } else { (open.sel + 1).min(last) };
+                }
+                return Flow::Go;
+            }
+            KeyCode::Enter if menu.scrolls() => menu.sel,
+            KeyCode::Char(character @ '1'..='9') if key.modifiers.is_empty() => character as usize - '1' as usize,
+            _ => return Flow::Go,
+        };
+        let Some((action, option)) = menu.entries.get(index) else {
+            return Flow::Go;
+        };
+        let (action, option) = (action.clone(), option.clone());
+        self.card_menu = None;
+        if let Some(screen) = self.mcp_servers.as_mut() {
+            let (Some(epoch), Some(row)) = (screen.epoch(), screen.selected().cloned()) else { return Flow::Go };
+            if let Some(option) = &option {
+                screen.choose(&row, &action, option);
+            }
+            let selected = Key(row.id.clone());
+            return self.press_card_action(action, option, &selected, epoch);
         }
-        Flow::Go
+        let Some(view) = self.card_view.as_ref().or(self.home_view.as_ref()) else {
+            return Flow::Go;
+        };
+        let epoch = view.data_epoch.clone();
+        let selected = self.sel.clone().unwrap_or_else(|| Key(view.key.clone()));
+        self.press_card_action(action, option, &selected, epoch)
     }
-
 
     pub(super) fn run_view_action(
         &mut self,

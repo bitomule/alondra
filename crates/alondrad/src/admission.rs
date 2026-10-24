@@ -2,7 +2,7 @@
 //! a minute, none while memory has no room for one more node (`MacState::room`, which reserves
 //! margin for every node admitted in the last `IN_FLIGHT`), and no new start while the CPU is
 //! overloaded. Memory only ever holds starts and resumes: it never pauses a working node. The
-//! limit is the user's number, or in automatic the most this Mac's hardware takes. What does not
+//! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
 //! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
 //! docs/pacing.md.
 //!
@@ -18,7 +18,7 @@ use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
-use alondra_core::options::NodeLimit;
+use alondra_core::options::{NodeLimit, NodeLimits};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -30,6 +30,8 @@ pub(crate) const FILE: &str = "admission.json";
 /// The gate's file before it was renamed; startup moves it to `FILE`.
 pub(crate) const PREVIOUS_FILE: &str = "fleet-gate.json";
 pub(crate) const SPACING: Millis = 60_000;
+/// The limit of tests and of a sandbox with fast timing, in place of automatic.
+pub(crate) const UNPACED: u32 = 12;
 /// A node admitted this recently counts as working even before its mod reports a turn, and its
 /// memory, which does not show yet, is reserved before one more starts.
 const IN_FLIGHT: Millis = 3 * 60_000;
@@ -86,8 +88,8 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     Ok(())
 }
 
-/// The working-node limit the user chose: a number, or automatic, the most this Mac's hardware
-/// takes. Memory never lowers it: it only holds starts while it has no room.
+/// The working-node limit the user chose: a number, or automatic, from this Mac's cores and what
+/// its nodes measure. Free memory never lowers it: it only holds starts while it has no room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Limit {
     Fixed(u32),
@@ -124,7 +126,7 @@ pub(crate) struct Tuning {
 impl Default for Tuning {
     fn default() -> Self {
         if cfg!(test) {
-            Self { spacing: 0, limit: Some(Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) }
+            Self { spacing: 0, limit: Some(Limit::Fixed(UNPACED)) }
         } else {
             Self { spacing: SPACING, limit: None }
         }
@@ -207,6 +209,9 @@ pub(crate) struct Snapshot {
     /// The tasks behind `working`: the busy ones and those starting.
     pub working_tasks: BTreeSet<TaskId>,
     pub limit: u32,
+    /// What `options.toml` sets and what this Mac takes, which `limit` comes from.
+    pub setting: NodeLimit,
+    pub limits: NodeLimits,
     pub mac: MacState,
     /// Nodes admitted in the last `IN_FLIGHT`, whose memory is reserved.
     pub in_flight: usize,
@@ -480,12 +485,15 @@ impl Admission {
             waits_for: None,
             retry: None,
         })).collect();
-        let (fixed, auto) = node_limit_setting(domain);
         Some(LivePacing {
             working: snapshot.working,
             limit: snapshot.limit,
-            fixed,
-            auto,
+            fixed: match snapshot.setting {
+                NodeLimit::Auto => None,
+                NodeLimit::Fixed(count) => Some(count),
+            },
+            auto: snapshot.limits.auto,
+            most: snapshot.limits.most,
             memory_free: snapshot.mac.free_percent,
             tight: snapshot.mac.room(snapshot.in_flight, now).is_err(),
             queued,
@@ -751,25 +759,25 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
     }).collect()
 }
 
-fn limit_setting(domain: &DomainRuntime, tuning: Tuning) -> Limit {
+/// What `options.toml` sets and what this Mac takes with its nodes measured at what `mac` says.
+fn node_limits(domain: &DomainRuntime, mac: &MacState) -> (NodeLimit, NodeLimits) {
     let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = machine_size();
-    match (file.max_working_nodes, tuning.limit) {
-        (NodeLimit::Fixed(_), _) => Limit::Fixed(file.max_working_nodes.resolve(cores, memory)),
-        (NodeLimit::Auto, Some(limit)) => limit,
-        (NodeLimit::Auto, None) => Limit::Auto { max: NodeLimit::Auto.resolve(cores, memory) },
-    }
+    (file.max_working_nodes, NodeLimits::of(cores, memory, mac.node_cost.unwrap_or(crate::node_cost::DEFAULT)))
 }
 
-/// What the user set in `options.toml` (`None` for automatic) and what automatic gives here.
-fn node_limit_setting(domain: &DomainRuntime) -> (Option<u32>, u32) {
-    let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
+/// The highest number Settings offers and `set_limit` takes on this Mac.
+pub(crate) fn most_working_nodes() -> u32 {
     let (cores, memory) = machine_size();
-    let fixed = match file.max_working_nodes {
-        NodeLimit::Auto => None,
-        NodeLimit::Fixed(count) => Some(count),
-    };
-    (fixed, NodeLimit::Auto.resolve(cores, memory))
+    NodeLimits::of(cores, memory, crate::node_cost::DEFAULT).most
+}
+
+fn limit_setting(setting: NodeLimit, limits: NodeLimits, tuning: Tuning) -> Limit {
+    match (setting, tuning.limit) {
+        (NodeLimit::Fixed(_), _) => Limit::Fixed(limits.applied(setting)),
+        (NodeLimit::Auto, Some(limit)) => limit,
+        (NodeLimit::Auto, None) => Limit::Auto { max: limits.auto },
+    }
 }
 
 /// Writes `max_working_nodes` into `options.toml`, keeping the rest of the file; the gate
@@ -837,10 +845,11 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         }
     }
     let queue = ordered(all.into_values().collect());
-    let limit = limit_setting(domain, inner.tuning).count();
     let mac = domain.live.machine_watch.mac();
+    let (setting, limits) = node_limits(domain, &mac);
+    let limit = limit_setting(setting, limits, inner.tuning).count();
     let disk_low = domain.live.machine_watch.disk_low();
-    let mut snapshot = Snapshot { queue, working, working_tasks, limit, mac, in_flight: admitted, hold: None, disk_low };
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk_low };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
 }

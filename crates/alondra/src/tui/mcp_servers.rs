@@ -6,6 +6,8 @@
 //! on demand. Its buttons are the view's: Connect opens the sign-in as a card's does, Reconnect,
 //! Sign out and Check go to the daemon.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use alondra_core::views::{Action, Item, Row, View};
@@ -37,6 +39,17 @@ pub struct McpServers {
     pub failed: Option<String>,
     pub sel: usize,
     pub scroll: usize,
+    /// What the user just picked on a General row, by the action's id: the row says it at once,
+    /// until the Mac refuses it or a view of the Mac says how it is now.
+    pub chosen: HashMap<String, Chosen>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chosen {
+    row: String,
+    line: String,
+    before: Option<String>,
+    applied: bool,
 }
 
 impl McpServers {
@@ -90,6 +103,26 @@ impl McpServers {
             _ => self.sel,
         }
         .min(last);
+    }
+
+    /// `row` as the screen draws it: with what the user just picked in place of what it said.
+    pub fn shown<'a>(&self, row: &'a Row) -> Cow<'a, Row> {
+        match self.chosen.values().find(|chosen| chosen.row == row.id) {
+            Some(chosen) => Cow::Owned(Row { subtitle: Some(chosen.line.clone()), ..row.clone() }),
+            None => Cow::Borrowed(row),
+        }
+    }
+
+    /// The user picked `option` of `action` on the General row `row`.
+    pub fn choose(&mut self, row: &Row, action: &Action, option: &alondra_core::views::ActionOption) {
+        let general = self.general.iter().flat_map(|view| &view.sections).filter(|section| section.id == GENERAL_SECTION)
+            .flat_map(|section| &section.items).any(|item| matches!(item, Item::Row(general) if general.id == row.id));
+        if !general {
+            return;
+        }
+        let label = option.label.split(" · ").next().unwrap_or(&option.label);
+        let line = format!("{}: {label}", row.title);
+        self.chosen.insert(action.id.clone(), Chosen { row: row.id.clone(), line, before: row.subtitle.clone(), applied: false });
     }
 
     /// The data epoch the screen's buttons act on.
@@ -242,8 +275,28 @@ impl App {
     pub(super) fn general_loaded(&mut self, view: &View) {
         let Some(screen) = self.mcp_servers.as_mut() else { return };
         screen.general = Some(view.clone());
+        let rows: Vec<&Row> = view.sections.iter().flat_map(|section| &section.items)
+            .filter_map(|item| match item {
+                Item::Row(row) => Some(row),
+                _ => None,
+            }).collect();
+        screen.chosen.retain(|_, chosen| !chosen.applied
+            && rows.iter().any(|row| row.id == chosen.row && row.subtitle == chosen.before));
         screen.clamp();
         self.sync_open_views();
+    }
+
+    /// The Mac answered a pick on a General row: refused, the row says again how it is; done, the
+    /// row is asked again.
+    pub(super) fn setting_answered(&mut self, action_id: &str, applied: bool) {
+        let Some(screen) = self.mcp_servers.as_mut() else { return };
+        if !applied {
+            screen.chosen.remove(action_id);
+            return;
+        }
+        let Some(chosen) = screen.chosen.get_mut(action_id) else { return };
+        chosen.applied = true;
+        self.load_general();
     }
 
     pub(super) fn close_mcp_servers(&mut self) {

@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "va4c4a61c868d9847",
+  "version": "v81f627d9c9a296a8",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -156,7 +156,7 @@
                 {
                   "id": "auto",
                   "label": "Automatic (6) · now",
-                  "description": "From this Mac's cores and memory",
+                  "description": "From this Mac's cores and the memory its nodes use",
                   "style": "secondary",
                   "input": {
                     "kind": "none"

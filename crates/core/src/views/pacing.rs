@@ -6,7 +6,6 @@ use super::{
     text::{t, tf},
 };
 use crate::domain::{AgentId, Task, TaskPriority};
-use crate::options::MAX_WORKING_NODES;
 
 fn option(id: String, label: String, description: Option<String>) -> ActionOption {
     ActionOption { id, label, description, style: Style::Secondary, input: Input::None, key: None }
@@ -22,8 +21,8 @@ pub(super) fn limit_text(pacing: &LivePacing, lang: super::Lang) -> String {
     }
 }
 
-/// "Nodes at once": automatic or a fixed number from 1 to 12, written to `options.toml`. It lives
-/// in this Mac's settings, never in the Tasks header.
+/// "Nodes at once": automatic or a fixed number from 1 to the most this Mac takes, written to
+/// `options.toml`. It lives in this Mac's settings, never in the Tasks header.
 pub(super) fn limit_action(pacing: &LivePacing, context: &RenderContext<'_>) -> Option<super::Action> {
     let lang = context.lang;
     let mut action = common::action(Verb::SetLimit, "limit", context.domain.revision,
@@ -31,8 +30,8 @@ pub(super) fn limit_action(pacing: &LivePacing, context: &RenderContext<'_>) -> 
     action.presentation = Presentation::Menu;
     let auto = pacing.auto;
     action.options.push(option("auto".into(), tf!(lang, "Automatic ({auto})", "Automático ({auto})"),
-        Some(t!(lang, "From this Mac's cores and memory", "Según los núcleos y la memoria de este Mac").into())));
-    action.options.extend((1..=MAX_WORKING_NODES).map(|count| {
+        Some(t!(lang, "From this Mac's cores and the memory its nodes use", "Según los núcleos de este Mac y la memoria que usan sus nodos").into())));
+    action.options.extend((1..=pacing.most).map(|count| {
         let label = match pacing.fixed == Some(count) {
             true => tf!(lang, "{count} · now", "{count} · ahora"),
             false => count.to_string(),

@@ -119,6 +119,9 @@ pub struct LivePacing {
     /// The limit automatic gives on this Mac.
     #[serde(default)]
     pub auto: u32,
+    /// The highest number this Mac takes.
+    #[serde(default)]
+    pub most: u32,
     pub memory_free: Option<u32>,
     /// Memory has no room for one more node to start; the nodes at work go on.
     pub tight: bool,

@@ -2218,6 +2218,7 @@ impl App {
             None => outcome.title.clone(),
         };
         self.rule_answered(command, applied);
+        self.setting_answered(request["action_id"].as_str().unwrap_or_default(), applied);
         match outcome.kind {
             OutcomeKind::Done | OutcomeKind::Started => {
                 if let Some(key) = &origin {

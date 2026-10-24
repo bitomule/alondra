@@ -242,6 +242,10 @@ impl App {
             let keys: Vec<KeyEvent> = (0..menu.entries.len()).filter_map(digit).collect();
             let hint = if keys.len() > 1 { format!("1-{}", keys.len()) } else { "1".into() };
             t.add(keys, &hint, tr!("pick", "elige"), Act::Pick);
+            if menu.scrolls() {
+                t.add(vec![plain(KeyCode::Up), plain(KeyCode::Down), char('k'), char('j')], "↑↓", tr!("move", "mover"), Act::Pick);
+                t.add(vec![plain(KeyCode::Enter)], "⏎", tr!("pick the marked one", "elige la marcada"), Act::Pick);
+            }
             t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::CloseMenu);
             return t;
         }

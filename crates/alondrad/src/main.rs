@@ -591,7 +591,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     tokio::spawn(claude_check::run(plugins::node()));
     if config.fast_timing {
-        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });
+        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
         domain.live.gate.ignore_mac();
     }
     if config.ignore_mac_load {
