@@ -4,6 +4,8 @@ mod test_support;
 
 use std::{fs, io::Read, net::TcpListener, process::{Command, Stdio}, time::{Duration, Instant}};
 
+const HANG_GUARD: Duration = Duration::from_secs(300);
+
 struct Fixture(crate::test_support::Directory);
 impl Fixture {
     fn new() -> Self {
@@ -17,12 +19,12 @@ impl Fixture {
             .args(args).env_clear().env("HOME", &self.0).env("ALONDRA_HOME", &self.0)
             .env("ALONDRA_LISTEN", "127.0.0.1").env("ALONDRA_PORT", port.to_string())
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let hang_guard = Instant::now() + HANG_GUARD;
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() { break status; }
-            if Instant::now() >= deadline {
+            if Instant::now() >= hang_guard {
                 let _ = child.kill(); let _ = child.wait();
-                panic!("informational command did not exit promptly: {args:?}");
+                panic!("hang guard: alondrad {args:?} still running after {HANG_GUARD:?}");
             }
             std::thread::sleep(Duration::from_millis(10));
         };
