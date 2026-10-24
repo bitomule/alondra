@@ -429,3 +429,18 @@ fn v_on_an_image_alondra_copied_fetches_it_to_open() {
     assert_eq!(app.spawned.borrow().len(), spawned + 1);
     assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("main screen")));
 }
+
+#[test]
+fn the_reader_key_column_fits_its_longest_key() {
+    let mut app = reader_on_question(false);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw::draw(frame, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    let row = rows.iter().find(|row| row.contains("Shift+C")).unwrap_or_else(|| panic!("{}", rows.join("\n")));
+    let after = &row[row.find("Shift+C").unwrap() + "Shift+C".len()..];
+    assert!(after.starts_with(' '), "{row}");
+}

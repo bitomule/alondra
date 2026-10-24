@@ -1161,9 +1161,11 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
     };
     let width = text.width as usize;
     let mut lines: Vec<Line> = vec![];
+    let hints = bar_keys(&app.bindings());
+    let key_width = hints.iter().map(|(hint, _)| hint.chars().count()).max().unwrap_or(0);
     let key = |k: &str, d: &str| {
         Line::from(vec![
-            Span::styled(format!("{k:<6} "), Style::new().fg(ACCENT).bold()),
+            Span::styled(format!("{k:<key_width$} "), Style::new().fg(ACCENT).bold()),
             Span::styled(d.to_string(), Style::new().fg(DIM)),
         ])
     };
@@ -1171,8 +1173,8 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
         None => {
             lines.push(Line::from(tr!("None yet.", "Todavía ninguno.").fg(DIM)));
             lines.push(Line::default());
-            for (hint, label) in bar_keys(&app.bindings()) {
-                lines.push(key(&hint, &label));
+            for (hint, label) in &hints {
+                lines.push(key(hint, label));
             }
         }
         Some(rv) => {
