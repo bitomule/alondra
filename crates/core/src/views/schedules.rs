@@ -62,8 +62,8 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     );
     let rows = context.domain.schedule.schedules.values().filter(|s| s.deleted_at.is_none()).map(|schedule| {
         let mut row = common::row(&schedule.id.0, &format!("schedule:{}", schedule.id), Icon::Schedule, schedule.title.clone(), Some(frequency_label(schedule.frequency, context.lang).into()));
-        if !schedule.enabled { row.badges.push(super::Label { text: t!(context.lang, "Paused", "Pausada").into(), tone: Tone::Warning }); }
-        if schedule.frequency == ScheduleFrequency::Once && schedule.next_run.is_none() { row.badges.push(super::Label { text: t!(context.lang, "Completed", "Completada").into(), tone: Tone::Neutral }); }
+        if !schedule.enabled { row.badges.push(super::Label { text: t!(context.lang, "Paused", "Pausada").into(), tone: Tone::Warning, elapsed: None }); }
+        if schedule.frequency == ScheduleFrequency::Once && schedule.next_run.is_none() { row.badges.push(super::Label { text: t!(context.lang, "Completed", "Completada").into(), tone: Tone::Neutral, elapsed: None }); }
         if let Some(next) = schedule.next_run { row.trailing = Some(Trailing::Time { at: instant(next), format: super::TimeFormat::Absolute }); }
         let revision = schedule.revision as u64;
         for (verb, label, style) in [(Verb::SchedRun, t!(context.lang, "Run Now", "Ejecutar ahora"), Style::Secondary), (Verb::SchedToggle, if schedule.enabled { t!(context.lang, "Pause", "Pausar") } else { t!(context.lang, "Resume", "Reanudar") }, Style::Secondary), (Verb::SchedDelete, t!(context.lang, "Delete", "Eliminar"), Style::Destructive)] {

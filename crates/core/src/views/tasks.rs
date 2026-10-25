@@ -51,9 +51,10 @@ fn presented_row(task: &Task, presentation: &task_state::Presentation, context: 
     let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
         Some(presentation.state.clone()));
     row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone });
+    row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
     row.badges.extend(common::scheduled_mark(task, context));
-    row.badges.extend(task.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral }));
+    row.badges.extend(task.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral, elapsed: None }));
+    row.badges.extend(common::elapsed_mark(task, false, context));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
     let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
@@ -273,7 +274,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
             format: super::TimeFormat::Relative,
         });
     if let Some(project) = context.index.request_project(&request.id) {
-        row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
+        row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral, elapsed: None });
     }
     if let Some(task) = tasks.iter().max_by_key(|task| task.revision) {
         row.link = Some(super::Link::View { key: format!("task:{}", task.id) });
@@ -292,8 +293,9 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.icon = icon;
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
-                row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone });
+                row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone, elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
+                row.badges.extend(common::elapsed_mark(task, false, context));
                 row.actions.extend(relaunch_action(task, context));
                 row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
@@ -310,6 +312,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.badges.insert(0, super::Label {
                     text: tf!(context.lang, "{done} of {total}", "{done} de {total}", done = done, total = all.len()),
                     tone: Tone::Neutral,
+                    elapsed: None,
                 });
             }
             _ => {}
@@ -620,13 +623,14 @@ fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) ->
     row.trailing = context.live.request_times.get(&request.id.0)
         .map(|at| Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
     if let Some(project) = context.index.request_project(&request.id) {
-        row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
+        row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral, elapsed: None });
     }
     row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View { key: format!("task:{}", task.id) });
     if context.client == super::Client::Tui {
         row.badges.insert(0, super::Label {
             text: tf!(context.lang, "{count} tasks", "{count} tareas", count = tasks.len()),
             tone: Tone::Neutral,
+            elapsed: None,
         });
     }
     row
@@ -647,11 +651,11 @@ fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Prese
         let mut line = common::row(&member.id.0, &format!("task:{}", member.id), Icon::Branch, member.title.clone(),
             Some(waits_for(member, context)));
         line.depth = depth.saturating_add(2);
-        line.badges.push(super::Label { text: shown[&member.id].state.clone(), tone: shown[&member.id].tone });
+        line.badges.push(super::Label { text: shown[&member.id].state.clone(), tone: shown[&member.id].tone, elapsed: None });
         if context.client == super::Client::Tui {
             line.badges.clear();
         }
-        line.badges.extend(member.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral }));
+        line.badges.extend(member.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral, elapsed: None }));
         fold.children.push(line);
     }
     row.children.push(fold);
@@ -1000,6 +1004,16 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let readings = live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default();
     if !readings.is_empty() {
         view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
+    }
+    if let Some(mark) = common::elapsed_mark(task, true, context) {
+        let title = match mark.elapsed.as_ref().and_then(|elapsed| elapsed.until.as_ref()) {
+            Some(_) => t!(context.lang, "Took", "Duró"),
+            None => t!(context.lang, "Running for", "En marcha"),
+        };
+        let mut row = common::row("elapsed", "task", Icon::History, title.into(), None);
+        row.link = None;
+        row.badges.push(mark);
+        view.sections.push(common::section("elapsed", None, vec![Item::Row(row)]));
     }
     if let Some(step) = context.live.task_history.get(id).and_then(|history| history.last()) {
         let mut row = common::row("since", "task", Icon::History, t!(context.lang, "Since", "Desde").into(), None);

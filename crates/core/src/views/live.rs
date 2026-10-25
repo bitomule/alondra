@@ -46,6 +46,9 @@ pub struct LiveSnapshot {
     /// When each open task last changed state, by task id: the Tasks list says since when its fact holds.
     #[serde(default)]
     pub task_since: BTreeMap<String, String>,
+    /// When each open or finished task first started running and, once it is over, when it ended.
+    #[serde(default)]
+    pub task_started: BTreeMap<String, LiveTaskStart>,
     /// Why each cancelled task was cancelled, when someone said so.
     #[serde(default)]
     pub cancel_reasons: BTreeMap<String, String>,
@@ -463,6 +466,12 @@ pub struct LiveHistoryStep {
     pub summary: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveTaskStart {
+    pub since: String,
+    pub until: Option<String>,
+    pub ran_secs: Option<u64>,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveTaskOptions {
     pub effort: Option<String>,

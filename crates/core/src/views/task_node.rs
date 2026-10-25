@@ -82,6 +82,7 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
     super::Label {
         text: tf!(lang, "Context {percent}%", "Contexto {percent}%", percent = percent),
         tone: if percent >= 80 { Tone::Warning } else { Tone::Neutral },
+        elapsed: None,
     }
 }
 
@@ -147,7 +148,7 @@ fn with_run_state(row: &mut super::Row, state: super::RunState, since: &str, lan
         RunState::Ended { outcome: RunOutcome::Failed, .. } => (t!(lang, "Failed", "Falló"), Tone::Critical),
         RunState::Ended { outcome: RunOutcome::Stopped, .. } => (t!(lang, "Stopped", "Detenido"), Tone::Neutral),
     };
-    row.badges.push(super::Label { text: text.into(), tone });
+    row.badges.push(super::Label { text: text.into(), tone, elapsed: None });
     row.trailing = Some(match state {
         RunState::Running => Trailing::Time { at: since.to_owned(), format: super::TimeFormat::Relative },
         RunState::Ended { ran_secs, .. } => Trailing::Text { text: ran_for(ran_secs) },
@@ -193,9 +194,9 @@ fn workflow_items(id: &str, workflow: &super::LiveWorkflow, lang: super::Lang) -
         let mut row = common::row(&format!("{id}:agent:{index}"), "node", icon, agent.label.clone(), (!about.is_empty()).then_some(about));
         row.link = None;
         row.badges.push(if agent.running {
-            super::Label { text: t!(lang, "Running", "En marcha").into(), tone: Tone::Info }
+            super::Label { text: t!(lang, "Running", "En marcha").into(), tone: Tone::Info, elapsed: None }
         } else {
-            super::Label { text: t!(lang, "Done", "Hecho").into(), tone: Tone::Neutral }
+            super::Label { text: t!(lang, "Done", "Hecho").into(), tone: Tone::Neutral, elapsed: None }
         });
         items.push(Item::Row(row));
     }
@@ -233,7 +234,7 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
             row.link = None;
             row.struck = step.state == StepState::Completed;
             if step.state == StepState::InProgress {
-                row.badges.push(super::Label { text: t!(lang, "In progress", "En curso").into(), tone: Tone::Info });
+                row.badges.push(super::Label { text: t!(lang, "In progress", "En curso").into(), tone: Tone::Info, elapsed: None });
             }
             Item::Row(row)
         }));

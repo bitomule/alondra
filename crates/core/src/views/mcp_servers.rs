@@ -59,7 +59,7 @@ fn status_label(status: McpStatus, signing_in: bool, signs_in: bool, lang: Lang)
         McpStatus::Disabled => (t!(lang, "Turned off", "Desactivado"), Tone::Neutral),
         McpStatus::Unknown => (t!(lang, "A status Alondra does not know", "Un estado que Alondra no conoce"), Tone::Neutral),
     };
-    Label { text: text.into(), tone }
+    Label { text: text.into(), tone, elapsed: None }
 }
 
 /// Where the provider found a server, in a few words.

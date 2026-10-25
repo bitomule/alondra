@@ -236,6 +236,16 @@ pub struct GaugePart {
 pub struct Label {
     pub text: String,
     pub tone: Tone,
+    /// A client that knows it draws the time elapsed instead of `text`, which stays for those that do not.
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
+    pub elapsed: Option<Elapsed>,
+}
+/// A span of time a client counts itself: from `since` until now, or until `until` once it is over.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Elapsed {
+    pub since: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Section {

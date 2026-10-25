@@ -76,7 +76,7 @@ fn state_badge(state: AccountState, lang: Lang) -> Label {
         AccountState::Unchecked => (t!(lang, "Not checked yet", "Sin comprobar"), Tone::Neutral),
         AccountState::Disabled => (t!(lang, "Off", "Desactivada"), Tone::Neutral),
     };
-    Label { text: text.into(), tone }
+    Label { text: text.into(), tone, elapsed: None }
 }
 
 /// The weight the account counts for, and where it comes from.
@@ -246,6 +246,7 @@ fn moves_row(context: &RenderContext<'_>) -> Item {
     row.badges.push(Label {
         text: if on { t!(lang, "On", "Activado") } else { t!(lang, "Off", "Desactivado") }.into(),
         tone: if on { Tone::Warning } else { Tone::Neutral },
+        elapsed: None,
     });
     if allowed(context, AccountChange::SetMoveWhenExhausted { on: !on }).is_ok() {
         let label = if on { t!(lang, "Turn off", "Desactivar") } else { t!(lang, "Turn on", "Activar") };

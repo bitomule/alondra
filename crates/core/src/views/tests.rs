@@ -749,6 +749,14 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     ] {
         live.request_times.insert(id.into(), at.into());
     }
+    for (id, since, until, ran_secs) in [
+        ("t-badge-count", "2026-09-30T09:20:00.000Z", None, None),
+        ("t-scheduled-lumo", "2026-09-30T09:48:00.000Z", None, None),
+        ("t-legacy-editor", "2026-09-29T17:15:00.000Z", None, None),
+        ("t-hf-paywall", "2026-09-29T10:00:00.000Z", Some("2026-09-29T11:05:00.000Z"), Some(3_900)),
+    ] {
+        live.task_started.insert(id.into(), LiveTaskStart { since: since.into(), until: until.map(Into::into), ran_secs });
+    }
     (state, live)
 }
 
@@ -1091,6 +1099,9 @@ fn golden_live() -> LiveSnapshot {
         LiveHistoryStep { at: "2026-09-30T08:00:00Z".into(), state: "running".into(), summary: "Started".into() },
         LiveHistoryStep { at: "2026-09-30T09:30:00Z".into(), state: "needs_you".into(), summary: "Waiting for a decision".into() },
     ]);
+    live.task_started.insert("t-651c38484cd2f34e74d5107ba05f7f15".into(), LiveTaskStart {
+        since: "2026-09-30T08:00:00Z".into(), until: None, ran_secs: None,
+    });
     live.projects.push(crate::options::ProjectEntry {
         name: "Demo Garden".into(),
         path: "/demo/Demo Garden".into(),
@@ -1280,8 +1291,8 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
     let [Item::Row(row)] = section.items.as_slice() else { panic!("one task in progress: {:?}", section.items) };
     assert_eq!(row.link, Some(Link::View { key: "task:t-651c38484cd2f34e74d5107ba05f7f15".into() }));
     assert_eq!(row.title, "Restore the native review experience");
-    assert_eq!(row.badges[0], Label { text: "Needs you".into(), tone: Tone::Warning }, "its task's state");
-    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Neutral }, "and what runs in its background");
+    assert_eq!(row.badges[0], Label { text: "Needs you".into(), tone: Tone::Warning, elapsed: None }, "its task's state");
+    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Neutral, elapsed: None }, "and what runs in its background");
     assert!(row.children.is_empty());
     assert!(view.status.summary.ends_with(" · 1 in progress"), "{}", view.status.summary);
 }
@@ -8033,6 +8044,72 @@ fn the_daemon_cannot_send_an_unsupported_value() {
     assert!(serde_json::to_value(FieldKind::Unsupported).is_err());
     assert!(serde_json::to_value(Presentation::Unsupported).is_err());
     assert!(serde_json::to_value(CommentKind::Unsupported).is_err());
+}
+
+fn all_rows(rows: &[Row]) -> Vec<Row> {
+    rows.iter().flat_map(|row| std::iter::once(row.clone()).chain(all_rows(&row.children))).collect()
+}
+
+fn elapsed_row(view: &View) -> Option<&Row> {
+    view.sections.iter().find(|section| section.id == "elapsed").and_then(|section| match section.items.first() {
+        Some(Item::Row(row)) => Some(row),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_task_counts_its_time_from_its_first_start_in_its_history_not_from_its_node() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    (task.agent_id, task.state, task.final_presentation) = (Some("a-1".into()), TaskState::NeedsYou, None);
+    let mut live = LiveSnapshot::default();
+    live.task_since.insert("t-1".into(), "2026-09-30T09:40:00.000+02:00".into());
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), name: "Node One".into(), waiting: true,
+        state_since: Some("2026-09-30T09:40:00.000+02:00".into()),
+        ..LiveNode::default()
+    });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (_, row) = active_row(&state, &live, client, Lang::En, "t-1");
+        assert!(row.badges.iter().all(|badge| badge.elapsed.is_none()), "{client:?}: a task without a start in its history counts nothing");
+    }
+    live.task_started.insert("t-1".into(), LiveTaskStart { since: "2026-09-30T08:05:00.000+02:00".into(), until: None, ran_secs: None });
+    let started = Some(Elapsed { since: "2026-09-30T08:05:00.000+02:00".into(), until: None });
+    for (client, lang, text) in [(Client::Ios, Lang::Es, "en marcha desde las 08:05"), (Client::Mac, Lang::En, "running since 08:05"),
+        (Client::Tui, Lang::Es, "en marcha desde las 08:05")] {
+        let (_, row) = active_row(&state, &live, client, lang, "t-1");
+        let mark = row.badges.last().unwrap();
+        assert_eq!((mark.text.as_str(), &mark.elapsed), (text, &started), "{client:?}: counts from the history while it waits for the user");
+        let view = render(&state, &live, client, lang, "task:t-1", "");
+        let detail = elapsed_row(&view).expect("the task's screen says how long it runs");
+        let (title, since) = match lang { Lang::En => ("Running for", "since 08:05"), Lang::Es => ("En marcha", "desde las 08:05") };
+        assert_eq!((detail.title.as_str(), detail.badges[0].text.as_str(), &detail.badges[0].elapsed), (title, since, &started), "{client:?}");
+    }
+}
+
+#[test]
+fn a_finished_task_shows_how_long_it_took_frozen() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let mut live = LiveSnapshot::default();
+    live.task_started.insert("t-1".into(), LiveTaskStart {
+        since: "2026-09-30T08:00:00.000+02:00".into(), until: Some("2026-09-30T09:05:00.000+02:00".into()), ran_secs: Some(3_900),
+    });
+    let took = Some(Elapsed { since: "2026-09-30T08:00:00.000+02:00".into(), until: Some("2026-09-30T09:05:00.000+02:00".into()) });
+    for (client, lang, listed, detail_title) in [(Client::Mac, Lang::En, "took 1 h 05 min", "Took"), (Client::Ios, Lang::Es, "duró 1 h 05 min", "Duró")] {
+        let rows: Vec<Row> = render(&state, &live, client, lang, "tasks?section=finished&after=0", "").sections.into_iter()
+            .flat_map(|section| section.items)
+            .filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+        let row = all_rows(&rows).into_iter().find(|row| ["t-1", "r-1"].contains(&row.id.as_str()) && row.badges.iter().any(|badge| badge.elapsed.is_some()))
+            .unwrap_or_else(|| panic!("{client:?}: the finished task says how long it took: {rows:?}"));
+        let mark = row.badges.last().unwrap();
+        assert_eq!((mark.text.as_str(), &mark.elapsed), (listed, &took), "{client:?}");
+        let view = render(&state, &live, Client::Ios, lang, "task:t-1", "");
+        let detail = elapsed_row(&view).unwrap();
+        assert_eq!((detail.title.as_str(), detail.badges[0].text.as_str(), &detail.badges[0].elapsed), (detail_title, "1 h 05 min", &took));
+    }
 }
 
 /// 24 October, in the sandbox: David wrote to a task whose PR waited for his review, the node of

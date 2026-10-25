@@ -9,7 +9,7 @@ use alondra_core::domain::{
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
-use alondra_core::views::{Client, Family, Lang, LiveNode, LivePullRequest, LiveSnapshot, RenderContext, Transport, build};
+use alondra_core::views::{Client, Family, Lang, LiveNode, LivePullRequest, LiveSnapshot, LiveTaskStart, RenderContext, Transport, build};
 use std::time::Instant;
 
 const BUDGET_MS: f64 = 50.0;
@@ -312,6 +312,11 @@ fn live(state: &DomainState) -> LiveSnapshot {
         pull_requests,
         request_times: state.requests.keys().map(|id| (id.0.clone(), "2026-10-15T09:00:00".into())).collect(),
         task_since: state.tasks.keys().map(|id| (id.0.clone(), "2026-10-15T09:30:00".into())).collect(),
+        task_started: state.tasks.iter().map(|(id, task)| (id.0.clone(), LiveTaskStart {
+            since: "2026-10-15T09:10:00".into(),
+            until: task.state.terminal().then(|| "2026-10-15T09:30:00".into()),
+            ran_secs: task.state.terminal().then_some(1_200),
+        })).collect(),
         ..LiveSnapshot::default()
     }
 }

@@ -562,15 +562,25 @@ async fn gather_inner(
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
-    let (task_since, cancel_reasons) = if clock_only { (BTreeMap::new(), BTreeMap::new()) } else {
-        let (times, reasons) = {
+    let (task_since, task_started, cancel_reasons) = if clock_only { (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()) } else {
+        let (times, started, reasons) = {
             let store = client.domain.store.lock().expect("domain store poisoned");
-            (store.task_state_times().unwrap_or_default(), store.cancel_reasons().unwrap_or_default())
+            (store.task_state_times().unwrap_or_default(), store.task_started_times().unwrap_or_default(), store.cancel_reasons().unwrap_or_default())
         };
-        let since = state.tasks.values().filter(|task| !task.archived)
+        let visible = || state.tasks.values().filter(|task| !task.archived);
+        let since = visible()
             .filter_map(|task| times.get(&task.id).map(|at| (task.id.0.clone(), timestamp(*at))))
             .collect();
-        (since, reasons.into_iter().map(|(task, reason)| (task.0, reason)).collect())
+        let started = visible().filter_map(|task| {
+            let since = *started.get(&task.id)?;
+            let until = matches!(task.state, TaskState::Done | TaskState::Cancelled).then(|| times.get(&task.id).copied()).flatten();
+            Some((task.id.0.clone(), alondra_core::views::LiveTaskStart {
+                since: timestamp(since),
+                until: until.map(timestamp),
+                ran_secs: until.map(|until| until.saturating_sub(since).max(0) as u64 / 1000),
+            }))
+        }).collect();
+        (since, started, reasons.into_iter().map(|(task, reason)| (task.0, reason)).collect())
     };
     let task_options = state.tasks.values().map(|task| {
         let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
@@ -596,6 +606,7 @@ async fn gather_inner(
         task_history: keyed.task_history,
         task_options,
         task_since,
+        task_started,
         cancel_reasons,
         search_matches: keyed.search_matches,
         usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
@@ -1041,6 +1052,21 @@ mod cache_tests {
     }
 
     #[tokio::test]
+    async fn a_task_runs_since_its_first_start_in_its_history_through_waits_and_restarts() {
+        let (_home, domain, client) = wait_fixture();
+        let start = 1_700_000_000_000;
+        for (state, at) in [("not_started", start - 600_000), ("running", start), ("needs_you", start + 60_000), ("running", start + 120_000)] {
+            domain.store.lock().unwrap().add_history_step("room", state, at);
+        }
+        let state = domain.state().unwrap();
+        let live = gather_at(&client, &state, Lang::En, &["home".to_owned()], true, false, start + 180_000).await;
+        assert_eq!(live.task_started.get("room"), Some(&alondra_core::views::LiveTaskStart {
+            since: timestamp(start), until: None, ran_secs: None,
+        }), "the first start counts, not the queue before it nor the restart after the wait");
+        assert!(!live.task_started.contains_key("launch"), "a task that never ran has no start");
+    }
+
+    #[tokio::test]
     async fn live_gather_bounds_sqlite_work_on_a_long_task_history() {
         let mut measured = Vec::new();
         for steps in [2, 20] {
@@ -1069,8 +1095,11 @@ mod cache_tests {
             assert_eq!(getters, BTreeMap::from([
                 ("request_launch_summaries", 1), ("launch_refusals", 1), ("start_retries", 1),
                 ("task_was_launched", 6), ("revision_times", 1), ("request_times", 1),
-                ("task_state_times", 1), ("cancel_reasons", 1),
+                ("task_state_times", 1), ("task_started_times", 1), ("cancel_reasons", 1),
             ]), "a cold home snapshot has a bounded set of real live getter calls");
+            let started = trace.iter().find(|read| read.getter == "task_started_times").unwrap();
+            let started_work = u64::try_from(started.vm_steps.expect("the first-start statement reports VM steps")).unwrap();
+            assert!(started_work <= 64 * (history + tasks), "first Task start read exceeded linear SQLite work budget: {started_work} VM steps");
             let read = trace.iter().find(|read| read.getter == "task_state_times").unwrap();
             assert_eq!(read.statement_attempts, 1);
             assert_eq!(read.rows as u64, tasks, "the latest-state query returns one row per Task, not per history entry");

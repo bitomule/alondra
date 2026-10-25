@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v529144398d5a6efb",
+  "version": "ve554b85131a9a67a",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -77,6 +77,29 @@
               "value": "Polish the Alondra beta"
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "elapsed",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "elapsed",
+          "icon": "history",
+          "title": "En marcha",
+          "badges": [
+            {
+              "text": "desde las 08:00",
+              "tone": "neutral",
+              "elapsed": {
+                "since": "2026-09-30T08:00:00Z"
+              }
+            }
+          ],
+          "depth": 0,
+          "struck": false
         }
       ]
     },

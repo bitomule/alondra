@@ -472,6 +472,20 @@ impl DomainStore {
     pub(crate) fn on_live_read(&mut self, hook: impl Fn(&str) + Send + 'static) {
         self.before_live_read = Some(Box::new(hook));
     }
+    /// Records that `task` entered `state` at `at`, after the newest revision.
+    #[cfg(test)]
+    pub(crate) fn add_history_step(&mut self, task: &str, state: &str, at: i64) {
+        let tx = self.conn.transaction().unwrap();
+        let (epoch, revision): (String, i64) = tx.query_row(
+            "SELECT data_epoch,revision FROM command_audit ORDER BY revision DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        let (revision, command) = (revision + 1, format!("step-{}", revision + 1));
+        tx.execute("INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result) VALUES('system',?1,?2,zeroblob(32),'{}')",
+            params![command, epoch]).unwrap();
+        tx.execute("INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,'system',?2,?3,'{}',?4)",
+            params![revision, command, epoch, at]).unwrap();
+        tx.execute("INSERT INTO task_history(revision,task_id,state,summary) VALUES(?1,?2,?3,'')", params![revision, task, state]).unwrap();
+        tx.commit().unwrap();
+    }
     /// Adds `tasks` finished Tasks and `steps` state changes to every Task after the newest
     /// revision: the history a long-lived domain carries.
     #[cfg(test)]
@@ -994,6 +1008,23 @@ impl DomainStore {
         // task_history's key starts with revision, so a per-task max(revision) subquery scans
         // the whole history once per row; one grouped pass stays linear.
         let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM (SELECT task_id,max(revision) AS revision FROM task_history GROUP BY task_id) h
+            JOIN command_audit a ON a.revision=h.revision")?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace {
+            trace.vm_steps(query.get_status(rusqlite::StatementStatus::VmStep));
+            trace.complete();
+        }
+        Ok(values)
+    }
+    /// When each Task first started running.
+    pub(crate) fn task_started_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("task_started_times");
+        let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM (SELECT task_id,min(revision) AS revision FROM task_history WHERE state='running' GROUP BY task_id) h
             JOIN command_audit a ON a.revision=h.revision")?;
         #[cfg(test)]
         if let Some(trace) = &mut trace { trace.statement(); }

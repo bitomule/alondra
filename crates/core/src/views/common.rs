@@ -263,6 +263,31 @@ pub(super) fn scheduled_mark(task: &crate::domain::Task, context: &RenderContext
     context.index.scheduled(&task.id).then(|| super::Label {
         text: super::text::t!(lang, "Scheduled", "Programada").into(),
         tone: super::Tone::Neutral,
+        elapsed: None,
+    })
+}
+
+/// How long the task has been running since it first started, for the client to count, or how long it took once over.
+/// Clients that do not count it read the text: "running since 10:05", "took 1 h 05 min", or "since 10:05", "1 h 05 min"
+/// when the row already `named` what it measures.
+pub(super) fn elapsed_mark(task: &crate::domain::Task, named: bool, context: &RenderContext<'_>) -> Option<super::Label> {
+    use super::text::tf;
+    let start = context.live.task_started.get(&task.id.0)?;
+    let lang = context.lang;
+    let text = match start.ran_secs {
+        Some(secs) => {
+            let took = super::text::short_duration(secs);
+            if named { took } else { tf!(lang, "took {took}", "duró {took}") }
+        }
+        None => {
+            let at = start.since.get(11..16).unwrap_or_default();
+            if named { tf!(lang, "since {at}", "desde las {at}") } else { tf!(lang, "running since {at}", "en marcha desde las {at}") }
+        }
+    };
+    Some(super::Label {
+        text,
+        tone: super::Tone::Neutral,
+        elapsed: Some(super::Elapsed { since: start.since.clone(), until: start.until.clone() }),
     })
 }
 
@@ -473,8 +498,8 @@ pub(super) fn halted(agent: &crate::domain::AgentId, context: &RenderContext<'_>
     (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Working)).then_some(())?;
     let key = context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.state_key.as_deref());
     match key {
-        Some("stalled") => Some(super::Label { text: t!(lang, "Stalled", "Parado").into(), tone: Tone::Critical }),
-        Some("failed") => Some(super::Label { text: t!(lang, "Failed", "Falló").into(), tone: Tone::Critical }),
+        Some("stalled") => Some(super::Label { text: t!(lang, "Stalled", "Parado").into(), tone: Tone::Critical, elapsed: None }),
+        Some("failed") => Some(super::Label { text: t!(lang, "Failed", "Falló").into(), tone: Tone::Critical, elapsed: None }),
         _ => None,
     }
 }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v3a89bfc963e4bcc5",
+  "version": "v629843041621f621",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -113,6 +113,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 08:00",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T08:00:00Z"
+                  }
                 }
               ],
               "trailing": {

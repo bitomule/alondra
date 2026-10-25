@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v50714c5d1d3dda07",
+  "version": "vd098c14eecd09476",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -113,6 +113,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 08:00",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T08:00:00Z"
+                  }
                 }
               ],
               "trailing": {

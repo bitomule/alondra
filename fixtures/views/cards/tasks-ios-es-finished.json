@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v6785e0aa34961c1e",
+  "version": "v3da2e1366a0698ea",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -113,6 +113,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 08:00",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T08:00:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -212,6 +219,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 09:20",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:20:00.000Z"
+                  }
                 }
               ],
               "trailing": {
@@ -255,6 +269,13 @@
                 {
                   "text": "Entregada",
                   "tone": "info"
+                },
+                {
+                  "text": "en marcha desde las 17:15",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-29T17:15:00.000Z"
+                  }
                 }
               ],
               "trailing": {
@@ -285,6 +306,13 @@
                 {
                   "text": "Lumo",
                   "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 09:48",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:48:00.000Z"
+                  }
                 }
               ],
               "trailing": {
@@ -484,6 +512,14 @@
                 {
                   "text": "BlurCamera",
                   "tone": "neutral"
+                },
+                {
+                  "text": "duró 1 h 05 min",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-29T10:00:00.000Z",
+                    "until": "2026-09-29T11:05:00.000Z"
+                  }
                 }
               ],
               "trailing": {

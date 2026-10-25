@@ -160,6 +160,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
                 row.badges.push(super::Label {
                     text: t!(context.lang, "Queued", "En cola").into(),
                     tone: Tone::Neutral,
+                    elapsed: None,
                 });
                 row.trailing =
                     context
@@ -286,6 +287,7 @@ pub(super) fn issue_picker(key: &str, context: &RenderContext<'_>) -> Result<Vie
                 .map(|label| super::Label {
                     text: label.clone(),
                     tone: Tone::Neutral,
+                    elapsed: None,
                 })
                 .collect();
             row.trailing = issue.updated_at.clone().map(|at| Trailing::Time {

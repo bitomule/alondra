@@ -103,6 +103,11 @@ final class NewerDaemonTests: XCTestCase {
         XCTAssertEqual(decoded.options.map(\.id), ["x"])
     }
 
+    func testALabelThatCountsTimeReadsAsItsTextOnAnAppThatDoesNotCount() throws {
+        let row = #"{"id":"t","icon":"task","title":"Task","badges":[{"text":"Working","tone":"info"},{"text":"running since 08:05","tone":"neutral","elapsed":{"since":"2026-09-30T08:05:00.000+02:00"}}],"depth":0,"struck":false}"#
+        XCTAssertEqual(try ContractCodec.decode(Row.self, from: Data(row.utf8)).badges.map(\.text), ["Working", "running since 08:05"])
+    }
+
     func testAnOutcomeFromANewerDaemonReadsAsChanged() throws {
         let reply = try ContractCodec.decode(ActionResponse.self, from: Data(#"{"protocol":1,"outcome":"queued"}"#.utf8))
         XCTAssertEqual(reply.outcome, .changed)

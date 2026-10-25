@@ -52,7 +52,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id),
                     icon, task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
                 row.struck = state == TaskState::Cancelled;
-                row.badges.push(Label { text: presented.state, tone: presented.tone });
+                row.badges.push(Label { text: presented.state, tone: presented.tone, elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
                 row.depth = 1;
                 row
@@ -67,7 +67,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
             let title = request.title.clone().unwrap_or_else(|| request.body.lines().next().unwrap_or("").chars().take(80).collect());
             let mut row = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission, title, None);
             row.depth = 1;
-            row.badges.push(Label { text: t!(context.lang, "Defining", "Definiendo").into(), tone: common::state_tone("defining") });
+            row.badges.push(Label { text: t!(context.lang, "Defining", "Definiendo").into(), tone: common::state_tone("defining"), elapsed: None });
             row
         }).collect();
     let defining_count = defining.len();
@@ -102,7 +102,7 @@ fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
     };
     let mut row = common::row(id, "tasks", icon, title.into(), None);
     row.link = None;
-    row.badges.push(Label { text: title.into(), tone: common::state_tone(state) });
+    row.badges.push(Label { text: title.into(), tone: common::state_tone(state), elapsed: None });
     row.trailing = Some(Trailing::Count { value: children.len() as u32 });
     row.children = children;
     row
@@ -116,12 +116,12 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         let (icon, _) = common::task_presentation(task.state);
         let presented = super::task_state::present(task, context);
         let mut row = common::row(&task.id.0, &format!("task:{}", task.id), icon, task.title.clone(), None);
-        row.badges.push(Label { text: presented.state, tone: presented.tone });
+        row.badges.push(Label { text: presented.state, tone: presented.tone, elapsed: None });
         if let Some(node) = live {
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
             row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
             if let Some(text) = &node.background_badge {
-                row.badges.push(Label { text: text.clone(), tone: Tone::Neutral });
+                row.badges.push(Label { text: text.clone(), tone: Tone::Neutral, elapsed: None });
             }
         }
         let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());

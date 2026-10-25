@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "vb5ba83bd5678e4b0",
+  "version": "vda79588e325d84c4",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -113,6 +113,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "running since 08:00",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T08:00:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -199,6 +206,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "running since 09:20",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:20:00.000Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -237,6 +251,13 @@
                 {
                   "text": "Delivered",
                   "tone": "info"
+                },
+                {
+                  "text": "running since 17:15",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-29T17:15:00.000Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -262,6 +283,13 @@
                 {
                   "text": "Lumo",
                   "tone": "neutral"
+                },
+                {
+                  "text": "running since 09:48",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:48:00.000Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -418,6 +446,14 @@
                 {
                   "text": "BlurCamera",
                   "tone": "neutral"
+                },
+                {
+                  "text": "took 1 h 05 min",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-29T10:00:00.000Z",
+                    "until": "2026-09-29T11:05:00.000Z"
+                  }
                 }
               ],
               "depth": 1,

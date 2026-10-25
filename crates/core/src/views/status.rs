@@ -82,7 +82,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
                 super::common::OrchestratorState::Failed => (t!(context.lang, "failed", "falló"), Tone::Warning),
                 super::common::OrchestratorState::Idle => (t!(context.lang, "idle", "inactivo"), Tone::Neutral),
             };
-            Label { text: text.into(), tone }
+            Label { text: text.into(), tone, elapsed: None }
         },
         update: context.live.update.clone(),
         usage_exhausted: context.live.usage_exhausted.as_ref().map(|exhausted| super::UsageExhausted {

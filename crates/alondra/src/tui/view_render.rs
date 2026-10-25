@@ -599,6 +599,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
             label_style(&Label {
                 text: String::new(),
                 tone: notice.tone,
+                elapsed: None,
             }),
         )));
     }
@@ -692,6 +693,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                     label_style(&Label {
                         text: String::new(),
                         tone: notice.tone,
+                        elapsed: None,
                     }),
                 ))),
                 Item::Actions(_) | Item::Unknown => {}

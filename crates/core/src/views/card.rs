@@ -376,15 +376,15 @@ fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
             None => (None, Tone::Neutral),
         };
         parts.extend(mark.map(str::to_owned));
-        return (!parts.is_empty()).then(|| Label { text: parts.join(" · "), tone });
+        return (!parts.is_empty()).then(|| Label { text: parts.join(" · "), tone, elapsed: None });
     }
     if matches!(interaction.payload, InteractionPayload::Delivery { .. }) {
         return None;
     }
     Some(if interaction.blocking {
-        Label { text: tf!(lang, "Blocks {node}", "Bloquea a {node}", node = node_name(item, context)), tone: Tone::Warning }
+        Label { text: tf!(lang, "Blocks {node}", "Bloquea a {node}", node = node_name(item, context)), tone: Tone::Warning, elapsed: None }
     } else {
-        Label { text: t!(lang, "Doesn't block", "No bloquea").into(), tone: Tone::Neutral }
+        Label { text: t!(lang, "Doesn't block", "No bloquea").into(), tone: Tone::Neutral, elapsed: None }
     })
 }
 
@@ -428,7 +428,7 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
     let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id));
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
-        let chip = |project: Option<&String>| project.map(|project| Label { text: project.clone(), tone: Tone::Neutral });
+        let chip = |project: Option<&String>| project.map(|project| Label { text: project.clone(), tone: Tone::Neutral, elapsed: None });
         lines.push(match task {
             Some(task) => {
                 let presentation = super::task_state::present(task, context);
@@ -437,7 +437,7 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
                     text: task.title.clone(),
                     link: Some(Link::View { key: format!("task:{}", task.id) }),
                     chip: chip(task.project.as_ref()),
-                    state: node.map(|_| Label { text: presentation.state, tone: presentation.tone }),
+                    state: node.map(|_| Label { text: presentation.state, tone: presentation.tone, elapsed: None }),
                 }
             }
             None => ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None,
@@ -505,7 +505,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         more: vec![],
         link: Some(Link::View { key: card_key(item) }),
         icon: kind_icon(spec.kind, carries),
-        eyebrow: Some(Label { text: eyebrow_text, tone: kind_tone(spec.kind, item.pending) }),
+        eyebrow: Some(Label { text: eyebrow_text, tone: kind_tone(spec.kind, item.pending), elapsed: None }),
         title: need,
         subtitle: why,
         badges: vec![],
@@ -2065,9 +2065,9 @@ fn pr_badges(pr: &PullRequest, context: &RenderContext<'_>) -> Vec<Label> {
     let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
     let mut badges = vec![];
     if live.is_some_and(|detail| detail.conflicts) {
-        badges.push(Label { text: t!(lang, "Conflicts", "Conflictos").into(), tone: Tone::Warning });
+        badges.push(Label { text: t!(lang, "Conflicts", "Conflictos").into(), tone: Tone::Warning, elapsed: None });
     } else if live.is_some_and(|detail| detail.checks_passed.is_none()) {
-        badges.push(Label { text: t!(lang, "GitHub is checking…", "GitHub está comprobando…").into(), tone: Tone::Info });
+        badges.push(Label { text: t!(lang, "GitHub is checking…", "GitHub está comprobando…").into(), tone: Tone::Info, elapsed: None });
     }
     badges
 }
