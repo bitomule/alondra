@@ -98,12 +98,8 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
         }
         .environment(\.mcpLinks, McpLinks(signIn: { presentation.send(.mcpSignInRequested(card: $0, server: $1)) },
                                           reconnect: { presentation.send(.mcpReconnectRequested(card: $0)) }))
-        .task { guard isActive else { return }; await store.send(.appeared).finish(); presentation.send(.appeared) }
-        .onDisappear {
-            presentation.send(.disappeared)
-            guard isActive else { return }
-            store.send(.disappeared)
-        }
+        .task { guard isActive else { return }; await store.send(.appeared).finish() }
+        .onDisappear { if isActive { store.send(.disappeared) } }
         .frame(minWidth: 860, minHeight: 540)
     }
 }

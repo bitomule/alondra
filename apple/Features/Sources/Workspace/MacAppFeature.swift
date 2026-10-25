@@ -53,10 +53,11 @@ public struct MacAppFeature: Sendable {
                     }.cancellable(id: CancelID.feed, cancelInFlight: true),
                     .run { [viewsClient] send in
                         for await connection in await viewsClient.connection() { await send(.connectionChanged(connection)) }
-                    }.cancellable(id: CancelID.connection, cancelInFlight: true)
+                    }.cancellable(id: CancelID.connection, cancelInFlight: true),
+                    .send(.macPresentation(.appeared))
                 )
             case .disappeared:
-                return .merge(.cancel(id: CancelID.feed), .cancel(id: CancelID.connection))
+                return .merge(.cancel(id: CancelID.feed), .cancel(id: CancelID.connection), .send(.macPresentation(.disappeared)))
             case .settingsPresented(let value):
                 state.settingsPresented = value
                 return .none

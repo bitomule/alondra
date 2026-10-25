@@ -273,6 +273,29 @@ struct MacServiceNavigationTests {
         #expect(store.connection == .connected(.irohRelay))
     }
 
+    /// The feed and the connection stay open for as long as the window does; the window used to wait
+    /// for them to end before asking for its sidebar, so it never asked.
+    @Test(.timeLimit(.minutes(1)))
+    func theWindowAsksForItsSidebarWhileTheFeedStaysOpen() async throws {
+        let (requested, request) = AsyncStream<String>.makeStream()
+        let store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.viewsClient.feed = { AsyncStream { _ in } }
+            $0.viewsClient.connection = { AsyncStream { $0.yield(.connecting) } }
+            $0.viewsClient.openScreen = { _, _ in }
+            $0.viewsClient.closeScreen = { _ in }
+            $0.viewsClient.load = { key, _ in
+                request.yield(key.rawValue)
+                return .document(try makeDocument(key: key.rawValue, version: "d1"))
+            }
+        }
+        let window = store.send(.appeared)
+        var keys = requested.makeAsyncIterator()
+        #expect(await keys.next() == "sidebar")
+        store.send(.disappeared)
+        window.cancel()
+    }
+
     @Test
     func eachWindowKeepsItsOwnViewsSelection() {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
