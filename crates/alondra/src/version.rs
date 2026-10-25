@@ -8,11 +8,12 @@ use serde_json::{Value, json};
 use crate::client::Client;
 
 const CLI: &str = env!("CARGO_PKG_VERSION");
+const DAEMON_LIMIT: Duration = Duration::from_millis(500);
 
 /// One `GET /daemon` with a short limit: knowing the version never depends on the daemon, so a
 /// daemon that does not answer is reported, never an error.
 pub fn run(as_json: bool) -> Result<()> {
-    let daemon = Client::new(Duration::from_millis(500)).get::<Value>("/daemon").ok();
+    let daemon = Client::new(DAEMON_LIMIT).get::<Value>("/daemon").ok();
     let path = std::env::current_exe().and_then(|p| p.canonicalize()).unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     if as_json {
@@ -97,6 +98,11 @@ fn report(daemon: Option<&Value>, path: &Path, home: &Path) -> Value {
 mod tests {
     use super::*;
     use crate::i18n::{Lang, set_for_this_thread};
+
+    #[test]
+    fn a_silent_daemon_delays_the_version_by_well_under_a_second() {
+        assert!(DAEMON_LIMIT <= Duration::from_secs(1), "{DAEMON_LIMIT:?}");
+    }
 
     #[test]
     fn a_daemon_that_does_not_answer_is_reported_without_a_version() {
