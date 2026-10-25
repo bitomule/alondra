@@ -1454,9 +1454,13 @@ impl DomainState {
     }
 
     /// What a live task is doing, or who it waits on, from its lifecycle alone. A delivery whose PR
-    /// merged waits on nobody while its node runs the work it declared for after the merge.
+    /// merged waits on nobody while its node runs the work it declared for after the merge, and one
+    /// under review while its node takes up what it was told after it.
     pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
         let lifecycle = self.lifecycle_of(task).ok()?;
+        if let Some(worker) = lifecycle.working_on_delivery() {
+            return Some(LiveState::Working(worker));
+        }
         let live = lifecycle.live()?;
         let LiveState::WaitingUser(cards) = &live else { return Some(live) };
         if cards.iter().eq(lifecycle.delivery()) && self.work_after_merge(task, &lifecycle).is_some() {

@@ -89,7 +89,9 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if let Attention::Wait(reason @ WaitReason::Answer { .. }) = &attention {
         return if waits { for_you(task, context) } else { waiting_for(task, reason, context) };
     }
+    let turn_runs = read.is_some_and(|read| matches!(read.live, Some(LiveState::Working(_))));
     match task.state {
+        TaskState::ForYourReview if turn_runs => running(task, context),
         TaskState::NeedsYou | TaskState::ForYourReview if waits => for_you(task, context),
         TaskState::Running | TaskState::NeedsYou => running(task, context),
         TaskState::ForYourReview | TaskState::AwaitingBlocker => match &attention {

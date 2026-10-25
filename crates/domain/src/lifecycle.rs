@@ -1018,6 +1018,8 @@ struct Delivered {
     gate: DeliveryGate,
     decisions: BTreeMap<InteractionId, Card>,
     session: Session,
+    /// The turn that presented the delivery, while it may still run.
+    presented_in: Option<TurnId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Finishing {
@@ -1325,6 +1327,20 @@ impl TaskLifecycle {
         match session {
             Session::Absent(pending) => (None, Some(pending)),
             Session::Present(execution) => execution_waiting(execution),
+        }
+    }
+    /// Who works, while the delivery waits for the user's review, on what the task was told after
+    /// it: the input the session takes up, or a turn other than the one that presented it.
+    pub fn working_on_delivery(&self) -> Option<Worker> {
+        let State::Delivered(delivered) = &self.state else { return None };
+        if delivered.gate != DeliveryGate::Review {
+            return None;
+        }
+        let execution = delivered.session.execution()?;
+        match &execution.activity {
+            Activity::Turn { id, .. } if delivered.presented_in.as_ref() == Some(id) => None,
+            Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } => execution.worker(),
+            Activity::OwnWork { .. } | Activity::Continuation(_) | Activity::Awaiting(_) | Activity::Resting => None,
         }
     }
     pub fn delivery(&self) -> Option<&InteractionId> {

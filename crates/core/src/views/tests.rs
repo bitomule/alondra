@@ -8029,3 +8029,45 @@ fn the_daemon_cannot_send_an_unsupported_value() {
     assert!(serde_json::to_value(Presentation::Unsupported).is_err());
     assert!(serde_json::to_value(CommentKind::Unsupported).is_err());
 }
+
+/// 24 October, in the sandbox: David wrote to a task whose PR waited for his review, the node of
+/// the Agent SDK took the message up in a turn, and the task still read «Ready for review» with
+/// nothing that said it worked. While its turn runs it reads «Working» on every client, the list
+/// and the task's screen, and once the turn ends it is back to «Ready for review».
+#[test]
+fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_review_once_it_ends() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = release_delivered_twice(None);
+    let delivered = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn-1".into(), input: "input:t-1:1".into() },
+        LifecycleRecord::Presented { delivery: "published-1".into() },
+        LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-1".into(), wake: None, text: None, awaits: None },
+    ];
+    let told = [delivered.clone(), vec![
+        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Also bump the changelog".into()) },
+        LifecycleRecord::TurnStarted { turn: "turn-2".into(), input: "input:t-1:2".into() },
+    ]].concat();
+    let ended = [told.clone(), vec![LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "unheard-2".into(), wake: None, text: None, awaits: None }]].concat();
+    let live = LiveSnapshot::default();
+    let shown = |state: &DomainState, client, lang| {
+        let row = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();
+        let screen = serde_json::to_string(&render(state, &live, client, lang, "task:t-1", "")).unwrap();
+        assert!(screen.contains(&serde_json::to_string(&row).unwrap()), "{client:?}: the task's screen says {row}: {screen}");
+        row
+    };
+    for (journal, en, es) in [(delivered, "Ready for review", "Para revisar"), (told, "Working", "Trabajando"), (ended, "Ready for review", "Para revisar")] {
+        state.lifecycle_journal.insert("t-1".into(), journal);
+        state.derive_states();
+        assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "its delivery still waits for the review");
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            assert_eq!(shown(&state, client, Lang::En), en, "{client:?}");
+            assert_eq!(shown(&state, client, Lang::Es), es, "{client:?}");
+        }
+    }
+}

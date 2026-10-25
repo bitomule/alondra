@@ -240,11 +240,16 @@ impl TaskLifecycle {
                     ),
                     _ => return Err(Refusal::InvalidState),
                 };
+                let presented_in = match session.execution().map(|execution| &execution.activity) {
+                    Some(Activity::Turn { id, .. }) => Some(id.clone()),
+                    _ => None,
+                };
                 self.state = State::Delivered(Delivered {
                     delivery,
                     gate,
                     decisions,
                     session,
+                    presented_in,
                 });
             }
             Event::Accept { delivery, merge } => {
@@ -413,6 +418,7 @@ impl TaskLifecycle {
                         gate: delivered.gate.clone(),
                         decisions: cards,
                         session: Session::Absent(Inputs::one(input)),
+                        presented_in: None,
                     })
                 } else if let Some(tasks) = dependencies {
                     State::InProgress(Progress::Dependency {
@@ -479,6 +485,7 @@ impl TaskLifecycle {
                         gate: delivered.gate.clone(),
                         decisions: delivered.decisions.clone(),
                         session: Session::Absent(pending),
+                        presented_in: None,
                     }),
                     _ => return Err(Refusal::InvalidState),
                 };
