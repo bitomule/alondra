@@ -2693,6 +2693,31 @@ fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_
         assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "{end:?}");
     }
 }
+/// The 0.3.6 release presented its version PR as a progress notice: its card had no merge, the task
+/// stayed running and its node waited for a merge nobody could give from Alondra.
+#[test]
+fn an_open_pr_is_only_presented_as_a_final_result_the_user_can_accept_into_a_merge() {
+    let mut s = fixture();
+    register(&mut s);
+    let progress = |s: &mut DomainState| exec(s, agent(), Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "progress".into(),
+        body: "Version bump".into(), targets: pr_targets(), is_final: false, nothing_to_review: false,
+        card: crate::domain::CardSpec::delivery("Review the version bump", &[], true),
+    });
+    let before = s.clone();
+    let error = progress(&mut s).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_needs_final", Some("is_final")));
+    assert!(error.message.contains("PR #1 is open") && error.message.contains("post_merge_work"), "{}", error.message);
+    assert_eq!(s, before, "a refused delivery changes nothing");
+
+    present(&mut s, "d", pr_targets());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    assert!(s.merge_authorizations.values().any(|a| a.pr_id == "pr".into()), "accepting the final result merges the PR");
+
+    exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+    progress(&mut s).expect("a merged PR can still be cited in a progress notice");
+}
 #[test]
 fn answer_reaches_the_current_assignee_after_reassignment() {
     let mut s = fixture();

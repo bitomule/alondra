@@ -75,7 +75,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "stale_head", "stale_generation", "pr_mismatch", "payload_too_large", "not_assigned", "dependency_not_done",
     "unknown_target", "task_already_has_pr", "not_closing", "merge_not_confirmed", "idempotency_conflict",
     "delivery_uncertain", "blocked", "withdrawn", "task_closing", "subject_already_linked", "stale_epoch",
-    "request_title_required", "pr_owned_by_other_task", "pr_missing", "no_task", "incompatible_protocol",
+    "request_title_required", "pr_owned_by_other_task", "pr_missing", "pr_needs_final", "no_task", "incompatible_protocol",
     "dependency_not_delivered", "clarification_pending", "blocking_open", "blocking_interaction",
     "unanswered_questions", "ask_already_open", "already_withdrawn", "already_answered", "agent_used", "agent_busy",
     "maintenance_request", "launch_plan_required", "too_many_suggestions", "suggestion_needs_decision",

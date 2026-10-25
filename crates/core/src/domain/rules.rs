@@ -3832,6 +3832,15 @@ impl DomainState {
                 }
                 self.current_pr_targets(task_id, targets)?;
                 self.targets(task_id, targets)?;
+                if !*is_final
+                    && let Some(pr) = targets.iter().find_map(|t| match t {
+                        DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id).filter(|p| p.state == PrState::Open),
+                        _ => None,
+                    })
+                {
+                    return refuse("pr_needs_final", "is_final", &format!(
+                        "PR #{} is open: present it with is_final true so the user can accept it and Alondra merges it. A progress notice cannot be merged. If work follows the merge (publish, deploy), declare it with post_merge_work first", pr.number));
+                }
                 if *is_final && self.blockers(task_id) {
                     let open = self.interactions.values()
                         .filter(|i| i.scope == (Scope::Task { task_id: task_id.clone() }) && i.blocking && self.open(i))

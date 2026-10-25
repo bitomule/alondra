@@ -154,7 +154,8 @@ Pick the tool by what you need:
   `content.body`, written out, never a path to the file that holds it: the user cannot open a file
   from the app. Files the user needs go in `attachments`. Both describe the change itself; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its
-  exact head. The user accepts it in Alondra. A file sent another way or a final message left in
+  exact head. An open PR goes only in a final result: a progress notice (`is_final` false) with it is
+  refused, because nobody can merge it from there. The user accepts it in Alondra. A file sent another way or a final message left in
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
