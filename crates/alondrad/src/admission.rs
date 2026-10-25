@@ -191,6 +191,7 @@ impl Told {
 pub(crate) struct Admission {
     inner: Mutex<Inner>,
     file: Option<PathBuf>,
+    save_failures: crate::save::Failures,
     /// Bumped whenever a waiting start may go: the callers that ask the gate wait on it.
     turn: tokio::sync::watch::Sender<u64>,
     changed: tokio::sync::Notify,
@@ -198,7 +199,7 @@ pub(crate) struct Admission {
 
 impl Default for Admission {
     fn default() -> Self {
-        Self { inner: Mutex::default(), file: None, turn: tokio::sync::watch::Sender::new(0), changed: tokio::sync::Notify::new() }
+        Self { inner: Mutex::default(), file: None, save_failures: crate::save::Failures::default(), turn: tokio::sync::watch::Sender::new(0), changed: tokio::sync::Notify::new() }
     }
 }
 
@@ -228,8 +229,11 @@ impl Admission {
         Self { inner: Mutex::new(Inner { saved, legacy, ..Inner::default() }), file: Some(file), ..Self::default() }
     }
 
+    /// A holder that panicked leaves a gate that still works: the pauses are read again from the
+    /// node machine on every `lock_with`, an admitted start expires after `IN_FLIGHT`, a waiting
+    /// start is asked for again by its caller, and the file is only ever replaced whole.
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("admission poisoned")
+        self.inner.recover("the admission gate")
     }
 
     /// The gate with the pauses the node machine holds now: the only place they live.
@@ -257,13 +261,14 @@ impl Admission {
 
     fn save(&self, inner: &Inner) {
         let Some(file) = &self.file else { return };
-        let next = file.with_extension("next");
         let written = serde_json::to_vec(&inner.saved).map_err(std::io::Error::from)
-            .and_then(|bytes| std::fs::write(&next, bytes))
-            .and_then(|()| std::fs::rename(&next, file));
-        if let Err(error) = written {
-            log!("could not save {}: {error}", file.display());
-        }
+            .and_then(|bytes| crate::save::atomic(file, &bytes));
+        self.save_failures.record(file, written);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison(&self) {
+        self.inner.poison();
     }
 
     pub(crate) fn tune(&self, tuning: Tuning) {

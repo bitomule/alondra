@@ -629,3 +629,41 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         assert_eq!((pacing.fixed, pacing.limit), (Some(most + 5), most), "a number over the most works as the most");
     }
 }
+
+#[test]
+fn a_full_disk_neither_breaks_the_gate_nor_fills_the_log() {
+    let (home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    gate.ignore_mac();
+    for id in ["t1", "t2", "t3", "t4"] {
+        create(&domain, id);
+    }
+    let now = alondra_core::now_millis();
+    let disk = crate::save::full_disk::fill();
+    for id in ["t1", "t2", "t3"] {
+        assert_eq!(ask(&domain, id, now), Ok(()), "{id}");
+    }
+    assert_eq!(gate.snapshot(&domain, now).unwrap().in_flight, 3);
+    let logged = |what: &str| disk.lines().iter().filter(|line| line.contains(what)).count();
+    assert_eq!(logged("could not save"), 1, "{:?}", disk.lines());
+
+    disk.free();
+    assert_eq!(ask(&domain, "t4", now), Ok(()));
+    let file = home.0.join(FILE);
+    assert!(file.exists());
+    assert_eq!(logged(&format!("saved {} again", file.display())), 1, "{:?}", disk.lines());
+    assert_eq!(logged("could not save"), 1);
+}
+
+#[test]
+fn a_thread_that_panicked_holding_the_gate_does_not_stop_it() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    domain.live.gate.ignore_mac();
+    create(&domain, "t1");
+    domain.live.gate.poison();
+    let now = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    assert_eq!(domain.live.gate.live(&domain, now).unwrap().working, 1);
+}

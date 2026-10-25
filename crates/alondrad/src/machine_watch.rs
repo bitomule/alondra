@@ -195,12 +195,13 @@ pub(crate) struct MachineWatch {
     pub(crate) sample_threads: Mutex<Vec<std::thread::ThreadId>>,
     record: Mutex<Record>,
     file: Option<PathBuf>,
+    save_failures: crate::save::Failures,
     changed: tokio::sync::Notify,
 }
 
 impl Default for MachineWatch {
     fn default() -> Self {
-        Self { record: Mutex::default(), file: None, changed: tokio::sync::Notify::new(),
+        Self { record: Mutex::default(), file: None, save_failures: crate::save::Failures::default(), changed: tokio::sync::Notify::new(),
             #[cfg(test)] sampled: tokio::sync::Notify::new(),
             #[cfg(test)] sample_threads: Mutex::new(vec![]),
         }
@@ -219,20 +220,27 @@ impl MachineWatch {
         Self { record: Mutex::new(record), file: Some(file), ..Self::default() }
     }
 
+    /// A holder that panicked leaves a valid record: every step replaces one whole field or one
+    /// whole entry, and the next sample rewrites what it reads.
+    fn record(&self) -> std::sync::MutexGuard<'_, Record> {
+        crate::log::recover(&self.record, "the machine watch")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison(&self) {
+        crate::log::poison(&self.record);
+    }
+
     fn save(&self, record: &Record) {
         let Some(file) = &self.file else { return };
-        let next = file.with_extension("next");
         let written = serde_json::to_vec(record).map_err(std::io::Error::from)
-            .and_then(|bytes| std::fs::write(&next, bytes))
-            .and_then(|()| std::fs::rename(&next, file));
-        if let Err(error) = written {
-            log!("could not save {}: {error}", file.display());
-        }
+            .and_then(|bytes| crate::save::atomic(file, &bytes));
+        self.save_failures.record(file, written);
     }
 
     /// A node said it waits for the machine; the watcher looks at once.
     pub(crate) fn declare(&self, session: &str, reason: &str, turn: u64, now: Millis) {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         record.declared.insert(session.to_owned(), Declared { reason: reason.to_owned(), at: now, turn });
         self.save(&record);
         drop(record);
@@ -240,18 +248,18 @@ impl MachineWatch {
     }
 
     pub(crate) fn incident(&self) -> Option<Incident> {
-        self.record.lock().expect("machine watch poisoned").incident.clone()
+        self.record().incident.clone()
     }
 
     /// How the Mac is doing, as the gate reads it.
     pub(crate) fn mac(&self) -> MacState {
-        self.record.lock().expect("machine watch poisoned").mac.clone()
+        self.record().mac.clone()
     }
 
     /// Takes a new sample; returns whether there is room for one more node when that changed, and
     /// `None` for a sample already taken, which changes nothing.
     fn sample(&self, machine: &Machine, now: Millis) -> Option<Option<Result<(), NoRoom>>> {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         if machine.at != 0 && machine.at == record.sampled_at {
             return None;
         }
@@ -263,12 +271,12 @@ impl MachineWatch {
     }
 
     fn nodes_due(&self, now: Millis) -> bool {
-        self.record.lock().expect("machine watch poisoned").node_cost.due(now)
+        self.record().node_cost.due(now)
     }
 
     /// Keeps what each node measured at `now`; the gate reserves the new estimate from then on.
     pub(crate) fn measure_nodes(&self, now: Millis, footprints: Vec<u64>) {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         record.node_cost.record(now, footprints);
         record.mac.node_cost = Some(record.node_cost.estimate());
     }
@@ -309,7 +317,7 @@ impl MachineWatch {
         if crate::disk::same_volume(&mount, own_disk()) {
             return;
         }
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         if record.volumes.insert(mount) {
             self.save(&record);
         }
@@ -317,7 +325,7 @@ impl MachineWatch {
 
     /// The free space of every watched volume still mounted, by name.
     fn volumes(&self) -> Vec<(String, crate::disk::Space)> {
-        let volumes = self.record.lock().expect("machine watch poisoned").volumes.clone();
+        let volumes = self.record().volumes.clone();
         volumes.iter().filter_map(|mount| {
             let space = crate::disk::space(mount)?;
             let name = mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned());
@@ -326,18 +334,18 @@ impl MachineWatch {
     }
 
     fn declared(&self) -> BTreeMap<String, Declared> {
-        self.record.lock().expect("machine watch poisoned").declared.clone()
+        self.record().declared.clone()
     }
 
     fn forget(&self, sessions: &[String]) {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         if sessions.iter().fold(false, |any, session| record.declared.remove(session).is_some() || any) {
             self.save(&record);
         }
     }
 
     fn set_incident(&self, incident: Option<Incident>) {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         if record.incident != incident {
             record.incident = incident;
             self.save(&record);
@@ -454,7 +462,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
 pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
-    watch(domain, move || gauges.lock().expect("machine gauges poisoned").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
+    watch(domain, move || crate::log::recover(&gauges, "the machine gauges").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
 }
 
 async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
@@ -876,6 +884,48 @@ mod tests {
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
         watcher.abort();
         assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: fase0. Continúan solos cuando se recupere.");
+    }
+
+    #[test]
+    fn a_full_disk_neither_breaks_the_machine_watch_nor_fills_the_log() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let watch = MachineWatch::persisted_in(&home);
+        let disk = crate::save::full_disk::fill();
+        for session in ["first", "second", "third"] {
+            watch.declare(session, "disk full", 0, 1);
+        }
+        let incident = Incident { since: 1, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 3, healthy: 0 };
+        watch.set_incident(Some(incident.clone()));
+        assert_eq!(watch.incident(), Some(incident));
+        assert_eq!(watch.declared().len(), 3);
+        watch.measure_nodes(1, vec![1 << 30]);
+        let _ = watch.mac();
+        let logged = |what: &str| disk.lines().iter().filter(|line| line.contains(what)).count();
+        assert_eq!(logged("could not save"), 1, "{:?}", disk.lines());
+        assert!(!home.join(FILE).exists());
+
+        disk.free();
+        watch.declare("fourth", "disk full", 0, 2);
+        let saved: Record = serde_json::from_slice(&std::fs::read(home.join(FILE)).unwrap()).unwrap();
+        assert_eq!(saved.declared.len(), 4);
+        assert_eq!(logged(&format!("saved {} again", home.join(FILE).display())), 1, "{:?}", disk.lines());
+        assert_eq!(logged("could not save"), 1);
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_panicked_holding_the_machine_watch_does_not_stop_it() {
+        let (_home, domain) = world();
+        domain.live.machine_watch.poison();
+        let mut watcher = tokio::spawn(watch(domain.clone(), || Some(machine(400 * GB, 50)), Arc::new(Told(Mutex::new(vec![]))), Duration::from_millis(20)));
+        tokio::select! {
+            () = domain.live.machine_watch.sampled.notified() => {}
+            ended = &mut watcher => panic!("the machine watch stopped: {ended:?}"),
+        }
+        watcher.abort();
+        domain.live.machine_watch.declare("s", "RAM", 0, now_millis());
+        assert_eq!(domain.live.machine_watch.declared().len(), 1);
+        assert!(domain.live.machine_watch.mac().free_percent.is_some());
     }
 
     #[test]

@@ -1,8 +1,7 @@
 macro_rules! log {
-    ($($arg:tt)*) => {{
-        eprintln!("{} alondrad: {}", $crate::log::stamp(), format_args!($($arg)*));
-        $crate::log::after_write()
-    }};
+    ($($arg:tt)*) => {
+        $crate::log::line(format_args!($($arg)*))
+    };
 }
 
 use alondra_core::daemon_log;
@@ -120,6 +119,50 @@ fn keep_last(path: &Path, limit: u64) -> std::io::Result<()> {
     let cut = path.with_extension("1.tmp");
     std::io::copy(&mut reader, &mut std::fs::File::create(&cut)?)?;
     std::fs::rename(&cut, path)
+}
+
+pub fn line(message: std::fmt::Arguments<'_>) {
+    let line = format!("{} alondrad: {message}\n", stamp());
+    #[cfg(test)]
+    if let Some(mut disk) = crate::save::full_disk::log() {
+        return write(&mut disk, &line);
+    }
+    write(&mut std::io::stderr().lock(), &line);
+    after_write();
+}
+
+/// The log is `alondrad.log`: on a full disk the line is lost, and the daemon goes on. `eprintln!`
+/// panics instead, and did so on 25 October holding the machine watch's lock.
+fn write(out: &mut impl std::io::Write, line: &str) {
+    let _ = out.write_all(line.as_bytes());
+}
+
+/// The guard of a lock whose holder panicked, for state each holder leaves whole at every step
+/// (the caller says why). The lock is healed, so this is logged once per panic, not per use.
+pub(crate) fn recover<'a, T>(lock: &'a std::sync::Mutex<T>, what: &str) -> std::sync::MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| healed(poisoned, || lock.clear_poison(), what))
+}
+
+pub(crate) fn healed<'a, T>(
+    poisoned: std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
+    heal: impl FnOnce(),
+    what: &str,
+) -> std::sync::MutexGuard<'a, T> {
+    log!("{what}: a thread panicked holding it; going on with what it holds");
+    heal();
+    poisoned.into_inner()
+}
+
+/// Leaves `lock` as a thread that panicked holding it does.
+#[cfg(test)]
+pub(crate) fn poison<T: Send>(lock: &std::sync::Mutex<T>) {
+    std::thread::scope(|scope| {
+        let _ = scope.spawn(|| {
+            let _held = lock.lock();
+            panic!("a holder panics");
+        }).join();
+    });
+    assert!(lock.is_poisoned());
 }
 
 pub fn stamp() -> String {

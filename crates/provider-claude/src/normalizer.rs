@@ -345,7 +345,9 @@ fn fold(
     }
     let native_session = payload.get("session_id").and_then(Value::as_str);
     if native_session != Some(session.session_id.as_str()) {
-        eprintln!(
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
             "alondrad: an SDK message of Claude session {} is kept as evidence only; this host runs session {}",
             native_session.map_or("(none)".into(), |id| id.chars().take(64).collect::<String>()),
             session.session_id

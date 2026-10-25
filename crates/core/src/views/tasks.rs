@@ -1220,7 +1220,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 message.attachments = true;
                 actions.push(message);
                 }
-                Err(_) => eprintln!("Alondra omitted an action with an invalid identifier ({:?})", Verb::Msg),
+                Err(_) => { use std::io::Write as _; let _ = writeln!(std::io::stderr(), "Alondra omitted an action with an invalid identifier ({:?})", Verb::Msg); },
             }
         }
     }

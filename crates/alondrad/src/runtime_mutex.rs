@@ -33,6 +33,16 @@ impl<T> RuntimeMutex<T> {
         }
     }
 
+    /// `lock`, for state each holder leaves whole: see `crate::log::recover`.
+    pub(crate) fn recover(&self, what: &str) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| crate::log::healed(poisoned, || self.inner.clear_poison(), what))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison(&self) where T: Send {
+        crate::log::poison(&self.inner);
+    }
+
     #[cfg(test)]
     pub(crate) fn on_wait(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.wait_hook.lock().unwrap() = Some(std::sync::Arc::new(hook));

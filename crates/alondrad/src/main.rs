@@ -19,6 +19,7 @@ mod cleanup;
 mod claude_trust;
 mod direct;
 mod disk;
+mod save;
 mod domain_agent_lifecycle;
 mod domain_api;
 mod domain_authority;
@@ -299,7 +300,20 @@ fn direct_approval(
 }
 
 /// Critical v2 workers must not disappear while the local listener remains healthy.
-async fn supervise_workers<S>(
+/// The loops that decide whether a node may start: the daemon does not serve without them, so the
+/// first to end stops it and launchd starts it again whole.
+async fn gates(
+    machine_watch: tokio::task::JoinHandle<()>,
+    gate: tokio::task::JoinHandle<()>,
+) -> (&'static str, std::result::Result<(), tokio::task::JoinError>) {
+    tokio::select! {
+        ended = machine_watch => ("machine watch", ended),
+        ended = gate => ("admission gate", ended),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn supervise_workers<S, G>(
     server: S,
     outbox: tokio::task::JoinHandle<Result<()>>,
     scheduler: tokio::task::JoinHandle<Result<()>>,
@@ -307,11 +321,19 @@ async fn supervise_workers<S>(
     github: tokio::task::JoinHandle<Result<()>>,
     orchestrator: Option<tokio::task::JoinHandle<Result<()>>>,
     connector: Option<tokio::task::JoinHandle<()>>,
+    gates: G,
 ) -> Result<()>
 where
     S: std::future::Future<Output = std::io::Result<()>>,
+    G: std::future::Future<Output = (&'static str, std::result::Result<(), tokio::task::JoinError>)>,
 {
     tokio::select! {
+        (gate, ended) = gates => {
+            match ended {
+                Ok(()) => anyhow::bail!("{gate} stopped unexpectedly"),
+                Err(error) => anyhow::bail!("{gate} panicked: {error}"),
+            }
+        },
         result = github => {
             match result {
                 Ok(Ok(())) => anyhow::bail!("GitHub observer stopped unexpectedly"),
@@ -558,7 +580,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::spawn(accounts::run(domain.clone(), config.home.clone()));
     tokio::spawn(usage_probe::run(domain.clone(), config.home.clone()));
     tokio::spawn(mcp_waits::run(domain.clone()));
-    tokio::spawn(machine_watch::run(
+    let machine_watch = tokio::spawn(machine_watch::run(
         domain.clone(),
         gauges.clone(),
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
@@ -589,7 +611,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         log!("could not record this release's first start: {error:#}");
     }
     tokio::spawn(retention::run(domain.clone()));
-    tokio::spawn(admission::run(domain.clone(), config.home.clone()));
+    let gate = tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     tokio::spawn(claude_check::run(plugins::node()));
     if config.fast_timing {
@@ -635,7 +657,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
     let stopped = tokio::select! {
-        stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector) => stopped,
+        stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
         () = replaced(config) => relaunch_now(),
         signal = terminated() => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
@@ -673,6 +695,16 @@ mod worker_supervision_tests {
     use super::*;
 
     #[tokio::test]
+    async fn the_daemon_stops_when_the_machine_watch_or_the_gate_ends() {
+        let pending = || tokio::spawn(std::future::pending::<Result<()>>());
+        let supervise = |gates| supervise_workers(std::future::pending::<std::io::Result<()>>(), pending(), pending(), pending(), pending(), None, None, gates);
+        let watch_panicked = supervise(gates(tokio::spawn(async { panic!("machine watch poisoned") }), tokio::spawn(std::future::pending()))).await.unwrap_err();
+        assert!(watch_panicked.to_string().contains("machine watch panicked"), "{watch_panicked}");
+        let gate_ended = supervise(gates(tokio::spawn(std::future::pending()), tokio::spawn(async {}))).await.unwrap_err();
+        assert!(gate_ended.to_string().contains("admission gate stopped unexpectedly"), "{gate_ended}");
+    }
+
+    #[tokio::test]
     async fn unexpected_connector_or_outbox_exit_stops_listener() {
         let server = || std::future::pending::<std::io::Result<()>>();
         let pending = || tokio::spawn(std::future::pending::<Result<()>>());
@@ -684,6 +716,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             Some(tokio::spawn(async {})),
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -696,6 +729,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             Some(tokio::spawn(async { panic!("synthetic failure") })),
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -708,6 +742,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             None,
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -724,6 +759,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             None,
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -736,6 +772,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             None,
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -752,6 +789,7 @@ mod worker_supervision_tests {
             pending(),
             None,
             None,
+            std::future::pending(),
         )
         .await
         .unwrap_err();
@@ -768,6 +806,7 @@ mod worker_supervision_tests {
             tokio::spawn(async { anyhow::bail!("synthetic GitHub failure") }),
             None,
             None,
+            std::future::pending(),
         )
         .await
         .unwrap_err();

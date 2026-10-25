@@ -438,7 +438,7 @@ async fn daemon(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    let (machine, usage) = match &*state.gauges.lock().expect("machine gauges poisoned") {
+    let (machine, usage) = match &*crate::log::recover(&state.gauges, "the machine gauges") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
@@ -964,7 +964,7 @@ async fn orchestrator_schedule(
 }
 
 fn gauges_json(state: &DomainDaemon) -> (Value, Value) {
-    match &*state.gauges.lock().expect("machine gauges poisoned") {
+    match &*crate::log::recover(&state.gauges, "the machine gauges") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     }
@@ -1103,7 +1103,7 @@ async fn orchestrator_machine(
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
-    let (machine, usage) = match &*state.gauges.lock().expect("machine gauges poisoned") {
+    let (machine, usage) = match &*crate::log::recover(&state.gauges, "the machine gauges") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };

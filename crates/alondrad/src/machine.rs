@@ -10,14 +10,15 @@ const UNRELIABLE_LOAD: f64 = 50.0;
 /// Where a Mac keeps its writable data; `/` on any other system.
 pub(crate) const BOOT_DATA: &str = "/System/Volumes/Data";
 
-/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header.
+/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
+/// only ever replaced whole, so a lock whose holder panicked still holds a whole one.
 pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
 
 /// The plan's limits travel with the machine's gauges, read from what each account measured.
 pub(crate) async fn run(gauges: Gauges, domain: Arc<crate::domain_runtime::DomainRuntime>) {
     sample_loop(|machine| {
         let usage = crate::usage_probe::usage(&domain, machine.at);
-        *gauges.lock().expect("machine gauges poisoned") = Some((machine, usage));
+        *crate::log::recover(&gauges, "the machine gauges") = Some((machine, usage));
     }).await
 }
 

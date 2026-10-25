@@ -12,18 +12,29 @@ use sha2::Digest;
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Mutex};
 use tokio::sync::watch;
 
+/// A cache whose holder panicked is emptied: the next read fills it again.
+fn cache<T: Default>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        log!("a live read cache was emptied: a thread panicked holding it");
+        lock.clear_poison();
+        let mut cache = poisoned.into_inner();
+        *cache = T::default();
+        cache
+    })
+}
+
 #[derive(Default)]
 pub(crate) struct LiveReadCache(Mutex<HashMap<String, (u64, String, Value)>>);
 
 impl LiveReadCache {
     fn get(&self, path: &str, domain_revision: u64, source_revision: &str) -> Option<Value> {
-        self.0.lock().expect("live read cache poisoned").get(path)
+        cache(&self.0).get(path)
             .filter(|(domain, source, _)| *domain == domain_revision && source == source_revision)
             .map(|(_, _, value)| value.clone())
     }
 
     fn insert(&self, path: String, domain_revision: u64, source_revision: &str, value: Value) {
-        let mut cache = self.0.lock().expect("live read cache poisoned");
+        let mut cache = cache(&self.0);
         if cache.len() >= 128 && !cache.contains_key(&path) { cache.clear(); }
         cache.insert(path, (domain_revision, source_revision.to_owned(), value));
     }
@@ -112,7 +123,7 @@ impl Marks {
 impl LiveSnapshots {
     fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState) -> Option<LiveSnapshot> {
         let marks = Marks::now(client);
-        let entries = self.entries.lock().expect("live snapshots poisoned");
+        let entries = cache(&self.entries);
         let (facts, live) = entries.get(key)?;
         (facts.reads(state) && facts.unchanged(&marks)).then(|| live.clone())
     }
@@ -120,7 +131,7 @@ impl LiveSnapshots {
     fn insert(&self, client: &crate::client_routes::Client, key: String, facts: Facts, live: LiveSnapshot) {
         let marks = Marks::now(client);
         if !facts.unchanged(&marks) { return; }
-        let mut entries = self.entries.lock().expect("live snapshots poisoned");
+        let mut entries = cache(&self.entries);
         if entries.len() >= 64 && !entries.contains_key(&key) {
             entries.retain(|_, (facts, _)| facts.unchanged(&marks));
             if entries.len() >= 64 { entries.clear(); }
@@ -227,7 +238,7 @@ async fn keyed_at(
     let runtime = tokio::runtime::Handle::current();
     let work = client.read_work.clone();
     work.run(move || runtime.block_on(gather_keyed(&client, &state, &keys, issue_data)))
-        .await.expect("live read worker failed")
+        .await.unwrap_or_else(|failed| std::panic::resume_unwind(failed.into_panic()))
 }
 
 async fn gather_at(
@@ -246,7 +257,7 @@ async fn gather_at(
     let runtime = tokio::runtime::Handle::current();
     let work = client.read_work.clone();
     work.run(move || runtime.block_on(gather_inner(&client, &state, lang, &keys, issue_data, clock_only, now)))
-        .await.expect("live read worker failed")
+        .await.unwrap_or_else(|failed| std::panic::resume_unwind(failed.into_panic()))
 }
 
 async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refresh_allowed: bool) -> Option<Value> {
@@ -533,13 +544,9 @@ async fn gather_inner(
             })
             .unwrap_or_default()
     };
-    let sample = client
-        .gauges
-        .lock()
-        .expect("machine gauges poisoned")
-        .clone();
+    let sample = crate::log::recover(&client.gauges, "the machine gauges").clone();
     let gauges = if let Some((machine, usage)) = sample {
-        let mut published = client.views_gauges.lock().expect("published views gauges poisoned");
+        let mut published = cache(&client.views_gauges);
         published_gauges(&mut published, std::time::Instant::now(), lang, || (
             gauges(&machine, usage.as_ref(), Lang::En, machine.at),
             gauges(&machine, usage.as_ref(), Lang::Es, machine.at),
@@ -1417,6 +1424,26 @@ mod cache_tests {
         assert!(activity_agents(&state, &keys(&["node:a"])).is_empty(), "no screen reads a node by its own key");
         state.tasks.get_mut(&TaskId("t-b".into())).unwrap().state = TaskState::Done;
         assert!(activity_agents(&state, &keys(&["task:t-b", "task:missing"])).is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_reads_go_on_after_threads_panicked_holding_the_gate_the_machine_watch_and_the_caches() {
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        let state = domain.state().unwrap();
+        assert!(gather(&client, &state, Lang::En, &["home".into()], false, false).await.pacing.is_some());
+        domain.live.gate.poison();
+        domain.live.machine_watch.poison();
+        crate::log::poison(&client.live_snapshots.entries);
+        crate::log::poison(&client.live_reads.0);
+        crate::log::poison(&client.views_gauges);
+        crate::log::poison(&client.gauges);
+        domain.live.gate.poke();
+        let live = gather(&client, &state, Lang::En, &["home".into()], false, false).await;
+        assert!(live.pacing.is_some());
+        assert!(client.live_snapshots.entries.lock().is_ok_and(|entries| !entries.is_empty()));
     }
 
     #[tokio::test]

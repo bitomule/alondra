@@ -702,7 +702,8 @@ fn action_id(verb: Verb, subject: &str, revision: u64, extra: Option<String>) ->
     match ActionId::new(verb, subject, revision, extra) {
         Ok(id) => Some(id),
         Err(_) => {
-            eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})");
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "Alondra omitted an action with an invalid identifier ({verb:?})");
             None
         }
     }

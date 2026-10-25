@@ -305,7 +305,8 @@ pub(super) fn action(
     let id = match ActionId::new(verb, subject, revision, None) {
         Ok(id) => id.to_string(),
         Err(_) => {
-            eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})");
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "Alondra omitted an action with an invalid identifier ({verb:?})");
             return None;
         }
     };

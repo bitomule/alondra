@@ -407,7 +407,7 @@ impl Client {
                 _ => return storage(),
             }
         };
-        let (machine, usage) = match &*self.gauges.lock().expect("machine gauges poisoned") {
+        let (machine, usage) = match &*crate::log::recover(&self.gauges, "the machine gauges") {
             Some((machine, usage)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
