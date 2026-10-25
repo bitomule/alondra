@@ -19,21 +19,34 @@ fn runfile(name: &str) -> PathBuf {
 }
 
 /// Waits for the end of the test process that started it, then kills the process group of every
-/// host still holding a file under the folder and removes the folder. Dropping a `HostRoot` ends
-/// it first, while that process lives: then it does nothing.
+/// host still holding a file under the folder, waits for each of its processes to exit, and removes
+/// the folder. Dropping a `HostRoot` ends it first, while that process lives: then it does nothing.
 const REAPER: &str = r#"
-import os, shutil, signal, subprocess, sys
+import os, select, shutil, signal, subprocess, sys
 root, owner = sys.argv[1], int(sys.argv[2])
 sys.stdin.buffer.read()
 if os.getppid() == owner:
     sys.exit(0)
 listed = subprocess.run(['/usr/sbin/lsof', '-t', '+D', root], capture_output=True, text=True).stdout.split()
+exits, watched = select.kqueue(), 0
 for pid in {int(pid) for pid in listed}:
     try:
-        if os.getpgid(pid) == pid:
-            os.killpg(pid, signal.SIGKILL)
+        if os.getpgid(pid) != pid:
+            continue
+    except ProcessLookupError:
+        continue
+    for member in subprocess.run(['/usr/bin/pgrep', '-g', str(pid)], capture_output=True, text=True).stdout.split():
+        try:
+            exits.control([select.kevent(int(member), select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 0)
+            watched += 1
+        except ProcessLookupError:
+            pass
+    try:
+        os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+while watched:
+    watched -= len(exits.control(None, watched))
 shutil.rmtree(os.path.dirname(root), ignore_errors=True)
 "#;
 
