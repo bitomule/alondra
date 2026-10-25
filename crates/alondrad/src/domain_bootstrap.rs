@@ -1131,29 +1131,13 @@ async fn orchestrator_log(
         return refused;
     }
     let lines = query.lines.unwrap_or(LOG_LINES).clamp(1, MAX_LOG_LINES);
-    match log_tail(&state.home.join("alondrad.log"), lines) {
-        Ok(text) => Json(json!({"log": text})).into_response(),
+    match alondra_core::daemon_log::tail(&state.home, lines, MAX_LOG_BYTES) {
+        Ok(text) => Json(json!({"log": text.join("\n")})).into_response(),
         Err(error) => crate::domain_api::domain_error(DomainError::new(
             "storage_unavailable",
             format!("cannot read alondrad.log: {error}"),
         )),
     }
-}
-
-fn log_tail(path: &Path, lines: usize) -> std::io::Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        Err(error) => return Err(error),
-    };
-    let start = file.metadata()?.len().saturating_sub(MAX_LOG_BYTES);
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let text = String::from_utf8_lossy(&bytes);
-    let whole: Vec<&str> = text.lines().skip(usize::from(start > 0)).collect();
-    Ok(whole[whole.len().saturating_sub(lines)..].join("\n"))
 }
 
 fn attachment_ref(home: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<AttachmentRef> {

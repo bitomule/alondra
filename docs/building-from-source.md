@@ -331,4 +331,5 @@ Other problems:
 - **The iPhone cannot reach the Mac on Wi-Fi:** `curl http://<LocalHostName>.local:47800/v1/health`
   from the Mac must answer; allow incoming connections to `alondrad` if the macOS firewall
   asks; the iPhone must allow Local Network access for Alondra (Settings → Privacy).
-- **Logs:** `~/.alondra/alondrad.log`.
+- **Logs:** `~/.alondra/alondrad.log`, and `alondrad.log.1` with the lines before it reached
+  10 MB. The daemon rotates it itself; `tail -F` keeps following it across a rotation.

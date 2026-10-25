@@ -196,6 +196,7 @@ fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    log::rotate_when_full(&config.home);
     home_renames::apply(&config.home)?;
     domain_cutover::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =

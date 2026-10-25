@@ -380,7 +380,7 @@ e2e-explore:
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:
 	@dir=$${SANDBOX_DIR:-$$(git rev-parse --show-toplevel)/.scratch/sandbox}; \
-	if [ "$(MAC)" = relay ]; then tail -f $$dir/relay.log; else tail -f $$dir/mac-$${MAC:-1}/alondrad.log; fi
+	if [ "$(MAC)" = relay ]; then tail -F $$dir/relay.log; else tail -F $$dir/mac-$${MAC:-1}/alondrad.log; fi
 
 # The previous published release must restart into this build on copies of the live HOME, and its
 # claude --bg nodes move to the Agent SDK with their sessions, also with the daemon killed after each

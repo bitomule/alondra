@@ -15,6 +15,7 @@ pub mod cited_file;
 pub mod artifact;
 pub mod automerge;
 pub mod config;
+pub mod daemon_log;
 pub mod event;
 pub mod issues;
 pub mod launcher;

@@ -482,9 +482,7 @@ impl System for Real {
     }
 
     fn log_tail(&self, lines: usize) -> Vec<String> {
-        let text = std::fs::read_to_string(self.home.join("alondrad.log")).unwrap_or_default();
-        let all: Vec<&str> = text.lines().collect();
-        all[all.len().saturating_sub(lines)..].iter().map(|l| l.to_string()).collect()
+        alondra_core::daemon_log::tail(&self.home, lines, u64::MAX).unwrap_or_default()
     }
 
     fn memory(&self) -> Memory {
