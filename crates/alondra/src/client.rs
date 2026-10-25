@@ -30,7 +30,7 @@ pub fn config() -> &'static Config {
 pub struct Client {
     base: String,
     agent: ureq::Agent,
-    signer: Option<Signer>,
+    pairing: Option<std::sync::Arc<Pairing>>,
     service: Option<std::sync::Arc<crate::service_client::Profile>>,
     direct: Option<std::sync::Arc<crate::direct_client::Connection>>,
     timeout: Duration,
@@ -80,6 +80,7 @@ pub struct PullRequestDiff {
     pub truncated: bool,
 }
 
+#[derive(Clone)]
 struct Signer {
     device: String,
     key: p256::ecdsa::SigningKey,
@@ -147,17 +148,87 @@ impl Signer {
         ])
     }
 
-    /// The key this terminal signs the user's answers with, paired with alondrad on first use.
-    fn load_or_pair(unsigned: &Client) -> Result<Signer> {
-        use base64::Engine as _;
-        use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
-        let home = &config().home;
-        let key_path = home.join(KEY_FILE);
-        let device_path = home.join(DEVICE_FILE);
-        if let (Ok(pem), Ok(device)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&device_path)) {
-            let key = p256::ecdsa::SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow!("{KEY_FILE}: {e}"))?;
-            return Ok(Signer { device: device.trim().to_string(), key });
+    fn same_pair(&self, other: &Signer) -> bool {
+        self.device == other.device && self.key.verifying_key() == other.key.verifying_key()
+    }
+}
+
+const PAIRING_LOCK_FILE: &str = "tui-pairing.lock";
+
+static PAIRING: std::sync::LazyLock<std::sync::Arc<Pairing>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(Pairing::at(config().home.clone())));
+
+/// The key this terminal signs the user's answers with, paired with alondrad on first use. Every
+/// client of the process shares it, and `tui-pairing.lock` keeps other processes from pairing at
+/// the same time, so the home never holds the key of one pairing with the device of another.
+struct Pairing {
+    home: std::path::PathBuf,
+    signer: std::sync::Mutex<Option<Signer>>,
+    replaced: std::sync::atomic::AtomicBool,
+}
+
+impl Pairing {
+    fn at(home: std::path::PathBuf) -> Self {
+        Pairing { home, signer: std::sync::Mutex::new(None), replaced: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, Option<Signer>> {
+        self.signer.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn current(&self) -> Option<Signer> {
+        self.cache().clone()
+    }
+
+    fn signer(&self, unsigned: &Client) -> Result<Signer> {
+        let mut cache = self.cache();
+        if let Some(signer) = cache.as_ref() {
+            return Ok(signer.clone());
         }
+        let _lock = self.lock()?;
+        let signer = match self.stored() {
+            Some(stored) => stored,
+            None => self.pair(unsigned)?,
+        };
+        *cache = Some(signer.clone());
+        Ok(signer)
+    }
+
+    /// alondrad knows the stored device but not with the stored key, as a home paired twice at
+    /// once was left. Pairs again, once per process, unless another process already did.
+    fn replace_rejected(&self, rejected: &Signer, unsigned: &Client) -> Result<Option<Signer>> {
+        let mut cache = self.cache();
+        let _lock = self.lock()?;
+        let signer = match self.stored() {
+            Some(stored) if !stored.same_pair(rejected) => stored,
+            _ if self.replaced.swap(true, std::sync::atomic::Ordering::SeqCst) => return Ok(None),
+            _ => self.pair(unsigned)?,
+        };
+        *cache = Some(signer.clone());
+        Ok(Some(signer))
+    }
+
+    fn lock(&self) -> Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(&self.home)?;
+        let file = std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600)
+            .open(self.home.join(PAIRING_LOCK_FILE))?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    fn stored(&self) -> Option<Signer> {
+        use p256::pkcs8::DecodePrivateKey;
+        let device = std::fs::read_to_string(self.home.join(DEVICE_FILE)).ok()?.trim().to_string();
+        let key = p256::ecdsa::SigningKey::from_pkcs8_pem(&std::fs::read_to_string(self.home.join(KEY_FILE)).ok()?).ok()?;
+        (!device.is_empty()).then_some(Signer { device, key })
+    }
+
+    /// The device file goes first and comes back last: a cut in between leaves no device, and
+    /// the next start pairs again instead of signing with a key alondrad does not have.
+    fn pair(&self, unsigned: &Client) -> Result<Signer> {
+        use base64::Engine as _;
+        use p256::pkcs8::{EncodePrivateKey, LineEnding};
         let mut seed = [0u8; 32];
         std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
         let key = p256::ecdsa::SigningKey::from_slice(&seed).map_err(|e| anyhow!("key: {e}"))?;
@@ -167,17 +238,25 @@ impl Signer {
         let paired = unsigned.post("/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
         let device = paired.get("device_id").and_then(Value::as_str).context("no device id")?.to_string();
         let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| anyhow!("key: {e}"))?;
-        std::fs::create_dir_all(home)?;
-        write_private(&key_path, pem.as_bytes())?;
-        write_private(&device_path, device.as_bytes())?;
+        let device_path = self.home.join(DEVICE_FILE);
+        match std::fs::remove_file(&device_path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        replace_private(&self.home.join(KEY_FILE), pem.as_bytes())?;
+        replace_private(&device_path, device.as_bytes())?;
         Ok(Signer { device, key })
     }
 }
 
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+fn replace_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    let name = path.file_name().context("no file name")?.to_string_lossy();
+    let temporary = path.with_file_name(format!(".{name}.{}", std::process::id()));
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temporary)?;
     std::io::Write::write_all(&mut f, bytes)?;
+    f.sync_all()?;
+    std::fs::rename(&temporary, path)?;
     Ok(())
 }
 
@@ -191,7 +270,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL }
+        Client { base: format!("http://{host}:{port}"), agent, pairing: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL }
     }
 
     #[cfg(test)]
@@ -205,8 +284,8 @@ impl Client {
     /// types. Falls back to unsigned (and says so on stderr) when pairing is impossible.
     pub fn for_user(timeout: Duration) -> Self {
         let mut client = Self::new(timeout);
-        match Signer::load_or_pair(&client) {
-            Ok(signer) => client.signer = Some(signer),
+        match PAIRING.signer(&client) {
+            Ok(_) => client.pairing = Some(PAIRING.clone()),
             Err(e) => eprintln!("{}", trf!("alondra: answers will go unsigned ({e})", "alondra: las respuestas irán sin firmar ({e})")),
         }
         client
@@ -239,11 +318,11 @@ impl Client {
         self
     }
 
-    fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> Result<ureq::RequestBuilder<B>> {
+    fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8], signer: Option<&Signer>) -> Result<ureq::RequestBuilder<B>> {
         req = req.header("x-alondra-client-version", env!("CARGO_PKG_VERSION"));
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
-        match &self.signer {
+        match signer {
             Some(s) => Ok(s.sign(method, path, body)?.into_iter().fold(req, |r, (k, v)| r.header(k, v))),
             None => Ok(req),
         }
@@ -257,22 +336,45 @@ impl Client {
         if let Some(direct) = &self.direct {
             return direct.request(method, path, body, self.timeout);
         }
+        let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
+        let (status, answer) = self.local(method, path, "application/json", &bytes)?;
+        Ok((status, serde_json::from_slice(&answer).unwrap_or(Value::Null)))
+    }
+
+    /// A request to this Mac's alondrad, sent once more after pairing again when alondrad
+    /// rejects the stored key: a 401 is refused before anything runs.
+    fn local(&self, method: &str, path: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>)> {
+        let signer = self.pairing.as_ref().and_then(|pairing| pairing.current());
+        let (status, answer) = self.send_local(method, path, content_type, body, signer.as_ref())?;
+        if let (Some(pairing), Some(rejected)) = (&self.pairing, &signer)
+            && status == 401
+            && serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")
+            && let Ok(Some(fresh)) = pairing.replace_rejected(rejected, &self.unsigned())
+        {
+            return self.send_local(method, path, content_type, body, Some(&fresh));
+        }
+        Ok((status, answer))
+    }
+
+    fn send_local(&self, method: &str, path: &str, content_type: &str, body: &[u8], signer: Option<&Signer>) -> Result<(u16, Vec<u8>)> {
         let url = format!("{}{path}", self.base);
         let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
-        let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
         let mut resp = match method {
-            "POST" => self.headers(self.agent.post(url).header("content-type", "application/json"), method, path, &bytes)?.send(&bytes[..]),
-            "PUT" => self.headers(self.agent.put(url).header("content-type", "application/json"), method, path, &bytes)?.send(&bytes[..]),
-            "DELETE" => self.headers(self.agent.delete(url), method, path, b"")?.call(),
-            _ => self.headers(self.agent.get(url), method, path, b"")?.call(),
+            "POST" => self.headers(self.agent.post(url).header("content-type", content_type), method, path, body, signer)?.send(body),
+            "PUT" => self.headers(self.agent.put(url).header("content-type", content_type), method, path, body, signer)?.send(body),
+            "DELETE" => self.headers(self.agent.delete(url), method, path, b"", signer)?.call(),
+            _ => self.headers(self.agent.get(url), method, path, b"", signer)?.call(),
         }
         .context(not_responding)?;
         if let Some(version) = resp.headers().get("x-alondra-version").and_then(|v| v.to_str().ok()) {
             let _ = SERVICE_VERSION.set(version.to_owned());
         }
         let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+        Ok((status, resp.body_mut().with_config().limit(MAX_ATTACHMENT_BYTES + 1024 * 1024).read_to_vec()?))
+    }
+
+    fn unsigned(&self) -> Client {
+        Client { base: self.base.clone(), agent: self.agent.clone(), pairing: None, service: None, direct: None, timeout: self.timeout, protocol: self.protocol }
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -435,15 +537,7 @@ impl Client {
 
     /// A signed local request whose body, sent or answered, is the file itself.
     fn raw(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
-        let url = format!("{}{path}", self.base);
-        let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
-        let mut resp = match method {
-            "POST" => self.headers(self.agent.post(url).header("content-type", "application/octet-stream"), method, path, body)?.send(body),
-            _ => self.headers(self.agent.get(url), method, path, b"")?.call(),
-        }
-        .context(not_responding)?;
-        let status = resp.status().as_u16();
-        let bytes = resp.body_mut().with_config().limit(MAX_ATTACHMENT_BYTES + 1024 * 1024).read_to_vec()?;
+        let (status, bytes) = self.local(method, path, "application/octet-stream", body)?;
         if status >= 400 {
             return Err(failure(status, &serde_json::from_slice(&bytes).unwrap_or(Value::Null)));
         }
@@ -1041,5 +1135,281 @@ mod wire_tests {
         assert_eq!(delivery(&error), Delivery::Unanswered);
         let error = anyhow::Error::new(Unsent("not on this network".into()));
         assert_eq!(delivery(&error), Delivery::Unsent);
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use p256::ecdsa::signature::Verifier as _;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    #[derive(Default)]
+    struct Seen {
+        pairings: usize,
+        pairs: usize,
+        devices: Vec<(String, String)>,
+        entered: usize,
+        released: bool,
+    }
+
+    /// alondrad's pairing and signature check over TCP. The first `/pairing` is answered only
+    /// once `callers` have entered or a second `/pairing` arrives, so racing pairings meet.
+    struct Daemon {
+        base: String,
+        state: Arc<(Mutex<Seen>, Condvar)>,
+        server: Option<std::thread::JoinHandle<()>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Daemon {
+        fn start(callers: usize, reject_every_signature: bool) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let state = Arc::new((Mutex::new(Seen::default()), Condvar::new()));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (shared, stopped) = (state.clone(), stop.clone());
+            let server = std::thread::spawn(move || {
+                let mut handlers = vec![];
+                for stream in listener.incoming() {
+                    if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let state = shared.clone();
+                    handlers.push(std::thread::spawn(move || serve(stream.unwrap(), &state, callers, reject_every_signature)));
+                }
+                for handler in handlers {
+                    handler.join().unwrap();
+                }
+            });
+            Daemon { base, state, server: Some(server), stop }
+        }
+
+        fn enter(&self) {
+            let (seen, changed) = &*self.state;
+            seen.lock().unwrap().entered += 1;
+            changed.notify_all();
+        }
+
+        fn add_device(&self, device: &str, key: &p256::ecdsa::SigningKey) {
+            self.state.0.lock().unwrap().devices.push((device.into(), public(key)));
+        }
+
+        fn counts(&self) -> (usize, usize) {
+            let seen = self.state.0.lock().unwrap();
+            (seen.pairings, seen.pairs)
+        }
+
+        fn key_of(&self, device: &str) -> Option<String> {
+            self.state.0.lock().unwrap().devices.iter().find(|(id, _)| id == device).map(|(_, key)| key.clone())
+        }
+
+        fn client(&self, pairing: &Arc<Pairing>) -> Client {
+            let mut client = Client::at(self.base.clone());
+            pairing.signer(&client).unwrap();
+            client.pairing = Some(pairing.clone());
+            client
+        }
+    }
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = TcpStream::connect(self.base.trim_start_matches("http://"));
+            if let Some(server) = self.server.take() {
+                server.join().unwrap();
+            }
+        }
+    }
+
+    fn public(key: &p256::ecdsa::SigningKey) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes())
+    }
+
+    fn serve(stream: TcpStream, state: &(Mutex<Seen>, Condvar), callers: usize, reject_every_signature: bool) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            return;
+        }
+        let mut parts = line.split_whitespace();
+        let (method, path) = (parts.next().unwrap().to_owned(), parts.next().unwrap().to_owned());
+        let mut headers = std::collections::HashMap::new();
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            let Some((name, value)) = header.trim_end().split_once(": ") else { break };
+            headers.insert(name.to_ascii_lowercase(), value.to_owned());
+        }
+        let mut body = vec![0; headers.get("content-length").map_or(0, |n| n.parse().unwrap())];
+        reader.read_exact(&mut body).unwrap();
+        let (seen, changed) = state;
+        let (status, reply) = match path.as_str() {
+            "/pairing" => {
+                let mut seen = seen.lock().unwrap();
+                seen.pairings += 1;
+                changed.notify_all();
+                if seen.pairings == 1 {
+                    seen = changed.wait_while(seen, |s| !s.released && s.entered < callers && s.pairings < 2).unwrap();
+                }
+                seen.released = true;
+                changed.notify_all();
+                (200, serde_json::json!({"code": format!("code-{}", seen.pairings)}))
+            }
+            "/pair" => {
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                let mut seen = seen.lock().unwrap();
+                seen.pairs += 1;
+                let device = format!("device-{}", seen.pairs);
+                seen.devices.push((device.clone(), request["public_key"].as_str().unwrap().to_owned()));
+                (200, serde_json::json!({"device_id": device}))
+            }
+            _ => match verify(&seen.lock().unwrap().devices, &headers, &method, &path, &body) {
+                Err(reason) => (401, serde_json::json!({"error": reason})),
+                Ok(()) if reject_every_signature => (401, serde_json::json!({"error": "wrong signature"})),
+                Ok(()) => (200, serde_json::json!({"ok": true})),
+            },
+        };
+        let reply = serde_json::to_vec(&reply).unwrap();
+        let mut stream = stream;
+        write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len()).unwrap();
+        stream.write_all(&reply).unwrap();
+    }
+
+    fn verify(devices: &[(String, String)], headers: &std::collections::HashMap<String, String>, method: &str, path: &str, body: &[u8]) -> Result<(), &'static str> {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let device = headers.get("x-alondra-device").ok_or("missing X-Alondra-Device")?;
+        let key = devices.iter().find(|(id, _)| id == device).map(|(_, key)| key).ok_or("device not paired")?;
+        let key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&base64::engine::general_purpose::STANDARD.decode(key).unwrap()).unwrap();
+        let digest: String = sha2::Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
+        let message = format!("{method}\n{path}\n{}\n{digest}", headers["x-alondra-timestamp"]);
+        let der = base64::engine::general_purpose::STANDARD.decode(&headers["x-alondra-signature"]).unwrap();
+        key.verify(message.as_bytes(), &p256::ecdsa::Signature::from_der(&der).unwrap()).map_err(|_| "wrong signature")
+    }
+
+    fn write_pair(home: &std::path::Path, device: &str, key: &p256::ecdsa::SigningKey) {
+        use p256::pkcs8::{EncodePrivateKey, LineEnding};
+        std::fs::write(home.join(KEY_FILE), key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        std::fs::write(home.join(DEVICE_FILE), device).unwrap();
+    }
+
+    fn new_home() -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    fn key(byte: u8) -> p256::ecdsa::SigningKey {
+        p256::ecdsa::SigningKey::from_slice(&[byte; 32]).unwrap()
+    }
+
+    /// The pair on disk is one alondrad has: its device carries the stored key.
+    fn assert_stored_pair_matches(daemon: &Daemon, pairing: &Pairing) -> Signer {
+        let stored = pairing.stored().expect("a stored pair");
+        assert_eq!(daemon.key_of(&stored.device), Some(public(&stored.key)), "key and device come from different pairings");
+        stored
+    }
+
+    fn first_run(daemon: &Arc<Daemon>, pairings: Vec<Arc<Pairing>>) -> Vec<Signer> {
+        let callers: Vec<_> = pairings.into_iter().map(|pairing| {
+            let daemon = daemon.clone();
+            std::thread::spawn(move || {
+                daemon.enter();
+                pairing.signer(&Client::at(daemon.base.clone())).unwrap()
+            })
+        }).collect();
+        callers.into_iter().map(|caller| caller.join().unwrap()).collect()
+    }
+
+    #[test]
+    fn threads_of_one_process_on_a_new_home_pair_once() {
+        let home = new_home();
+        let daemon = Arc::new(Daemon::start(6, false));
+        let pairing = Arc::new(Pairing::at(home.to_path_buf()));
+        let signers = first_run(&daemon, vec![pairing.clone(); 6]);
+        assert_eq!(daemon.counts(), (1, 1));
+        let stored = assert_stored_pair_matches(&daemon, &pairing);
+        assert!(signers.iter().all(|signer| signer.same_pair(&stored)));
+    }
+
+    #[test]
+    fn a_process_waiting_on_the_lock_reuses_the_pair_the_first_one_made() {
+        let home = new_home();
+        let daemon = Arc::new(Daemon::start(3, false));
+        let processes: Vec<_> = (0..3).map(|_| Arc::new(Pairing::at(home.to_path_buf()))).collect();
+        let signers = first_run(&daemon, processes.clone());
+        assert_eq!(daemon.counts(), (1, 1));
+        let stored = assert_stored_pair_matches(&daemon, &processes[0]);
+        assert!(signers.iter().all(|signer| signer.same_pair(&stored)));
+    }
+
+    #[test]
+    fn a_key_left_without_its_device_is_paired_again_whole() {
+        let home = new_home();
+        let daemon = Daemon::start(1, false);
+        std::fs::write(home.join(KEY_FILE), b"left by a cut pairing").unwrap();
+        let pairing = Arc::new(Pairing::at(home.to_path_buf()));
+        daemon.enter();
+        daemon.client(&pairing);
+        assert_eq!(daemon.counts(), (1, 1));
+        assert_stored_pair_matches(&daemon, &pairing);
+    }
+
+    #[test]
+    fn a_cut_between_the_two_files_leaves_no_device_to_sign_with() {
+        let home = new_home();
+        let daemon = Daemon::start(1, false);
+        std::fs::write(home.join(DEVICE_FILE), "device-stale").unwrap();
+        std::fs::create_dir(home.join(format!(".{DEVICE_FILE}.{}", std::process::id()))).unwrap();
+        let pairing = Pairing::at(home.to_path_buf());
+        daemon.enter();
+        assert!(pairing.signer(&Client::at(daemon.base.clone())).is_err());
+        assert!(pairing.stored().is_none(), "a new key was left beside the device of another pairing");
+    }
+
+    #[test]
+    fn a_stored_key_alondrad_rejects_is_paired_again_once_and_the_request_goes_through() {
+        let home = new_home();
+        let daemon = Daemon::start(1, false);
+        daemon.add_device("device-mixed", &key(1));
+        write_pair(&home, "device-mixed", &key(2));
+        daemon.enter();
+        let pairing = Arc::new(Pairing::at(home.to_path_buf()));
+        let client = daemon.client(&pairing);
+        assert_eq!(client.get::<Value>("/views/home").unwrap()["ok"], true);
+        assert_eq!(daemon.counts(), (1, 1));
+        assert_stored_pair_matches(&daemon, &pairing);
+        assert_eq!(client.get::<Value>("/views/home").unwrap()["ok"], true);
+        assert_eq!(daemon.counts(), (1, 1));
+    }
+
+    #[test]
+    fn a_process_pairs_again_at_most_once() {
+        let home = new_home();
+        let daemon = Daemon::start(1, true);
+        daemon.add_device("device-mixed", &key(1));
+        write_pair(&home, "device-mixed", &key(1));
+        daemon.enter();
+        let pairing = Arc::new(Pairing::at(home.to_path_buf()));
+        let client = daemon.client(&pairing);
+        assert!(client.get::<Value>("/views/home").is_err());
+        assert!(client.get::<Value>("/views/home").is_err());
+        assert_eq!(daemon.counts(), (1, 1));
+    }
+
+    #[test]
+    fn an_unpaired_device_is_not_paired_again() {
+        let home = new_home();
+        let daemon = Daemon::start(1, false);
+        write_pair(&home, "device-revoked", &key(1));
+        let pairing = Arc::new(Pairing::at(home.to_path_buf()));
+        let client = daemon.client(&pairing);
+        assert!(format!("{:#}", client.get::<Value>("/views/home").unwrap_err()).contains("device not paired"));
+        assert_eq!(daemon.counts(), (0, 0));
+        assert_eq!(pairing.stored().unwrap().device, "device-revoked");
     }
 }

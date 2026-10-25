@@ -44,9 +44,6 @@ exec env -i HOME="$dir/tui-home" PATH=/usr/bin:/bin LANG=en_US.UTF-8 TERM=xterm-
 	"$dir/bin/alondra" "\$@"
 EOF
 chmod 755 "$dir/tui"
-# The TUI's first requests each pair the terminal at once and can keep one pairing's key with
-# another's device; one request first pairs it alone.
-"$dir/tui" status >/dev/null
 tmux new-session -d -s "$session" -x 160 -y 45 "$dir/tui"
 trap - EXIT
 
