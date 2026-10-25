@@ -108,6 +108,21 @@ proptest! {
     }
 }
 
+/// A node delivers, is told something while its delivery waits for review, and pauses before it
+/// takes it up: it reads paused, never at work, and holds no slot.
+#[test]
+fn a_node_paused_with_a_message_on_its_delivery_is_not_at_work() {
+    for by_user in [false, true] {
+        let mut s = three_tasks();
+        let acts = [Act::Task(Step::Deliver(2)), Act::Task(Step::TurnEnded), Act::Task(Step::Tell), Act::Pause { by_user }];
+        for (n, act) in acts.iter().enumerate() {
+            perform(&mut s, act, n);
+            assert_eq!(agree(&s), Ok(()), "after {act:?} (by user: {by_user})");
+        }
+        assert!(s.node_pause(&NODE.into()).is_some(), "the node is paused (by user: {by_user})");
+    }
+}
+
 /// The user pauses a node of the Agent SDK at work: its task's lifecycle holds it, not its phase,
 /// and its own words resume it with what it was told.
 #[test]

@@ -1337,10 +1337,11 @@ impl TaskLifecycle {
         }
     }
     /// Who works, while the delivery waits for the user's review, on what the task was told after
-    /// it: the input the session takes up, or a turn other than the one that presented it.
+    /// it: the input the session takes up, or a turn other than the one that presented it. Nobody
+    /// works while the node is paused.
     pub fn working_on_delivery(&self) -> Option<Worker> {
         let State::Delivered(delivered) = &self.state else { return None };
-        if delivered.gate != DeliveryGate::Review {
+        if delivered.gate != DeliveryGate::Review || delivered.decisions.values().any(|card| card.reason == WaitReason::Pause) {
             return None;
         }
         let execution = delivered.session.execution()?;
