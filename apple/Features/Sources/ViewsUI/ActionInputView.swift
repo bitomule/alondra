@@ -109,11 +109,10 @@ public struct ActionInputView: View {
         case let .text(placeholder, _, multiline):
             if multiline {
                 VStack(alignment: .leading, spacing: 12) {
-                    TextField(placeholder ?? store.action?.label ?? "",
-                              text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                    MultilineTextField(placeholder ?? store.action?.label ?? "",
+                                       text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }),
+                                       lines: 4...12, focus: $textFocused)
                         .font(.display(.title3, weight: .regular))
-                        .lineLimit(4...12)
-                        .focused($textFocused)
                     if attaches, embedsAttachments(input) { attachments }
                 }
                 .padding(16)
@@ -172,12 +171,10 @@ public struct ActionInputView: View {
         switch field.kind {
         case let .text(placeholder), let .multiline(placeholder), let .lines(placeholder):
             if case .multiline = field.kind {
-                TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
-                    .lineLimit(4...8)
+                MultilineTextField(placeholder ?? "", text: stringBinding(field, value: value), lines: 4...8)
                     .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             } else if case .lines = field.kind {
-                TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
-                    .lineLimit(2...6)
+                MultilineTextField(placeholder ?? "", text: stringBinding(field, value: value), lines: 2...6)
                     .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             } else {
                 TextField(placeholder ?? "", text: stringBinding(field, value: value))

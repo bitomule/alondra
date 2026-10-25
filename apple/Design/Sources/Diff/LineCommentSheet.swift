@@ -18,6 +18,8 @@ public struct LineCommentSheet: View {
         self.text = text
     }
 
+    private var prompt: String { String(localized: "What should change here?", table: "AlondraDesign", bundle: #bundle) }
+
     private var trimmed: String { text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     public var body: some View {
@@ -34,9 +36,14 @@ public struct LineCommentSheet: View {
                         .textCase(nil)
                 }
                 Section {
-                    TextField(String(localized: "What should change here?", table: "AlondraDesign", bundle: #bundle), text: text, axis: .vertical)
-                        .lineLimit(4...12)
-                        .focused($focused)
+                    #if os(macOS)
+                    LabeledContent(prompt) {
+                        MultilineTextField("", text: text, lines: 4...12, focus: $focused)
+                            .accessibilityLabel(prompt)
+                    }
+                    #else
+                    MultilineTextField(prompt, text: text, lines: 4...12, focus: $focused)
+                    #endif
                 }
                 if !initial.isEmpty {
                     Section {

@@ -98,8 +98,8 @@ private struct MacServicePairingStep: View {
                 }.controlSize(.large).accessibilityLabel("Paste connection invitation")
                 DisclosureGroup("Enter invitation manually") {
                     VStack(alignment: .leading, spacing: 12) {
-                        TextField("Connection invitation", text: $store.payload, axis: .vertical)
-                            .lineLimit(3...6).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                        MultilineTextField(String(localized: "Connection invitation"), text: $store.payload, lines: 3...6)
+                            .autocorrectionDisabled()
                             .accessibilityIdentifier("pairing.payload")
                         Button("Connect") { store.send(.submit) }
                             .buttonStyle(.borderedProminent).disabled(store.payload.isEmpty)
