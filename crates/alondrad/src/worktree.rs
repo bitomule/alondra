@@ -280,7 +280,12 @@ pub(crate) async fn release_recorded_worktree(dir: &Path, give_up: bool) -> Resu
 
 async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remove: bool) -> Result<TaskWorktree, String> {
     if !dir.exists() {
-        return Ok(TaskWorktree::Absent);
+        let trash = trash_of(dir).filter(|trash| named(dir) && trash.exists());
+        return match trash {
+            Some(trash) if remove => empty_trash(dir.to_path_buf(), trash).await.map(|()| TaskWorktree::Removed),
+            Some(_) => Ok(TaskWorktree::Removed),
+            None => Ok(TaskWorktree::Absent),
+        };
     }
     let Some(top) = git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await.map(PathBuf::from) else {
         return Ok(TaskWorktree::NotAlondras);
@@ -297,16 +302,97 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
     if !remove {
         return Ok(TaskWorktree::Removed);
     }
-    let common = git(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
-    let out = Command::new("git").arg(format!("--git-dir={common}")).args(["worktree", "remove", "--force"]).arg(&top)
-        .kill_on_drop(true).output().await.map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!("git could not delete {}: {}", top.display(), String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    if top.exists() {
-        return Err(format!("{} is still there after git deleted it", top.display()));
-    }
+    let trash = trash_of(&top).ok_or_else(|| format!("{} has no folder name", top.display()))?;
+    std::fs::rename(&top, &trash).map_err(|e| format!("could not set {} aside to delete it: {e}", top.display()))?;
+    empty_trash(top, trash).await?;
     Ok(TaskWorktree::Removed)
+}
+
+/// Where a worktree is moved before it is deleted, beside it: in one rename it is either whole,
+/// with its git metadata, or set aside to go, so a deletion cut halfway is finished on the next
+/// try instead of leaving a folder git no longer knows.
+fn trash_of(top: &Path) -> Option<PathBuf> {
+    let name = top.file_name()?.to_str()?;
+    top.parent().filter(|parent| parent.ends_with(".claude/worktrees")).map(|parent| parent.join(format!(".{name}.removing")))
+}
+
+/// Deletes the worktree that was at `top`, already moved to `trash`: git's record of it, the
+/// Bazel output base built from it, then its files.
+async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<(), String> {
+    let shown = top.display().to_string();
+    let emptied = tokio::task::spawn_blocking(move || {
+        let failed = |what: &str, e: std::io::Error| format!("could not delete {what} of {}: {e}", top.display());
+        if let Some(admin) = git_admin_dir(&trash) {
+            remove_tree(&admin).map_err(|e| failed("git's record", e))?;
+        }
+        if let Some(base) = bazel_output_base(&top, &trash) {
+            remove_output_base(&base).map_err(|e| failed("the Bazel output base", e))?;
+        }
+        remove_tree(&trash).map_err(|e| failed("the files", e))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("the deletion of {shown} stopped: {e}")));
+    if let Err(why) = &emptied {
+        log!("{why}");
+    }
+    emptied
+}
+
+/// `<common>/worktrees/<id>`, which the worktree's `.git` file names.
+fn git_admin_dir(worktree: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(worktree.join(".git")).ok()?;
+    let admin = PathBuf::from(link.trim().strip_prefix("gitdir:")?.trim());
+    (admin.is_absolute() && admin.parent().is_some_and(|parent| parent.ends_with("worktrees")) && admin.exists()).then_some(admin)
+}
+
+/// The output base Bazel made for the workspace at `top`, found through the `bazel-out` link it
+/// left in `worktree` and taken only when the base says it was built from `top`.
+fn bazel_output_base(top: &Path, worktree: &Path) -> Option<PathBuf> {
+    let out = std::fs::read_link(worktree.join("bazel-out")).ok()?;
+    let base = out.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "execroot"))?.parent()?.to_path_buf();
+    let built_from = PathBuf::from(std::fs::read_to_string(base.join(BAZEL_WORKSPACE_MARK)).ok()?.trim());
+    (base.is_absolute() && resolved(&built_from).is_some_and(|built| Some(built) == resolved(top))).then_some(base)
+}
+
+/// `path` with its parent's links resolved: `path` itself may be gone already.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    Some(std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?))
+}
+
+/// The file in an output base that names the workspace it was built from.
+const BAZEL_WORKSPACE_MARK: &str = "DO_NOT_BUILD_HERE";
+
+/// Deletes an output base with the file that names its workspace last, so one cut halfway is
+/// still found as this worktree's on the next try.
+fn remove_output_base(base: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(base)? {
+        let entry = entry?;
+        if entry.file_name() != BAZEL_WORKSPACE_MARK {
+            remove_tree(&entry.path())?;
+        }
+    }
+    remove_tree(base)
+}
+
+/// Deletes `path` and everything under it, also folders made read-only, as Bazel makes its
+/// outputs. Links are deleted, never followed.
+fn remove_tree(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if !meta.is_dir() {
+        return std::fs::remove_file(path);
+    }
+    if meta.permissions().mode() & 0o700 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(meta.permissions().mode() | 0o700))?;
+    }
+    for entry in std::fs::read_dir(path)? {
+        remove_tree(&entry?.path())?;
+    }
+    std::fs::remove_dir(path)
 }
 
 /// The work `top` holds that no remote has: uncommitted files and commits not pushed that no
@@ -591,6 +677,81 @@ mod tests {
         let Ok(TaskWorktree::Unsaved(left)) = release_task_worktree(&dir, "t-dirty", true).await else { panic!("kept for its commit") };
         assert!(left.contains("1 commit(s) not pushed"), "{left}");
         assert!(dir.join(".git").is_file());
+    }
+
+    /// git deletes its record of a worktree even when it cannot delete all of its files, and what
+    /// is left is a folder no git knows: the task's worktree goes whole, never left as the user's.
+    #[tokio::test]
+    async fn a_closed_tasks_worktree_with_a_read_only_folder_goes_whole_with_gits_record_of_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-locked");
+        std::fs::write(dir.join(".gitignore"), "/out/\n").unwrap();
+        testing::git(&dir, &["add", ".gitignore"]);
+        testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
+        testing::git(&dir, &["push", "-q", "origin", "worktree-t-locked"]);
+        std::fs::create_dir_all(dir.join("out/snapshots")).unwrap();
+        std::fs::write(dir.join("out/snapshots/a.png"), "x").unwrap();
+        std::fs::set_permissions(dir.join("out/snapshots"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(release_task_worktree(&dir, "t-locked", true).await, Ok(TaskWorktree::Removed));
+        assert!(!dir.exists());
+        assert!(!root.join("repo/.claude/worktrees/.t-locked.removing").exists());
+        assert!(!root.join("repo/.git/worktrees/t-locked").exists(), "git's record of it goes too");
+        assert_eq!(release_task_worktree(&dir, "t-locked", true).await, Ok(TaskWorktree::Absent));
+    }
+
+    /// A deletion cut after the worktree was set aside is finished on the next try.
+    #[tokio::test]
+    async fn a_worktree_set_aside_by_a_deletion_that_was_cut_is_deleted_on_the_next_try() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-cut");
+        let trash = root.join("repo/.claude/worktrees/.t-cut.removing");
+        std::fs::rename(&dir, &trash).unwrap();
+        assert_eq!(release_task_worktree(&dir, "t-cut", false).await, Ok(TaskWorktree::Removed), "a dry run deletes nothing");
+        assert!(trash.exists());
+        assert_eq!(release_task_worktree(&dir, "t-cut", true).await, Ok(TaskWorktree::Removed));
+        assert!(!trash.exists());
+        assert!(!root.join("repo/.git/worktrees/t-cut").exists());
+    }
+
+    /// The output base Bazel built from the worktree goes with it, found through the worktree's
+    /// `bazel-out` link; one built from another workspace is never touched.
+    #[tokio::test]
+    async fn a_closed_tasks_worktree_goes_with_the_bazel_output_base_built_from_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::Directory::new();
+        let output = root.join("bazel-root");
+        let base = |hash: &str, workspace: &Path, read_only: bool| {
+            let base = output.join(hash);
+            std::fs::create_dir_all(base.join("execroot/_main/bazel-out/bin")).unwrap();
+            std::fs::create_dir_all(base.join("external/rules")).unwrap();
+            std::fs::write(base.join("external/rules/BUILD"), "x").unwrap();
+            if read_only {
+                std::fs::set_permissions(base.join("external/rules"), std::fs::Permissions::from_mode(0o555)).unwrap();
+            }
+            std::fs::write(base.join(BAZEL_WORKSPACE_MARK), workspace.to_str().unwrap()).unwrap();
+            base
+        };
+        let built = |slug: &str| {
+            let dir = testing::task_worktree(&root.join(slug), slug);
+            std::fs::write(dir.join(".gitignore"), "/bazel-*\n").unwrap();
+            testing::git(&dir, &["add", ".gitignore"]);
+            testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
+            testing::git(&dir, &["push", "-q", "origin", &format!("worktree-{slug}")]);
+            dir
+        };
+        let dir = built("t-built");
+        let own = base("1111", &dir, true);
+        std::os::unix::fs::symlink(own.join("execroot/_main/bazel-out"), dir.join("bazel-out")).unwrap();
+        let other = built("t-borrowed");
+        let foreign = base("2222", &root.join("elsewhere"), false);
+        std::os::unix::fs::symlink(foreign.join("execroot/_main/bazel-out"), other.join("bazel-out")).unwrap();
+
+        assert_eq!(release_task_worktree(&dir, "t-built", true).await, Ok(TaskWorktree::Removed));
+        assert!(!dir.exists());
+        assert!(!own.exists(), "its output base goes with it");
+        assert_eq!(release_task_worktree(&other, "t-borrowed", true).await, Ok(TaskWorktree::Removed));
+        assert!(foreign.join("external/rules/BUILD").exists(), "a base built from another workspace stays");
     }
 
     #[tokio::test]

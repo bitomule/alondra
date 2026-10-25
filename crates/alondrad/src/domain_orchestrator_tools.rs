@@ -363,6 +363,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
     let workplace = crate::launch_worktree::isolate(Path::new(&cwd), &crate::launch_worktree::slug(&task.id.0), known.as_deref(), pr_head).await
         .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+    own_worktree(domain, &task.id, &workplace).await?;
     let cwd = workplace.dir().to_string_lossy().into_owned();
     let Some(plugin) = crate::plugins::node() else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
@@ -454,7 +455,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
                     error.message, task.title, task.id, task.id), ..error },
                 None => error,
             })?;
-        record_worktree(domain, &task.id, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()), &cwd);
+        record_worktree(domain, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()));
         if origin == Origin::Auto {
             let _ = domain.store.lock().expect("domain store poisoned")
                 .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
@@ -474,11 +475,32 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     }
 }
 
-/// The worktree the task's node works in, as the task's own: it is cleaned with the task and its
-/// subagents' worktrees go beside it. The node owns it when Alondra made it for the task, or when
-/// it took over the one of the node it replaced.
-fn record_worktree(domain: &DomainRuntime, task: &TaskId, agent: Option<&str>, workplace: &Workplace,
-    inherited: Option<(&AgentId, &String)>, cwd: &str) {
+/// The worktree a launch works in is the task's own from the moment it exists, before any node
+/// runs in it: it is cleaned with the task and its subagents' worktrees go beside it, even when the
+/// launch fails. A task that ended while the worktree was being made already had its close, so the
+/// worktree goes at once, unless it holds work not saved.
+pub(crate) async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
+    let dir = workplace.dir();
+    if workplace.chosen().is_none() || !dir.join(".git").is_file() {
+        return Ok(());
+    }
+    let shown = dir.to_string_lossy();
+    domain.set_task_worktree(task, &shown)
+        .map_err(|error| DomainError::new("storage_unavailable", format!("could not record that {task} works in {shown}: {error:#}")))?;
+    let state = domain.state().map_err(|error| DomainError::new("storage_unavailable", format!("{error:#}")))?;
+    if !state.tasks.get(task).is_some_and(|ended| ended.state.terminal()) {
+        return Ok(());
+    }
+    match crate::worktree::release_task_worktree(dir, &crate::launch_worktree::slug(&task.0), true).await {
+        Ok(crate::worktree::TaskWorktree::Unsaved(left)) => log!("the worktree of {task}, which ended while it started, is kept: {left}"),
+        Ok(_) => {}
+        Err(why) => log!("could not delete the worktree of {task}, which ended while it started: {why}"),
+    }
+    Err(DomainError::new("task_not_active", format!("Task is terminal: {task} ended while it started")))
+}
+
+/// The node took over the worktree Alondra chose for the task, or the one of the node it replaced.
+fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Workplace, inherited: Option<(&AgentId, &String)>) {
     let owned = match inherited {
         Some((old, dir)) => Some((dir.clone(), old.0.clone())),
         None => workplace.chosen().map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
@@ -487,11 +509,6 @@ fn record_worktree(domain: &DomainRuntime, task: &TaskId, agent: Option<&str>, w
         && let Err(error) = domain.set_inherited_worktree(agent, &dir, &from)
     {
         log!("could not record that {agent} took over {dir}: {error:#}");
-    }
-    if workplace.dir().join(".git").is_file()
-        && let Err(error) = domain.set_task_worktree(task, cwd)
-    {
-        log!("could not record that {task} works in {cwd}: {error:#}");
     }
 }
 

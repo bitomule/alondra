@@ -369,6 +369,47 @@ async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_t
     assert!(agent_of(&f, "a").is_none());
 }
 
+struct NoSessions;
+impl crate::node_close::Sessions for NoSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+        panic!("the closer ran claude {args:?} for a task without a node")
+    }
+    fn leftovers<'a>(&'a self, session_id: &'a str) -> crate::node_close::Answer<'a, Option<String>> {
+        panic!("the closer looked for leftovers of {session_id}, a task without a node")
+    }
+}
+
+/// The worktree a start makes is the task's from the moment it exists: a task cancelled while it
+/// starts, whose start fails, leaves no worktree behind once it closes.
+#[tokio::test]
+async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_closes() {
+    let f = world();
+    for args in [&["init", "-q"][..], &["config", "user.email", "test@example.invalid"], &["config", "user.name", "Test"],
+        &["commit", "-q", "--allow-empty", "-m", "base"]] {
+        crate::worktree::testing::git(&f.project, args);
+    }
+    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    create(&f, "a", &[], Some(&plan(&f, "app/a")));
+    let now = alondra_core::now_millis();
+    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
+        resuming: false, since: 0 };
+    assert_eq!(f.domain.live.gate.ask(&f.domain, waiting, now), Ok(()));
+    assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
+    assert!(f.domain.live.begin_launch("a"));
+    let domain = f.domain.clone();
+    let cancel: Box<dyn FnOnce() + Send> = Box::new(move || command(&domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "a".into() }));
+    let launched = crate::domain_orchestrator_tools::launch_guarded(&f.domain, &f.home, LaunchBody::from_plan("a".into(), &plan(&f, "app/a")), |_| None,
+        Origin::Auto, Some(cancel)).await;
+    f.domain.live.end_launch("a");
+    assert!(launched.is_err(), "cancelled before its admission: {launched:?}");
+    settle(&f.domain, &"a".into(), f.project.to_str().unwrap(), launched, now).unwrap();
+    let worktree = f.project.join(".claude/worktrees/a");
+    assert!(worktree.join(".git").is_file(), "the start made the task's worktree");
+    crate::task_closer::pass(&f.domain, &NoSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    assert!(!worktree.exists(), "the cancelled task's worktree goes with its close");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("a")].state, alondra_core::domain::TaskState::Cancelled);
+}
+
 fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
     f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
 }

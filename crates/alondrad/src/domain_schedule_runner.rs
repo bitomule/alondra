@@ -140,6 +140,7 @@ async fn launch_through_sdk(
         .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
     let profile = alondra_core::accounts::folder(home, &account);
     let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
+    crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await.map_err(|error| error.message)?;
     let options = crate::sdk_owner::LaunchOptions {
         model: resolved.flags.model.clone(),
         effort: resolved.flags.effort.clone(),
@@ -161,9 +162,6 @@ async fn launch_through_sdk(
     if let Some(dir) = workplace.chosen().map(|dir| dir.to_string_lossy().into_owned()) {
         if let Err(error) = domain.set_inherited_worktree(&agent, &dir, "alondra") {
             log!("could not record that {agent} works in {dir}: {error:#}");
-        }
-        if let Err(error) = domain.set_task_worktree(task, &dir) {
-            log!("could not record that {task} works in {dir}: {error:#}");
         }
     }
     Ok(agent)
