@@ -14,7 +14,7 @@ pub enum Role {
 }
 
 fn self_contained_card(user: &str) -> String {
-    format!("Every card is decided without reading your chat: {user} sees only the card. It says what is decided and the minimum context, and carries in content the whole thing being decided (the proposed text and the current one, the design or screenshot, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat (\"as I said\", \"the earlier one\", \"the plan\"): repeat what is needed. Before sending, ask yourself whether someone who sees only this card can decide, and add what is missing: \"Approve the new promotional text for Quill's App Store listing\" goes with the proposed text and the current one in content. {user} cannot open a file from the app: a plan or decision that cites a Markdown file (`docs/plan.md`) carries its content, and Alondra adds it from where you work or refuses the card when it cannot read it; never point at a file instead of writing the plan in the card.")
+    format!("Every card is decided without reading your chat: {user} sees only the card. Its content carries the whole thing being decided (the proposed text and the current one, the design, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat: repeat what is needed, and ask yourself whether someone who sees only this card can decide. {user} cannot open a file from the app: write a plan into the card, never point at a file.")
 }
 
 fn instructions(role: Role, user: &str) -> String {
@@ -22,16 +22,19 @@ fn instructions(role: Role, user: &str) -> String {
         crate::i18n::Lang::Es => "Spanish",
         crate::i18n::Lang::En => "English",
     };
-    let self_contained = self_contained_card(user);
+    let skill = match role {
+        Role::Node => "alondra:alondra",
+        Role::Orchestrator => "alondra-orchestrator:alondra-orchestrator",
+    };
     let common = format!(
-        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. {self_contained} An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Load the skill {skill} with the Skill tool before your first Alondra call and follow it: these lines are only its core. Everything the user reads must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. Every card is decided without reading your chat: {user} sees only the card, so it carries the whole thing being decided, and {user} cannot open a file from the app. A refused card was not sent and is never a permission: fix the field it names and send it again with the same interaction_id; when a call could not reach Alondra, do not proceed: retry it."
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task for its whole life: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra doctor --fix or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}, only a real decision whose options change what you do next: never to announce that your work is ready, show a report or point at a file; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Never send the same card twice: before a card about something you already asked, read open_cards and replace your open one with `replaces`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A tool's arguments are exactly its schema: never add a field it does not have, and send an object or a list as JSON itself, never as text that holds JSON. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. A plan states its scope as Markdown checklist lines (`- [ ] …`), one per thing you will deliver, or it goes back to you; once {user} approves it, your final result marks every point done with its evidence in checklist, and a point that no longer applies goes out only with a revised plan {user} approves. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true, the whole report or answer written in content.body, never a path to the file that holds it: a file, a final message left in this session or a question saying the work is ready never reaches {user} as a delivery. When the result needs {user} to choose anything (a design's open decisions, a default to pick), ask it with ask before you deliver, each question with the option you recommend: accepting a result never answers a choice left in its content. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, the full commit sha it is at as head (never a branch name) and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. When Alondra tells you the task is closing, delete what you generated for it that git does not track (build outputs, caches, temporary files) with the project's own tools, change nothing else, and call cleanup_done with the task_id: Alondra then closes your session and its worktree. While something you started for the Task still runs after its PR merged (a deploy, a release script), say so with post_merge_work and the reason, so Alondra does not close the session under it, and call it again without reason when it ends. Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your Task: declare it with post_merge_work before you present the PR as final, so accepting and merging the PR does not close the Task; Alondra tells you to do it once the PR merges. If after the merge that work has to wait for another task or pull request to land, call post_merge_work with waits_for naming it and end your turn: Alondra wakes you when it lands; a wait written only in reason wakes nobody. When Alondra tells you the task was cancelled, stop: do not commit, push or deliver anything. Ending a Claude turn does not complete a task: when your turn ends without a result, a question, work of your own running or a wait through an Alondra tool, Alondra wakes you once with the reason, and if your next turn ends the same way, it asks {user} how you go on. Keep stack retarget and dependency checks. To wait for another Task to be done, ask the orchestrator (recipient orchestrator) to make yours depend on it and end your turn: Alondra tells you when it is done; never ask {user} to tell you. Every message typed into this session starts with who sent it and when; the most recent instruction from whoever directs you ({user}, Claude for {user}, the orchestrator) replaces earlier ones that contradict it. Technical permission requests remain separate from task questions. When you stop only because the Mac lacks resources (memory, a full disk, the CPU), say so with wait_for_machine and end your turn; the subscription's usage is never a reason to wait or stop: Alondra paces usage itself and {user} decides whether to keep going, so keep working; when a turn ends on a usage limit, never wait for it yourself with sleep, cron or a background loop: end your turn, and Alondra waits out the limit and wakes you when Claude answers again; waiting in a build queue such as the build queue is normal and never a reason to call it; if something you ran died for lack of memory, call wait_for_machine with that reason and never ask {user} whether to run it again: Alondra tells you to carry on when the Mac has room, and then you run again what was cut. When you need an MCP server that is not connected, call wait_for_mcp with its name and end your turn; never call its mcp__<server>__authenticate tool yourself or ask {user} to sign in with a card: Alondra shows {user} one card to sign in and tells you when it is connected or that you go on without it. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode. When you are done, deliver with present_result and is_final true; Alondra merges your one PR: never merge it yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
-            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. A node works on one Task for its whole life and closes with it: start every Task with launch (a new node), never by sending a Task to another node. Every Task is created with its launch plan in create_task (launch: name, cwd, and with auto effort model and reason; for a Request a schedule made, the schedule's model and effort), or create_task refuses it: Alondra starts it by itself when the node limit has room, by priority then age, and a Task that depends on others once they are done, with their results in its mission. You never launch Tasks to keep nodes busy; use launch only for a Task whose start failed or whose node is gone, or to replace a node. When the Request's effort is auto, launch needs model: the lowest that can reliably finish; tell a new node in its mission what other nodes are doing when their work touches (tasks_in_progress shows them); to move a live Task to another model or effort, launch it again with replace: true, which stops its node and starts the new one in the same worktree (it answers at once with replacing: true and you are told how it ended: do not launch the task again meanwhile); interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. tasks_in_progress shows the live nodes and what waits on someone, and node one node in detail. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another. A plan approved in phases is one Task per phase, each taking its points with plan_items and depending only on the phases it truly needs. When a Task's work goes on after its PR merges (publish, install, deploy, verify), say so in its mission: its node declares that work before delivering, so merging the PR does not close the Task."
+            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns one PR. Answer a Request without a Task with publish_information before close_request. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
         ),
     }
 }
@@ -235,7 +238,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice, which never carries an open PR: an open PR goes only in a final result, the one {user} can accept into a merge. Finishing is always present_result, never an ask. need says what to review and content carries the report, diff or document written out in its body, never a path to a file: {user} cannot open files from the app, so files go in attachments (a final result needs content). Both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. When the work found nothing for {user} to look at, deliver with nothing_to_review true: no card is created and the task closes. When the result needs {user} to choose anything, ask it with ask before delivering; never leave choices only in the content, because accepting the result does not answer them. When {user} approved a plan for the Task, the final result marks every point of its checklist done in checklist, each with its evidence, or it is refused with the points still open; a result that is not final, or a Task with no approved plan, carries no checklist. A report that proposes work to build sends that work as plan, so {user} can approve it to start its implementation or only archive it. The whole result is kept in Alondra's files folder and every Markdown file it cites is shown on its card, so never leave a report only in a temporary folder. {rule}"),
+            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass). With is_final false it is a progress notice, which never carries an open PR: an open PR goes only in a final result. Finishing is always present_result, never an ask. need says what to review and content carries the report, diff or document written out in its body, never a path to a file: {user} cannot open files from the app, so files go in attachments (a final result needs content). Both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. When the result needs {user} to choose anything, ask it with ask before delivering; never leave choices only in the content, because accepting the result does not answer them. When {user} approved a plan for the Task, a final result marks every point done in checklist, each with its evidence. {rule}"),
             json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose report proposes work to build (a research or investigation that ends in a plan): that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver. The card then offers Approve and start implementing, which creates a new task that implements exactly this plan, or Only archive. Never put such a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
@@ -1703,6 +1706,16 @@ fn serve_server(
     Ok(())
 }
 
+/// A skill's text with its line breaks folded, so a rule wrapped across lines reads as one.
+#[cfg(test)]
+fn skill_text(role: Role) -> String {
+    let text = match role {
+        Role::Node => include_str!("../../../plugin/skills/alondra/SKILL.md"),
+        Role::Orchestrator => include_str!("../../../plugin-orchestrator/skills/alondra-orchestrator/SKILL.md"),
+    };
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1750,31 +1763,27 @@ mod tests {
         assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "register_pr"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "domain_command"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "complete_task"));
-        assert!(instructions(Role::Node, "User").contains("Alondra merges the PR and tells you"));
-        assert!(instructions(Role::Node, "User").contains("A Task owns exactly one PR for its whole life"));
-        assert!(instructions(Role::Node, "User").contains("never ask User to authorize or re-authorize a merge"));
+        assert!(instructions(Role::Node, "User").contains("Alondra merges your one PR: never merge it yourself or ask User to authorize a merge"));
         assert!(instructions(Role::Node, "Ana").contains("Your terminal does not reach Ana: these tools do"));
         for role in [Role::Node, Role::Orchestrator] {
             assert!(instructions(role, "Ana").contains("and your replies in this terminal too: the apps show your last one"));
+            assert!(instructions(role, "Ana").contains("Ana cannot open a file from the app"));
         }
         assert!(instructions(Role::Node, "Ana").contains("deliver with present_result and is_final true"));
         assert!(instructions(Role::Node, "Ana").contains("never install, restart or replace the Alondra daemon or CLI"));
         assert!(instructions(Role::Node, "Ana").contains("A plan goes through plan mode: EnterPlanMode, then ExitPlanMode"));
-        for role in [Role::Node, Role::Orchestrator] {
-            assert!(instructions(role, "Ana").contains("Ana cannot open a file from the app"));
-        }
-        assert!(instructions(Role::Node, "Ana").contains("create_document, then ask, then link_interaction_subject"));
+        let skill = skill_text(Role::Node);
+        assert!(skill.contains("A task owns exactly one PR for its whole life"));
+        assert!(skill.contains("`ask` with the decision in `body` and the approval options, then at once `link_interaction_subject`"));
     }
 
     #[test]
     fn the_node_leaves_a_usage_limit_to_alondra_instead_of_waiting_it_out() {
-        let rule = "never wait for it yourself with sleep, cron or a background loop: end your turn, and Alondra waits out the limit and wakes you when Claude answers again";
-        assert!(instructions(Role::Node, "Ana").contains(rule));
+        assert!(instructions(Role::Node, "Ana").contains("Never wait out a usage limit yourself: end your turn."));
         let catalog = tools(Role::Node, "Ana");
         let wait = catalog.as_array().unwrap().iter().find(|t| t["name"] == "wait_for_machine").unwrap();
         assert!(wait["description"].as_str().unwrap().contains("never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again"));
-        let skill = include_str!("../../../plugin/skills/alondra/SKILL.md").split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(skill.contains("When a turn ends on a usage limit (\"You've hit your session limit\"), never wait for it yourself: no `sleep`, no cron (`CronCreate`), no loop in the background. End your turn; Alondra waits out the limit and wakes you when Claude answers again."), "the node skill says so too");
+        assert!(skill_text(Role::Node).contains("When a turn ends on a usage limit (\"You've hit your session limit\"), never wait for it yourself: no `sleep`, no cron (`CronCreate`), no loop in the background. End your turn; Alondra waits out the limit and wakes you when Claude answers again."), "the node skill says so too");
     }
 
     #[test]
@@ -1810,8 +1819,8 @@ mod tests {
         assert_eq!((method, path.as_str(), body["server"].as_str()), ("PUT", "/tasks/t-1/mcp-wait", Some("linear")));
         let envelope = domain_envelope("wait_for_mcp", &json!({"task_id": "t-1", "server": "linear"}), "epoch", "one").unwrap();
         assert_eq!(envelope["command"]["kind"], "wait_for_mcp");
-        let instructions = instructions(Role::Node, "Ana");
-        assert!(instructions.contains("wait_for_mcp") && instructions.contains("never call its mcp__<server>__authenticate"), "{instructions}");
+        assert!(instructions(Role::Node, "Ana").contains("A missing MCP server: wait_for_mcp."));
+        assert!(skill_text(Role::Node).contains("Never call its `mcp__<server>__authenticate`"));
     }
 
     #[test]
@@ -1849,6 +1858,22 @@ mod tests {
         assert_eq!(envelope["command"]["launch"]["name"], "app/next", "the domain sees the plan");
     }
 
+    /// Claude Code passes the model at most 2 KB of a server's instructions and of each tool's
+    /// description, and cuts the rest with «[truncated]».
+    #[test]
+    fn instructions_and_every_tool_description_fit_what_claude_code_passes_on() {
+        const LIMIT: usize = 2048;
+        let user = "Alexandra Montgomery";
+        for role in [Role::Node, Role::Orchestrator] {
+            let text = instructions(role, user);
+            assert!(text.len() <= LIMIT, "instructions: {} bytes", text.len());
+            for tool in tools(role, user).as_array().unwrap() {
+                let description = tool["description"].as_str().unwrap();
+                assert!(description.len() <= LIMIT, "{}: {} bytes", tool["name"], description.len());
+            }
+        }
+    }
+
     #[test]
     fn the_orchestrator_instructions_say_one_node_per_task_and_never_mention_reuse() {
         let text = instructions(Role::Orchestrator, "Ana");
@@ -1856,9 +1881,10 @@ mod tests {
             assert!(!text.contains(old), "{old}");
         }
         assert!(text.contains("A node works on one Task for its whole life and closes with it"));
-        assert!(text.contains("launch: name, cwd"));
-        let node = instructions(Role::Node, "Ana");
-        assert!(node.contains("call cleanup_done with the task_id") && node.contains("When Alondra tells you the task was cancelled, stop"));
+        assert!(text.contains("each with its launch plan"));
+        assert!(skill_text(Role::Orchestrator).contains("`create_task` refuses a task without `launch` (`name`, `cwd`"));
+        let node = skill_text(Role::Node);
+        assert!(node.contains("call `cleanup_done`") && node.contains("When Alondra tells you your task was cancelled, stop"));
     }
 
     #[test]
@@ -1979,7 +2005,7 @@ mod tests {
         let present = node.as_array().unwrap().iter().find(|tool| tool["name"] == "present_result").unwrap();
         assert!(present["description"].as_str().unwrap()
             .contains("When the result needs David to choose anything, ask it with ask before delivering; never leave choices only in the content"));
-        assert!(instructions(Role::Node, "David").contains("ask it with ask before you deliver, each question with the option you recommend"));
+        assert!(skill_text(Role::Node).contains("ask it with `ask` before you deliver: each choice a question with the option you recommend"));
     }
 
     #[test]
@@ -2366,10 +2392,12 @@ mod card_tool_tests {
         assert!(tool(Role::Node, "ask")["description"].as_str().unwrap().contains("never in why"));
         assert!(tool(Role::Node, "ask")["inputSchema"]["properties"]["why"]["description"].as_str().unwrap().contains("Long text goes in content"));
         let node = instructions(Role::Node, "Ana");
-        for tool in ["request_input", "request_test", "answer_clarification", "withdraw"] {
+        for tool in ["request_input", "request_test", "replaces"] {
             assert!(node.contains(tool), "{tool}");
         }
-        assert!(node.contains("never in `why`") && node.contains("never a permission") && node.contains("do not proceed"));
+        assert!(node.contains("never a permission") && node.contains("do not proceed"));
+        let skill = skill_text(Role::Node);
+        assert!(skill.contains("`answer_clarification`") && skill.contains("`withdraw`") && skill.contains("never in `why`"));
         let orchestrator = instructions(Role::Orchestrator, "Ana");
         assert!(orchestrator.contains("publish_information") && orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
     }
@@ -2377,14 +2405,17 @@ mod card_tool_tests {
     #[test]
     fn every_card_is_decided_from_the_card_alone_never_from_the_chat() {
         let cards = [(Role::Node, "ask"), (Role::Node, "request_action"), (Role::Node, "present_result"), (Role::Orchestrator, "ask"), (Role::Orchestrator, "request_action"), (Role::Orchestrator, "publish_information")];
-        let texts = cards.iter().map(|(role, name)| tool(*role, name)["description"].as_str().unwrap().to_owned())
-            .chain([instructions(Role::Node, "Ana"), instructions(Role::Orchestrator, "Ana")]);
-        for text in texts {
+        for (role, name) in cards {
+            let text = tool(role, name)["description"].as_str().unwrap().to_owned();
             assert!(text.contains("Every card is decided without reading your chat: Ana sees only the card"), "{text}");
             assert!(text.contains("the proposed text and the current one") && text.contains("never a summary"), "{text}");
             assert!(text.contains("Each option says what happens if it is chosen, and the recommended one why"), "{text}");
             assert!(text.contains("Never refer to the chat") && text.contains("whether someone who sees only this card can decide"), "{text}");
-            assert!(text.contains("promotional text for Quill"), "{text}");
+        }
+        for role in [Role::Node, Role::Orchestrator] {
+            assert!(instructions(role, "Ana").contains("Every card is decided without reading your chat: Ana sees only the card"));
+            let skill = skill_text(role);
+            assert!(skill.contains("Every card is decided from the card alone") && skill.contains("promotional text for Quill"));
         }
     }
 
@@ -2648,9 +2679,11 @@ mod card_tool_tests {
     #[test]
     fn a_node_is_told_that_finishing_is_present_result_with_the_whole_report_never_an_ask() {
         let node = instructions(Role::Node, "Ana");
-        assert!(node.contains("only a real decision whose options change what you do next: never to announce that your work is ready, show a report or point at a file"), "{node}");
-        assert!(node.contains("deliver with present_result and is_final true, the whole report or answer written in content.body, never a path to the file that holds it"), "{node}");
-        assert!(node.contains("a question saying the work is ready never reaches Ana as a delivery"), "{node}");
+        assert!(node.contains("Use ask only for a real decision whose options change what you do next"), "{node}");
+        let skill = skill_text(Role::Node);
+        assert!(skill.contains("It never announces that your work is ready, never shows a report or a plan for the user to read, and never points at a file"));
+        assert!(skill.contains("written out, never a path to the file that holds it"));
+        assert!(skill.contains("An `ask` that says the work is done is not a delivery"));
         let ask = tool(Role::Node, "ask")["description"].as_str().unwrap().to_owned();
         assert!(ask.contains("never to say your work is ready, to show a report or plan to read, or to point at a file; finished work goes out with present_result"), "{ask}");
         let result = tool(Role::Node, "present_result")["description"].as_str().unwrap().to_owned();

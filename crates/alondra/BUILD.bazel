@@ -15,7 +15,10 @@ rust_binary(
 rust_test(
     name = "alondra_test",
     crate = ":alondra",
-    compile_data = ["//:plugin/skills/alondra/SKILL.md"],
+    compile_data = [
+        "//:plugin/skills/alondra/SKILL.md",
+        "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
+    ],
     deps = all_crate_deps(normal_dev = True),
     data = ["//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",

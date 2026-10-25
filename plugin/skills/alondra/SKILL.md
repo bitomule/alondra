@@ -22,6 +22,10 @@ The work you were launched for is an Alondra task; its id (`t-…`) is in your m
 on the task assigned to you. Alondra shows the task as working from your first step; `start_task`
 is only needed for a task the orchestrator hands you after your previous one ended.
 
+Alondra supplies the protocol metadata of every call itself. Your authority over the task comes
+from the capability the daemon issued to this session: public session ids and process ancestry
+never grant it, and an old session without one must resume with the current plugin.
+
 Each call needs a new unique `interaction_id` (or `document_id`, `revision_id`) that you
 choose, for example `t-12-result-1`. A retry with the same `interaction_id` never duplicates the
 card. When a call fails, nothing was recorded and the reply says why. If it says Alondra could
@@ -83,6 +87,9 @@ must be decidable by someone who sees nothing else:
   repeat what is needed.
 - Before sending, ask yourself: could someone who sees only this card decide? If not, add what is
   missing.
+- The user cannot open a file from the app. A card that cites a Markdown file (`docs/plan.md`)
+  carries its content: Alondra adds it from your worktree, or refuses the card when it cannot read
+  it. Never point at a file instead of writing what it says.
 
 Wrong: `need` "Approve the new promotional text for Quill's App Store listing", no `content`.
 Right: the same `need`, `why` saying what the text is for, and `content` (kind `document`) with
@@ -331,6 +338,7 @@ Pick the tool by what you need:
 - With auto-merge chosen for the work, register and present the PR the same way: Alondra merges
   it once its checks pass, without the user's review.
 - A task that builds on another names the branch to start from and to open your PR against.
+  Keep the stack's retargeting and dependency checks as they are.
 
 ## Waiting for another task
 

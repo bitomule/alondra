@@ -1,7 +1,10 @@
 exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
 exports_files(
-    ["plugin/skills/alondra/SKILL.md"],
+    [
+        "plugin/skills/alondra/SKILL.md",
+        "plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
+    ],
     visibility = ["//crates/alondra:__pkg__"],
 )
 
