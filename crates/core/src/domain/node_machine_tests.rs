@@ -1092,7 +1092,7 @@ impl World {
         let task_slots: BTreeSet<String> = self.s.slots().iter()
             .filter(|a| !matches!(a.phase, NodePhase::Delivered { .. }) && !(a.phase.coming_back() && self.s.task_facts(&a.id).delivered))
             .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        let at_work = ["Working", "Reconnecting", "Making changes", "Resolving conflicts", "Answering you"];
+        let at_work = ["Working", "In the background", "Reconnecting", "Making changes", "Resolving conflicts", "Answering you"];
         let listed = badged(&tasks, &at_work);
         assert_eq!(listed, task_slots, "the Tasks list says at work of the tasks whose node holds a slot");
         let paused: BTreeSet<String> = self.s.paused_nodes().keys()

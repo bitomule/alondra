@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v116f62665128da35",
+  "version": "v3a89bfc963e4bcc5",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -225,10 +225,10 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "Trabajando",
+              "subtitle": "En segundo plano",
               "badges": [
                 {
-                  "text": "Trabajando",
+                  "text": "En segundo plano",
                   "tone": "accent"
                 },
                 {
@@ -241,7 +241,16 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "./deploy/brew/release.sh 0.2.67",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
             },
             {
               "id": "t-zeta-worker",

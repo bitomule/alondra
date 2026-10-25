@@ -30,6 +30,8 @@ pub(super) struct Presentation {
     pub queue: Option<usize>,
     /// When it last did something, to order the work in progress; a task at work shows no time.
     pub active_at: Option<String>,
+    /// Its fact belongs beside its state on the task's screen too, though it is in progress.
+    pub fact_in_state: bool,
 }
 
 impl Presentation {
@@ -39,7 +41,7 @@ impl Presentation {
     }
 
     fn new(state: impl Into<String>, tone: Tone, block: Block, fact: Option<String>) -> Self {
-        Self { state: state.into(), tone, icon: Icon::Task, fact, since: None, block, chained: false, queue: None, active_at: None }
+        Self { state: state.into(), tone, icon: Icon::Task, fact, since: None, block, chained: false, queue: None, active_at: None, fact_in_state: false }
     }
 }
 
@@ -166,6 +168,15 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if let Some(halted) = task.agent_id.as_ref().and_then(|agent| common::halted(agent, context)) {
         return Presentation { active_at, ..Presentation::new(halted.text, Tone::Warning, Block::InProgress, fact) };
     }
+    let behind = match &activity {
+        TaskActivity::Live(LiveState::Working(Worker::OwnWork)) => Some(None),
+        TaskActivity::WaitingBackground(work) if work.gone.is_none() => Some(Some(work)),
+        _ => None,
+    };
+    if let Some(stored) = behind {
+        return Presentation { active_at, fact_in_state: true, ..Presentation::new(t!(lang, "In the background", "En segundo plano"),
+            Tone::Accent, Block::InProgress, left_running(node, stored, lang)) };
+    }
     let state = match (&activity, read.and_then(|read| read.handed_back)) {
         (TaskActivity::Live(live), _) => return live_state(task, live,
             Shown { fact: fact.clone(), active_at: active_at.clone(), step: node.and_then(|node| super::task_node::step(node, lang)) }, context),
@@ -217,6 +228,27 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     };
     let step = node.and_then(|node| super::task_node::step(node, lang));
     Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
+}
+
+/// What a node left running when its turn ended, by name, the oldest first: what its readings say
+/// still runs, else what its phase recorded when the turn ended.
+fn left_running(node: Option<&super::LiveNode>, stored: Option<&crate::domain::Background>, lang: super::Lang) -> Option<String> {
+    let running = |state: super::RunState| state == super::RunState::Running;
+    let mut runs: Vec<(&str, &str)> = node.map(|node| node.background.iter().filter(|item| running(item.state))
+        .map(|item| (item.since.as_str(), item.label.as_str()))
+        .chain(node.workflows.iter().chain(&node.subagents).filter(|run| running(run.state)).map(|run| (run.since.as_str(), run.label.as_str())))
+        .filter(|(_, label)| !label.trim().is_empty())
+        .collect()).unwrap_or_default();
+    runs.sort();
+    let (first, more) = match (runs.first(), stored) {
+        (Some((_, label)), _) => (label.trim().to_owned(), runs.len() - 1),
+        (None, Some(work)) if !work.label.trim().is_empty() => (work.label.trim().to_owned(), work.others as usize),
+        _ => return None,
+    };
+    Some(match more {
+        0 => first,
+        more => tf!(lang, "{first} and {more} more", "{first} y {more} más"),
+    })
 }
 
 /// What the screen knows of a task's node beside its lifecycle: what it says it does, since when,

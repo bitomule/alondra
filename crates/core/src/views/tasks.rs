@@ -12,6 +12,7 @@ fn detail_state(task: &Task, context: &RenderContext<'_>) -> String {
     let presentation = task_state::present(task, context);
     match (&presentation.fact, presentation.block) {
         (Some(fact), Block::ForYou | Block::Waiting) => format!("{} · {fact}", presentation.state),
+        (Some(fact), _) if presentation.fact_in_state => format!("{} · {fact}", presentation.state),
         _ => presentation.state,
     }
 }

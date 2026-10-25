@@ -789,6 +789,10 @@ impl Native<'_> {
                             "type": "system", "subtype": "task_started", "task_id": task, "tool_use_id": id,
                             "description": command, "task_type": "local_bash", "is_backgrounded": true, "uuid": uuid()?, "session_id": self.session.session_id,
                         }))?;
+                        self.send(json!({
+                            "type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": task, "task_type": "local_bash", "description": command}],
+                            "uuid": uuid()?, "session_id": self.session.session_id,
+                        }))?;
                     }
                     self.end_turn(said)?;
                 }
@@ -976,6 +980,7 @@ impl Native<'_> {
             "type": "system", "subtype": "task_notification", "task_id": task, "tool_use_id": tool_use, "status": "completed",
             "output_file": "", "summary": "Background command finished", "uuid": uuid()?, "session_id": self.session.session_id,
         }))?;
+        self.send(json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [], "uuid": uuid()?, "session_id": self.session.session_id}))?;
         self.unheard = Some(vec![]);
         Ok(work::done("its background command ended unheard"))
     }

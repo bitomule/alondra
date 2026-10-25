@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""A task whose background command ended without waking Claude offers Interrupt and Pause, in the
-real TUI in tmux, and Interrupt hands Claude the message it held.
+"""A task whose node ended its turn behind a background command says it waits for that command, by
+name; once the command ended without waking Claude it offers Interrupt and Pause, in the real TUI
+in tmux, and Interrupt hands Claude the message it held.
 
 The task's node is the sandbox's scripted native Claude in the Mac's Agent SDK host. Its turn ends
 with a command left in the background; the command ends and Claude never takes up its
@@ -96,17 +97,23 @@ def main():
         phone = Phone(sandbox)
         start_node(sandbox, phone)
         step(sandbox, {"do": "speak", "said": "Running the snapshots in the background", "behind": "sleep 600"})
-        step(sandbox, {"do": "background_ends_unheard"})
-        wait("the task never offered Interrupt and Pause while its background command ended unheard",
-             lambda: offered(phone, "interrupt:") and offered(phone, "pause:"))
-        print("ok (phone): the task offers Interrumpir and Pausar", file=sys.stderr, flush=True)
-
         tui = Terminal([sandbox.alondra], sandbox.env, args.captures)
         tui.keys(":")
         tui.type("tasks")
         tui.keys("Enter")
         tui.until(lambda s: TITLE in s, "the task never showed in the tasks screen")
+        tui.until(lambda s: "Estado: En segundo plano · sleep 600" in s, "the task's detail never named the command it waits for")
+        tui.capture("waiting-background")
+        print("ok (tui): the task says it waits for its background work and names sleep 600", file=sys.stderr, flush=True)
+
+        step(sandbox, {"do": "background_ends_unheard"})
+        wait("the task never offered Interrupt and Pause while its background command ended unheard",
+             lambda: offered(phone, "interrupt:") and offered(phone, "pause:"))
+        print("ok (phone): the task offers Interrumpir and Pausar", file=sys.stderr, flush=True)
+
         tui.until(lambda s: "Interrumpir" in s and "Pausar" in s, "the task's detail never offered Interrumpir and Pausar")
+        tui.until(lambda s: "Terminado" in s and "Estado: Trabajando" in s,
+                  "the task still said it waits for a background command that ended")
         tui.capture("waiting-unheard")
         print("ok (tui): the task offers Interrumpir and Pausar", file=sys.stderr, flush=True)
 

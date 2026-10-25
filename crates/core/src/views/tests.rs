@@ -1861,22 +1861,26 @@ fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String
 }
 
 /// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
-/// its turn to wait for it. A node that waits for its own command is working: its task says
-/// «Trabajando» on every screen, and no screen shows the command.
+/// its turn to wait for it. Its task says, on every screen, that it waits for that work and which
+/// command it is (23 October: «Trabajando» hid a `sleep 5900` for 26 minutes); it is still in
+/// progress, never stopped or idle.
 #[test]
-fn a_task_whose_node_waits_for_its_own_command_says_working_without_the_command_on_every_screen() {
+fn a_task_whose_node_waits_for_its_own_command_says_so_and_names_it_on_every_screen() {
     let mut state = fixture();
     let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0, gone: None };
     node_in(&mut state, NodePhase::WaitingBackground(work));
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Working");
-    let (block, _) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!(block, "block:in-progress");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "En segundo plano");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "In the background");
+    let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("./deploy/brew/release.sh 0.2.67")));
     for (screen, text) in every_screen(&state, &live) {
-        assert!(text.contains("Trabajando"), "{screen}: {text}");
-        for wrong in ["release.sh", "Esperando su comando", "Sin conexión", "Sin actividad", "Detenido"] {
+        assert!(text.contains("En segundo plano"), "{screen}: {text}");
+        if !screen.ends_with("sidebar") {
+            assert!(text.contains("./deploy/brew/release.sh 0.2.67"), "{screen}: {text}");
+        }
+        for wrong in ["Esperando su comando", "Sin conexión", "Sin actividad", "Detenido"] {
             assert!(!text.contains(wrong), "{screen} says {wrong}: {text}");
         }
     }
@@ -7886,10 +7890,72 @@ fn each_live_state_reads_one_way_on_every_client() {
         }
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
-    assert_eq!(read(Lang::En), ["Working", "Working", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
+    assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
         "Delivered", "Waiting for an answer", "Waiting for the machine", "Waiting for Claude's usage limit", "Waiting for the Claude API", "Waiting"]);
-    assert_eq!(read(Lang::Es), ["Trabajando", "Trabajando", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
+    assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
         "Entregada", "Esperando respuesta", "Esperando máquina", "Esperando al límite de uso de Claude", "Esperando a la API de Claude", "Esperando"]);
+}
+
+/// On 23 October a node ended its turn behind `sleep 5900`, then behind a workflow, and its task
+/// read «Working» for 26 minutes with nothing to explain it. A task whose node's turn ended behind
+/// work of its own says it waits for that work and names what still runs (a command, a Monitor, a
+/// workflow, a subagent), on every client and in both languages, through the Agent SDK and through
+/// `claude --bg`; what already ended is not named.
+#[test]
+fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
+    use alondra_domain::{LiveState, Worker};
+    let ended = RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 3 };
+    let item = |kind: &str, label: &str, since: &str, state| LiveBackground { kind: kind.into(), label: label.into(), since: since.into(), state };
+    let run = |label: &str, since: &str, state| LiveRun { label: label.into(), since: since.into(), state, ..Default::default() };
+    let node = |background, workflows, subagents| LiveNode { background, workflows, subagents, steps: vec![], background_badge: None, ..node_on_its_task() };
+    let sleep = || item("shell", "sleep 5900", "2026-10-23T08:27:00Z", RunState::Running);
+    let workflow = |state| run("Mide con git y PRs la velocidad", "2026-10-23T08:54:00Z", state);
+    let subagent = |state| run("Explore the parser", "2026-10-23T08:55:00Z", state);
+    let cases: Vec<(LiveNode, &str, &str)> = vec![
+        (node(vec![item("shell", "npm test", "2026-10-23T08:00:00Z", ended), sleep()], vec![], vec![]), "sleep 5900", "sleep 5900"),
+        (node(vec![item("other", "Monitor: tail -f build.log", "2026-10-23T08:30:00Z", RunState::Running)], vec![], vec![]),
+            "Monitor: tail -f build.log", "Monitor: tail -f build.log"),
+        (node(vec![], vec![workflow(RunState::Running)], vec![subagent(ended)]), "Mide con git y PRs la velocidad", "Mide con git y PRs la velocidad"),
+        (node(vec![], vec![], vec![subagent(RunState::Running)]), "Explore the parser", "Explore the parser"),
+        (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "sleep 5900 and 2 more", "sleep 5900 y 2 más"),
+    ];
+    let stored = Background { work: crate::model::BackgroundKind::Shell, label: "sleep 5900".into(), since: 0, others: 1, gone: None };
+    let mut by_bg = fixture();
+    node_in(&mut by_bg, NodePhase::WaitingBackground(stored));
+    let sdk = sdk_task();
+    let own_work = LiveState::Working(Worker::OwnWork);
+    let mut runs: Vec<(&str, &DomainState, Option<&LiveState>, LiveSnapshot, Option<(&str, &str)>)> = vec![];
+    for (node, en, es) in &cases {
+        let live = LiveSnapshot { nodes: vec![node.clone()], ..Default::default() };
+        runs.push(("claude --bg", &by_bg, None, live.clone(), Some((*en, *es))));
+        runs.push(("the Agent SDK", &sdk, Some(&own_work), live, Some((*en, *es))));
+    }
+    runs.push(("claude --bg with no readings", &by_bg, None, LiveSnapshot::default(), Some(("sleep 5900 and 1 more", "sleep 5900 y 1 más"))));
+    runs.push(("the Agent SDK with no readings", &sdk, Some(&own_work), LiveSnapshot::default(), None));
+    for (through, state, in_state, live, named) in &runs {
+        for (lang, waits) in [(Lang::En, "In the background"), (Lang::Es, "En segundo plano")] {
+            let named = named.map(|(en, es)| if lang == Lang::En { en } else { es });
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let list = render_in(state, live, client, lang, "tasks", "", *in_state);
+                let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
+                let badges: Vec<&str> = row.badges.iter().map(|badge| badge.text.as_str()).collect();
+                assert_eq!(badges, [waits], "{through} {client:?} {lang:?}");
+                let shown = |view: &View| serde_json::to_string(view).unwrap();
+                let (list, screen) = (shown(&list), shown(&render_in(state, live, client, lang, "task:t-1", "", *in_state)));
+                assert!(screen.contains(waits), "{through} {client:?} {lang:?}: the task's screen says {waits}: {screen}");
+                match named {
+                    Some(named) => {
+                        assert!(list.contains(&format!("\"{named}\"")), "{through} {client:?} {lang:?}: the list names {named}: {list}");
+                        assert!(screen.contains(&format!("\"{waits} · {named}\"")), "{through} {client:?} {lang:?}: the screen names {named}: {screen}");
+                    }
+                    None => assert!(!list.contains("sleep 5900"), "{through} {client:?} {lang:?}: nothing is named without readings: {list}"),
+                }
+                for ended in ["npm test", "Explore the parser and", "Explore the parser y"] {
+                    assert!(!list.contains(ended), "{through} {client:?} {lang:?}: {ended} ended and is not named: {list}");
+                }
+            }
+        }
+    }
 }
 
 /// Whatever phase `claude --bg` last left on a node of the Agent SDK (starting, lost, closed…), its
