@@ -133,6 +133,23 @@ pub(super) fn gate_queued<'a>(task: &crate::domain::Task, context: &'a RenderCon
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
+/// The free space and what one more build needs, when the gate holds the task's start or its
+/// node's return for room on the disk: the task then reads `WaitingCapacity(Disk)`, whatever its
+/// lifecycle says.
+pub(super) fn held_for_disk(task: &crate::domain::Task, context: &RenderContext<'_>) -> Option<(u64, u64)> {
+    match gate_queued(task, context)?.hold {
+        super::LiveHold::Disk { free, needed } => Some((free, needed)),
+        _ => None,
+    }
+}
+
+/// «Disk · 3.5 GB free of 13.0 GB needed».
+pub(super) fn disk_room_fact(free: u64, needed: u64, lang: super::Lang) -> String {
+    use crate::machine_incident::bytes_text;
+    let (free, needed) = (bytes_text(free, lang), bytes_text(needed, lang));
+    super::text::tf!(lang, "Disk · {free} free of {needed} needed", "Disco · {free} libres de {needed} necesarios")
+}
+
 /// What the task of a node that runs through the Agent SDK does, from its lifecycle; `None` for a
 /// node of `claude --bg`, whose phase says it.
 pub(super) fn sdk_live<'a>(agent: &crate::domain::AgentId, context: &'a RenderContext<'_>) -> Option<Option<&'a alondra_domain::LiveState>> {
@@ -173,8 +190,10 @@ pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> Str
         LiveHold::Next if queued.position == 1 => tf!(lang, "Queued · next · starts within a minute",
             "En cola · la siguiente · arranca en menos de un minuto"),
         LiveHold::Next => tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"),
-        LiveHold::Disk => tf!(lang, "Queued · {place} of {of} · the disk is nearly full",
-            "En cola · {place} de {of} · el disco está casi lleno"),
+        LiveHold::Disk { free, needed } => {
+            let fact = disk_room_fact(*free, *needed, lang);
+            tf!(lang, "Waiting for capacity · {fact}", "Esperando capacidad · {fact}")
+        }
     }
 }
 

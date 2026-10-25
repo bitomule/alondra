@@ -16,7 +16,8 @@ use crate::pauses::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
-use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
+use alondra_core::machine_incident::bytes_text;
+use alondra_core::views::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
 use alondra_core::options::{NodeLimit, NodeLimits};
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,8 @@ pub(crate) enum Hold {
     Memory { why: NoRoom, free: Option<u32> },
     Cpu { load: f64, cpus: usize },
     Spacing { until: Millis },
-    Disk,
+    /// No room on the disk for one more build.
+    Disk { free: u64, needed: u64 },
 }
 
 pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
@@ -165,7 +167,7 @@ impl Cause {
             Hold::Slots { .. } => Some(Self::Slots),
             Hold::Memory { .. } => Some(Self::Memory),
             Hold::Cpu { .. } => Some(Self::Cpu),
-            Hold::Disk => Some(Self::Disk),
+            Hold::Disk { .. } => Some(Self::Disk),
         }
     }
 }
@@ -217,7 +219,7 @@ pub(crate) struct Snapshot {
     /// Nodes admitted in the last `IN_FLIGHT`, whose memory is reserved.
     pub in_flight: usize,
     pub hold: Option<Hold>,
-    pub disk_low: bool,
+    pub disk: Option<crate::disk::Room>,
 }
 
 impl Admission {
@@ -510,8 +512,8 @@ impl Admission {
 /// Whether `head` may start now, with everything the gate knows: the disk, the Mac, the limit and
 /// the spacing of starts, which resumes keep too.
 fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> Result<(), Hold> {
-    if snapshot.disk_low {
-        return Err(Hold::Disk);
+    if let Some(room) = snapshot.disk {
+        return Err(Hold::Disk { free: room.free, needed: room.needed });
     }
     let mac = if inner.ignores_mac { MacState::default() } else { snapshot.mac.clone() };
     decide(head, snapshot.working, snapshot.limit, &mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
@@ -657,7 +659,7 @@ fn live_hold(hold: &Hold) -> LiveHold {
         Hold::Memory { free, .. } => LiveHold::Memory { free: *free },
         Hold::Cpu { load, cpus } => LiveHold::Cpu { load: load.round() as u32, cpus: *cpus },
         Hold::Spacing { .. } => LiveHold::Next,
-        Hold::Disk => LiveHold::Disk,
+        Hold::Disk { free, needed } => LiveHold::Disk { free: *free, needed: *needed },
     }
 }
 
@@ -685,7 +687,7 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
         }
         Hold::Memory { why, free } => format!("memory has no room for one more node: {why} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
         Hold::Cpu { load, cpus } => format!("the CPU is overloaded (load {load:.0} on {cpus} cores), which holds new starts"),
-        Hold::Disk => "the disk is nearly full".into(),
+        Hold::Disk { free, needed } => format!("the disk has no room for one more build: {} free of {} needed", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
     };
     let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
     Some(format!("the admission gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
@@ -855,8 +857,8 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let mac = domain.live.machine_watch.mac();
     let (setting, limits) = node_limits(domain, &mac);
     let limit = limit_setting(setting, limits, inner.tuning).count();
-    let disk_low = domain.live.machine_watch.disk_low();
-    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk_low };
+    let disk = domain.live.machine_watch.disk_room();
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
 }
@@ -941,7 +943,7 @@ pub(crate) fn queued_text(domain: &DomainRuntime, task: &TaskId, now: Millis) ->
         LiveHold::Memory { free: None } => "the Mac is short of memory".into(),
         LiveHold::Cpu { load, cpus } => format!("the Mac is very busy (load {load} on {cpus} cores)"),
         LiveHold::Next => "it starts within a minute".into(),
-        LiveHold::Disk => "the disk is nearly full".into(),
+        LiveHold::Disk { free, needed } => format!("the disk has no room for one more build ({} free of {} needed)", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
     };
     format!("It waits in the queue, {} of {}: {why}. Alondra starts it by itself when its turn comes; you do not need to launch it again.",
         place.position, place.of)

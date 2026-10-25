@@ -551,6 +551,7 @@ impl TaskActivity {
             Self::Live(LiveState::Working(Worker::Alondra(Step::Finishing))) => "finishing",
             Self::Live(LiveState::WaitingUser(_)) => "waiting_user",
             Self::Live(LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine)) => "waiting_machine",
+            Self::Live(LiveState::WaitingCapacity(Capacity::Disk)) => "waiting_disk",
             Self::Live(LiveState::WaitingCapacity(Capacity::Usage)) => "waiting_usage",
             Self::Live(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "waiting_claude_api",
             Self::Live(LiveState::WaitingTask(_)) => "waiting_dependency",

@@ -194,6 +194,14 @@ pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: Launc
 }
 
 /// What the Tasks list says about a task that did not start: kept until it starts.
+/// The orchestrator's launch waits in the gate's queue, which starts it by itself once there is room.
+fn queue_at_gate(domain: &DomainRuntime, body: &LaunchBody, task: &TaskId, title: &str) -> Result<Value, DomainError> {
+    let now = alondra_core::now_millis();
+    crate::admission::enqueue(domain, body, "orchestrator", now)
+        .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
+    Ok(json!({"task": task, "queued": true, "message": format!("“{title}” is queued. {}", crate::admission::queued_text(domain, task, now))}))
+}
+
 fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
     let recorded = domain.store.lock().expect("domain store poisoned")
         .set_launch_refusal(task, refusal, alondra_core::now_millis());
@@ -349,6 +357,9 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
     if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
+        if origin == Origin::Orchestrator && replaced.is_none() {
+            return queue_at_gate(domain, &body, &task.id, &task.title);
+        }
         remember_refusal(domain, &task.id, Some(("disk_low", None)));
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
@@ -389,10 +400,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
         if domain.live.gate.ask(domain, waiting, now).is_err() {
             domain.live.gate.forget(&key);
-            crate::admission::enqueue(domain, &body, "orchestrator", now)
-                .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
-            return Ok(json!({"task": task.id, "queued": true, "message": format!("“{}” is queued. {}", task.title,
-                crate::admission::queued_text(domain, &task.id, now))}));
+            return queue_at_gate(domain, &body, &task.id, &task.title);
         }
     }
     let mission = body.prompt.clone().unwrap_or_else(|| {

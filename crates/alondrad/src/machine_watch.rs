@@ -4,7 +4,8 @@
 //! user says they fixed it), withdraws the card. No clock reminds about it or holds it open. The nodes that waited are not
 //! woken here: they wait paused at the admission gate, which brings them back one at a time within the
 //! limit (`pauses`). A disk below `disk::low_lines()` opens an incident before any node fails,
-//! and while it is open no node starts. The disk watched is the Mac's own and every volume a node
+//! and while it is open no node starts; nor while the disk has no room for one more build
+//! (`disk_room`), sized by what deleting the latest worktrees freed. The disk watched is the Mac's own and every volume a node
 //! was launched on, so a repository on an external disk is watched too.
 //!
 //! Memory opens no incident: the user can do nothing about it that Alondra does not do already.
@@ -68,6 +69,14 @@ struct Record {
     sampled_at: Millis,
     #[serde(skip)]
     node_cost: crate::node_cost::NodeCost,
+    /// The space deleting each of the latest worktrees freed: what a typical task builds.
+    #[serde(default)]
+    builds: Vec<u64>,
+    /// The disk short of room for one more build, as last measured.
+    #[serde(skip)]
+    short: Option<crate::disk::Room>,
+    #[serde(skip)]
+    disk: Option<crate::disk::Space>,
 }
 
 /// A node stopped for the machine, as the card names it.
@@ -110,7 +119,7 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
     let short_now = cause == MachineCause::Disk && space.short_now();
     MachineCard {
         cause,
-        disk_free: if short_now { space.free } else { space.usable() },
+        disk_free: space.shown_free(),
         purgeable: if short_now { space.purgeable } else { 0 },
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
@@ -288,11 +297,44 @@ impl MachineWatch {
     #[cfg(test)]
     pub(crate) fn set_disk_low(&self, low: bool) {
         let disk = Machine { disk_total: 500_000_000_000, disk_available: if low { 1_000_000_000 } else { 400_000_000_000 }, ..Machine::default() };
+        self.measure_disk(disk_space(&disk));
         self.set_incident(step(None, &disk, &[], false, 0).0);
     }
 
     pub(crate) fn disk_low(&self) -> bool {
         self.incident().is_some_and(|incident| incident.cause == MachineCause::Disk)
+    }
+
+    /// Keeps the space deleting a task's worktree freed, the latest `disk::BUILDS_KEPT`.
+    pub(crate) fn record_build(&self, freed: u64) {
+        if freed == 0 {
+            return;
+        }
+        let mut record = self.record.lock().expect("machine watch poisoned");
+        record.builds.push(freed);
+        let over = record.builds.len().saturating_sub(crate::disk::BUILDS_KEPT);
+        record.builds.drain(..over);
+        self.save(&record);
+    }
+
+    /// Takes the fullest disk's space; returns whether one more build fits again after it did not.
+    pub(crate) fn measure_disk(&self, space: crate::disk::Space) -> bool {
+        let mut record = self.record.lock().expect("machine watch poisoned");
+        let needed = crate::disk::needed_for_build(&record.builds);
+        let was_short = record.short.is_some();
+        record.short = space.room_for(needed, was_short).err();
+        record.disk = Some(space);
+        was_short && record.short.is_none()
+    }
+
+    /// The disk short of room for one more build, also while its card is open: no node starts.
+    pub(crate) fn disk_room(&self) -> Option<crate::disk::Room> {
+        let record = self.record.lock().expect("machine watch poisoned");
+        let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
+        record.short.or_else(|| carded.then(|| crate::disk::Room {
+            free: record.disk.or_else(|| crate::disk::space(own_disk())).map_or(0, |space| space.shown_free()),
+            needed: crate::disk::needed_for_build(&record.builds),
+        }))
     }
 
     /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac. The
@@ -477,6 +519,9 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
                 let watch = &domain.live.machine_watch;
                 pace(&domain, &machine);
                 let (machine, disk) = tightest(machine, &watch.volumes());
+                if machine.disk_total > 0 && watch.measure_disk(disk_space(&machine)) {
+                    domain.live.gate.poke();
+                }
                 let previous = watch.incident();
                 let fixed = fixed(&domain, previous.as_ref());
                 let waiting = waiters(&domain);
@@ -531,6 +576,24 @@ mod tests {
 
     fn raised_ids(actions: &[Action]) -> Vec<String> {
         actions.iter().filter_map(|action| match action { Action::Raise { id, .. } => Some(id.clone()), _ => None }).collect()
+    }
+
+    #[test]
+    fn the_typical_build_is_kept_across_a_restart_from_the_latest_worktrees_deleted() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let watch = MachineWatch::persisted_in(&home);
+        watch.record_build(0);
+        for gb in 1..=25 {
+            watch.record_build(gb * GB);
+        }
+        let space = crate::disk::Space { free: 20 * GB, purgeable: 0, total: 500 * GB };
+        let reopened = MachineWatch::persisted_in(&home);
+        reopened.measure_disk(space);
+        assert_eq!(reopened.disk_room(), Some(crate::disk::Room { free: 20 * GB, needed: 16 * GB + 5 * GB }),
+            "the median of the latest 20 (6 to 25 GB) on top of the 5 GB line");
+        let earlier: Record = serde_json::from_str(r#"{"incident": null, "declared": {}}"#).unwrap();
+        assert!(earlier.builds.is_empty(), "a file of an earlier daemon still reads");
     }
 
     #[test]

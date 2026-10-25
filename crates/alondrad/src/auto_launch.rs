@@ -124,7 +124,6 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             continue;
         }
         let usage_out = domain.live.usage_pause.current().is_some();
-        let disk_low = domain.live.machine_watch.disk_low();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched | AutoLaunchState::Launching, _)) => continue,
@@ -137,10 +136,6 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let Some(plan) = plan else { continue };
         if usage_out {
             block(AutoLaunchReason::UsageExhausted, None)?;
-            continue;
-        }
-        // The user has the disk card; the task stays unclaimed and starts on a pass after it clears.
-        if disk_low {
             continue;
         }
         let waiting = crate::admission::Waiting { key: crate::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,

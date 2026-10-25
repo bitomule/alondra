@@ -66,6 +66,9 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
         TaskState::Closing => return closing(task, context),
         _ => {}
     }
+    if common::held_for_disk(task, context).is_some() {
+        return live_state(task, &LiveState::WaitingCapacity(Capacity::Disk), Shown { fact: None, active_at: None, step: None }, context);
+    }
     if let Some(paused) = common::paused(task, context) {
         let at = &paused.at;
         let fact = match paused.reason {
@@ -296,6 +299,16 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
         },
         LiveState::WaitingCapacity(Capacity::Usage) => warn(t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude")),
         LiveState::WaitingCapacity(Capacity::ClaudeApi) => warn(t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude")),
+        LiveState::WaitingCapacity(Capacity::Disk) => {
+            let fact = match common::held_for_disk(task, context) {
+                Some((free, needed)) => common::disk_room_fact(free, needed, lang),
+                None => t!(lang, "Disk", "Disco").into(),
+            };
+            Presentation {
+                queue: common::gate_queued(task, context).map(|queued| queued.position),
+                ..Presentation::new(t!(lang, "Waiting for capacity", "Esperando capacidad"), Tone::Neutral, Block::Waiting, Some(fact))
+            }
+        }
         LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine) => {
             let queued = common::gate_queued(task, context).and_then(|queued| in_queue(task, queued, lang).fact);
             Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, queued)
@@ -465,7 +478,7 @@ fn in_queue(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Prese
         LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
         LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
         LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
-        LiveHold::Disk => Some(t!(lang, "The disk is nearly full", "El disco está casi lleno").into()),
+        LiveHold::Disk { free, needed } => Some(common::disk_room_fact(*free, *needed, lang)),
         LiveHold::Next => priority(task, lang),
     };
     Presentation {

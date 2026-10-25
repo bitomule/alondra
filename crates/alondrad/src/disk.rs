@@ -4,6 +4,10 @@
 //! which macOS deletes by itself when space runs short, though not always in time: on 7 October a
 //! build filled the disk while that number still showed tens of gigabytes. So the disk is low when
 //! the space counting purgeable is short, or when the space free right now is under a floor.
+//!
+//! A new node starts only with room for one more build: what a typical task of this Mac took, the
+//! space deleting its worktree freed, on top of the low line, so the build never takes the disk
+//! under it.
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -14,6 +18,10 @@ pub(crate) const LOW_DISK_BYTES: u64 = 5_000_000_000;
 pub(crate) const FLOOR_DISK_BYTES: u64 = 2_000_000_000;
 const RECOVERY_MARGIN_BYTES: u64 = 2_000_000_000;
 const FLOOR_RECOVERY_MARGIN_BYTES: u64 = 1_000_000_000;
+/// A typical build while none was measured yet.
+pub(crate) const UNMEASURED_BUILD_BYTES: u64 = 5_000_000_000;
+/// The builds the typical one is taken from, the latest.
+pub(crate) const BUILDS_KEPT: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Space {
@@ -36,6 +44,65 @@ impl Space {
     /// Low only because macOS has not freed the purgeable space yet.
     pub(crate) fn short_now(&self) -> bool {
         self.purgeable > 0 && self.free < low_lines().free && self.usable() >= low_lines().usable
+    }
+
+    /// The free space the user is told: what a write can use right now when macOS has not freed
+    /// its purgeable space yet, else the usable space.
+    pub(crate) fn shown_free(&self) -> u64 {
+        if self.short_now() { self.free } else { self.usable() }
+    }
+
+    /// Whether one more build fits, `needed` counting purgeable space; once it did not
+    /// (`was_short`) it needs margin on both lines to fit again.
+    pub(crate) fn room_for(&self, needed: u64, was_short: bool) -> Result<(), Room> {
+        let (usable, free) = if was_short { (needed + RECOVERY_MARGIN_BYTES, recovered_lines().free) } else { (needed, low_lines().free) };
+        if self.usable() < usable || self.free < free {
+            return Err(Room { free: self.shown_free(), needed });
+        }
+        Ok(())
+    }
+}
+
+/// The disk short of room for one more build: the free space the user is told and what is needed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Room {
+    pub free: u64,
+    pub needed: u64,
+}
+
+/// The space one more build needs: the median of the builds measured, or
+/// `UNMEASURED_BUILD_BYTES` before any, on top of the low line.
+pub(crate) fn needed_for_build(builds: &[u64]) -> u64 {
+    let mut sorted = builds.to_vec();
+    sorted.sort_unstable();
+    let typical = sorted.get(sorted.len() / 2).copied().unwrap_or(UNMEASURED_BUILD_BYTES);
+    typical + low_lines().usable
+}
+
+/// The space the files under `path` take on disk, links not followed and a file with several
+/// hard links counted once.
+#[derive(Debug, Default)]
+pub(crate) struct Tally {
+    bytes: u64,
+    linked: std::collections::HashSet<(u64, u64)>,
+}
+
+impl Tally {
+    /// Counts a file met before deleting it: once one of its links is deleted the others count
+    /// one link fewer, so every file with more than one is remembered.
+    pub(crate) fn add(&mut self, meta: &std::fs::Metadata) {
+        let file = (meta.dev(), meta.ino());
+        if self.linked.contains(&file) {
+            return;
+        }
+        if meta.nlink() > 1 && !meta.is_dir() {
+            self.linked.insert(file);
+        }
+        self.bytes += meta.blocks() * 512;
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
     }
 }
 
@@ -174,6 +241,23 @@ mod tests {
         assert!(disk(4.0, 2.5).low(true), "6.5 GB usable is under the recovery line");
         assert!(disk(2.5, 10.0).low(true), "2.5 GB free is under the recovered floor");
         assert!(!disk(3.0, 4.5).low(true));
+    }
+
+    #[test]
+    fn one_more_build_needs_the_typical_one_measured_on_top_of_the_low_line() {
+        assert_eq!(needed_for_build(&[]), 10 * GB, "none measured yet");
+        assert_eq!(needed_for_build(&[3 * GB, 13 * GB, 8 * GB]), 13 * GB, "the median of 3, 8 and 13 GB");
+        assert_eq!(needed_for_build(&[GB / 2, 4 * GB, 12 * GB, 9 * GB]), 14 * GB);
+    }
+
+    #[test]
+    fn a_disk_short_of_room_for_a_build_needs_margin_to_have_it_again() {
+        let needed = 13 * GB;
+        assert_eq!(disk(12.0, 0.0).room_for(needed, false), Err(Room { free: 12 * GB, needed }));
+        assert_eq!(disk(4.0, 10.0).room_for(needed, false), Ok(()), "purgeable space counts");
+        assert_eq!(disk(1.0, 30.0).room_for(needed, false), Err(Room { free: GB, needed }), "little free right now: told what a write can use");
+        assert!(disk(14.0, 0.0).room_for(needed, true).is_err(), "under the 2 GB margin once short");
+        assert_eq!(disk(15.0, 0.0).room_for(needed, true), Ok(()));
     }
 
     #[test]

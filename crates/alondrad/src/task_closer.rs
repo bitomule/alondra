@@ -134,6 +134,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     if let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
+            Ok(TaskWorktree::Removed { freed }) => domain.live.machine_watch.record_build(freed),
             Ok(_) => {}
             Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
         }
@@ -482,7 +483,12 @@ async fn finish_with_worktree(
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
             failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)
         }
-        Ok(_) => finish(domain, &row, Some(agent), end),
+        Ok(released) => {
+            if let TaskWorktree::Removed { freed } = released {
+                domain.live.machine_watch.record_build(freed);
+            }
+            finish(domain, &row, Some(agent), end)
+        }
         Err(why) => failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup),
     }
 }

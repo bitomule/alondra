@@ -243,6 +243,7 @@ pub enum PauseOwner {
     User,
     Gate,
     Machine,
+    Disk,
     Usage,
     ClaudeApi,
 }
@@ -252,6 +253,7 @@ impl From<Owner> for PauseOwner {
             Owner::User => Self::User,
             Owner::Capacity(Capacity::Gate) => Self::Gate,
             Owner::Capacity(Capacity::Machine) => Self::Machine,
+            Owner::Capacity(Capacity::Disk) => Self::Disk,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
         }
@@ -263,6 +265,7 @@ impl From<PauseOwner> for Owner {
             PauseOwner::User => Self::User,
             PauseOwner::Gate => Self::Capacity(Capacity::Gate),
             PauseOwner::Machine => Self::Capacity(Capacity::Machine),
+            PauseOwner::Disk => Self::Capacity(Capacity::Disk),
             PauseOwner::Usage => Self::Capacity(Capacity::Usage),
             PauseOwner::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
         }

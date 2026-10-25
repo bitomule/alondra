@@ -1189,6 +1189,35 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_b
     assert!(!queued().iter().any(|queued| queued.task_id == "task-1"), "the gate let it back");
 }
 
+/// 25 October: the disk filled with the nodes' builds and the daemon restarted without space. With
+/// less room on the disk than one more build needs no node starts, and its task waits for capacity
+/// with the free space and what is needed; once the disk has room the gate lets it start.
+#[tokio::test]
+async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
+    use crate::admission::{Hold, Key, Waiting};
+    const GB: u64 = 1_000_000_000;
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
+    fixture.orchestrator("task-9", Command::CreateTask { plan_items: None,
+        task_id: "task-9".into(), request_id: "request-1".into(), title: "Faster search".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+    });
+    let watch = &fixture.domain.live.machine_watch;
+    let ask = || fixture.domain.live.gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_core::domain::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
+    assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 10 * GB }), "no build measured yet: 5 GB for one on top of the 5 GB line");
+    assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting for capacity · Disk · 6.0 GB free of 10.0 GB needed");
+    let screen = view_json(&fixture, "task:task-9", "es").await.to_string();
+    assert!(screen.contains("Esperando capacidad") && screen.contains("Disco · 6,0 GB libres de 10,0 GB necesarios"), "{screen}");
+
+    assert!(!watch.measure_disk(crate::disk::Space { free: 11 * GB, purgeable: 0, total: 500 * GB }), "past the line, not past its margin");
+    assert!(matches!(ask(), Err(Hold::Disk { .. })));
+    assert!(watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 9 * GB, total: 500 * GB }), "purgeable space counts");
+    assert_eq!(ask(), Ok(()), "the disk has room for one more build: it starts");
+}
+
 #[tokio::test]
 async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects() {
     let fixture = Fixture::start().await;

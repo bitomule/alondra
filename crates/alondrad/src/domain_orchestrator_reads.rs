@@ -80,6 +80,7 @@ fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
         Some(LiveState::WaitingUser(_)) => "a card of its task waits for the user's answer",
         Some(LiveState::WaitingCapacity(Capacity::Gate)) => "it waits for a slot in the gate",
         Some(LiveState::WaitingCapacity(Capacity::Machine)) => "it said it waits for the machine; the gate resumes it once the Mac has room",
+        Some(LiveState::WaitingCapacity(Capacity::Disk)) => "it waits for room on the disk for one more build",
         Some(LiveState::WaitingCapacity(Capacity::Usage)) => "it waits for the usage limit to renew",
         Some(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "it waits for Claude's API to answer again",
         Some(LiveState::WaitingTask(_)) => "its task waits for another task to be done",

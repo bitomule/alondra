@@ -166,6 +166,7 @@ pub(super) enum OwnerRecord {
     User,
     Gate,
     Machine,
+    Disk,
     Usage,
     ClaudeApi,
 }
@@ -175,6 +176,7 @@ impl From<Owner> for OwnerRecord {
             Owner::User => Self::User,
             Owner::Capacity(Capacity::Gate) => Self::Gate,
             Owner::Capacity(Capacity::Machine) => Self::Machine,
+            Owner::Capacity(Capacity::Disk) => Self::Disk,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
         }
@@ -186,6 +188,7 @@ impl From<OwnerRecord> for Owner {
             OwnerRecord::User => Self::User,
             OwnerRecord::Gate => Self::Capacity(Capacity::Gate),
             OwnerRecord::Machine => Self::Capacity(Capacity::Machine),
+            OwnerRecord::Disk => Self::Capacity(Capacity::Disk),
             OwnerRecord::Usage => Self::Capacity(Capacity::Usage),
             OwnerRecord::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
         }

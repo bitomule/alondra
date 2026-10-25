@@ -253,8 +253,9 @@ pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark])
 /// What became of the worktree Alondra made for a task once the task closed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TaskWorktree {
-    /// It was deleted, or would be on a dry run.
-    Removed,
+    /// It was deleted, or would be on a dry run, with the space its files took: none on a dry run
+    /// or when a deletion cut halfway is finished.
+    Removed { freed: u64 },
     /// It no longer exists.
     Absent,
     /// It is not `.claude/worktrees/<slug>` of a repository: the user's folder, never deleted.
@@ -282,8 +283,8 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
     if !dir.exists() {
         let trash = trash_of(dir).filter(|trash| named(dir) && trash.exists());
         return match trash {
-            Some(trash) if remove => empty_trash(dir.to_path_buf(), trash).await.map(|()| TaskWorktree::Removed),
-            Some(_) => Ok(TaskWorktree::Removed),
+            Some(trash) if remove => empty_trash(dir.to_path_buf(), trash).await.map(|_| TaskWorktree::Removed { freed: 0 }),
+            Some(_) => Ok(TaskWorktree::Removed { freed: 0 }),
             None => Ok(TaskWorktree::Absent),
         };
     }
@@ -300,12 +301,12 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
         return Ok(TaskWorktree::Unsaved(left));
     }
     if !remove {
-        return Ok(TaskWorktree::Removed);
+        return Ok(TaskWorktree::Removed { freed: 0 });
     }
     let trash = trash_of(&top).ok_or_else(|| format!("{} has no folder name", top.display()))?;
     std::fs::rename(&top, &trash).map_err(|e| format!("could not set {} aside to delete it: {e}", top.display()))?;
-    empty_trash(top, trash).await?;
-    Ok(TaskWorktree::Removed)
+    let freed = empty_trash(top, trash).await?;
+    Ok(TaskWorktree::Removed { freed })
 }
 
 /// Where a worktree is moved before it is deleted, beside it: in one rename it is either whole,
@@ -317,8 +318,8 @@ fn trash_of(top: &Path) -> Option<PathBuf> {
 }
 
 /// Deletes the worktree that was at `top`, already moved to `trash`: git's record of it, the
-/// Bazel output base built from it, then its files.
-async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<(), String> {
+/// Bazel output base built from it, then its files, whose space on disk it returns.
+async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<u64, String> {
     let shown = top.display().to_string();
     let emptied = tokio::task::spawn_blocking(move || {
         let failed = |what: &str, e: std::io::Error| format!("could not delete {what} of {}: {e}", top.display());
@@ -328,7 +329,9 @@ async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<(), String> {
         if let Some(base) = bazel_output_base(&top, &trash) {
             remove_output_base(&base).map_err(|e| failed("the Bazel output base", e))?;
         }
-        remove_tree(&trash).map_err(|e| failed("the files", e))
+        let mut tally = crate::disk::Tally::default();
+        remove_tree_counting(&trash, &mut tally).map_err(|e| failed("the files", e))?;
+        Ok(tally.bytes())
     })
     .await
     .unwrap_or_else(|e| Err(format!("the deletion of {shown} stopped: {e}")));
@@ -377,12 +380,18 @@ fn remove_output_base(base: &Path) -> std::io::Result<()> {
 /// Deletes `path` and everything under it, also folders made read-only, as Bazel makes its
 /// outputs. Links are deleted, never followed.
 fn remove_tree(path: &Path) -> std::io::Result<()> {
+    remove_tree_counting(path, &mut crate::disk::Tally::default())
+}
+
+/// `remove_tree`, adding to `tally` the space each file it deletes took.
+fn remove_tree_counting(path: &Path, tally: &mut crate::disk::Tally) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     };
+    tally.add(&meta);
     if !meta.is_dir() {
         return std::fs::remove_file(path);
     }
@@ -390,7 +399,7 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(meta.permissions().mode() | 0o700))?;
     }
     for entry in std::fs::read_dir(path)? {
-        remove_tree(&entry?.path())?;
+        remove_tree_counting(&entry?.path(), tally)?;
     }
     std::fs::remove_dir(path)
 }
@@ -657,12 +666,43 @@ mod tests {
         testing::git(&dir, &["push", "-q", "origin", "worktree-t-done"]);
         std::fs::create_dir(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/db"), "x").unwrap();
-        assert_eq!(release_task_worktree(&dir, "t-done", false).await, Ok(TaskWorktree::Removed));
+        assert_eq!(release_task_worktree(&dir, "t-done", false).await, Ok(TaskWorktree::Removed { freed: 0 }));
         assert!(dir.exists(), "a dry run deletes nothing");
-        assert_eq!(release_task_worktree(&dir, "t-done", true).await, Ok(TaskWorktree::Removed));
+        assert!(matches!(release_task_worktree(&dir, "t-done", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!dir.exists());
         testing::git(&root.join("repo"), &["rev-parse", "--verify", "--quiet", "refs/heads/worktree-t-done"]);
         assert_eq!(release_task_worktree(&dir, "t-done", true).await, Ok(TaskWorktree::Absent));
+    }
+
+    /// What deleting a worktree freed is what its files took on disk, a file with two links once:
+    /// the size of a typical task the gate keeps room for.
+    #[tokio::test]
+    async fn deleting_a_worktree_says_the_space_its_files_took() {
+        use std::os::unix::fs::MetadataExt;
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-sized");
+        std::fs::write(dir.join(".gitignore"), "/out/\n").unwrap();
+        testing::git(&dir, &["add", ".gitignore"]);
+        testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
+        testing::git(&dir, &["push", "-q", "origin", "worktree-t-sized"]);
+        std::fs::create_dir(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out/big"), vec![7u8; 3_000_000]).unwrap();
+        std::fs::hard_link(dir.join("out/big"), dir.join("out/same")).unwrap();
+        let mut expected = 0;
+        let mut walk = vec![dir.clone()];
+        while let Some(path) = walk.pop() {
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if path.ends_with("out/same") {
+                continue;
+            }
+            expected += meta.blocks() * 512;
+            if meta.is_dir() {
+                walk.extend(std::fs::read_dir(&path).unwrap().map(|entry| entry.unwrap().path()));
+            }
+        }
+        let Ok(TaskWorktree::Removed { freed }) = release_task_worktree(&dir, "t-sized", true).await else { panic!("deleted") };
+        assert!(expected > 3_000_000, "{expected}");
+        assert_eq!(freed, expected);
     }
 
     #[tokio::test]
@@ -693,7 +733,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("out/snapshots")).unwrap();
         std::fs::write(dir.join("out/snapshots/a.png"), "x").unwrap();
         std::fs::set_permissions(dir.join("out/snapshots"), std::fs::Permissions::from_mode(0o555)).unwrap();
-        assert_eq!(release_task_worktree(&dir, "t-locked", true).await, Ok(TaskWorktree::Removed));
+        assert!(matches!(release_task_worktree(&dir, "t-locked", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!dir.exists());
         assert!(!root.join("repo/.claude/worktrees/.t-locked.removing").exists());
         assert!(!root.join("repo/.git/worktrees/t-locked").exists(), "git's record of it goes too");
@@ -707,9 +747,9 @@ mod tests {
         let dir = testing::task_worktree(&root, "t-cut");
         let trash = root.join("repo/.claude/worktrees/.t-cut.removing");
         std::fs::rename(&dir, &trash).unwrap();
-        assert_eq!(release_task_worktree(&dir, "t-cut", false).await, Ok(TaskWorktree::Removed), "a dry run deletes nothing");
+        assert_eq!(release_task_worktree(&dir, "t-cut", false).await, Ok(TaskWorktree::Removed { freed: 0 }), "a dry run deletes nothing");
         assert!(trash.exists());
-        assert_eq!(release_task_worktree(&dir, "t-cut", true).await, Ok(TaskWorktree::Removed));
+        assert!(matches!(release_task_worktree(&dir, "t-cut", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!trash.exists());
         assert!(!root.join("repo/.git/worktrees/t-cut").exists());
     }
@@ -747,10 +787,10 @@ mod tests {
         let foreign = base("2222", &root.join("elsewhere"), false);
         std::os::unix::fs::symlink(foreign.join("execroot/_main/bazel-out"), other.join("bazel-out")).unwrap();
 
-        assert_eq!(release_task_worktree(&dir, "t-built", true).await, Ok(TaskWorktree::Removed));
+        assert!(matches!(release_task_worktree(&dir, "t-built", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!dir.exists());
         assert!(!own.exists(), "its output base goes with it");
-        assert_eq!(release_task_worktree(&other, "t-borrowed", true).await, Ok(TaskWorktree::Removed));
+        assert!(matches!(release_task_worktree(&other, "t-borrowed", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(foreign.join("external/rules/BUILD").exists(), "a base built from another workspace stays");
     }
 

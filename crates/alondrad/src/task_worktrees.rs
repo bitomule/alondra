@@ -92,7 +92,11 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
     let mut left = vec![];
     for (path, worktree) in task.open_worktrees() {
         let end = match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
-            Ok(TaskWorktree::Removed | TaskWorktree::Absent) => WorktreeEnd::Removed,
+            Ok(TaskWorktree::Removed { freed }) => {
+                domain.live.machine_watch.record_build(freed);
+                WorktreeEnd::Removed
+            }
+            Ok(TaskWorktree::Absent) => WorktreeEnd::Removed,
             Ok(TaskWorktree::NotAlondras) => WorktreeEnd::UsersOwn,
             Ok(TaskWorktree::Unsaved(what)) => {
                 left.push((path.clone(), what));

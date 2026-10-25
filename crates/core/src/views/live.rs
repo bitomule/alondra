@@ -216,7 +216,13 @@ pub enum LiveHold {
     Cpu { load: u32, cpus: usize },
     /// Nothing holds it but the minute between two starts.
     Next,
-    Disk,
+    /// No room on the disk for one more build: the free space and what one more needs, in bytes.
+    Disk {
+        #[serde(default)]
+        free: u64,
+        #[serde(default)]
+        needed: u64,
+    },
 }
 /// `reason` is `usage_exhausted`, `disk_low`, `workspace_untrusted` (with the folder as `detail`)
 /// or `launch_failed` (with the error).

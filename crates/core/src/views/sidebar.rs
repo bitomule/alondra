@@ -6,9 +6,9 @@ use crate::domain::{Task, TaskState};
 use std::collections::BTreeMap;
 
 fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {
-    let queued = common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
+    let queued = common::held_for_disk(task, context).is_none().then(|| common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
         .or_else(|| common::queued(task, context).or_else(|| common::coming_back_queued(task, context))
-            .map(|queued| common::queued_label(queued, context.lang)));
+            .map(|queued| common::queued_label(queued, context.lang)))).flatten();
     let presented = super::task_state::present(task, context).state;
     let state = queued.as_deref().unwrap_or(&presented);
     let project = task.project.as_deref();

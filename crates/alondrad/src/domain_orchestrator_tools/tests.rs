@@ -532,19 +532,21 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
 
+/// 25 October: the disk filled. A launch while the disk is nearly full waits in the queue for room
+/// instead of being refused for the orchestrator to try again, and starts by itself once there is.
 #[tokio::test]
-async fn a_launch_is_refused_while_the_disk_is_nearly_full_and_goes_ahead_once_it_has_space() {
+async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_once_it_has_space() {
     let f = world();
     f.domain.live.machine_watch.set_disk_low(true);
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
-    assert_eq!(refused.code, "disk_low");
-    assert!(refused.message.starts_with("The disk is nearly full: Alondra starts no node until there is space again"), "{}", refused.message);
-    assert!(refused.message.ends_with("t stays as it is and can be launched after that"), "{}", refused.message);
+    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    assert_eq!(queued["queued"], true, "{queued}");
+    assert!(queued["message"].as_str().unwrap().contains("the disk has no room for one more build (1.0 GB free of 10.0 GB needed)"), "{queued}");
     assert!(f.sdk().starts().is_empty());
-    assert!(f.task_node().is_none(), "the task is left as it was");
+    assert!(f.task_node().is_none(), "the task waits as it was");
+    assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
 
     f.domain.live.machine_watch.set_disk_low(false);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
 

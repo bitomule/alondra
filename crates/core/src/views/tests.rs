@@ -6096,6 +6096,34 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
     assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy (load 52 on 11 cores)");
 }
 
+/// 25 October: the disk filled with builds. A task the gate holds for room on the disk reads
+/// «Waiting for capacity» with the free space and what one more build needs, on every client, in
+/// its row and on its screen, whether it never started or its node waits to come back.
+#[test]
+fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_needed() {
+    let held = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000 } };
+    let mut unstarted = fixture();
+    let task = unstarted.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation) = (TaskState::NotStarted, None);
+    let live = pacing_live(vec![held.clone()], vec![], None);
+    for (state, in_state) in [(&unstarted, None), (&sdk_task(), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Machine)))] {
+        for (lang, said, fact) in [(Lang::En, "Waiting for capacity", "Disk · 3.5 GB free of 13.0 GB needed"),
+            (Lang::Es, "Esperando capacidad", "Disco · 3,5 GB libres de 13,0 GB necesarios")] {
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let list = render_in(state, &live, client, lang, "tasks", "", in_state.as_ref());
+                let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
+                let [badge] = row.badges.as_slice() else { panic!("{client:?}: one badge: {:?}", row.badges) };
+                assert_eq!(badge.text, said, "{client:?} {lang:?}");
+                let screen = serde_json::to_string(&render_in(state, &live, client, lang, "task:t-1", "", in_state.as_ref())).unwrap();
+                assert!(screen.contains(said) && screen.contains(fact), "{client:?} {lang:?}: {screen}");
+            }
+        }
+    }
+    assert_eq!(common::queued_label(&held, Lang::Es), "Esperando capacidad · Disco · 3,5 GB libres de 13,0 GB necesarios");
+    let earlier: LiveHold = serde_json::from_str(r#"{"kind":"disk"}"#).unwrap();
+    assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0 }, "a view of an earlier daemon still reads");
+}
+
 #[test]
 fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
     use crate::domain::{Actor, CardKind, CardSpec, Command, ContentKind, Hold, InputValue};
@@ -7842,15 +7870,15 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
         LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("delivery-t-1")]).unwrap()),
         LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("claude-signed-out-t-1")]).unwrap()),
         LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from(format!("{}user-0-t-1", crate::domain::NODE_PAUSE_PREFIX))]).unwrap()),
-        LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Machine), LiveState::WaitingCapacity(Capacity::Usage),
-        LiveState::WaitingCapacity(Capacity::ClaudeApi),
+        LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Machine), LiveState::WaitingCapacity(Capacity::Disk),
+        LiveState::WaitingCapacity(Capacity::Usage), LiveState::WaitingCapacity(Capacity::ClaudeApi),
         LiveState::WaitingTask(Several::new([crate::domain::TaskId::from("t-2")]).unwrap()),
     ];
     for state in &states {
         match state {
             LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
                 | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking | Step::Answering | Step::Merging | Step::Finishing))
-            | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine | Capacity::Usage | Capacity::ClaudeApi)
+            | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine | Capacity::Disk | Capacity::Usage | Capacity::ClaudeApi)
             | LiveState::WaitingTask(_) => {}
         }
     }
@@ -7905,10 +7933,10 @@ fn each_live_state_reads_one_way_on_every_client() {
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
     assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
-        "Delivered", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for Claude's usage limit",
+        "Delivered", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit",
         "Waiting for the Claude API", "Waiting"]);
     assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
-        "Entregada", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando al límite de uso de Claude",
+        "Entregada", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando al límite de uso de Claude",
         "Esperando a la API de Claude", "Esperando"]);
 }
 

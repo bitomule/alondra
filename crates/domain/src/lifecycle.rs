@@ -216,11 +216,13 @@ impl Owner {
 }
 
 /// What Alondra holds a task back for until there is room: a place in the gate, room on the Mac
-/// its node said it waits for, the subscription's usage, or Claude's API answering again.
+/// its node said it waits for, room on the disk for one more build, the subscription's usage, or
+/// Claude's API answering again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capacity {
     Gate,
     Machine,
+    Disk,
     Usage,
     ClaudeApi,
 }
