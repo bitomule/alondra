@@ -1537,7 +1537,6 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     slice.settle(&mut driver);
     carry_on(&slice.domain, "Add the tests first stall-before-starting");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
-    while !driver.worker.readable(Duration::from_secs(1)).unwrap() {}
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
