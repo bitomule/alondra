@@ -31,7 +31,10 @@ final class CardDetailFeatureTests: XCTestCase {
         } withDependencies: {
             $0.viewsClient.observe = feed.observe
             $0.viewsClient.perform = feed.perform()
-            if let content { $0.viewsClient.fetchContent = content }
+            if let content {
+                $0.viewsClient.fetchContent = content
+                $0.viewsClient.fetchDiff = { FetchedDiff(text: try await content($0)) }
+            }
             $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
         }
         store.exhaustivity = .off
@@ -124,6 +127,27 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(fetched.value.first?.hasPrefix("/pull-requests/"), true)
         XCTAssertEqual(store.state.diff?.count, 1)
         XCTAssertFalse(store.state.diffFailed)
+        XCTAssertFalse(store.state.showsChanges, "the diff waits behind View changes")
+    }
+
+    @MainActor
+    func testADiffTheMacCutSaysSoAndOpensOnItsOwnScreen() async throws {
+        let card = try Fixtures.card(Fixtures.pullRequestID)
+        let store = store(card)
+        store.dependencies.viewsClient.fetchDiff = { _ in
+            FetchedDiff(text: "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1 +1 @@\n-old\n+new\n", truncated: true)
+        }
+
+        await store.send(.screen(.loaded(card)))
+        await store.skipReceivedActions()
+        XCTAssertTrue(store.state.diffTruncated)
+
+        await store.send(.changesShown(true))
+        XCTAssertTrue(store.state.showsChanges)
+        await store.send(.toggleAllFiles)
+        XCTAssertEqual(store.state.collapsedFiles, ["a.swift"])
+        await store.send(.changesShown(false))
+        XCTAssertFalse(store.state.showsChanges)
     }
 
     @MainActor

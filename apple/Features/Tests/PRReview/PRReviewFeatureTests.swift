@@ -73,9 +73,9 @@ final class PRReviewFeatureTests: XCTestCase {
         } withDependencies: {
             $0.uuid = .incrementing
             $0.dismiss = DismissEffect { dismissed.setValue(true) }
-            $0.viewsClient.fetchContent = { ref in
+            $0.viewsClient.fetchDiff = { ref in
                 diffs.withValue { $0.append(ref.digest) }
-                return Self.diffText
+                return FetchedDiff(text: Self.diffText)
             }
             $0.viewsClient.perform = { request in
                 requests.withValue { $0.append(request) }
@@ -164,9 +164,9 @@ final class PRReviewFeatureTests: XCTestCase {
     func testAFailedDiffCanBeTriedAgain() async throws {
         let attempts = LockIsolated(0)
         let store = TestStore(initialState: PRReviewFeature.State(key: key)) { PRReviewFeature() } withDependencies: {
-            $0.viewsClient.fetchContent = { _ in
+            $0.viewsClient.fetchDiff = { _ in
                 if attempts.withValue({ $0 += 1; return $0 }) == 1 { throw ViewsClientError.missingView }
-                return Self.diffText
+                return FetchedDiff(text: Self.diffText, truncated: true)
             }
         }
         store.exhaustivity = .off
@@ -178,6 +178,7 @@ final class PRReviewFeatureTests: XCTestCase {
         await store.receive(\.diffLoaded)
 
         XCTAssertEqual(store.state.diff, .loaded(UnifiedDiff.parse(Self.diffText)))
+        XCTAssertTrue(store.state.diffTruncated, "a diff the Mac cut says so")
     }
 
     func testAViewWithoutADiffShowsNone() async throws {

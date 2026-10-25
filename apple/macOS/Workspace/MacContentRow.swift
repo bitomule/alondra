@@ -25,6 +25,7 @@ struct MacContentRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .keyboardShortcut(row.kind == "diff" ? KeyboardShortcut("d", modifiers: .command) : nil)
         .help("Show the details")
         .accessibilityLabel("\(row.label), \(row.summary)")
     }

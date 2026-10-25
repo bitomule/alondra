@@ -18,6 +18,9 @@ public struct PRReviewFeature: Sendable {
             case loading
             case loaded([DiffFile])
             case failed(String)
+
+            public var files: [DiffFile]? { if case .loaded(let files) = self { files } else { nil } }
+            public var failed: Bool { if case .failed = self { true } else { false } }
         }
 
         public var screen: ScreenFeature.State
@@ -26,6 +29,8 @@ public struct PRReviewFeature: Sendable {
         public var diffDigest: String?
         public var comments: [String: ActionComment] = [:]
         public var collapsed: Set<String> = []
+        public var diffTruncated = false
+        public var showsChanges = false
         public var attachment: AttachmentPreview?
         public var failure: String?
 
@@ -48,7 +53,8 @@ public struct PRReviewFeature: Sendable {
         case task
         case screen(ScreenFeature.Action)
         case actions(ActionFeature.Action)
-        case diffLoaded(digest: String?, [DiffFile])
+        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false)
+        case changesShown(Bool)
         case toggleFile(String)
         case toggleAllFiles
         case diffFailed(digest: String?, String)
@@ -94,10 +100,14 @@ public struct PRReviewFeature: Sendable {
                 return fetchDiff(ref)
             case .screen:
                 return .none
-            case .diffLoaded(let digest, let files):
+            case .diffLoaded(let digest, let files, let truncated):
                 guard digest == state.diffDigest else { return .none }
                 state.diff = .loaded(files)
+                state.diffTruncated = truncated
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
+                return .none
+            case .changesShown(let shown):
+                state.showsChanges = shown
                 return .none
             case .toggleFile(let id):
                 state.collapsed.formSymmetricDifference([id])
@@ -158,7 +168,10 @@ public struct PRReviewFeature: Sendable {
 
     private func fetchDiff(_ ref: ContentRef) -> Effect<Action> {
         .run { [viewsClient] send in
-            do { await send(.diffLoaded(digest: ref.digest, UnifiedDiff.parse(try await viewsClient.fetchContent(ref)))) }
+            do {
+                let fetched = try await viewsClient.fetchDiff(ref)
+                await send(.diffLoaded(digest: ref.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated))
+            }
             catch is CancellationError { return }
             catch { await send(.diffFailed(digest: ref.digest, String(localized: "Couldn’t load the diff. Try again."))) }
         }

@@ -1,0 +1,5 @@
+filegroup(
+    name = "diffs",
+    srcs = glob(["*.diff"]),
+    visibility = ["//visibility:public"],
+)

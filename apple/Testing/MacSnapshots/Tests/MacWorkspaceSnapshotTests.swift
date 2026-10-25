@@ -47,7 +47,9 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             state.selectedViewKey = document.key
         }
         edit(&state)
-        return Store(initialState: state) { MacPresentationFeature() }
+        return Store(initialState: state) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchDiff = { _ in try await Task.never() }
+        }
     }
 
     private func assertWindow<Content: View>(
@@ -473,6 +475,36 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     func test_pullRequest_detail() throws {
         let store = try presentation(detail: "pull-request-mac")
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }
+    }
+
+    private func diff() throws -> [DiffFile] { UnifiedDiff.parse(try DiffFixture.text()) }
+
+    func test_pullRequest_changesFoldedIntoTheirSummary() throws {
+        let files = try diff()
+        let store = try presentation(detail: "pull-request-mac") { $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false) }
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_pullRequest_changesFoldedIntoTheirSummary_spanish() throws {
+        let files = try diff()
+        let store = try presentation(detail: "pull-request-mac", spanish: true) { $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false) }
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_pullRequest_changesFileByFile() throws {
+        let files = try diff()
+        let anchor = try XCTUnwrap(files.first?.lines.first { $0.kind == .added }?.anchor)
+        let comments = [anchor: ActionComment(anchor: anchor, text: "Keep the long rows behind a toggle", quote: "")]
+        assertWindow(size: CGSize(width: 1100, height: 760)) {
+            MacChangesView(files: files, truncated: true, highlights: false, comments: .constant(comments))
+        }
+    }
+
+    func test_pullRequest_changesFileByFile_spanish() throws {
+        let files = try diff()
+        assertWindow(size: CGSize(width: 1100, height: 760), spanish: true) {
+            MacChangesView(files: files, truncated: true, highlights: false, comments: .constant([:]))
+        }
     }
 
     func test_tasks_board() throws {

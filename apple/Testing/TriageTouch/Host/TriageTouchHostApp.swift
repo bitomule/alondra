@@ -67,6 +67,7 @@ final class Answers {
                 setAsideAnswers: { nil },
                 dismissSetAsideAnswers: {},
                 fetchContent: { _ in "" },
+                fetchDiff: { _ in FetchedDiff(text: "") },
                 fetchAttachment: { _ in Data() }
             )
         }

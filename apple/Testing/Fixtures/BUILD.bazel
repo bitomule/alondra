@@ -6,6 +6,6 @@ filegroup(
 )
 
 exports_files(
-    ["SpanishTestData.swift"],
+    ["DiffFixture.swift", "SpanishTestData.swift"],
     visibility = ["//apple:__subpackages__"],
 )

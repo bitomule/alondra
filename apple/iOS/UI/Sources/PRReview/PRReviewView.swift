@@ -26,6 +26,12 @@ public struct PRReviewView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { hostToolbar }
         .task { await store.send(.task).finish() }
+        .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
+            PRChangesView(files: store.diff.files, failed: store.diff.failed, truncated: store.diffTruncated,
+                          collapsed: store.collapsed, comments: store.comments,
+                          toggle: { store.send(.toggleFile($0)) }, toggleAll: { store.send(.toggleAllFiles) },
+                          comment: { store.send(.comment(anchor: $0, $1)) }, retry: { store.send(.retryDiff) })
+        }
         .sheet(isPresented: Binding(get: { store.isComposing }, set: { if !$0 { store.send(.dismissSheet) } })) { sheet }
         .sheet(item: Binding(get: { store.attachment }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
             AttachmentPreviewView(preview: preview)
@@ -77,30 +83,9 @@ public struct PRReviewView: View {
     }
 
     @ViewBuilder private var diff: some View {
-        switch store.diff {
-        case .unavailable:
-            EmptyView()
-        case .loading:
-            ProgressView().frame(maxWidth: .infinity).padding()
-        case .failed(let message):
-            VStack(spacing: 8) {
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-                Button("Try Again") { store.send(.retryDiff) }
-            }
-            .frame(maxWidth: .infinity)
-        case .loaded(let files):
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Diff").font(.title3.weight(.bold)).foregroundStyle(Palette.ink)
-                    Spacer()
-                    if !files.isEmpty { foldAllButton(files) }
-                }
-                Text("Tap a line to comment on it").font(.caption).foregroundStyle(.secondary)
-                PRDiffView(files: files, collapsed: store.collapsed, comments: store.comments,
-                           toggle: { store.send(.toggleFile($0)) },
-                           comment: { store.send(.comment(anchor: $0, $1)) })
-                    .id(store.diffDigest)
-            }
+        if store.diff != .unavailable {
+            DiffSummaryCard(summary: store.diff.files.map(DiffSummary.init), pending: nil,
+                            failed: store.diff.failed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
         }
     }
 
@@ -110,21 +95,6 @@ public struct PRReviewView: View {
                 Button("Open on GitHub", systemImage: "arrow.up.right.square") { openURL(url) }
             }
         }
-    }
-
-    private func foldAllButton(_ files: [DiffFile]) -> some View {
-        let allCollapsed = store.collapsed.count == files.count
-        return Button {
-            withAnimation(.snappy) { _ = store.send(.toggleAllFiles) }
-        } label: {
-            Label(allCollapsed ? "Expand All" : "Collapse All",
-                  systemImage: allCollapsed ? "chevron.down" : "chevron.up")
-                .font(.subheadline.weight(.medium))
-        }
-        .buttonStyle(.glass)
-        .controlSize(.small)
-        .buttonBorderShape(.capsule)
-        .accessibilityLabel(allCollapsed ? "Expand All Files" : "Collapse All Files")
     }
 
     private var sheet: some View {

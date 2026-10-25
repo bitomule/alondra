@@ -7,7 +7,7 @@ import AlondraFeed
 /// What the content sheet draws: a fetched document is Markdown, so its links open and its images show.
 public enum MacContent: Equatable, Sendable {
     case image(Data)
-    case diff(String)
+    case diff([DiffFile], truncated: Bool)
     case markdown([MarkdownSegment])
     case text(String)
 }
@@ -79,10 +79,14 @@ public struct MacPresentationFeature: Sendable {
         public var contentImageData: Data?
         public var contentDigest: String?
         public var diffComments: [String: ActionComment] = [:]
+        /// The selected pull request's diff, fetched once per head and kept for its summary and its viewer.
+        public var diff: MacDiff?
+        public var diffFailed: String?
+        public var diffRequested: String?
         public var contentShown: MacContent {
             if let contentImageData { return .image(contentImageData) }
             switch contentKind {
-            case .diff: return .diff(contentBody)
+            case .diff: return .diff(diff?.files ?? [], truncated: diff?.truncated ?? false)
             case .document: return .markdown(MarkdownParser.segments(from: contentBody))
             case .file, nil: return .text(contentBody)
             }
@@ -136,6 +140,9 @@ public struct MacPresentationFeature: Sendable {
         case contentLoaded(AlondraContract.ContentRef, String)
         case attachmentLoaded(AlondraContract.Attachment, Data)
         case contentFailed(String)
+        case diffNeeded(AlondraContract.ContentRef)
+        case diffLoaded(String, FetchedDiff)
+        case diffLoadFailed(String)
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
@@ -155,7 +162,7 @@ public struct MacPresentationFeature: Sendable {
     @Dependency(\.continuousClock) var clock
     @Dependency(\.mcpSignIn) var mcpSignIn
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String) }
+    private enum CancelID: Hashable { case search, picker, undelivered, diff, confirmation(String) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -253,6 +260,10 @@ public struct MacPresentationFeature: Sendable {
                 state.contentLoading = true
                 state.contentPresented = true
                 state.contentImageData = nil
+                if content.kind == .diff {
+                    state.contentLoading = state.diff?.digest != identity
+                    return state.contentLoading ? fetchDiff(content, state: &state) : .none
+                }
                 return .run { [viewsClient] send in
                     do { await send(.contentLoaded(content, try await viewsClient.fetchContent(content))) }
                     catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
@@ -292,6 +303,22 @@ public struct MacPresentationFeature: Sendable {
             case .contentFailed(let message):
                 state.contentLoading = false
                 state.contentError = message
+            case .diffNeeded(let content):
+                let identity = content.digest ?? content.fetch
+                guard state.diff?.digest != identity else { return .none }
+                return fetchDiff(content, state: &state)
+            case let .diffLoaded(identity, fetched):
+                guard identity == state.diffRequested else { return .none }
+                state.diff = MacDiff(digest: identity, files: UnifiedDiff.parse(fetched.text), truncated: fetched.truncated)
+                state.diffFailed = nil
+                if state.contentIsDiff, state.contentDigest == identity { state.contentLoading = false }
+            case .diffLoadFailed(let identity):
+                guard identity == state.diffRequested else { return .none }
+                state.diffFailed = identity
+                if state.contentIsDiff, state.contentDigest == identity {
+                    state.contentLoading = false
+                    state.contentError = String(localized: "Couldn’t load this from your Mac. Try again.")
+                }
             case .contentPresented(let value):
                 state.contentPresented = value
             case .actionPresented(let value):
@@ -556,6 +583,19 @@ public struct MacPresentationFeature: Sendable {
             }
         }
         .ifLet(\.$mcpSignIn, action: \.mcpSignIn) { McpSignInFeature() }
+    }
+
+    private func fetchDiff(_ content: AlondraContract.ContentRef, state: inout State) -> Effect<Action> {
+        let identity = content.digest ?? content.fetch
+        guard state.diffRequested != identity || state.diffFailed == identity else { return .none }
+        state.diffRequested = identity
+        state.diffFailed = nil
+        return .run { [viewsClient] send in
+            do { await send(.diffLoaded(identity, try await viewsClient.fetchDiff(content))) }
+            catch is CancellationError { return }
+            catch { await send(.diffLoadFailed(identity)) }
+        }
+        .cancellable(id: CancelID.diff, cancelInFlight: true)
     }
 
     /// The daemon asks about an answer again: its card is shown, unless the person is already

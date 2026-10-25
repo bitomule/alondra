@@ -29,6 +29,7 @@ enum ScreenFixtures {
 func idleViewsClient(_ client: inout ViewsClient) {
     client.observe = { _ in AsyncThrowingStream { _ in } }
     client.fetchContent = { _ in "" }
+    client.fetchDiff = { _ in FetchedDiff(text: "") }
 }
 
 /// A whole screen on an iPhone 17 Pro, inside the navigation stack it is pushed in, in light, dark

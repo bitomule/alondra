@@ -1,9 +1,24 @@
 public struct DiffFile: Identifiable, Hashable, Sendable {
+    public enum Status: Sendable { case added, deleted, renamed, modified }
+
     public let path: String
+    public let oldPath: String?
+    public let status: Status
+    public let isBinary: Bool
     public let lines: [DiffLine]
+    public let additions: Int
+    public let deletions: Int
     public var id: String { path }
-    public var additions: Int { lines.filter { $0.kind == .added }.count }
-    public var deletions: Int { lines.filter { $0.kind == .removed }.count }
+
+    public init(path: String, oldPath: String? = nil, status: Status = .modified, isBinary: Bool = false, lines: [DiffLine]) {
+        self.path = path
+        self.oldPath = oldPath
+        self.status = status
+        self.isBinary = isBinary
+        self.lines = lines
+        additions = lines.filter { $0.kind == .added }.count
+        deletions = lines.filter { $0.kind == .removed }.count
+    }
 
     public static let foldedChangeThreshold = 400
     static let generatedNames: Set<String> = [
@@ -17,8 +32,12 @@ public struct DiffFile: Identifiable, Hashable, Sendable {
         return Self.generatedNames.contains(name) || name.hasSuffix(".xcstrings") || components.contains("__Snapshots__")
     }
 
+    public var isLarge: Bool { additions + deletions > Self.foldedChangeThreshold }
+
+    public var hasCode: Bool { lines.contains { $0.kind != .note } }
+
     public var startsCollapsed: Bool {
-        isGenerated || additions + deletions > Self.foldedChangeThreshold
+        isBinary || !hasCode || isGenerated || isLarge
     }
 
     public func commentCount(in comments: [String: String]) -> Int {

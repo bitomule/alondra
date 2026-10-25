@@ -170,6 +170,7 @@ import Testing
         }.first)
         #expect(diff.fetch == "/pull-requests/github.com%2Fexample%2Frepo%2312/diff")
         #expect(try await client.fetchContent(diff).contains("diff --git"))
+        #expect(try await client.fetchDiff(diff).text.contains("diff --git"))
         let actions = items.flatMap { item -> [AlondraContract.Action] in
             if case let .actions(bar) = item { return bar.actions }
             return []

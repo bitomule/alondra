@@ -37,7 +37,13 @@ public struct CardDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .task { await store.send(.task).finish() }
-        .onDisappear { store.send(.screen(.stop)) }
+        .onDisappear { if !store.showsChanges { store.send(.screen(.stop)) } }
+        .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
+            PRChangesView(files: store.diff, failed: store.diffFailed, truncated: store.diffTruncated,
+                          collapsed: store.collapsedFiles, comments: nil,
+                          toggle: { store.send(.toggleFile($0)) }, toggleAll: { store.send(.toggleAllFiles) },
+                          comment: { _, _ in }, retry: { store.send(.retryDiff) })
+        }
     }
 
     private func methodDialog<Content: View>(_ view: Content) -> some View {
@@ -145,7 +151,7 @@ public struct CardDetailView: View {
 
     private func sectionView(_ section: ViewSection) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let title = section.title {
+            if let title = section.title, section.id != "diff" {
                 Text(title).font(.footnote.weight(.bold)).textCase(.uppercase).kerning(0.6).foregroundStyle(.secondary)
             }
             ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
@@ -197,20 +203,9 @@ public struct CardDetailView: View {
         }
     }
 
-    @ViewBuilder private func diffBody(_ reference: ContentRef) -> some View {
-        if let files = store.diff {
-            PRDiffView(files: files, collapsed: store.collapsedFiles, comments: [:],
-                       toggle: { store.send(.toggleFile($0)) }, comment: { _, _ in })
-                .id(store.diffDigest)
-        } else if store.diffFailed {
-            VStack(spacing: 8) {
-                Label("Couldn’t load the diff. Try again.", systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-                Button("Try Again") { store.send(.retryDiff) }
-            }
-            .frame(maxWidth: .infinity)
-        } else {
-            RoundedRectangle(cornerRadius: 6).fill(Palette.hairline).frame(height: 14).frame(maxWidth: .infinity)
-        }
+    private func diffBody(_ reference: ContentRef) -> some View {
+        DiffSummaryCard(summary: store.diff.map(DiffSummary.init), pending: store.subject?.card?.contentRow?.summary,
+                        failed: store.diffFailed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
     }
 
     private func historyRow(_ row: Row) -> some View {

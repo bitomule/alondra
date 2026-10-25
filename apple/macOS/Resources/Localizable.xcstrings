@@ -483,16 +483,6 @@
         }
       }
     },
-    "Comment…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comentar…"
-          }
-        }
-      }
-    },
     "Couldn’t load this view": {
       "localizations": {
         "es": {
@@ -549,16 +539,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Editar comentario"
-          }
-        }
-      }
-    },
-    "Edit Comment…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Editar comentario…"
           }
         }
       }
@@ -1935,7 +1915,11 @@
     "Its nodes read their sign-in again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sus nodos vuelven a leer su sesión"}}}},
     "No task that uses this server runs now. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no está en marcha ninguna tarea que use este servidor. Vuelve a intentarlo en un momento."}}}},
     "Alondra has the sign-in": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra tiene el inicio de sesión"}}}},
-    "You can close this page and go back to Alondra.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes cerrar esta página y volver a Alondra."}}}}
+    "You can close this page and go back to Alondra.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes cerrar esta página y volver a Alondra."}}}},
+    "Changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
+    "Wrap Lines": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ajustar líneas"}}}},
+    "Expand All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desplegar todo"}}}},
+    "Collapse All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Plegar todo"}}}}
   },
   "version": "1.0"
 }

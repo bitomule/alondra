@@ -1,17 +1,23 @@
 import Foundation
 
-/// Reads `gh pr diff` output: files, hunks, and each line with its old and new numbers.
+/// Reads `gh pr diff` output: files with their status, hunks, and each line with its old and new numbers.
 public enum UnifiedDiff {
     public static func parse(_ text: String) -> [DiffFile] {
         var files: [DiffFile] = []
         var path: String?
+        var oldPath: String?
+        var status = DiffFile.Status.modified
+        var binary = false
         var lines: [DiffLine] = []
         var (old, new) = (0, 0)
         var inHunk = false
 
         func close() {
-            if let path { files.append(DiffFile(path: path, lines: lines)) }
-            (path, lines, inHunk) = (nil, [], false)
+            if let path {
+                files.append(DiffFile(path: path, oldPath: oldPath, status: status, isBinary: binary,
+                                      lines: InlineChanges.marking(lines)))
+            }
+            (path, oldPath, status, binary, lines, inHunk) = (nil, nil, .modified, false, [], false)
         }
 
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
@@ -21,10 +27,21 @@ public enum UnifiedDiff {
                 continue
             }
             guard let current = path else { continue }
-            if raw.hasPrefix("+++ ") {
-                let target = String(raw.dropFirst(4))
-                if target != "/dev/null" { path = target.hasPrefix("b/") ? String(target.dropFirst(2)) : target }
-                continue
+            if !inHunk {
+                if raw.hasPrefix("new file mode") { status = .added; continue }
+                if raw.hasPrefix("deleted file mode") { status = .deleted; continue }
+                if raw.hasPrefix("rename from ") {
+                    (oldPath, status) = (String(raw.dropFirst(12)), .renamed)
+                    continue
+                }
+                if raw.hasPrefix("rename to ") { path = String(raw.dropFirst(10)); continue }
+                if raw.hasPrefix("Binary files ") || raw == "GIT binary patch" { binary = true; continue }
+                if raw.hasPrefix("--- ") { continue }
+                if raw.hasPrefix("+++ ") {
+                    let target = String(raw.dropFirst(4))
+                    if target != "/dev/null" { path = target.hasPrefix("b/") ? String(target.dropFirst(2)) : target }
+                    continue
+                }
             }
             if raw.hasPrefix("@@") {
                 let (o, n) = hunkStarts(raw)

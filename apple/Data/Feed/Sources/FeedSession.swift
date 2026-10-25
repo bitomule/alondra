@@ -467,6 +467,11 @@ public actor FeedSession {
         return try await transport.fetchContent(content)
     }
 
+    public func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff {
+        guard active else { throw CancellationError() }
+        return try await transport.fetchDiff(content)
+    }
+
     public func fetchAttachment(_ attachment: Attachment) async throws -> Data {
         guard active else { throw CancellationError() }
         return try await transport.fetchAttachment(attachment)

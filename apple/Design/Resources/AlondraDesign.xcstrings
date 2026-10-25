@@ -580,7 +580,30 @@
           }
         }
       }
-    }
+    },
+    "Binary": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Binario"}}}},
+    "Added": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadido"}}}},
+    "Deleted": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Borrado"}}}},
+    "Renamed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Renombrado"}}}},
+    "Modified": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Modificado"}}}},
+    "Changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
+    "Couldn’t load the changes.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudieron cargar los cambios."}}}},
+    "Try Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar"}}}},
+    "View changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver cambios"}}}},
+    "Added: %lld, removed: %lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadidas: %1$lld, quitadas: %2$lld"}}}},
+    "Show": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mostrar"}}}},
+    "Part of the diff isn’t shown because it’s too large.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Parte del diff no se muestra porque es demasiado grande."}}}},
+    "Binary file not shown.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Fichero binario, no se muestra."}}}},
+    "File renamed without changes.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Fichero renombrado sin cambios."}}}},
+    "No changes to show.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No hay cambios que mostrar."}}}},
+    "Generated file.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Fichero generado."}}}},
+    "%lld new": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld new"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld new"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld nuevo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld nuevos"}}}}}}},
+    "%lld modified": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld modified"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld modified"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld modificado"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld modificados"}}}}}}},
+    "%lld deleted": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld deleted"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld deleted"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld borrado"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld borrados"}}}}}}},
+    "%lld renamed": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld renamed"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld renamed"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld renombrado"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld renombrados"}}}}}}},
+    "%lld files": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld file"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld files"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld archivo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld archivos"}}}}}}},
+    "Large file: %lld changed lines.": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "Large file: %lld changed line."}}, "other": {"stringUnit": {"state": "translated", "value": "Large file: %lld changed lines."}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "Fichero grande: %lld línea cambiada."}}, "other": {"stringUnit": {"state": "translated", "value": "Fichero grande: %lld líneas cambiadas."}}}}}}},
+    "%@ · +%lld −%lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%1$@ · +%2$lld −%3$lld"}}}}
   },
   "version": "1.0"
 }
