@@ -901,7 +901,7 @@ impl Driver {
     /// Whether the node is paused: what it is told waits for the user to resume it, or for their own
     /// words, which end the pause.
     fn paused(&self) -> bool {
-        matches!(self.domain.read().state().node_phase(&self.agent), Some(NodePhase::Paused(pause)) if !pause.released)
+        self.domain.read().state().node_pause(&self.agent).is_some_and(|pause| !pause.released)
     }
 
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken

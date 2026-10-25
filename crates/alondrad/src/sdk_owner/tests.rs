@@ -882,9 +882,12 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
-    let phase = slice.domain.state().unwrap().agents[&agent].phase.key();
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.agents[&agent].phase, NodePhase::ThroughSdk, "no event moves its phase");
+    let live = alondra_core::domain::TaskActivity::Live(state.sdk_live(&agent).expect("its task is open")).key();
     let shown = crate::domain_orchestrator_reads::node(&slice.domain, &agent.0).unwrap()["node"].clone();
-    assert_eq!((shown["alive"].as_bool(), shown["state"].as_str(), shown["sdk_host"].as_bool()), (Some(true), Some(phase), Some(true)), "{shown}");
+    assert_eq!((shown["alive"].as_bool(), shown["state"].as_str(), shown["sdk_host"].as_bool()), (Some(true), Some(live), Some(true)), "{shown}");
+    assert_eq!(shown["task"]["activity"].as_str(), Some(live), "the node's state is its task's");
     assert_eq!(shown["name"], "Release notes");
     assert_eq!(shown["task"]["id"], TASK);
     assert!(shown["last_message"].as_str().is_some_and(|said| !said.is_empty()), "what its Claude said last: {shown}");
@@ -3493,7 +3496,7 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
     drivers.push(slice.launch_until("busy", "consume-and-hold", works));
     let state = slice.domain.state().unwrap();
     for driver in &drivers[..5] {
-        assert!(matches!(state.node_phase(driver.agent()), Some(NodePhase::WaitingUser { .. })), "the log lists it as waiting on the user");
+        assert!(state.node_waits_on_user(driver.agent()), "the log lists it as waiting on the user");
     }
     assert_eq!(crate::admission::working_tasks(&state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
     let now = alondra_core::now_millis();

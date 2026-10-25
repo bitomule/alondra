@@ -2,7 +2,8 @@
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, TaskId};
+use alondra_core::domain::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, TaskActivity, TaskId, NODE_PAUSE_PREFIX};
+use alondra_domain::{Capacity, LiveState, Step, Worker};
 use alondra_core::Node;
 use serde_json::{Value, json};
 
@@ -48,12 +49,50 @@ fn phase_fields(row: &mut Value, phase: &NodePhase) {
         NodePhase::NoTask => "its turn ended and it has no open task".to_owned(),
         NodePhase::Closing => "its task is over; it cleans up".to_owned(),
         NodePhase::Closed => "its session is closed".to_owned(),
+        NodePhase::ThroughSdk => "it runs through the Agent SDK".to_owned(),
+    });
+}
+
+/// A node of the Agent SDK as its task's lifecycle holds it: what its task does or who it waits on,
+/// and whether its session runs. Its phase says nothing of it.
+fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
+    let live = state.sdk_live(agent);
+    row["state"] = json!(match &live {
+        Some(live) => TaskActivity::Live(live.clone()).key(),
+        None if state.node_task(agent).is_some_and(|task| task.over()) => "done",
+        None => "no_task",
+    });
+    row["alive"] = json!(live.is_some() && state.sdk_session_runs(agent));
+    row["evidence"] = json!(match &live {
+        Some(LiveState::Working(Worker::Turn)) => "a turn is running",
+        Some(LiveState::Working(Worker::OwnWork)) => "its turn ended behind work of its own; it wakes when that ends",
+        Some(LiveState::Working(Worker::AfterMerge)) => "its PR merged and it runs the work it declared for after the merge",
+        Some(LiveState::Working(Worker::Alondra(Step::Starting))) => "Alondra is starting its session",
+        Some(LiveState::Working(Worker::Alondra(Step::Delivering))) => "Alondra is handing it an input it has not read yet",
+        Some(LiveState::Working(Worker::Alondra(Step::Waking))) => "Alondra is waking it: work it waited on ended",
+        Some(LiveState::Working(Worker::Alondra(Step::Answering))) => "it waits for your answer to what it asked you",
+        Some(LiveState::Working(Worker::Alondra(Step::Merging))) => "Alondra merges its PR",
+        Some(LiveState::Working(Worker::Alondra(Step::Finishing))) => "its task is over; Alondra closes it",
+        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX)) =>
+            "the user paused it and only the user resumes it",
+        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| state.node_task(agent).and_then(|task| task.final_presentation.as_ref()) == Some(card)) =>
+            "its result waits for the user's review",
+        Some(LiveState::WaitingUser(_)) => "a card of its task waits for the user's answer",
+        Some(LiveState::WaitingCapacity(Capacity::Gate)) => "it waits for a slot in the gate",
+        Some(LiveState::WaitingCapacity(Capacity::Machine)) => "it said it waits for the machine; the gate resumes it once the Mac has room",
+        Some(LiveState::WaitingCapacity(Capacity::Usage)) => "it waits for the usage limit to renew",
+        Some(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "it waits for Claude's API to answer again",
+        Some(LiveState::WaitingTask(_)) => "its task waits for another task to be done",
+        None => "it has no open task",
     });
 }
 
 fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
     let mut row = wire(node);
-    if let Some(phase) = state.node_phase(&AgentId(node.session_id.clone())) {
+    let agent = AgentId(node.session_id.clone());
+    if state.node_phase(&agent) == Some(&NodePhase::ThroughSdk) || state.through_sdk(&agent) {
+        live_fields(&mut row, state, &agent);
+    } else if let Some(phase) = state.node_phase(&agent) {
         phase_fields(&mut row, phase);
     }
     row["model"] = model_of(domain, &node.session_id);
@@ -73,7 +112,7 @@ fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> V
     node.name = Some(agent.name.clone());
     node.cwd = reported.cwd.clone();
     node.tool = reported.tool.clone();
-    node.busy = agent.phase.in_turn();
+    node.busy = matches!(state.sdk_live(&agent.id), Some(LiveState::Working(Worker::Turn)));
     node.last_message = reported.answer.as_ref().map(|answer| answer.text.clone());
     node.last_message_at = reported.answer.as_ref().map(|answer| answer.at);
     node.background = reported.background.iter().map(|(_, item)| item.clone()).collect();
@@ -159,7 +198,7 @@ fn requests(state: &DomainState) -> Vec<Value> {
 /// The questions that wait on the user or the orchestrator.
 fn open_questions(state: &DomainState) -> Vec<Value> {
     state.interactions.values()
-        .filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator))
+        .filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator) && !state.out_of_sight(i))
         .filter_map(|i| question(i, state))
         .filter(|q| q["status"] == "open").collect()
 }
@@ -198,7 +237,8 @@ pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainErr
     let live = domain.live.node(&agent.0);
     let mut node = match live {
         Some(live) => node_row(&live, &state, domain),
-        None if crate::sdk_owner::runs_through_sdk(&state, &agent) => sdk_node_row(&state.agents[&agent], &state, domain),
+        None if crate::sdk_owner::runs_through_sdk(&state, &agent) || state.agents[&agent].phase == NodePhase::ThroughSdk =>
+            sdk_node_row(&state.agents[&agent], &state, domain),
         None => json!({"session_id": agent.0, "alive": false}),
     };
     if node["name"].is_null() {

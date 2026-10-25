@@ -481,7 +481,7 @@ fn nodes_of_the_sdk_waiting_on_the_user_inside_their_turn_hold_no_slot_until_ans
     }
     let slots = |s: &DomainState| s.slots().iter().map(|agent| agent.id.0.clone()).filter(|id| id.starts_with("node-")).collect::<Vec<_>>();
     for id in plans.iter().chain(&questions) {
-        assert!(matches!(s.agents[&AgentId::from(format!("node-{id}").as_str())].phase, NodePhase::WaitingUser { in_turn: true }), "{id} waits on the user inside its turn");
+        assert!(s.node_waits_on_user(&AgentId::from(format!("node-{id}").as_str())), "{id} waits on the user inside its turn");
         assert!(holds_slot(&s, id), "{id}'s turn is still open");
     }
     assert_eq!(slots(&s), ["node-busy"], "only the node at work holds a slot");

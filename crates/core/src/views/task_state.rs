@@ -283,6 +283,9 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
         }
         LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) =>
             Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>
+            Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting,
+                Some(with_pending(t!(lang, "You paused it", "La pausaste").to_owned(), task, context))),
         LiveState::WaitingUser(_) => match (claude_hold(task, context), context.index.mcp_wait_of_task(&task.id)) {
             (Some(crate::domain::ClaudeHold::SignedOut), _) => warn(t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude")),
             (_, Some(waiting)) => {
@@ -293,7 +296,7 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
         },
         LiveState::WaitingCapacity(Capacity::Usage) => warn(t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude")),
         LiveState::WaitingCapacity(Capacity::ClaudeApi) => warn(t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude")),
-        LiveState::WaitingCapacity(Capacity::Gate) => {
+        LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine) => {
             let queued = common::gate_queued(task, context).and_then(|queued| in_queue(task, queued, lang).fact);
             Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, queued)
         }

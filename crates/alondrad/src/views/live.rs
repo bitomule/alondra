@@ -327,7 +327,14 @@ async fn gather_inner(
                 Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
                 activity => activity,
             };
+            let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| state.sdk_live(&agent.id));
             let state_key = match (&agent.phase, activity) {
+                (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
+                    Some(live) if alondra_core::domain::node_at_work(live) => "busy",
+                    Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",
+                    Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
+                    _ => "free",
+                },
                 (NodePhase::Working | NodePhase::Starting { .. }, Activity::Stalled) => "stalled",
                 (NodePhase::Working | NodePhase::Starting { .. }, Activity::Failed) => "failed",
                 (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }
@@ -421,8 +428,14 @@ async fn gather_inner(
                         state: run_state(item.started_at, end),
                     }).collect(),
                 background_badge,
-                working: agent.phase == NodePhase::Working,
-                waiting: matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
+                working: match &sdk {
+                    Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
+                    None => agent.phase == NodePhase::Working,
+                },
+                waiting: match &sdk {
+                    Some(live) => matches!(live, Some(alondra_domain::LiveState::WaitingUser(_))),
+                    None => matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
+                },
                 state_since: state_since.map(timestamp),
                 last_message: answer.map(|answer| answer.text.clone()),
                 last_message_at: answer.map(|answer| timestamp(answer.at)),

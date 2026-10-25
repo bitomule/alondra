@@ -551,7 +551,7 @@ fn pause_cleanup(cleanup: crate::pauses::Cleanup) -> PauseCleanup {
 /// The paused nodes as the node machine holds them, by session, with the task each one keeps.
 fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
     state.paused_nodes().into_iter().filter_map(|(agent, pause)| {
-        let task = state.node_task(agent).filter(|task| !task.over())?.id.clone();
+        let task = state.node_task(&agent).filter(|task| !task.over())?.id.clone();
         Some((agent.0.clone(), Paused {
             task, reason: reason_of(&pause.reason), since: pause.since, cut: pause.cut.clone(), turn_since: pause.turn_since,
             cleanup: cleanup_of(pause.cleanup), released: pause.released,
@@ -561,13 +561,15 @@ fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
 
 /// Turns the pauses the gate wants into events of the node machine: a new pause, its cleanup, its
 /// release, a resume. The machine refuses what cannot be (pausing a node that waits on the user),
-/// and the gate reads back what it accepted.
+/// and the gate reads back what it accepted. A node of the Agent SDK has no processes of its own
+/// to clean up, and its task's lifecycle keeps only that it is paused.
 fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
     let Ok(state) = domain.state() else { return };
     let held = domain_paused(&state);
     let mut events = vec![];
     for (session, paused) in wanted {
         match held.get(session) {
+            Some(_) if state.through_sdk(&AgentId(session.clone())) => {}
             None => events.push((session, NodeEvent::Paused { pause: Pause {
                 reason: pause_reason(&paused.reason), since: paused.since, cut: paused.cut.clone(), turn_since: paused.turn_since,
                 cleanup: pause_cleanup(paused.cleanup), released: paused.released,
@@ -980,7 +982,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
             let working: Vec<TaskId> = working_tasks(&state).into_iter().collect();
-            let on_user: Vec<TaskId> = state.agents.values().filter(|agent| matches!(agent.phase, NodePhase::WaitingUser { .. }))
+            let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
                 log!("{line}");

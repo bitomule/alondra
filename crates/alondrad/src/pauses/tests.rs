@@ -711,8 +711,9 @@ impl SdkNode {
     fn pause(&mut self) {
         self.domain.live.gate.pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
         self.step_until(Self::turn_ended);
-        assert!(matches!(self.domain.state().unwrap().node_phase(&AgentId(self.agent())),
-            Some(NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }))), "{:?}", self.domain.state().unwrap().node_phase(&AgentId(self.agent())));
+        let state = self.domain.state().unwrap();
+        assert!(matches!(state.node_pause(&AgentId(self.agent())), Some(Pause { reason: PauseReason::ByUser, .. })), "{:?}", state.node_pause(&AgentId(self.agent())));
+        assert_eq!(state.node_phase(&AgentId(self.agent())), Some(&NodePhase::ThroughSdk), "its task's lifecycle holds the pause, not its phase");
     }
 }
 
@@ -737,7 +738,7 @@ fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resu
     let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
     assert_eq!(resumed, 1, "{:?}", node.prompts());
     assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_none());
-    assert!(!matches!(node.domain.state().unwrap().node_phase(&AgentId(node.agent())), Some(NodePhase::Paused(_))));
+    assert_eq!(node.domain.state().unwrap().node_pause(&AgentId(node.agent())), None);
 }
 
 /// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
@@ -758,6 +759,12 @@ fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     }).unwrap();
     let tasks = serde_json::to_string(&tasks).unwrap();
     assert!(tasks.contains("\"Paused\""), "{tasks}");
+    assert!(read.index().waiting().is_empty(), "the pause waits in nobody's inbox: {:?}", read.index().waiting());
+    let screen = serde_json::to_string(&alondra_core::views::build(&format!("task:{SDK_TASK}"), alondra_core::views::RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
+        lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap()).unwrap();
+    assert!(screen.contains("Paused") && !screen.contains("Resume “"), "its screen says it is paused and shows no card: {screen}");
     drop(read);
 
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));

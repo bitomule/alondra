@@ -242,6 +242,7 @@ impl TurnAwait {
 pub enum PauseOwner {
     User,
     Gate,
+    Machine,
     Usage,
     ClaudeApi,
 }
@@ -250,6 +251,7 @@ impl From<Owner> for PauseOwner {
         match owner {
             Owner::User => Self::User,
             Owner::Capacity(Capacity::Gate) => Self::Gate,
+            Owner::Capacity(Capacity::Machine) => Self::Machine,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
         }
@@ -260,6 +262,7 @@ impl From<PauseOwner> for Owner {
         match owner {
             PauseOwner::User => Self::User,
             PauseOwner::Gate => Self::Capacity(Capacity::Gate),
+            PauseOwner::Machine => Self::Capacity(Capacity::Machine),
             PauseOwner::Usage => Self::Capacity(Capacity::Usage),
             PauseOwner::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
         }
@@ -349,6 +352,8 @@ pub enum LifecycleRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    /// The hold `card` ended with nothing new to tell: what the task goes on with already waits.
+    PauseEnded { card: InteractionId },
     /// The SDK execution's host ended, and its native Claude with it. When that leaves nothing to
     /// explain the task's next step, the session a new host resumes goes on with `resume`, told
     /// `text`, or, without one, the aggregate requires `unheard_card`.
@@ -575,6 +580,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             owner: owner.map_or_else(|| Owner::of_unnamed_pause(card), Owner::from),
         },
         LifecycleRecord::Resumed { card, input, .. } => Event::Resume { card: card.clone(), input: input_id(task, input)? },
+        LifecycleRecord::PauseEnded { card } => Event::EndPause { card: card.clone() },
         LifecycleRecord::WorkEnded { work, continuation } => runtime(RuntimeFact::WorkEnded {
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -869,6 +875,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             input: input.as_str().into(),
             text: texts.get(input).cloned(),
         },
+        Event::EndPause { card } => LifecycleRecord::PauseEnded { card: card.clone() },
         Event::Runtime { fact: RuntimeFact::WorkEnded { work, continuation }, .. } => {
             LifecycleRecord::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
         }
@@ -1496,7 +1503,7 @@ impl DomainState {
     pub fn recorded_wait(&self, task: &TaskId, revision: u64) -> Option<RecordedWait> {
         let node = self.tasks.get(task)?.agent_id.clone()?;
         let waits_on = |recipient: &Recipient| self.node_waits_on(task, &node, recipient, revision).is_some();
-        let paused = matches!(self.node_phase(&node), Some(NodePhase::Paused(pause)) if !pause.released);
+        let paused = self.node_pause(&node).is_some_and(|pause| !pause.released);
         if waits_on(&Recipient::User) {
             Some(RecordedWait::User)
         } else if paused {
@@ -2041,7 +2048,8 @@ impl DomainState {
             return Ok(());
         }
         let delivery = lifecycle.delivery().cloned().expect("a delivered task has its delivery");
-        if !lifecycle.accepted() {
+        self.end_node_pause(task, lifecycles)?;
+        if !self.lifecycle(lifecycles, task)?.accepted() {
             self.decide(lifecycles, task, LifecycleRecord::Accepted { delivery })?;
         }
         let record = LifecycleRecord::Finished {

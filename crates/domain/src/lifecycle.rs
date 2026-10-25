@@ -215,11 +215,12 @@ impl Owner {
     }
 }
 
-/// What Alondra holds a task back for until there is room: a place in the gate, the subscription's
-/// usage, or Claude's API answering again.
+/// What Alondra holds a task back for until there is room: a place in the gate, room on the Mac
+/// its node said it waits for, the subscription's usage, or Claude's API answering again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capacity {
     Gate,
+    Machine,
     Usage,
     ClaudeApi,
 }
@@ -562,6 +563,11 @@ pub enum Event {
         card: InteractionId,
         input: InputId,
     },
+    /// The pause `card` ends with nothing new to tell: what the task goes on with already waits
+    /// for its node.
+    EndPause {
+        card: InteractionId,
+    },
     Finish {
         intent: FinishIntent,
         cleanup: OperationId,
@@ -693,6 +699,7 @@ impl Event {
             | Self::MergeObserved { .. }
             | Self::WaitForDependencies { .. }
             | Self::Pause { .. }
+            | Self::EndPause { .. }
             | Self::Finish { .. }
             | Self::DrainObserved { .. }
             | Self::PostMergeDeclared { .. }
@@ -925,7 +932,7 @@ impl Execution {
     fn live(&self) -> Option<LiveState> {
         match &self.activity {
             Activity::Awaiting(Await::User(card)) => Several::new([card.clone()]).map(LiveState::WaitingUser),
-            Activity::Awaiting(Await::Machine) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
+            Activity::Awaiting(Await::Machine) => Some(LiveState::WaitingCapacity(Capacity::Machine)),
             Activity::Awaiting(Await::Tasks(tasks)) => Some(LiveState::WaitingTask(tasks.clone())),
             _ => self.worker().map(LiveState::Working),
         }

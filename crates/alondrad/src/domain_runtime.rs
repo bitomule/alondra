@@ -95,7 +95,7 @@ impl DomainRuntime {
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);
         let authority = capabilities::load(home, state.data_epoch.0.clone())?;
-        Ok(Self {
+        let runtime = Self {
             read_work: crate::blocking_work::BlockingWork::new(2),
             producer_work: crate::blocking_work::BlockingWork::new(2),
             external_work: crate::blocking_work::BlockingWork::new(2),
@@ -133,7 +133,32 @@ impl DomainRuntime {
             owner_failures: Default::default(),
             #[cfg(test)]
             index_builds: Default::default(),
-        })
+        };
+        runtime.adopt_sdk_nodes()?;
+        Ok(runtime)
+    }
+    /// Moves every node of the Agent SDK an older daemon left in a phase of its own to its task's
+    /// lifecycle, before the gate or an SDK owner reads the domain.
+    fn adopt_sdk_nodes(&self) -> Result<()> {
+        let state = self.state()?;
+        if state.unadopted_sdk_nodes().is_empty() {
+            return Ok(());
+        }
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("adopt-sdk-nodes-{}", crate::auth::random_hex(8)).into(),
+            expected_revision: 0,
+            command: Command::AdoptSdkNodes,
+        };
+        match self.execute_as_system(envelope) {
+            Ok(_) => Ok(()),
+            Err(StoreError::Domain(error)) => {
+                log!("could not move the nodes of the Agent SDK to their tasks' lifecycles: {}", error.message);
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
     /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
     pub(crate) fn enable_sdk(self: &Arc<Self>, backend: crate::sdk_owner::SdkBackend) {
@@ -892,6 +917,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordScheduleLaunchHanded { .. }
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
+        | Command::AdoptSdkNodes
         | Command::RegisterAgent { .. }
         | Command::MoveNode { .. }
         | Command::RecordLastWords { .. }

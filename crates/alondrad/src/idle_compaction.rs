@@ -11,7 +11,7 @@
 //! not the request's. What is measured lives in memory; a restarted daemon compacts again after
 //! the task's next turn.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Command, CommandEnvelope, DomainState, NodePhase, PROTOCOL_VERSION, TaskId};
+use alondra_core::domain::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};
 use alondra_core::{Millis, now_millis};
 use alondra_domain::{ActivityView, ResourceEvidence};
 use alondra_provider_claude::ContextEvent;
@@ -166,7 +166,7 @@ pub(crate) fn resting(state: &DomainState, task: &TaskId) -> bool {
     let Some(lifecycle) = state.lifecycle_of(task).ok() else {
         return false;
     };
-    let paused = state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).and_then(|agent| state.node_phase(agent)).is_some_and(|phase| matches!(phase, NodePhase::Paused(pause) if !pause.released));
+    let paused = state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).and_then(|agent| state.node_pause(agent)).is_some_and(|pause| !pause.released);
     lifecycle.activity() == ActivityView::Resting && lifecycle.resource() == Some(ResourceEvidence::Available) && !paused
 }
 

@@ -193,8 +193,7 @@ pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
 pub(super) fn paused<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
     if task.state.terminal() { return None; }
     let paused = context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.task_id == task.id.0)?;
-    let node_paused = || task.agent_id.as_ref().and_then(|agent| context.domain.node_phase(agent))
-        .is_some_and(|phase| matches!(phase, crate::domain::NodePhase::Paused(_)));
+    let node_paused = || task.agent_id.as_ref().is_some_and(|agent| context.domain.node_pause(agent).is_some());
     (paused.session.is_none() || node_paused()).then_some(paused)
 }
 

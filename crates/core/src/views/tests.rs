@@ -7711,12 +7711,13 @@ fn node_phases() -> Vec<NodePhase> {
         NodePhase::Starting { reviving: false, idle_since: None }, NodePhase::Lost, NodePhase::Working, NodePhase::WaitingBackground(work),
         NodePhase::WaitingUser { in_turn: false }, NodePhase::Paused(pause), NodePhase::Delivered { in_turn: false },
         NodePhase::Resuming { idle_since: None, after_wait: false }, NodePhase::WaitingDependency, NodePhase::NoTask, NodePhase::Closing, NodePhase::Closed,
+        NodePhase::ThroughSdk,
     ];
     for phase in &phases {
         match phase {
             NodePhase::Starting { .. } | NodePhase::Lost | NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::WaitingUser { .. }
             | NodePhase::Paused(_) | NodePhase::Delivered { .. } | NodePhase::Resuming { .. } | NodePhase::WaitingDependency | NodePhase::NoTask
-            | NodePhase::Closing | NodePhase::Closed => {}
+            | NodePhase::Closing | NodePhase::Closed | NodePhase::ThroughSdk => {}
         }
     }
     phases
@@ -7829,14 +7830,16 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
         LiveState::Working(Worker::Alondra(Step::Merging)), LiveState::Working(Worker::Alondra(Step::Finishing)),
         LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("delivery-t-1")]).unwrap()),
         LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from("claude-signed-out-t-1")]).unwrap()),
-        LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Usage), LiveState::WaitingCapacity(Capacity::ClaudeApi),
+        LiveState::WaitingUser(Several::new([crate::domain::InteractionId::from(format!("{}user-0-t-1", crate::domain::NODE_PAUSE_PREFIX))]).unwrap()),
+        LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Machine), LiveState::WaitingCapacity(Capacity::Usage),
+        LiveState::WaitingCapacity(Capacity::ClaudeApi),
         LiveState::WaitingTask(Several::new([crate::domain::TaskId::from("t-2")]).unwrap()),
     ];
     for state in &states {
         match state {
             LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
                 | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking | Step::Answering | Step::Merging | Step::Finishing))
-            | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Usage | Capacity::ClaudeApi)
+            | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine | Capacity::Usage | Capacity::ClaudeApi)
             | LiveState::WaitingTask(_) => {}
         }
     }
@@ -7878,7 +7881,7 @@ fn each_live_state_reads_one_way_on_every_client() {
                 let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
                 let [badge] = row.badges.as_slice() else { panic!("{client:?} {in_state:?}: one state, one badge: {:?}", row.badges) };
                 let screen = serde_json::to_string(&render_in(&state, &live, client, lang, "task:t-1", "", Some(&in_state))).unwrap();
-                assert!(screen.contains(&serde_json::to_string(&badge.text).unwrap()), "{client:?} {in_state:?}: the task's screen says {:?}: {screen}", badge.text);
+                assert!(screen.contains(&badge.text), "{client:?} {in_state:?}: the task's screen says {:?}: {screen}", badge.text);
                 texts.push(badge.text.clone());
             }
             texts.dedup();
@@ -7891,9 +7894,11 @@ fn each_live_state_reads_one_way_on_every_client() {
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
     assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
-        "Delivered", "Waiting for an answer", "Waiting for the machine", "Waiting for Claude's usage limit", "Waiting for the Claude API", "Waiting"]);
+        "Delivered", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for Claude's usage limit",
+        "Waiting for the Claude API", "Waiting"]);
     assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
-        "Entregada", "Esperando respuesta", "Esperando máquina", "Esperando al límite de uso de Claude", "Esperando a la API de Claude", "Esperando"]);
+        "Entregada", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando al límite de uso de Claude",
+        "Esperando a la API de Claude", "Esperando"]);
 }
 
 /// On 23 October a node ended its turn behind `sleep 5900`, then behind a workflow, and its task

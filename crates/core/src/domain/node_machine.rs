@@ -17,6 +17,70 @@ pub const CARRY_ON: &str = "carry_on";
 pub const CARRY_ON_LABEL: &str = "Carry on";
 pub(super) const CARRY_ON_MEANS: &str = "It goes on with its task and asks you through a card when it needs you";
 const UNHEARD_WHY: &str = "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.";
+/// The cards of the pauses the gate holds a node of the Agent SDK in, which its task's lifecycle
+/// keeps: who the pause waits for and since when are in the card's id, so the journal keeps them.
+/// They stay out of Waiting for You: the task's row shows the pause and its Resume button.
+pub const NODE_PAUSE_PREFIX: &str = "node-pause-";
+
+/// The card behind a pause of the gate of the node of `task`, which nobody sees.
+fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+    let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("Resume “{title}”"));
+    Interaction {
+        attachments: vec![],
+        id,
+        scope: Scope::Task { task_id: task.clone() },
+        author: Author::System,
+        recipient: Recipient::User,
+        body: need.clone(),
+        blocking: false,
+        subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![QuestionOption { id: "resume".into(), label: "Resume".into(), description: None }],
+            answer: None,
+        },
+        revision,
+        order: revision,
+        withdrawn: false,
+        card: CardSpec::new(CardKind::Decide, need),
+        clarification: None,
+    }
+}
+
+/// The card a pause of the gate takes in the lifecycle of a node of the Agent SDK, and who it
+/// waits for. An API error of such a node is its lifecycle's own hold, never the gate's.
+fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alondra_domain::Owner)> {
+    use alondra_domain::{Capacity, Owner};
+    let (kind, owner) = match pause.reason {
+        PauseReason::ByUser => ("user", Owner::User),
+        PauseReason::Declared { .. } | PauseReason::Memory => ("machine", Owner::Capacity(Capacity::Machine)),
+        PauseReason::Usage => ("usage", Owner::Capacity(Capacity::Usage)),
+        PauseReason::ApiError(_) => return None,
+    };
+    Some((InteractionId(format!("{NODE_PAUSE_PREFIX}{kind}-{}-{task}", pause.since)), owner))
+}
+
+/// The pause a card of `node_pause_card` stands for.
+fn pause_of_card(card: &InteractionId) -> Option<Pause> {
+    let (kind, rest) = card.0.strip_prefix(NODE_PAUSE_PREFIX)?.split_once('-')?;
+    let (since, _) = rest.split_once('-')?;
+    let reason = match kind {
+        "user" => PauseReason::ByUser,
+        "machine" => PauseReason::Declared { reason: String::new() },
+        "usage" => PauseReason::Usage,
+        _ => return None,
+    };
+    Some(Pause { reason, since: since.parse().ok()?, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false })
+}
+
+/// Whether a task in `live` has its node at work: its turn, its own work, the work it declared for
+/// after the merge, or Alondra starting it, handing it an input or waking it. Only such a node
+/// takes one of the gate's slots, and only while its lifecycle says its execution holds one.
+pub fn node_at_work(live: &alondra_domain::LiveState) -> bool {
+    use alondra_domain::{LiveState, Step, Worker};
+    matches!(live, LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
+        | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking)))
+}
+
 /// The longest last words a node's card carries.
 pub(super) const LAST_WORDS_MAX: usize = 20_000;
 
@@ -77,6 +141,9 @@ pub enum NodePhase {
     Closing,
     /// Its session is gone for good.
     Closed,
+    /// It runs through the Agent SDK: what it does is its task's lifecycle (`DomainState::live_state`),
+    /// and no event moves this phase but the end of its session.
+    ThroughSdk,
 }
 
 impl NodePhase {
@@ -113,6 +180,7 @@ impl NodePhase {
             Self::NoTask => "no_task",
             Self::Closing => "closing",
             Self::Closed => "closed",
+            Self::ThroughSdk => "through_sdk",
         }
     }
 }
@@ -329,6 +397,7 @@ fn resume_after(f: &TaskFacts, after_wait: bool) -> NodePhase {
 pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
     match phase {
         NodePhase::Closed => NodePhase::Closed,
+        NodePhase::ThroughSdk => NodePhase::ThroughSdk,
         NodePhase::Closing if f.open && !f.closing => resume(f),
         NodePhase::Closing => NodePhase::Closing,
         _ if f.closing => NodePhase::Closing,
@@ -353,6 +422,12 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
         return match event {
             NodeEvent::SessionClosed | NodeEvent::SessionLost | NodeEvent::Listed { listed: Listed::Absent | Listed::Done } => Ok(Settled::At(P::Closed)),
             _ => refuse("node_closed", "The node's session is closed"),
+        };
+    }
+    if *phase == P::ThroughSdk {
+        return match event {
+            NodeEvent::SessionClosed => Ok(Settled::At(P::Closed)),
+            _ => refuse("through_sdk", "A node of the Agent SDK does what its task's lifecycle says: no node event moves it"),
         };
     }
     if event.timed() && at < since {
@@ -475,7 +550,7 @@ impl TaskActivity {
             Self::Live(LiveState::Working(Worker::Alondra(Step::Merging))) => "merging",
             Self::Live(LiveState::Working(Worker::Alondra(Step::Finishing))) => "finishing",
             Self::Live(LiveState::WaitingUser(_)) => "waiting_user",
-            Self::Live(LiveState::WaitingCapacity(Capacity::Gate)) => "waiting_machine",
+            Self::Live(LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine)) => "waiting_machine",
             Self::Live(LiveState::WaitingCapacity(Capacity::Usage)) => "waiting_usage",
             Self::Live(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "waiting_claude_api",
             Self::Live(LiveState::WaitingTask(_)) => "waiting_dependency",
@@ -513,6 +588,7 @@ impl DomainState {
             return Some(TaskActivity::AfterMerge { reason: work.reason.clone() });
         }
         Some(match self.node_phase(agent) {
+            Some(NodePhase::ThroughSdk) => return self.live_state(&task.id).map(TaskActivity::Live),
             None | Some(NodePhase::Closing | NodePhase::Closed | NodePhase::NoTask) => TaskActivity::NodeClosed,
             Some(NodePhase::Starting { reviving: true, .. }) => TaskActivity::Reconnecting,
             Some(NodePhase::Starting { reviving: false, .. }) => TaskActivity::Starting,
@@ -563,7 +639,7 @@ impl DomainState {
         let (mut asked, mut carded) = (BTreeSet::new(), BTreeSet::new());
         for i in self.interactions.values().filter(|i| (i.recipient == Recipient::User || Self::asks_the_orchestrator(i))
             && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
-            && self.open(i))
+            && self.open(i) && !i.id.0.starts_with(NODE_PAUSE_PREFIX))
         {
             if let Author::Agent { agent_id } = &i.author {
                 asked.insert(agent_id);
@@ -590,6 +666,15 @@ impl DomainState {
     /// Whether `event` would move the node, and where: what an adapter checks before it records one.
     pub fn node_next(&self, agent: &AgentId, event: &NodeEvent, at: Millis) -> Result<Option<NodePhase>> {
         let a = self.agents.get(agent).ok_or_else(|| DomainError::new("not_found", "Agent missing"))?;
+        if a.phase == NodePhase::ThroughSdk || self.through_sdk(agent) {
+            let paused = self.node_pause(agent).is_some();
+            return Ok(match event {
+                NodeEvent::Paused { .. } if !paused => Some(NodePhase::ThroughSdk),
+                NodeEvent::Resumed if paused => Some(NodePhase::ThroughSdk),
+                NodeEvent::SessionClosed => Some(NodePhase::Closed),
+                _ => None,
+            });
+        }
         let moved = match next(&a.phase, a.since, event, &self.task_facts(agent), at)? {
             Settled::At(phase) => phase,
             Settled::Unheard => NodePhase::WaitingUser { in_turn: false },
@@ -717,19 +802,56 @@ impl DomainState {
 
     /// The nodes that take a slot: the one count the gate, Tasks and the header share.
     pub fn slots(&self) -> Vec<&Agent> {
-        self.agents.values().filter(|a| Some(&a.id) != self.orchestrator_session.as_ref() && self.holds_slot(a)).collect()
+        let index = self.fact_index();
+        self.agents.values().filter(|a| Some(&a.id) != self.orchestrator_session.as_ref() && self.holds_slot(a, &index)).collect()
     }
 
-    /// A node of the Agent SDK takes a slot while its task's lifecycle holds one: no session phase
-    /// moves for it once it starts, so its phase only says whether it waits on the user, is
-    /// paused, lost or ending. A turn kept open on a plan or a question for the user holds none.
-    fn holds_slot(&self, agent: &Agent) -> bool {
+    /// A node of the Agent SDK takes a slot while its task's lifecycle has it at work and says its
+    /// execution holds one; a node of `claude --bg` while its phase does.
+    fn holds_slot(&self, agent: &Agent, index: &FactIndex<'_>) -> bool {
         let sdk = self.tasks.values()
             .find(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal() && super::read_index::admitted_through_sdk(self, &t.id, &agent.id));
         match sdk {
-            Some(task) => !matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed)
-                && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()),
+            Some(task) => self.node_pause(&agent.id).is_none() && self.sdk_task_holds_slot(task, &self.facts_in(index, &agent.id)),
             None => agent.phase.holds_slot(),
+        }
+    }
+
+    /// Whether the node of `task`, one of the Agent SDK, takes a slot of the gate.
+    pub fn task_holds_slot(&self, task: &TaskId) -> bool {
+        let Some(t) = self.tasks.get(task) else { return false };
+        let facts = t.agent_id.as_ref().map(|agent| self.task_facts(agent)).unwrap_or_default();
+        t.agent_id.as_ref().is_none_or(|agent| self.node_pause(agent).is_none()) && self.sdk_task_holds_slot(t, &facts)
+    }
+
+    /// Its `LiveState` has the node at work, or in a turn it runs after delivering, which is real
+    /// work; it waits on no card of the user's or the orchestrator's; its task is not ending; and
+    /// its lifecycle says its execution holds a slot. A turn kept open on a plan or a question for
+    /// the user holds none.
+    fn sdk_task_holds_slot(&self, task: &Task, facts: &TaskFacts) -> bool {
+        use alondra_domain::LiveState;
+        let at_work = match self.live_state(&task.id) {
+            Some(LiveState::Working(_)) => true,
+            Some(LiveState::WaitingUser(cards)) => cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)),
+            _ => false,
+        };
+        at_work && !(facts.card || facts.held || facts.closing) && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
+    }
+
+    /// A node waits on the user: a card of its task is in front of them. For a node of the Agent
+    /// SDK, its task's lifecycle holds that card (a plan, a permission, a question inside its turn),
+    /// or it asked one through Alondra; its delivery and a pause are no such wait.
+    pub fn node_waits_on_user(&self, agent: &AgentId) -> bool {
+        use alondra_domain::LiveState;
+        match self.node_phase(agent) {
+            Some(NodePhase::WaitingUser { .. }) => true,
+            Some(NodePhase::ThroughSdk) => {
+                let facts = self.task_facts(agent);
+                let delivery = self.node_task(agent).and_then(|t| t.final_presentation.clone());
+                facts.card || facts.held || matches!(self.sdk_live(agent), Some(LiveState::WaitingUser(cards))
+                    if cards.iter().any(|card| !card.0.starts_with(NODE_PAUSE_PREFIX) && Some(card) != delivery.as_ref()))
+            }
+            _ => false,
         }
     }
 
@@ -737,12 +859,149 @@ impl DomainState {
         self.agents.get(agent).map(|a| &a.phase)
     }
 
-    /// The paused nodes, by agent.
-    pub fn paused_nodes(&self) -> BTreeMap<&AgentId, &Pause> {
-        self.agents.values().filter_map(|a| match &a.phase {
-            NodePhase::Paused(pause) => Some((&a.id, pause)),
+    /// A node of the Agent SDK: its task's latest admission gave it an execution of its own.
+    pub fn through_sdk(&self, agent: &AgentId) -> bool {
+        self.node_task(agent).is_some_and(|t| super::read_index::admitted_through_sdk(self, &t.id, agent))
+    }
+
+    /// What the open task of a node of the Agent SDK does, from its lifecycle alone; `None` for a
+    /// node of `claude --bg`, or one whose task is over.
+    pub fn sdk_live(&self, agent: &AgentId) -> Option<alondra_domain::LiveState> {
+        if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) && !self.through_sdk(agent) {
+            return None;
+        }
+        self.node_task(agent).filter(|t| !t.over()).and_then(|t| self.live_state(&t.id))
+    }
+
+    /// Whether the session of a node of the Agent SDK runs: its task's execution has a host that
+    /// was not released. A task back in the gate's queue, or whose host was lost, has none.
+    pub fn sdk_session_runs(&self, agent: &AgentId) -> bool {
+        self.node_task(agent).filter(|t| !t.over())
+            .and_then(|t| self.lifecycle_of(&t.id).ok())
+            .and_then(|lifecycle| lifecycle.resource())
+            .is_some_and(|resource| resource != alondra_domain::ResourceEvidence::Released)
+    }
+
+    /// The pause the gate holds a node in: its phase says it for a node of `claude --bg`, and its
+    /// open task's lifecycle for one of the Agent SDK.
+    pub fn node_pause(&self, agent: &AgentId) -> Option<Pause> {
+        match self.node_phase(agent)? {
+            NodePhase::Paused(pause) => Some(pause.clone()),
+            NodePhase::ThroughSdk => self.node_task(agent).filter(|t| !t.over())
+                .and_then(|t| self.held_pause(&t.id)).and_then(|card| pause_of_card(&card)),
             _ => None,
-        }).collect()
+        }
+    }
+
+    /// The card of the gate's pause the lifecycle of `task` holds.
+    fn held_pause(&self, task: &TaskId) -> Option<InteractionId> {
+        let lifecycle = self.lifecycle_of(task).ok()?;
+        lifecycle.cards().into_iter()
+            .find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX))
+            .map(|(card, _)| card.clone())
+    }
+
+    /// The paused nodes, by agent.
+    pub fn paused_nodes(&self) -> BTreeMap<AgentId, Pause> {
+        let mut paused: BTreeMap<AgentId, Pause> = self.agents.values().filter_map(|a| match &a.phase {
+            NodePhase::Paused(pause) => Some((a.id.clone(), pause.clone())),
+            _ => None,
+        }).collect();
+        for t in self.tasks.values().filter(|t| !t.over()) {
+            let Some(agent) = t.agent_id.as_ref().filter(|agent| self.node_phase(agent) == Some(&NodePhase::ThroughSdk)) else { continue };
+            if let Some(pause) = self.held_pause(&t.id).and_then(|card| pause_of_card(&card)) {
+                paused.insert(agent.clone(), pause);
+            }
+        }
+        paused
+    }
+
+    /// What the gate's events do to a node of the Agent SDK: a pause becomes a pause of its task's
+    /// lifecycle and a resume ends it, and nothing moves its phase but the end of its session. The
+    /// pause's cleanup and release concern only the processes of a `claude --bg` node.
+    pub(super) fn move_sdk_node(&mut self, agent: &AgentId, event: &NodeEvent, at: Millis, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.adopt_sdk_node(agent, lifecycles)?;
+        let task = self.node_task(agent).filter(|t| !t.over()).map(|t| t.id.clone());
+        match event {
+            NodeEvent::Paused { pause } => {
+                let task = task.ok_or_else(|| DomainError::new("not_found", "The node has no open task"))?;
+                if self.held_pause(&task).is_some() {
+                    return refuse("already_paused", "The node is already paused");
+                }
+                let (card, owner) = node_pause_card(&task, pause)
+                    .ok_or_else(|| DomainError::new("invalid_input", "A Claude API error of a node of the Agent SDK is held by its task's lifecycle"))?;
+                self.hold_node_pause(&task, card, owner, lifecycles)
+            }
+            NodeEvent::Resumed => {
+                let card = task.as_ref().and_then(|task| self.held_pause(task)).ok_or_else(|| DomainError::new("not_paused", "The node is not paused"))?;
+                self.decide(lifecycles, task.as_ref().expect("held above"), super::LifecycleRecord::PauseEnded { card: card.clone() })?;
+                self.retire(&card);
+                Ok(())
+            }
+            NodeEvent::PauseCleanup { .. } | NodeEvent::PauseReleased => Ok(()),
+            event => self.move_node(agent, event, at),
+        }
+    }
+
+    /// A node of the Agent SDK an older daemon moved through its phase takes `ThroughSdk`, and a
+    /// pause its phase held becomes the same pause of its task's lifecycle, so the gate sees it
+    /// unchanged: the same reason and the same start, the same place in its queue. A pause the
+    /// lifecycle cannot take (its task is ending, or another pause holds it) has nothing left to
+    /// hold.
+    pub(super) fn adopt_sdk_node(&mut self, agent: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.node_phase(agent).is_none_or(|phase| *phase == NodePhase::ThroughSdk) || !self.through_sdk(agent) {
+            return Ok(());
+        }
+        let pause = match self.node_phase(agent) {
+            Some(NodePhase::Paused(pause)) => Some(pause.clone()),
+            _ => None,
+        };
+        let task = self.node_task(agent).filter(|t| !t.over()).map(|t| t.id.clone());
+        if let (Some(pause), Some(task)) = (pause, task)
+            && self.held_pause(&task).is_none()
+            && let Some((card, owner)) = node_pause_card(&task, &pause)
+        {
+            let _ = self.hold_node_pause(&task, card, owner, lifecycles);
+        }
+        self.agents.get_mut(agent).expect("read above").phase = NodePhase::ThroughSdk;
+        Ok(())
+    }
+
+    /// The nodes of the Agent SDK whose open task an older daemon left in a phase of their own.
+    pub fn unadopted_sdk_nodes(&self) -> BTreeSet<AgentId> {
+        self.tasks.values().filter(|t| !t.over())
+            .filter_map(|t| t.agent_id.as_ref().filter(|agent| self.node_phase(agent).is_some_and(|phase| !matches!(phase, NodePhase::ThroughSdk | NodePhase::Closed))
+                && super::read_index::admitted_through_sdk(self, &t.id, agent)))
+            .cloned().collect()
+    }
+
+    /// The task ends while the gate holds its node of the Agent SDK paused: nothing is left to resume.
+    pub(super) fn end_node_pause(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(card) = self.held_pause(task) else { return Ok(()) };
+        self.decide(lifecycles, task, super::LifecycleRecord::PauseEnded { card: card.clone() })?;
+        self.retire(&card);
+        Ok(())
+    }
+
+    /// The lifecycle of `task` holds the gate's pause `card`, with the card behind it.
+    fn hold_node_pause(&mut self, task: &TaskId, card: InteractionId, owner: alondra_domain::Owner, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.decide(lifecycles, task, super::LifecycleRecord::Paused { card: card.clone(), owner: Some(owner.into()) })?;
+        let title = self.tasks[task].title.clone();
+        self.interactions.insert(card.clone(), node_pause_interaction(card, task, &title, self.revision + 1));
+        Ok(())
+    }
+
+    /// A card nobody sees: the gate's pause of a node of the Agent SDK.
+    pub fn out_of_sight(&self, card: &Interaction) -> bool {
+        card.author == Author::System && card.id.0.starts_with(NODE_PAUSE_PREFIX)
+    }
+
+    /// Every node of the Agent SDK still in a phase an older daemon gave it takes `ThroughSdk`.
+    pub(super) fn adopt_sdk_nodes(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+        for agent in self.unadopted_sdk_nodes() {
+            self.adopt_sdk_node(&agent, lifecycles)?;
+        }
+        Ok(())
     }
 
     pub(super) fn validate_nodes(&self) -> Result<()> {

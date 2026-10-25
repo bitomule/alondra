@@ -948,7 +948,7 @@ fn a_turn_that_ends_on_a_recorded_wait_is_that_wait_until_its_input_arrives() {
     for (awaits, live) in [
         (Await::User("question".into()), Several::new([InteractionId::from("question")]).map(LiveState::WaitingUser)),
         (Await::Orchestrator("message".into()), Some(LiveState::Working(Worker::Alondra(Step::Answering)))),
-        (Await::Machine, Some(LiveState::WaitingCapacity(Capacity::Gate))),
+        (Await::Machine, Some(LiveState::WaitingCapacity(Capacity::Machine))),
         (Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap()), Several::new([TaskId::from("dependency")]).map(LiveState::WaitingTask)),
     ] {
         let mut task = running();
@@ -971,6 +971,7 @@ fn a_turn_that_ends_on_a_recorded_wait_is_that_wait_until_its_input_arrives() {
 fn a_pause_waits_on_who_it_names() {
     for (owner, live) in [
         (Owner::User, Several::new([InteractionId::from("pause")]).map(LiveState::WaitingUser)),
+        (Owner::Capacity(Capacity::Machine), Some(LiveState::WaitingCapacity(Capacity::Machine))),
         (Owner::Capacity(Capacity::Usage), Some(LiveState::WaitingCapacity(Capacity::Usage))),
         (Owner::Capacity(Capacity::ClaudeApi), Some(LiveState::WaitingCapacity(Capacity::ClaudeApi))),
     ] {
@@ -980,6 +981,33 @@ fn a_pause_waits_on_who_it_names() {
     }
     let mut task = running();
     assert_eq!(task.apply(task.revision(), Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Gate) }), Err(Refusal::InvalidState), "the gate holds a task only before it starts");
+}
+
+/// A pause the node took mid-turn holds the turn's end too: the turn ends on the pause, not on a
+/// card that asks how the task goes on, and the pause ends without a new input only once what the
+/// task goes on with already waits for its node.
+#[test]
+fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_with() {
+    let mut task = running();
+    apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Machine) });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    assert_eq!(task.live(), Some(LiveState::WaitingCapacity(Capacity::Machine)));
+    assert!(!task.holds_slot(), "a resting execution on a pause takes no slot");
+    assert_eq!(task.apply(task.revision(), Event::EndPause { card: "pause".into() }), Err(Refusal::InvalidState),
+        "nothing tells the resting node how it goes on");
+    apply(&mut task, Event::Tell { input: input("go-on") });
+    assert_eq!(task.live(), Some(LiveState::WaitingCapacity(Capacity::Machine)), "what it was told waits for the pause to end");
+    apply(&mut task, Event::EndPause { card: "pause".into() });
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))));
+    assert_eq!(task.apply(task.revision(), Event::EndPause { card: "pause".into() }), Err(Refusal::InvalidState), "no pause holds it any more");
+
+    let mut task = running();
+    apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::User });
+    apply(&mut task, Event::Tell { input: input("resume") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    assert_eq!(task.activity(), ActivityView::Resting, "what it was told inside its turn waits for the pause to end");
+    apply(&mut task, Event::EndPause { card: "pause".into() });
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the pause's end hands it what it was told");
 }
 
 /// One step of an arbitrary history: an event the task may or may not accept.
@@ -1023,6 +1051,8 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         51 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())) }),
         52 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: None, awaits: Some(Await::Machine) }),
         53 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake-again")) }),
+        54 => Some(Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Machine) }),
+        55 => Some(Event::EndPause { card: "pause".into() }),
         22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
         23 => runtime(RuntimeFact::Notification),
         24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
@@ -1052,7 +1082,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..54, 1..160)) {
+    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..56, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
@@ -1075,8 +1105,10 @@ proptest! {
                     prop_assert!(task.dependencies().contains(&dependency) || matches!(task.awaits(), Some(Await::Tasks(awaited)) if awaited.iter().any(|t| t == dependency)),
                         "it waits on a task it depends on: {:?}", task);
                 },
-                LiveState::WaitingCapacity(Capacity::Gate) => prop_assert!((task.execution().is_none() && !task.pending_inputs().is_empty()) || task.awaits() == Some(&Await::Machine),
-                    "the gate holds a task that waits to start, or a node that waits for the machine: {:?}", task),
+                LiveState::WaitingCapacity(Capacity::Gate) => prop_assert!(task.execution().is_none() && !task.pending_inputs().is_empty(),
+                    "the gate holds a task that waits to start: {:?}", task),
+                LiveState::WaitingCapacity(Capacity::Machine) => prop_assert!(task.awaits() == Some(&Await::Machine) || cards.iter().any(|(_, reason)| *reason == WaitReason::Pause),
+                    "a node that waits for the machine said so, or the gate paused it: {:?}", task),
                 LiveState::WaitingCapacity(_) => prop_assert!(cards.iter().any(|(_, reason)| *reason == WaitReason::Pause), "capacity holds it through a pause: {:?}", task),
                 LiveState::Working(Worker::Turn) => prop_assert!(task.turn().is_some(), "a turn runs: {:?}", task),
                 LiveState::Working(Worker::OwnWork) => prop_assert!(task.activity() == ActivityView::OwnWork || task.drain().any(|o| matches!(o, DrainObligation::Work(_))), "its own work runs: {:?}", task),
@@ -1091,7 +1123,7 @@ proptest! {
     #[test]
     fn every_empty_turn_wakes_the_node_once_and_then_asks_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         3 => prop::sample::select(vec![2u8, 3, 4, 6, 7, 17, 23, 36, 37, 38, 46, 47, 48, 49, 50, 52, 53]),
-        1 => 0u8..54,
+        1 => 0u8..56,
     ], 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let mut woke = false;
@@ -1122,7 +1154,7 @@ proptest! {
     }
 
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..54, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..56, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let event = arbitrary_event(&task, action);

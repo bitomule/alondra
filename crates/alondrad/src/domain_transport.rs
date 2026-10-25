@@ -658,7 +658,7 @@ fn driven_by_user(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
 /// with the resume whoever writes to the node then. What the node says of itself, such as a
 /// budget it thinks is spent, is no pause.
 fn paused(state: &DomainState, agent_id: &AgentId) -> bool {
-    matches!(state.node_phase(agent_id), Some(alondra_core::domain::NodePhase::Paused(_)))
+    state.node_pause(agent_id).is_some()
 }
 
 /// The node machine has the node waiting for work of its own that Alondra has not seen end.
@@ -687,7 +687,7 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime,
         let session = agent_id.0.as_str();
         let Some(fact) = domain.live.mods.session(session).map(|reported| (reported.last_event_at, reported.work_gone())) else { continue };
         let counted = |task: &TaskId| domain.store.lock().expect("domain store poisoned").stop_blocks(task).ok().flatten();
-        if matches!(agent.phase, alondra_core::domain::NodePhase::Starting { .. }) || reminded.get(session) == Some(&fact)
+        if matches!(agent.phase, alondra_core::domain::NodePhase::Starting { .. } | alondra_core::domain::NodePhase::ThroughSdk) || reminded.get(session) == Some(&fact)
             || stopped_without_delivering(domain, &state, agent_id, counted).is_none()
         {
             continue;

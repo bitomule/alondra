@@ -1783,6 +1783,7 @@ impl DomainState {
                 InteractionPayload::Question { answer: None, .. }
                     | InteractionPayload::ActionRequest { answer: None, .. }
             )
+            && !self.out_of_sight(i)
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
         self.merged_delivery(p)
@@ -2275,6 +2276,7 @@ impl DomainState {
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
         next.adopt_declared_post_merge(&mut lifecycles)?;
+        next.adopt_sdk_nodes(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
@@ -2603,6 +2605,10 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
+            Command::AdoptSdkNodes => {
+                system(actor)?;
+                self.adopt_sdk_nodes(lifecycles)?;
+            }
             Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;
                 let mut seen = BTreeSet::new();
@@ -2709,6 +2715,9 @@ impl DomainState {
             }
             Command::MoveNode { agent_id, event, at } => {
                 system(actor)?;
+                if self.through_sdk(agent_id) || self.node_phase(agent_id) == Some(&NodePhase::ThroughSdk) {
+                    return self.move_sdk_node(agent_id, event, *at, lifecycles);
+                }
                 self.move_node(agent_id, event, *at)?;
                 self.post_merge_turn(agent_id, event, lifecycles)?;
                 if *event == NodeEvent::TurnStarted {

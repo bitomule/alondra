@@ -236,7 +236,7 @@ fn judge_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &
         NodePhase::Resuming { .. } if message_waiting && !domain.live.pushes.waiting(&agent.0) => Verdict::Passes(Reason::MessageWaiting),
         NodePhase::Resuming { .. } => Verdict::Waits(Reason::MessageOnItsWay),
         NodePhase::Closing => Verdict::Stays(Reason::Closing),
-        NodePhase::NoTask | NodePhase::Closed => Verdict::Stays(Reason::SessionClosed),
+        NodePhase::NoTask | NodePhase::Closed | NodePhase::ThroughSdk => Verdict::Stays(Reason::SessionClosed),
     }
 }
 

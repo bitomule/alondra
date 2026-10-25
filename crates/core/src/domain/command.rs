@@ -70,6 +70,9 @@ pub enum Command {
         finished_at: i64,
     },
     InterruptScheduleRunsOnRestart,
+    /// Every node of the Agent SDK an older daemon left in a phase of its own takes `ThroughSdk`,
+    /// its pause moved to its task's lifecycle: the daemon runs it when it opens its domain.
+    AdoptSdkNodes,
     CreateRequest {
         request_id: RequestId,
         body: String,

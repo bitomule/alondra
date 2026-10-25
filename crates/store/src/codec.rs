@@ -165,6 +165,7 @@ impl From<PostMergeFactRecord> for PostMergeFact {
 pub(super) enum OwnerRecord {
     User,
     Gate,
+    Machine,
     Usage,
     ClaudeApi,
 }
@@ -173,6 +174,7 @@ impl From<Owner> for OwnerRecord {
         match owner {
             Owner::User => Self::User,
             Owner::Capacity(Capacity::Gate) => Self::Gate,
+            Owner::Capacity(Capacity::Machine) => Self::Machine,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
         }
@@ -183,6 +185,7 @@ impl From<OwnerRecord> for Owner {
         match record {
             OwnerRecord::User => Self::User,
             OwnerRecord::Gate => Self::Capacity(Capacity::Gate),
+            OwnerRecord::Machine => Self::Capacity(Capacity::Machine),
             OwnerRecord::Usage => Self::Capacity(Capacity::Usage),
             OwnerRecord::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
         }
@@ -788,6 +791,9 @@ pub(super) enum EventRecord {
         card: String,
         input: String,
     },
+    EndPause {
+        card: String,
+    },
     Finish {
         intent: FinishRecord,
         cleanup: String,
@@ -935,6 +941,7 @@ impl From<&Event> for EventRecord {
                 card: card.0.clone(),
                 input: input.as_str().to_owned(),
             },
+            Event::EndPause { card } => Self::EndPause { card: card.0.clone() },
             Event::Finish {
                 intent,
                 cleanup,
@@ -1103,6 +1110,7 @@ impl EventRecord {
                 card: InteractionId(card),
                 input: InputId::new(input).map_err(Error::from)?,
             },
+            EventRecord::EndPause { card } => Event::EndPause { card: InteractionId(card) },
             EventRecord::Finish {
                 intent,
                 cleanup,
@@ -1369,6 +1377,14 @@ mod tests {
                 input: InputId::new("input").unwrap(),
             },
         );
+        roundtrip(
+            &current,
+            Event::Pause {
+                card: "card".into(),
+                owner: Owner::Capacity(Capacity::Machine),
+            },
+        );
+        roundtrip(&current, Event::EndPause { card: "card".into() });
         roundtrip(
             &current,
             Event::Finish {

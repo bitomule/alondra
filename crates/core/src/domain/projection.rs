@@ -169,7 +169,7 @@ impl DomainState {
             return false;
         };
         self.tasks.get(task_id).and_then(|t| t.agent_id.as_ref()).and_then(|id| self.agents.get(id))
-            .is_some_and(|a| !matches!(a.phase, NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed))
+            .is_some_and(|a| !matches!(a.phase, NodePhase::Lost | NodePhase::Closing | NodePhase::Closed) && self.node_pause(&a.id).is_none())
     }
     /// The same for an active Task, through its current final delivery.
     /// The PR number and reason when the current final delivery went back because Alondra
@@ -210,7 +210,7 @@ impl DomainState {
         match &i.payload {
             InteractionPayload::Information { read_by } => read_by.is_empty() && !i.withdrawn,
             InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => {
-                answer.is_none() && !i.withdrawn && active && !self.grouped_away(i) && !self.mcp_grouped_away(i)
+                answer.is_none() && !i.withdrawn && active && !self.grouped_away(i) && !self.mcp_grouped_away(i) && !self.out_of_sight(i)
             }
             InteractionPayload::Delivery { acceptance, .. } => {
                 task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))

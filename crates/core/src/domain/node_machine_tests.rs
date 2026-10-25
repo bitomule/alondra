@@ -1057,7 +1057,8 @@ impl World {
             let asks = self.s.open_user_card(&task.id).is_some() || facts.held;
             match &agent.phase {
                 NodePhase::Starting { .. } | NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. }
-                | NodePhase::Delivered { in_turn: true } | NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed => {}
+                | NodePhase::Delivered { in_turn: true } | NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed
+                | NodePhase::ThroughSdk => {}
                 NodePhase::WaitingUser { .. } => assert!(asks, "{} waits on the user with no card in front of them", agent.id.0),
                 NodePhase::Delivered { in_turn: false } => assert!(facts.delivered, "{} rests delivered with no result in front of the user", agent.id.0),
                 NodePhase::WaitingDependency => assert_eq!(task.state, TaskState::WaitingDependency, "{} waits for a task its own does not wait for", agent.id.0),

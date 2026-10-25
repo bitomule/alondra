@@ -182,3 +182,34 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_
     apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
     assert_eq!(open(&state), [format!("{TURN_ENDED_PREFIX}t3-1-turn-2")], "the next empty turn waits on someone");
 }
+
+/// A node of the Agent SDK is what its task's lifecycle says: alive while its session runs, at work
+/// in its turn, and waiting on the user once they pause it. Its phase never moved, so it read
+/// `starting` and, as soon as a card opened, `waiting_user`.
+#[test]
+fn the_orchestrator_reads_a_node_of_the_agent_sdk_from_its_task_s_lifecycle() {
+    use alondra_core::domain::{LifecycleRecord, NodeEvent, Pause, PauseCleanup, PauseReason, RuntimeObservation};
+    let mut state = DomainState::new("epoch");
+    apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-s".into(), name: "Instance S".into(), at: 0 });
+    apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Notes".into() });
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+    apply(&mut state, Actor::System, Command::AdmitExecution { task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
+        instance: "instance-t4".into(), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });
+    let read = |state: &DomainState| {
+        let mut row = json!({});
+        live_fields(&mut row, state, &"agent-s".into());
+        (row["state"].as_str().unwrap().to_owned(), row["alive"].as_bool().unwrap(), row["evidence"].as_str().unwrap().to_owned())
+    };
+    assert_eq!(read(&state), ("starting".into(), true, "Alondra is starting its session".into()));
+    let LifecycleRecord::Planned { input } = state.lifecycle_journal[&TaskId::from("t4")][0].clone() else { panic!("planned first") };
+    apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t4".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+    ] });
+    assert_eq!(read(&state), ("working".into(), true, "a turn is running".into()));
+    let pause = Pause { reason: PauseReason::ByUser, since: 3, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    apply(&mut state, Actor::System, Command::MoveNode { agent_id: "agent-s".into(), event: NodeEvent::Paused { pause }, at: 3 });
+    assert_eq!(read(&state), ("waiting_user".into(), true, "the user paused it and only the user resumes it".into()), "its session still runs");
+    assert_eq!(state.node_phase(&"agent-s".into()), Some(&NodePhase::ThroughSdk));
+}

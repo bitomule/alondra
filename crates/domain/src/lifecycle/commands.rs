@@ -164,6 +164,7 @@ impl TaskLifecycle {
             }
             Event::Answer { card, input } => self.answer(card, Reply::Input(input), false)?,
             Event::Resume { card, input } => self.answer(card, Reply::Input(input), true)?,
+            Event::EndPause { card } => self.answer(card, Reply::Nothing, true)?,
             Event::Decide { card, decision } => {
                 valid_decision(&decision)?;
                 self.answer(card, Reply::Decision(decision), false)?
@@ -728,7 +729,8 @@ impl TaskLifecycle {
                 None
             }
             (None, Reply::Input(input)) => Some(input),
-            (Some(_), Reply::Input(_)) | (None, Reply::Decision(_)) => return Err(Refusal::InvalidState),
+            (None, Reply::Nothing) => None,
+            (Some(_), Reply::Input(_) | Reply::Nothing) | (None, Reply::Decision(_)) => return Err(Refusal::InvalidState),
         };
         match (input, &mut session) {
             (Some(input), Session::Present(execution)) => {
@@ -744,6 +746,16 @@ impl TaskLifecycle {
                     return Err(Refusal::DuplicateObligation);
                 }
                 pending.push_back(input);
+            }
+            (None, Session::Present(execution))
+                if resume
+                    && !cards.values().any(|card| card.reason == WaitReason::Pause)
+                    && execution.resource == ResourceEvidence::Available
+                    && execution.activity.rests() =>
+            {
+                if let Some(input) = execution.inbox.pop_front() {
+                    execution.activity = Activity::InputPending(input);
+                }
             }
             (None, _) => {}
         }
@@ -1083,4 +1095,5 @@ fn replace_handoff(execution: &mut Execution, input: &InputId, resend: Option<In
 enum Reply {
     Input(InputId),
     Decision(Decision),
+    Nothing,
 }

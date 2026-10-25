@@ -20,7 +20,7 @@ use super::{
 use crate::sandbox::{hex, now_ms, random};
 
 const SERVER: &str = "alondra-orchestrator";
-const TOOLS: [&str; 6] = ["tasks_in_progress", "ask", "create_task", "launch", "close_request", "settle_suggestion"];
+const TOOLS: [&str; 7] = ["tasks_in_progress", "node", "ask", "create_task", "launch", "close_request", "settle_suggestion"];
 
 pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let session = flag_value(args, "--session-id").or_else(|| flag_value(args, "--resume")).context("no session id")?.to_owned();
@@ -53,6 +53,20 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
         append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": "ask", "arguments": call, "refused": reply.refused, "text": reply.text}))?;
         std::fs::rename(&card, dir.join("asked.json"))?;
         made.push(("ask", call, reply));
+    }
+    let read = dir.join("call.json");
+    if read.exists() {
+        let call: Value = serde_json::from_slice(&std::fs::read(&read)?)?;
+        let tool = match call["tool"].as_str() {
+            Some("node") => "node",
+            Some("tasks_in_progress") => "tasks_in_progress",
+            other => anyhow::bail!("call.json names {other:?}: the sandbox's orchestrator only reads with node and tasks_in_progress"),
+        };
+        let arguments = call["arguments"].clone();
+        let reply = mcp::call(&program, &server_args, &[], &[(tool, arguments.clone())])?.remove(0);
+        append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": tool, "arguments": arguments, "refused": reply.refused, "text": reply.text}))?;
+        std::fs::rename(&read, dir.join("called.json"))?;
+        made.push((tool, arguments, reply));
     }
     for script in fakes.request_scripts()? {
         let handled = dir.join(format!("{}.handled", script.request_id));

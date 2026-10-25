@@ -393,13 +393,19 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
-    awaits(&s, &card, alondra_domain::Await::Machine);
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Machine)),
+        "its task's lifecycle holds the gate's pause");
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert!(!render(&s, "tasks", client).contains("sin entregar ni preguntar"), "{client:?}");
     }
+    assert!(!s.interactions.contains_key(&card), "the turn ends on the pause its task's lifecycle holds: no card says it stopped");
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into() });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
-    resumes(&mut s, &card);
+    let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(lifecycle.cards().is_empty(), "nothing holds the task: {:?}", lifecycle.cards());
+    assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::Starting, "its next turn starts with what it was told");
+    assert_aggregate_rules(&s);
 }
 
 fn ask_user(s: &mut DomainState, id: &str) {

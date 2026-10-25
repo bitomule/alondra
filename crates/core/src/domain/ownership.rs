@@ -158,7 +158,7 @@ impl DomainState {
     /// A question or request of the task, from anyone, still waiting for the user.
     pub fn open_user_card(&self, task: &TaskId) -> Option<&Interaction> {
         self.interactions.values().find(|i| {
-            i.recipient == Recipient::User && self.open(i) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)
+            i.recipient == Recipient::User && self.open(i) && !i.id.0.starts_with(super::NODE_PAUSE_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)
                 && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
         })
     }
