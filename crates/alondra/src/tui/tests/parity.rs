@@ -604,6 +604,7 @@ fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
         crate::client::PullRequestDiff {
             text: "partial diff".into(),
             truncated: true,
+            files: None,
         },
         "Diff truncated",
     );

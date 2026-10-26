@@ -3044,6 +3044,8 @@ mod tests {
                 Ok(())
             })
         }
+        fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> crate::node_close::Answer<'a, Result<crate::pr_viewed::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
     #[tokio::test]
@@ -3314,6 +3316,8 @@ mod tests {
                 Ok(())
             })
         }
+        fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> crate::node_close::Answer<'a, Result<crate::pr_viewed::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
     const FIRST: &str = "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10";

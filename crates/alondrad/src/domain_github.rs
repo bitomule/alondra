@@ -52,6 +52,9 @@ impl GhCli {
     pub(crate) fn at(program: PathBuf) -> Self {
         Self { program }
     }
+    pub(crate) fn program(&self) -> &std::path::Path {
+        &self.program
+    }
 }
 
 impl PrObserver for GhCli {

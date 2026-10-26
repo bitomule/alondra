@@ -96,6 +96,7 @@ mod prs;
 mod push;
 mod pr_heads;
 mod pr_ids;
+mod pr_viewed;
 mod result_files;
 mod push_gate;
 mod push_retract;

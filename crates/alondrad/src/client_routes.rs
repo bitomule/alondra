@@ -7,6 +7,7 @@ mod mcp;
 mod new_work;
 mod pr_details;
 mod tasks;
+mod viewed;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
@@ -90,6 +91,7 @@ pub(crate) enum Write {
     Presence,
     CancelReason(String),
     ResolveConflicts(String),
+    FileViewed(String),
     McpSignIn { card: String, step: mcp::Step },
 }
 
@@ -113,6 +115,9 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
         return crate::domain_api::decoded_pull_request_id(id).map(Write::ResolveConflicts);
+    }
+    if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/viewed-files")) {
+        return crate::domain_api::decoded_pull_request_id(id).map(Write::FileViewed);
     }
     path.strip_prefix("/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
@@ -306,6 +311,10 @@ impl Client {
             Write::ResolveConflicts(pr) => {
                 authorize()?;
                 Ok(self.resolve_conflicts(user_id, &pr, body).await)
+            }
+            Write::FileViewed(pr) => {
+                authorize()?;
+                Ok(self.file_viewed(&pr, body).await)
             }
             Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
             Write::OrchestratorMessage => self.orchestrator_message(user_id, body, transport, authorize).await,

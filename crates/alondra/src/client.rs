@@ -78,6 +78,23 @@ pub struct ViewsFeed {
 pub struct PullRequestDiff {
     pub text: String,
     pub truncated: bool,
+    /// The viewed mark GitHub keeps for each file; none when the daemon or GitHub gave none.
+    pub files: Option<Vec<FileMark>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileViewed {
+    Viewed,
+    Unviewed,
+    /// Viewed once, then a push changed the file.
+    Changed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct FileMark {
+    pub path: String,
+    pub viewed: FileViewed,
 }
 
 #[derive(Clone)]
@@ -524,6 +541,11 @@ impl Client {
         pull_request_diff_via(id, expected_head, |path| self.get::<Value>(path))
     }
 
+    /// Marks a file of the PR as viewed, or not, in GitHub, for the head the reader saw.
+    pub fn set_file_viewed(&self, id: &str, head: &str, path: &str, viewed: bool) -> Result<FileViewed> {
+        set_file_viewed_via(id, head, path, viewed, |route, body| self.post(route, body))
+    }
+
     /// Copies a file into the daemon's storage and returns the reference commands attach:
     /// in one request on this Mac, in chunks through the service.
     pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<AttachmentRef> {
@@ -578,7 +600,20 @@ fn pull_request_diff_via(id: &str, expected_head: &str, mut get: impl FnMut(&str
     Ok(PullRequestDiff {
         text: response["diff"].as_str().context("the pull request diff response has no diff text")?.to_owned(),
         truncated: response["truncated"].as_bool().context("the pull request diff response has no truncation flag")?,
+        files: response.get("files").and_then(|files| serde_json::from_value(files.clone()).ok()),
     })
+}
+
+fn set_file_viewed_via(id: &str, head: &str, path: &str, viewed: bool, post: impl FnOnce(&str, &Value) -> Result<Value>) -> Result<FileViewed> {
+    if !alondra_core::views::id::valid(id) {
+        return Err(anyhow!("invalid pull request ID"));
+    }
+    let route = format!("/pull-requests/{}/viewed-files", alondra_core::views::id::path_segment(id));
+    let response = post(&route, &serde_json::json!({"path": path, "viewed": viewed, "head": head}))?;
+    if response["pr_id"].as_str() != Some(id) || response["head"].as_str() != Some(head) || response["path"].as_str() != Some(path) {
+        return Err(anyhow!("the viewed mark response is for another file"));
+    }
+    serde_json::from_value(response["viewed"].clone()).context("the viewed mark response has no mark")
 }
 
 /// Reads `route` from offset 0 to the end, refusing a file that changes between chunks.
@@ -892,6 +927,28 @@ mod tests {
     }
 
     #[test]
+    fn a_pr_diff_reads_the_viewed_marks_and_a_mark_is_set_for_the_head_seen() {
+        let id = "github.com/bitomule/alondra#154";
+        let answer = |files: Value| move |_: &str| Ok(json!({"pr_id": id, "head": "abc", "diff": "d", "truncated": false, "files": files}));
+        let marked = pull_request_diff_via(id, "abc", answer(json!([{"path": "a", "viewed": "viewed"}, {"path": "b", "viewed": "changed"}]))).unwrap();
+        assert_eq!(marked.files, Some(vec![
+            FileMark { path: "a".into(), viewed: FileViewed::Viewed },
+            FileMark { path: "b".into(), viewed: FileViewed::Changed },
+        ]));
+        let unknown = pull_request_diff_via(id, "abc", answer(json!([{"path": "a", "viewed": "someday"}]))).unwrap();
+        assert_eq!((unknown.files, unknown.text.as_str()), (None, "d"), "a mark it cannot read never costs the diff");
+        let mut sent = Vec::new();
+        let viewed = set_file_viewed_via(id, "abc", "src/a.rs", true, |route, body| {
+            sent.push((route.to_owned(), body.clone()));
+            Ok(json!({"pr_id": id, "head": "abc", "path": "src/a.rs", "viewed": "viewed"}))
+        }).unwrap();
+        assert_eq!(viewed, FileViewed::Viewed);
+        assert_eq!(sent, [("/pull-requests/github.com%2Fbitomule%2Falondra%23154/viewed-files".to_owned(), json!({"path": "src/a.rs", "viewed": true, "head": "abc"}))]);
+        assert!(set_file_viewed_via(id, "abc", "src/a.rs", true, |_, _| Ok(json!({"pr_id": id, "head": "abc", "path": "src/b.rs", "viewed": "viewed"}))).is_err());
+        assert!(set_file_viewed_via("../secret", "abc", "a", true, |_, _| panic!("invalid ID reached transport")).is_err());
+    }
+
+    #[test]
     fn a_canonical_pr_diff_uses_the_json_contract_and_one_encoded_path_segment() {
         let mut paths = Vec::new();
         let diff = pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |path| {
@@ -907,6 +964,7 @@ mod tests {
         assert!(pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "head":"changed", "diff":"stale", "truncated":false}))).is_err());
         let cut = pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "head":"abc", "diff":"partial", "truncated":true}))).unwrap();
         assert!(cut.truncated);
+        assert_eq!(diff.files, None);
     }
 
     #[test]

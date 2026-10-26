@@ -19,6 +19,8 @@ pub(crate) trait Github: Send + Sync + 'static {
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>>;
     /// Closes the PR on GitHub without merging it.
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>>;
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
+    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>>;
 }
 
 pub(crate) struct Gh;
@@ -40,6 +42,14 @@ impl Github for Gh {
                 .await
                 .map(|_| ())
         })
+    }
+
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+        Box::pin(async move { crate::pr_viewed::read(&crate::domain_github::GhCli::new(), pr).await })
+    }
+
+    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>> {
+        Box::pin(async move { crate::pr_viewed::set(&crate::domain_github::GhCli::new(), host, node, path, viewed).await })
     }
 }
 

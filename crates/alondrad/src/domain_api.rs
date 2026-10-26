@@ -263,6 +263,12 @@ async fn pull_request_diff<H: DomainHost>(
 }
 
 pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
+    pull_request_diff_from(domain, id, &crate::domain_github::GhCli::new()).await
+}
+
+/// The diff at the registered head, with the viewed mark GitHub keeps for each file when it gives
+/// them for that same head: a mark that cannot be read never holds back the diff.
+pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &crate::domain_github::GhCli) -> Response {
     let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -274,18 +280,27 @@ pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) 
     // numeric PR or an arbitrary URL supplied by a reader.
     let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
     let expected_head = pr.head.clone();
-    let before = match live_head(&url).await {
+    let before = match live_head(gh, &url).await {
         Ok(head) => head,
         Err(error) => return error,
     };
     if before != expected_head {
         return domain_error(DomainError::new("stale_head", "registered PR head changed"));
     }
-    let (bytes, truncated) = match bounded_diff(&url).await {
+    let (diff, marks) = tokio::join!(bounded_diff(gh, &url), crate::pr_viewed::read(gh, pr));
+    let (bytes, truncated) = match diff {
         Ok(result) => result,
         Err(error) => return error,
     };
-    let after = match live_head(&url).await {
+    let marks = match marks {
+        Ok(marks) if marks.head == before => Some(marks.files),
+        Ok(_) => None,
+        Err(error) => {
+            log!("could not read the viewed files of {url}: {error}");
+            None
+        }
+    };
+    let after = match live_head(gh, &url).await {
         Ok(head) => head,
         Err(error) => return error,
     };
@@ -303,6 +318,9 @@ pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) 
     }
     let mut body = json!({"pr_id":pr.id,"host":pr.host,"repository":pr.repository,
         "number":pr.number,"head":before,"diff":diff,"truncated":truncated});
+    if let Some(marks) = marks {
+        body["files"] = json!(marks);
+    }
     bound_diff_json(&mut body);
     Json(body).into_response()
 }
@@ -311,7 +329,15 @@ pub(crate) fn bound_diff_json(body: &mut Value) {
     // Bound the *encoded JSON*, not source bytes: backslashes/control chars can
     // expand substantially when relayed. All readers receive an explicit
     // truncated flag rather than a transport-level 502.
-    while serde_json::to_vec(body).is_ok_and(|encoded| encoded.len() > MAX_RELAY_DIFF_RESPONSE) {
+    let too_big = |body: &Value| serde_json::to_vec(body).is_ok_and(|encoded| encoded.len() > MAX_RELAY_DIFF_RESPONSE);
+    if body.get("files").is_some() {
+        let mut bare = body.clone();
+        bare["diff"] = json!("");
+        if too_big(&bare) {
+            body.as_object_mut().map(|fields| fields.remove("files"));
+        }
+    }
+    while too_big(body) {
         let Some(diff) = body.get("diff").and_then(Value::as_str) else {
             break;
         };
@@ -325,11 +351,35 @@ pub(crate) fn bound_diff_json(body: &mut Value) {
         let replacement = diff[..cut].to_owned();
         body["diff"] = json!(replacement);
         body["truncated"] = json!(true);
+        keep_shown_marks(body);
     }
 }
 
-async fn bounded_diff(url: &str) -> Result<(Vec<u8>, bool), Response> {
-    let mut child = tokio::process::Command::new("gh")
+/// Drops the marks of the files a cut diff no longer shows.
+fn keep_shown_marks(body: &mut Value) {
+    let shown = diff_paths(body["diff"].as_str().unwrap_or_default());
+    if let Some(files) = body.get_mut("files").and_then(Value::as_array_mut) {
+        files.retain(|file| file["path"].as_str().is_some_and(|path| shown.contains(path)));
+    }
+}
+
+/// The paths each `diff --git a/OLD b/NEW` header names, both sides of a rename.
+fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
+    let mut paths = std::collections::HashSet::new();
+    for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {
+        let half = names.len().saturating_sub(3) / 2;
+        if names.len() % 2 == 1 && names.get(half..half + 3) == Some(" b/") && names[..half] == names[half + 3..] {
+            paths.insert(names[..half].to_owned());
+        } else if let Some((old, new)) = names.split_once(" b/") {
+            paths.insert(old.to_owned());
+            paths.insert(new.to_owned());
+        }
+    }
+    paths
+}
+
+async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Vec<u8>, bool), Response> {
+    let mut child = tokio::process::Command::new(gh.program())
         .args(["pr", "diff", url])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -373,10 +423,10 @@ async fn bounded_diff(url: &str) -> Result<(Vec<u8>, bool), Response> {
     Ok((bytes, truncated))
 }
 
-async fn live_head(url: &str) -> Result<String, Response> {
+async fn live_head(gh: &crate::domain_github::GhCli, url: &str) -> Result<String, Response> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        tokio::process::Command::new("gh")
+        tokio::process::Command::new(gh.program())
             .args(["pr", "view", url, "--json", "headRefOid"])
             .kill_on_drop(true)
             .output(),
@@ -1327,6 +1377,29 @@ mod tests {
         assert!(body["truncated"].as_bool().unwrap());
         assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
         assert!(body["diff"].as_str().unwrap().chars().count() > 0);
+    }
+    #[test]
+    fn a_cut_diff_keeps_only_the_marks_of_the_files_it_still_shows() {
+        let file = |path: &str| format!("diff --git a/{path} b/{path}\n{}", "+line\n".repeat(10_000));
+        let diff = format!("{}diff --git a/old name.rs b/new name.rs\n+x\n{}{}", file("src/a.rs"), file("src/b.rs"), file("src/c.rs"));
+        let marks = ["src/a.rs", "new name.rs", "src/b.rs", "src/c.rs"].map(|path| json!({"path": path, "viewed": "viewed"}));
+        let mut body = json!({"pr_id":"pr-a","head":"a".repeat(40),"diff":diff,"truncated":false,"files":marks});
+        bound_diff_json(&mut body);
+        assert!(body["truncated"].as_bool().unwrap());
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
+        let shown = diff_paths(body["diff"].as_str().unwrap());
+        let kept: Vec<_> = body["files"].as_array().unwrap().iter().map(|mark| mark["path"].as_str().unwrap()).collect();
+        assert!(kept.starts_with(&["src/a.rs", "new name.rs"]) && !kept.contains(&"src/c.rs"), "{kept:?}");
+        assert!(kept.iter().all(|path| shown.contains(*path)), "{kept:?}");
+    }
+    #[test]
+    fn marks_that_alone_overflow_the_relay_go_before_the_diff() {
+        let marks: Vec<_> = (0..3000).map(|n| json!({"path": format!("src/{}/file-{n}.rs", "deep/".repeat(10)), "viewed": "unviewed"})).collect();
+        let mut body = json!({"pr_id":"pr-a","head":"a".repeat(40),"diff":"diff --git a/x b/x\n+x\n","truncated":false,"files":marks});
+        bound_diff_json(&mut body);
+        assert!(body.get("files").is_none());
+        assert_eq!(body["diff"], "diff --git a/x b/x\n+x\n");
+        assert!(!body["truncated"].as_bool().unwrap());
     }
     fn envelope(host: &Host, id: &str, command: Command) -> CommandEnvelope {
         let state = host.domain.state().unwrap();

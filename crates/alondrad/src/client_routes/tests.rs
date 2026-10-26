@@ -669,6 +669,14 @@ impl Github for FakeGithub {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("closing is not available here".into()) })
     }
+
+    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+        Box::pin(async { Err("viewed files are not available here".into()) })
+    }
+
+    fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async { Err("viewed files are not available here".into()) })
+    }
 }
 
 const USER_OPTION: &str = "
@@ -1401,6 +1409,12 @@ impl Github for HeldIssueSearch {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
+    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+        Box::pin(async { Err("unexpected viewed files".into()) })
+    }
+    fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async { Err("unexpected viewed mark".into()) })
+    }
 }
 struct ReleaseIssueSearch(Arc<tokio::sync::Semaphore>);
 impl Drop for ReleaseIssueSearch {
@@ -1461,4 +1475,153 @@ async fn the_mcp_sign_in_routes_take_only_a_signed_device_and_their_own_body() {
     for refused in ["/mcp-sign-ins/other-card/connect", "/mcp-sign-ins/mcp-sign-in-t/open", "/mcp-sign-ins/mcp-sign-in-t", "/mcp-sign-ins/mcp sign/connect"] {
         assert_eq!(parse_write(refused), None, "{refused}");
     }
+}
+
+const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// A `gh` for `me/app#7` at `PR_HEAD`: `pr view` gives the head, `pr diff` the diff in `diff`, and
+/// the GraphQL read of its files `marks`.
+fn diff_gh(dir: &std::path::Path, marks: &str) -> crate::domain_github::GhCli {
+    use std::os::unix::fs::PermissionsExt;
+    let diff = dir.join("diff");
+    std::fs::write(&diff, "diff --git a/src/a.rs b/src/a.rs\n+a\ndiff --git a/src/b.rs b/src/b.rs\n+b\n").unwrap();
+    let marks_file = dir.join("marks");
+    std::fs::write(&marks_file, marks).unwrap();
+    let program = dir.join("gh");
+    std::fs::write(&program, format!(r#"#!/bin/sh
+case "$*" in
+  *viewerViewedState*) cat '{marks}';;
+  *"pr view"*) printf '%s' '{{"headRefOid":"{PR_HEAD}"}}';;
+  *"pr diff"*) cat '{diff}';;
+  *) exit 1;;
+esac
+"#, marks = marks_file.display(), diff = diff.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::domain_github::GhCli::at(program)
+}
+
+fn marks_page(head: &str) -> String {
+    json!({"data": {"repository": {"pullRequest": {"id": "PR_node", "headRefOid": head, "files": {
+        "pageInfo": {"hasNextPage": false, "endCursor": null},
+        "nodes": [{"path": "src/a.rs", "viewerViewedState": "VIEWED"}, {"path": "src/b.rs", "viewerViewedState": "DISMISSED"}],
+    }}}}}).to_string()
+}
+
+async fn diff_body(fixture: &Fixture, gh: &crate::domain_github::GhCli) -> Value {
+    let response = crate::domain_api::pull_request_diff_from(&fixture.domain, "pr-1".into(), gh).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn the_diff_of_a_pull_request_carries_the_viewed_mark_github_keeps_for_each_file() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let gh = diff_gh(&fixture.home, &marks_page(PR_HEAD));
+    let body = diff_body(&fixture, &gh).await;
+    assert_eq!(body["head"], PR_HEAD);
+    assert!(body["diff"].as_str().unwrap().contains("src/b.rs"));
+    assert_eq!(body["files"], json!([{"path": "src/a.rs", "viewed": "viewed"}, {"path": "src/b.rs", "viewed": "changed"}]));
+}
+
+#[tokio::test]
+async fn the_diff_comes_without_marks_when_github_gives_none_for_its_head() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    for marks in [marks_page("fedcba9876543210fedcba9876543210fedcba98"), json!({"errors": [{"message": "boom"}]}).to_string(), "not json".into()] {
+        let gh = diff_gh(&fixture.home, &marks);
+        let body = diff_body(&fixture, &gh).await;
+        assert!(body["diff"].as_str().unwrap().contains("src/a.rs"), "{marks}");
+        assert!(body.get("files").is_none(), "{marks}: {body}");
+    }
+}
+
+/// Answers the reads and marks of viewed files from memory, and keeps every mark it is asked for.
+struct ViewedGithub {
+    marks: Result<crate::pr_viewed::Marks, String>,
+    set: std::sync::Mutex<Vec<(String, String, String, bool)>>,
+}
+
+impl ViewedGithub {
+    fn at(head: &str) -> Arc<Self> {
+        use crate::pr_viewed::{Mark, Marks, Viewed};
+        Arc::new(Self {
+            marks: Ok(Marks { node: "PR_node".into(), head: head.into(), files: vec![Mark { path: "src/a.rs".into(), viewed: Viewed::Unviewed }] }),
+            set: Default::default(),
+        })
+    }
+}
+
+impl Github for ViewedGithub {
+    fn search_issues<'a>(&'a self, _: &'a [String]) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async { Err("unexpected issue search".into()) })
+    }
+    fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async { Err("unexpected issue detail".into()) })
+    }
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async { Err("unexpected PR close".into()) })
+    }
+    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+        Box::pin(async { self.marks.clone() })
+    }
+    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.set.lock().unwrap().push((host.into(), node.into(), path.into(), viewed));
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn marking_a_file_viewed_sets_the_github_mark_of_the_head_the_reader_saw() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let github = ViewedGithub::at(PR_HEAD);
+    fixture.client.use_github(github.clone());
+    let path = "/pull-requests/pr-1/viewed-files";
+    let (status, body) = fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": true, "head": PR_HEAD})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"pr_id": "pr-1", "head": PR_HEAD, "path": "src/a.rs", "viewed": "viewed"}));
+    let (status, body) = fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": false, "head": PR_HEAD})).await;
+    assert_eq!((status, body["viewed"].as_str()), (StatusCode::OK, Some("unviewed")));
+    assert_eq!(*github.set.lock().unwrap(), [
+        ("github.com".to_owned(), "PR_node".to_owned(), "src/a.rs".to_owned(), true),
+        ("github.com".to_owned(), "PR_node".to_owned(), "src/a.rs".to_owned(), false),
+    ]);
+    assert_eq!(parse_write(path), Some(Write::FileViewed("pr-1".into())));
+    assert_eq!(parse_write("/pull-requests/github.com%2Fme%2Fapp%237/viewed-files"), Some(Write::FileViewed("github.com/me/app#7".into())));
+    assert!(approved_write_path(path) && !atomic_write_path(path), "a mark goes through the relay as a write of its own and is never replayed");
+}
+
+#[tokio::test]
+async fn a_file_is_never_marked_for_a_head_or_a_file_the_reader_did_not_see() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let path = "/pull-requests/pr-1/viewed-files";
+    let mark = |file: &str, head: &str| json!({"path": file, "viewed": true, "head": head});
+    let github = ViewedGithub::at(PR_HEAD);
+    fixture.client.use_github(github.clone());
+    let refused = [
+        (fixture.local_send(path, &mark("src/a.rs", "fedcba9876543210fedcba9876543210fedcba98")).await, StatusCode::CONFLICT, "stale_head"),
+        (fixture.local_send(path, &mark("src/elsewhere.rs", PR_HEAD)).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
+        (fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": true, "head": PR_HEAD, "extra": 1})).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
+        (fixture.local_send(path, &mark("", PR_HEAD)).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
+        (fixture.local_send("/pull-requests/nothing/viewed-files", &mark("src/a.rs", PR_HEAD)).await, StatusCode::NOT_FOUND, "not_found"),
+    ];
+    for ((status, error), expected, code) in refused {
+        assert_eq!((status, error["code"].as_str()), (expected, Some(code)), "{error}");
+    }
+    fixture.client.use_github(ViewedGithub::at("fedcba9876543210fedcba9876543210fedcba98"));
+    let (status, error) = fixture.local_send(path, &mark("src/a.rs", PR_HEAD)).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("stale_head")), "GitHub's head moved past the registered one");
+    fixture.command(Actor::System, "closed", Command::ObservePrState {
+        pr_id: "pr-1".into(), head: PR_HEAD.into(), base: "main".into(),
+        state: alondra_core::domain::PrState::Closed, merged_head: None });
+    fixture.client.use_github(github.clone());
+    let (status, error) = fixture.local_send(path, &mark("src/a.rs", PR_HEAD)).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
+    assert!(github.set.lock().unwrap().is_empty(), "nothing reached GitHub");
+    let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&mark("src/a.rs", PR_HEAD)).send().await.unwrap();
+    assert_eq!(unsigned.status(), StatusCode::NOT_FOUND);
 }
