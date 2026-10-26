@@ -2,7 +2,7 @@
 # Usage: journeys.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox> <node> <persistent.cjs>
 # Starts a fresh two-Mac sandbox with the fake claude and gh, whose tasks and orchestrator batches
 # run through the Agent SDK host with the sandbox's scripted Claude, runs the pairing scenarios and
-# then the scripted journeys (JOURNEY=task-cycle|session|reopen|mcp|local|accounts, all by default), and stops it.
+# then the scripted journeys (JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts, all by default), and stops it.
 # KEEP=1 keeps the sandbox directory for a look afterwards.
 set -eu
 

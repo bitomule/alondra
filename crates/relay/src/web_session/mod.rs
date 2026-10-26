@@ -767,6 +767,7 @@ mod tests {
             epoch: "synthetic".into(),
             iroh_access_token: None,
             iroh_relay: None,
+            report_repo: None,
             testflight_url: None,
             test_directory: Some(scratch_directory),
         });

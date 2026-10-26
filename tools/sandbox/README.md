@@ -101,7 +101,7 @@ task's detail.
 ## Journeys
 
 `make e2e-journeys` (`//tests/sandbox:journeys`) starts a two-Mac sandbox with the fakes, runs
-`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|reopen|mcp|local|accounts` runs one, and
+`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts` runs one, and
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
 
@@ -120,6 +120,16 @@ as the user through views and actions, the way the iPhone does.
   - S4: a crashed session's bearer is refused once it resumes with a new one.
   - S5: from a turn Claude started by itself, with the user's message waiting behind it, a plan of 41 points is refused and Claude gets why; its shorter plan reaches the user's Review card and the message then runs.
   - S6: a node force-stopped while it runs its work after the merge leaves a card that names that work and offers «Carry on» and «Close the task»; closing finishes the task.
+- `report` (before `local`: the Macs learn the report repository from the relay, which announces
+  the fake `gh`'s `sandbox/reports`):
+  - C1: `alondra report` on Mac 1 builds a report and `alondra report send` puts it in a secret
+    gist of the sender, in parts, with an issue that holds only the version, macOS, failure and the
+    gist's address; sending again adds nothing.
+  - C2: Mac 2, signed in as the repository's owner, lists it with `alondra report list` and
+    `alondra report open` brings back exactly the files Mac 1 previewed, without its pseudonyms.
+  - C3: sent while GitHub cannot be reached, a report stays pending and Mac 1's daemon sends it on
+    its own once GitHub answers again.
+  - C4: `alondra report delete` closes the issue; only the sender's own delete takes the gist away.
 - `local` (last, since it stops the relay):
   - L1: a whole task over the direct listener with the relay down.
   - L2: each Mac shows only its own tasks, and a terminal pairs directly with both.

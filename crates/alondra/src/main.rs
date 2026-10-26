@@ -104,16 +104,18 @@ enum Cmd {
     },
     #[command(about = tr!("A crash report with everything private left out, to send to whoever asked for it", "Un informe de fallo con todo lo privado fuera, para mandárselo a quien te lo pidió"),
         long_about = tr!(
-            "Collect a crash report of this Mac with everything private left out, show it in full, and save it as a file only when it passed the final check. It needs no daemon.",
-            "Recoge un informe de fallo de este Mac con todo lo privado fuera, lo enseña entero y solo lo guarda como fichero si pasó la comprobación final. No necesita el daemon."
+            "Collect a crash report of this Mac with everything private left out and show it in full. Only when it passed the final check can it leave the Mac: sent with your GitHub account as a public issue of the report repository that links it, or saved as a file. It needs no daemon.",
+            "Recoge un informe de fallo de este Mac con todo lo privado fuera y lo enseña entero. Solo si pasó la comprobación final puede salir del Mac: enviado con tu cuenta de GitHub como un issue público del repositorio de informes que lo enlaza, o guardado como fichero. No necesita el daemon."
         ),
         args_conflicts_with_subcommands = true,
-        after_help = examples(&["alondra report", "alondra report --window 24h --description \"The node stopped after the Mac slept\"", "alondra report save r-20261025-1a2b3c4d", "alondra report open alondra-report-20261025.txt"]))]
+        after_help = examples(&["alondra report", "alondra report --window 24h --description \"The node stopped after the Mac slept\"", "alondra report send r-20261025-1a2b3c4d --kind session-ended", "alondra report save r-20261025-1a2b3c4d", "alondra report list", "alondra report open 12", "alondra report open alondra-report-20261025.txt"]))]
     Report {
         #[arg(long, default_value = "72h", value_parser = ["24h", "72h", "7d"], help = tr!("How far back it looks", "Hasta cuándo mira atrás"))]
         window: String,
         #[arg(long, help = tr!("What happened, in your words; it goes as you write it", "Qué pasó, con tus palabras; va tal cual lo escribas"))]
         description: Option<String>,
+        #[arg(long, value_enum, help = tr!("What failed, for the issue when it is sent", "Qué falló, para el issue cuando se envíe"))]
+        kind: Option<report::send::Kind>,
         #[command(subcommand)]
         command: Option<ReportCmd>,
     },
@@ -247,10 +249,26 @@ enum ReportCmd {
         #[arg(help = tr!("Where to save it; alondra-report-<date>.txt here by default", "Dónde guardarlo; alondra-report-<fecha>.txt aquí por defecto"))]
         file: Option<std::path::PathBuf>,
     },
-    #[command(about = tr!("Open a report someone sent you", "Abre un informe que te mandaron"))]
+    #[command(about = tr!("Send a report already previewed to the report repository", "Envía al repositorio de informes un informe ya revisado"))]
+    Send {
+        #[arg(help = tr!("The report's id, as alondra report printed it", "El id del informe, como lo mostró alondra report"))]
+        id: String,
+        #[arg(long, value_enum, help = tr!("What failed, for the issue", "Qué falló, para el issue"))]
+        kind: Option<report::send::Kind>,
+        #[arg(long, hide = true)]
+        retry: bool,
+    },
+    #[command(about = tr!("The open reports of the report repository", "Los informes abiertos del repositorio de informes"))]
+    List,
+    #[command(about = tr!("Open a report: an issue of the report repository or a file someone sent you", "Abre un informe: un issue del repositorio de informes o un fichero que te mandaron"))]
     Open {
-        #[arg(help = tr!("The report file", "El fichero del informe"))]
-        file: std::path::PathBuf,
+        #[arg(help = tr!("The issue's number or URL, or the report file", "El número o la URL del issue, o el fichero del informe"))]
+        target: String,
+    },
+    #[command(about = tr!("Close a report's issue and, if you sent it, delete its gist", "Cierra el issue de un informe y, si lo mandaste tú, borra su gist"))]
+    Delete {
+        #[arg(help = tr!("The issue's number or URL", "El número o la URL del issue"))]
+        target: String,
     },
 }
 
@@ -442,7 +460,7 @@ fn main() -> Result<()> {
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
         Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
-        | Cmd::Report { command: None, .. }
+        | Cmd::Report { command: None | Some(ReportCmd::List), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
@@ -470,20 +488,18 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             ConfigCmd::Set { key, value } => commands::config_set(&key, Some(&value)),
             ConfigCmd::Unset { key } => commands::config_set(&key, None),
         },
-        Some(Cmd::Report { window, description, command }) => match command {
-            None => report::run(&window, description, json, no_input),
+        Some(Cmd::Report { window, description, kind, command }) => match command {
+            None => report::run(&window, description, kind, json, no_input),
             Some(ReportCmd::Save { id, file }) => {
                 let file = file.unwrap_or_else(|| report::default_file_name(&id).into());
                 report::save(&report::Mac::new(), &id, &file)?;
                 println!("{}", report::saved_notice(&file));
                 Ok(())
             }
-            Some(ReportCmd::Open { file }) => {
-                use report::collect::Host as _;
-                let (id, dir, files) = report::open_file(report::Mac::new().home(), &file)?;
-                print!("{}", report::received_summary(&id, &dir, &files));
-                Ok(())
-            }
+            Some(ReportCmd::Send { id, kind, retry }) => report::send_report(&id, kind, retry),
+            Some(ReportCmd::List) => report::list_reports(json),
+            Some(ReportCmd::Open { target }) => report::open_report(&target),
+            Some(ReportCmd::Delete { target }) => report::delete_report(&target),
         },
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),

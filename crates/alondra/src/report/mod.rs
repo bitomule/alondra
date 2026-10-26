@@ -6,10 +6,14 @@ pub mod canary;
 pub mod collect;
 pub mod daemon_log;
 pub mod extract;
+pub mod github;
 pub mod private;
 pub mod redact;
+pub mod send;
 pub mod templates;
 pub mod time;
+#[cfg(test)]
+mod send_tests;
 #[cfg(test)]
 mod tests;
 
@@ -79,9 +83,9 @@ fn final_check(host: &dyn Host, files: &Files, pseudonyms: &redact::Pseudonyms, 
     bundle::check(files, &private)
 }
 
-/// The armored file of a report already previewed, if its files are still those of the preview and
-/// the final check finds nothing.
-pub fn package(host: &dyn Host, id: &str) -> Result<String> {
+/// The files of a report already previewed, if they are still those of the preview and the final
+/// check finds nothing.
+pub fn checked(host: &dyn Host, id: &str) -> Result<Files> {
     if !bundle::is_id(id) {
         bail!(trf!("{id} is not a report id; alondra report prints it", "{id} no es el id de un informe; alondra report lo muestra"));
     }
@@ -95,11 +99,11 @@ pub fn package(host: &dyn Host, id: &str) -> Result<String> {
     if let Some(hit) = hits.first() {
         let (section, line, what) = (&hit.section, hit.line, &hit.what);
         bail!(trf!(
-            "the report cannot leave this Mac: {section}, line {line}, has {what}. Nothing was saved",
-            "el informe no puede salir de este Mac: {section}, línea {line}, tiene {what}. No se ha guardado nada"
+            "the report cannot leave this Mac: {section}, line {line}, has {what}. Nothing was saved or sent",
+            "el informe no puede salir de este Mac: {section}, línea {line}, tiene {what}. No se ha guardado ni enviado nada"
         ));
     }
-    Ok(bundle::armored(id, &files))
+    Ok(files)
 }
 
 pub fn default_file_name(id: &str) -> String {
@@ -109,7 +113,7 @@ pub fn default_file_name(id: &str) -> String {
 
 /// Writes the package of report `id` to `file`.
 pub fn save(host: &dyn Host, id: &str, file: &Path) -> Result<()> {
-    let armored = package(host, id)?;
+    let armored = bundle::armored(id, &checked(host, id)?);
     use std::io::Write;
     let shown = file.display();
     let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(file).with_context(|| trf!("cannot create {shown}", "no se puede crear {shown}"))?;
@@ -122,15 +126,220 @@ pub fn open_file(home: &Path, file: &Path) -> Result<(String, PathBuf, Files)> {
     let shown = file.display();
     let text = std::fs::read_to_string(file).with_context(|| trf!("cannot read {shown}", "no se puede leer {shown}"))?;
     let (id, files) = bundle::unarmored(&text)?;
-    let dir = bundle::received_dir(home, &id);
+    let dir = keep_received(home, &id, &files)?;
+    Ok((id, dir, files))
+}
+
+fn keep_received(home: &Path, id: &str, files: &Files) -> Result<PathBuf> {
+    let dir = bundle::received_dir(home, id);
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
     std::fs::create_dir_all(&dir)?;
-    for (name, text) in &files {
+    for (name, text) in files {
         std::fs::write(dir.join(name), text)?;
     }
+    Ok(dir)
+}
+
+/// Where the relay's announcement was last kept, for when the relay cannot be asked.
+const ANNOUNCED: &str = "announced.json";
+
+/// The report repository: `chosen` (`report.repo`) when this Mac has one, else the one the relay
+/// announces in `/v1/bootstrap` (`ask` asks the relay), else the last one that relay announced.
+pub fn repo_name(home: &Path, chosen: Option<String>, ask: &dyn Fn(&str) -> Option<Value>) -> Option<String> {
+    if let Some(repo) = chosen {
+        return Some(repo);
+    }
+    let relay = relay_origin(home);
+    let reports = home.join("reports");
+    match ask(&relay) {
+        Some(body) => {
+            let repo = body["report_repo"].as_str().filter(|r| alondra_core::config::is_github_repo(r)).map(str::to_owned);
+            let _ = std::fs::create_dir_all(&reports);
+            let _ = std::fs::write(reports.join(ANNOUNCED), json!({"relay": relay, "report_repo": repo}).to_string());
+            repo
+        }
+        None => {
+            let kept: Value = serde_json::from_slice(&std::fs::read(reports.join(ANNOUNCED)).ok()?).ok()?;
+            if kept["relay"].as_str() != Some(relay.as_str()) {
+                return None;
+            }
+            kept["report_repo"].as_str().map(str::to_owned)
+        }
+    }
+}
+
+fn relay_origin(home: &Path) -> String {
+    std::fs::read_to_string(home.join("service.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Table>(&text).ok())
+        .and_then(|table| table.get("relay_url").and_then(|v| v.as_str()).map(|u| u.trim_end_matches('/').to_owned()))
+        .unwrap_or_else(|| crate::service_client::RELAY.to_owned())
+}
+
+fn bootstrap(relay: &str) -> Option<Value> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build())
+        .timeout_global(Some(Duration::from_secs(5)))
+        .max_redirects(0)
+        .build()
+        .into();
+    agent.get(format!("{relay}/v1/bootstrap")).call().ok()?.body_mut().with_config().limit(4096).read_json().ok()
+}
+
+fn repo_of(host: &dyn Host) -> Result<String> {
+    host.report_repo().ok_or_else(|| send::Blocked::NoRepo.into())
+}
+
+/// `alondra report send`: sends report `id`, already previewed, to the report repository.
+pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool) -> Result<()> {
+    let host = Mac::new();
+    let files = checked(&host, id)?;
+    let gh = github::Gh::default();
+    let repo = github::Repo { gh: &gh, name: repo_of(&host)? };
+    let outcome = send::send(&repo, host.home(), id, &files, kind, host.now(), &backoff);
+    if retry {
+        return outcome.map(drop);
+    }
+    println!("{}", outcome_notice(&repo.name, &outcome?));
+    Ok(())
+}
+
+/// How long a pending report waits; seconds in a sandbox with fast timing.
+fn backoff(attempts: u32) -> i64 {
+    if alondra_core::config::Config::load().is_ok_and(|c| c.fast_timing) { 1_000 } else { send::backoff_ms(attempts) }
+}
+
+pub fn outcome_notice(repo: &str, outcome: &send::Outcome) -> String {
+    match outcome {
+        send::Outcome::Sent { url, .. } => trf!(
+            "Sent: {url}. Its issue in {repo} shows the version, macOS and the kind of failure, and links the report: anyone who sees it can read the report.",
+            "Enviado: {url}. Su issue en {repo} enseña la versión, macOS y el tipo de fallo, y enlaza el informe: cualquiera que lo vea puede leerlo."
+        ),
+        send::Outcome::Pending(why) => trf!(
+            "GitHub cannot take it now ({why}). It stays pending on this Mac and Alondra sends it on its own when GitHub answers again.",
+            "GitHub no puede recibirlo ahora ({why}). Queda pendiente en este Mac y Alondra lo envía sola cuando GitHub vuelva a responder."
+        ),
+    }
+}
+
+/// `alondra report list`: the open reports of the report repository.
+pub fn list_reports(json: bool) -> Result<()> {
+    let host = Mac::new();
+    let gh = github::Gh::default();
+    let repo = github::Repo { gh: &gh, name: repo_of(&host)? };
+    let reports = open_reports(&repo)?;
+    if json {
+        let rows: Vec<Value> = reports
+            .iter()
+            .map(|(i, p)| json!({"number": i.number, "url": i.url, "author": i.author, "created_at": i.created_at, "report": p.id, "alondra": p.alondra, "macos": p.macos, "failure": p.kind.word()}))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({"schema": "alondra.reports/1", "repo": repo.name, "reports": rows}))?);
+        return Ok(());
+    }
+    print!("{}", reports_text(&repo.name, &reports));
+    Ok(())
+}
+
+/// The open issues of `repo` that are crash reports, newest first.
+pub fn open_reports(repo: &github::Repo) -> Result<Vec<(github::Issue, send::Public)>> {
+    let issues = repo.issues("state=open")?;
+    Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())
+}
+
+pub fn reports_text(repo: &str, reports: &[(github::Issue, send::Public)]) -> String {
+    if reports.is_empty() {
+        return trf!("{repo} has no open reports.\n", "{repo} no tiene informes abiertos.\n");
+    }
+    let mut out = String::new();
+    for (issue, public) in reports {
+        let date = issue.created_at.get(..10).unwrap_or(&issue.created_at);
+        out.push_str(&format!("#{:<5} {:<20} {date}  Alondra {:<8} macOS {:<7} {}\n", issue.number, issue.author, public.alondra, public.macos, public.kind.label()));
+    }
+    out.push_str(&format!("\n{}\n", tr!("Open one with alondra report open <number>.", "Abre uno con alondra report open <número>.")));
+    out
+}
+
+/// `alondra report open <number|URL|file>`.
+pub fn open_report(target: &str) -> Result<()> {
+    let host = Mac::new();
+    if Path::new(target).is_file() {
+        let (id, dir, files) = open_file(host.home(), Path::new(target))?;
+        print!("{}", received_summary(&id, &dir, &files));
+        return Ok(());
+    }
+    let gh = github::Gh::default();
+    let (repo, issue) = found_issue(&host, target, &gh)?;
+    let (id, dir, files) = open_issue(host.home(), &repo, &issue)?;
+    let (number, author) = (issue.number, issue.author.as_str());
+    println!("{}", trf!("Issue #{number}, sent by {author}", "Issue #{number}, enviado por {author}"));
+    print!("{}", received_summary(&id, &dir, &files));
+    Ok(())
+}
+
+/// Downloads the report `issue` names into `<home>/reports/received/<id>/`.
+pub fn open_issue(home: &Path, repo: &github::Repo, issue: &github::Issue) -> Result<(String, PathBuf, Files)> {
+    let (public, file) = send::download(repo, issue)?;
+    let (id, files) = bundle::unarmored(&file)?;
+    if id != public.id {
+        bail!(tr!("the report on GitHub is not the one its issue names", "el informe en GitHub no es el que nombra su issue"));
+    }
+    let dir = keep_received(home, &id, &files)?;
     Ok((id, dir, files))
+}
+
+fn found_issue<'a>(host: &dyn Host, target: &str, gh: &'a dyn github::Github) -> Result<(github::Repo<'a>, github::Issue)> {
+    let Some((number, named)) = send::issue_ref(target) else {
+        bail!(trf!("{target} is not a file, an issue number or an issue URL", "{target} no es un fichero, ni un número ni una URL de issue"));
+    };
+    let name = match named {
+        Some(name) => name,
+        None => repo_of(host)?,
+    };
+    let repo = github::Repo { gh, name };
+    let issue = repo.issue(number)?.with_context(|| {
+        let name = repo.name.as_str();
+        trf!("{name} has no issue {number}", "{name} no tiene el issue {number}")
+    })?;
+    Ok((repo, issue))
+}
+
+/// `alondra report delete <number|URL>`: closes a report's issue and, when you sent it, deletes
+/// its gist.
+pub fn delete_report(target: &str) -> Result<()> {
+    let host = Mac::new();
+    let gh = github::Gh::default();
+    let (repo, issue) = found_issue(&host, target, &gh)?;
+    println!("{}", delete_issue_report(&repo, &issue)?);
+    Ok(())
+}
+
+pub fn delete_issue_report(repo: &github::Repo, issue: &github::Issue) -> Result<String> {
+    let Some(public) = send::Public::parse(&issue.body) else {
+        let number = issue.number;
+        bail!(trf!("issue {number} is not an Alondra crash report", "el issue {number} no es un informe de fallo de Alondra"));
+    };
+    let login = repo.login()?;
+    let gist = repo.gist(send::gist_id(&public.gist))?;
+    let deleted = match gist {
+        Some(gist) if gist.owner == login => repo.delete_gist(&gist.id)?,
+        _ => false,
+    };
+    if issue.open {
+        repo.close_issue(issue.number)?;
+    }
+    let (number, url, gist, author) = (issue.number, issue.url.as_str(), public.gist.as_str(), issue.author.as_str());
+    Ok(if deleted {
+        trf!("Deleted the report's gist and closed issue #{number}: {url}", "Borrado el gist del informe y cerrado el issue #{number}: {url}")
+    } else if issue.author == login {
+        trf!("Closed issue #{number}; its gist was already deleted: {url}", "Cerrado el issue #{number}; su gist ya estaba borrado: {url}")
+    } else {
+        trf!(
+            "Closed issue #{number}: {url}. Its gist {gist} belongs to {author}: only they can delete it, with alondra report delete {number}",
+            "Cerrado el issue #{number}: {url}. Su gist {gist} es de {author}: solo puede borrarlo esa cuenta, con alondra report delete {number}"
+        )
+    })
 }
 
 /// The real Mac.
@@ -179,11 +388,14 @@ impl Host for Mac {
     fn uid(&self) -> u32 {
         unsafe { libc::getuid() }
     }
+
+    fn report_repo(&self) -> Option<String> {
+        repo_name(&self.home, alondra_core::config::Config::load().ok().and_then(|c| c.report_repo), &bootstrap)
+    }
 }
 
-/// `alondra report`: builds a report, shows what it holds and lets the user read each section,
-/// open its folder or save it as a file.
-pub fn run(window_text: &str, description: Option<String>, json: bool, no_input: bool) -> Result<()> {
+/// `alondra report`: builds a report, shows what it holds and asks whether to send it.
+pub fn run(window_text: &str, description: Option<String>, kind: Option<send::Kind>, json: bool, no_input: bool) -> Result<()> {
     use std::io::IsTerminal;
     let no_input = no_input || !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal());
     let host = Mac::new();
@@ -199,7 +411,15 @@ pub fn run(window_text: &str, description: Option<String>, json: bool, no_input:
             Some(text).filter(|t| !t.trim().is_empty())
         }
     };
-    let built = build(&host, window, description)?;
+    let collecting = (!json && !no_input).then(cliclack::spinner);
+    if let Some(spinner) = &collecting {
+        spinner.start(tr!("Collecting the report: the logs, the tasks and the nodes of the last hours…", "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"));
+    }
+    let built = build(&host, window, description);
+    if let Some(spinner) = collecting {
+        spinner.clear();
+    }
+    let built = built?;
     if json {
         println!("{}", serde_json::to_string_pretty(&summary_json(&built))?);
         return Ok(());
@@ -208,37 +428,38 @@ pub fn run(window_text: &str, description: Option<String>, json: bool, no_input:
     if no_input {
         return Ok(());
     }
-    loop {
-        let mut menu = cliclack::select(tr!("What now?", "¿Y ahora?"));
-        menu = menu.item("view", tr!("Read a section", "Leer una sección"), "");
-        menu = menu.item("folder", tr!("Open its folder", "Abrir su carpeta"), "");
-        if built.hits.is_empty() {
-            menu = menu.item("save", tr!("Save as a file", "Guardar como fichero"), tr!("to send it yourself", "para mandarlo tú"));
-        }
-        menu = menu.item("done", tr!("Done", "Listo"), tr!("the report stays on this Mac", "el informe se queda en este Mac"));
-        match menu.interact()? {
-            "view" => {
-                let mut pick = cliclack::select(tr!("Which section?", "¿Qué sección?"));
-                for (name, text) in &built.files {
-                    pick = pick.item(name.as_str(), name.as_str(), size(text.len()));
-                }
-                let name = pick.interact()?;
-                if let Some((_, text)) = built.files.iter().find(|(n, _)| n == name) {
-                    print!("\n{text}\n");
-                }
-            }
-            "folder" => {
-                let _ = std::process::Command::new("/usr/bin/open").arg(&built.dir).status();
-            }
-            "save" => {
-                let file = PathBuf::from(default_file_name(&built.id));
-                save(&host, &built.id, &file)?;
-                println!("{}", saved_notice(&file));
-                return Ok(());
-            }
-            _ => return Ok(()),
-        }
+    if !built.hits.is_empty() {
+        return Ok(());
     }
+    let id = built.id.as_str();
+    let Some(repo) = host.report_repo() else {
+        println!("{}", trf!(
+            "This Mac knows no report repository, so it stays here. To save it as a file: alondra report save {id}",
+            "Este Mac no conoce ningún repositorio de informes, así que se queda aquí. Para guardarlo como fichero: alondra report save {id}"
+        ));
+        return Ok(());
+    };
+    let question = trf!("Send it to {repo}? Anyone who sees its issue will be able to read it.", "¿Lo envío a {repo}? Cualquiera que vea el issue podrá leerlo.");
+    let send_it = cliclack::select(question)
+        .item(true, tr!("Yes, send it", "Sí, enviarlo"), "")
+        .item(false, tr!("No, keep it on this Mac", "No, que se quede en este Mac"), "")
+        .interact()?;
+    let later = trf!("To send it later: alondra report send {id}", "Para enviarlo luego: alondra report send {id}");
+    if !send_it {
+        println!("{} {later}", tr!("It stays on this Mac.", "Se queda en este Mac."));
+        return Ok(());
+    }
+    let gh = github::Gh::default();
+    let target = github::Repo { gh: &gh, name: repo.clone() };
+    let sending = cliclack::spinner();
+    sending.start(trf!("Sending it to {repo}…", "Enviándolo a {repo}…"));
+    let sent = checked(&host, id).and_then(|files| send::send(&target, host.home(), id, &files, kind, host.now(), &backoff));
+    sending.clear();
+    match sent {
+        Ok(outcome) => println!("{}", outcome_notice(&repo, &outcome)),
+        Err(error) => println!("{error}. {} {later}", tr!("Nothing was sent; it stays on this Mac.", "No se ha enviado nada; se queda en este Mac.")),
+    }
+    Ok(())
 }
 
 pub fn saved_notice(file: &Path) -> String {

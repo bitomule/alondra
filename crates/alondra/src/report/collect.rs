@@ -26,6 +26,8 @@ pub trait Host {
     fn bin_dir(&self) -> Option<PathBuf>;
     fn service_label(&self) -> String;
     fn uid(&self) -> u32;
+    /// The repository reports are sent to, if this Mac knows one.
+    fn report_repo(&self) -> Option<String>;
 }
 
 #[derive(Debug, Clone, Copy)]

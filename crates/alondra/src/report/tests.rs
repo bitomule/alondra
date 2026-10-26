@@ -26,7 +26,7 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(workspace_file(&format!("fixtures/report/{name}"))).unwrap()
 }
 
-fn private_values() -> Vec<String> {
+pub(super) fn private_values() -> Vec<String> {
     fixture("private.txt").lines().filter(|l| !l.is_empty()).map(str::to_owned).collect()
 }
 
@@ -37,20 +37,21 @@ fn assert_has_none_of(text: &str, values: &[String]) {
     }
 }
 
-const NOW: i64 = 1_792_850_000_000;
+pub(super) const NOW: i64 = 1_792_850_000_000;
 
-fn hours_before(hours: i64) -> Window {
+pub(super) fn hours_before(hours: i64) -> Window {
     Window { from: NOW - hours * 3_600_000, to: NOW, hours: hours as u32 }
 }
 
-struct FakeMac {
+pub(super) struct FakeMac {
     home: PathBuf,
     daemon: Option<Value>,
     commands: HashMap<String, String>,
+    pub(super) report_repo: Option<String>,
 }
 
 impl FakeMac {
-    fn new(home: &Path) -> FakeMac {
+    pub(super) fn new(home: &Path) -> FakeMac {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         let commands = [
             ("sysctl -n hw.model", "Mac15,8\n"),
@@ -69,7 +70,7 @@ impl FakeMac {
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
-        FakeMac { home: home.to_path_buf(), daemon: None, commands }
+        FakeMac { home: home.to_path_buf(), daemon: None, commands, report_repo: None }
     }
 }
 
@@ -97,6 +98,9 @@ impl Host for FakeMac {
     }
     fn uid(&self) -> u32 {
         501
+    }
+    fn report_repo(&self) -> Option<String> {
+        self.report_repo.clone()
     }
 }
 
@@ -393,7 +397,7 @@ fn outbox_fixture(home: &Path) {
     std::fs::write(dir.join("outbox"), outbox).unwrap();
 }
 
-fn full_home(home: &Path) {
+pub(super) fn full_home(home: &Path) {
     domain_fixture(home, 5, true);
     outbox_fixture(home);
     std::fs::write(home.join("alondrad.log"), fixture("alondrad.log").replace("2026-10-23", "2026-10-25").replace("2026-10-24", "2026-10-25")).unwrap();

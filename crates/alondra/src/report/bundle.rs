@@ -18,6 +18,9 @@ pub const MAX_COMPRESSED: usize = 5 * 1024 * 1024;
 pub const MANIFEST: &str = "manifest.json";
 pub const DESCRIPTION: &str = "description.txt";
 pub const PSEUDONYMS: &str = "pseudonyms.json";
+/// How sending the report goes; it stays on this Mac.
+pub const SENDING: &str = "sending.json";
+const LOCAL_ONLY: &[&str] = &[PSEUDONYMS, SENDING, "sending.json.next", ".sending.lock"];
 pub const SECTIONS: &[&str] = &[
     "versions.json", "machine.json", "machine-samples.csv", "doctor.json", "daemon.log", "lifecycle.jsonl", "tasks.jsonl", "nodes.jsonl", "sdk-host.jsonl",
 ];
@@ -185,7 +188,7 @@ pub fn read(dir: &Path) -> Result<Files> {
     }
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name != MANIFEST && name != PSEUDONYMS && !expected.iter().any(|(e, _)| *e == name) {
+        if name != MANIFEST && !LOCAL_ONLY.contains(&name.as_str()) && !expected.iter().any(|(e, _)| *e == name) {
             bail!(trf!("{name} was added to the report after the preview; create the report again with alondra report", "{name} se añadió al informe después de la vista previa; vuelve a crear el informe con alondra report"));
         }
     }

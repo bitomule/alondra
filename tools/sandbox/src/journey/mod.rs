@@ -1,6 +1,7 @@
 //! Scripted end-to-end journeys against a sandbox started with `FAKES=1`: a phone acts as the user,
 //! the fakes act as Claude and GitHub, and every case writes what it saw to the run's report.
 mod accounts;
+mod crash_report;
 mod local;
 mod mcp;
 mod reopen;
@@ -27,7 +28,7 @@ pub use user::User;
 /// How long a step waits for what another process applies on its own.
 pub const PATIENCE: Duration = Duration::from_secs(60);
 
-pub const NAMES: [&str; 6] = ["task-cycle", "session", "reopen", "mcp", "local", "accounts"];
+pub const NAMES: [&str; 7] = ["task-cycle", "session", "reopen", "mcp", "report", "local", "accounts"];
 /// Journeys that need a sandbox started for them, which `all` does not run.
 pub const OPT_IN: [&str; 1] = ["sdk"];
 
@@ -54,6 +55,7 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
             "reopen" => reopen::run(&mut report, sandbox, &fakes),
             "mcp" => mcp::run(&mut report, sandbox, &fakes),
             "accounts" => accounts::run(&mut report, sandbox, &fakes),
+            "report" => crash_report::run(&mut report, sandbox, &fakes),
             "sdk" => sdk::run(&mut report, sandbox, &fakes),
             _ => unreachable!(),
         }

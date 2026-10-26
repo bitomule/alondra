@@ -56,6 +56,23 @@ pub struct FileConfig {
     /// Install a newer release with Homebrew as soon as the daemon sees it. Off unless set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<ReportFile>,
+}
+
+/// `[report]` in `config.toml`.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReportFile {
+    /// The GitHub `owner/repo` crash reports go to, instead of the one the relay announces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// A GitHub `owner/repo`.
+pub fn is_github_repo(value: &str) -> bool {
+    let name = |part: &str| !part.is_empty() && part.len() <= 100 && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    value.split_once('/').is_some_and(|(owner, repo)| name(owner) && name(repo))
 }
 
 impl FileConfig {
@@ -73,6 +90,9 @@ impl FileConfig {
         if file.compact_orchestrator_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
             return Err("compact_orchestrator_at: a percentage from 0 (off) to 100".into());
         }
+        if file.report.as_ref().and_then(|r| r.repo.as_deref()).is_some_and(|repo| !is_github_repo(repo)) {
+            return Err("report.repo: a GitHub owner/repo".into());
+        }
         Ok(file)
     }
 
@@ -85,7 +105,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update, report);
         self
     }
 }
@@ -146,6 +166,9 @@ pub struct Config {
     /// `None` is off.
     pub device_expiry_days: Option<f64>,
     pub auto_update: bool,
+    /// Where crash reports go when this Mac chose one (`report.repo`, `ALONDRA_REPORT_REPO`);
+    /// otherwise the relay announces it.
+    pub report_repo: Option<String>,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -238,6 +261,9 @@ impl Config {
             )
             .filter(|days| *days > 0.0),
             auto_update: var("ALONDRA_AUTO_UPDATE").map(flag).or(file.auto_update).unwrap_or(false),
+            report_repo: var("ALONDRA_REPORT_REPO")
+                .filter(|repo| is_github_repo(repo))
+                .or_else(|| file.report.as_ref().and_then(|r| r.repo.clone())),
             home,
         }
     }
@@ -260,6 +286,7 @@ pub const SETTABLE: &[(&str, bool)] = &[
     ("wake", true),
     ("retention_hours", true),
     ("service_label", true),
+    ("report.repo", false),
 ];
 
 pub fn restarts_daemon(key: &str) -> bool {
@@ -287,6 +314,7 @@ fn typed(key: &str, value: &str) -> Result<toml::Value, SetError> {
         "port" => value.parse::<u16>().ok().filter(|p| *p > 0).map(|p| toml::Value::Integer(p.into())).ok_or(SetError::Invalid),
         "wake" => value.parse::<bool>().map(toml::Value::Boolean).map_err(|_| SetError::Invalid),
         "retention_hours" => value.parse::<f64>().ok().filter(|h| h.is_finite() && *h > 0.0).map(toml::Value::Float).ok_or(SetError::Invalid),
+        "report.repo" => is_github_repo(value).then(text).unwrap_or(Err(SetError::Invalid)),
         _ => Err(SetError::UnknownKey),
     }
 }
@@ -305,9 +333,25 @@ pub fn set_key(home: &Path, key: &str, value: Option<&str>) -> Result<(), SetErr
     };
     FileConfig::parse(&text).map_err(SetError::File)?;
     let mut table: toml::Table = toml::from_str(&text).map_err(|e| SetError::File(e.to_string()))?;
+    let (table_name, leaf) = match key.split_once('.') {
+        Some((table_name, leaf)) => (Some(table_name), leaf),
+        None => (None, key),
+    };
+    let target = match table_name {
+        Some(name) => match table.entry(name).or_insert_with(|| toml::Value::Table(toml::Table::new())) {
+            toml::Value::Table(inner) => inner,
+            _ => return Err(SetError::File(format!("{name} is not a table"))),
+        },
+        None => &mut table,
+    };
     match value {
-        Some(value) => { table.insert(key.into(), typed(key, value)?); }
-        None => { table.remove(key); }
+        Some(value) => { target.insert(leaf.into(), typed(key, value)?); }
+        None => { target.remove(leaf); }
+    }
+    if let Some(name) = table_name
+        && table.get(name).and_then(toml::Value::as_table).is_some_and(toml::Table::is_empty)
+    {
+        table.remove(name);
     }
     let rendered = toml::to_string(&table).map_err(|e| SetError::File(e.to_string()))?;
     FileConfig::parse(&rendered).map_err(|_| SetError::Invalid)?;
@@ -318,6 +362,24 @@ pub fn set_key(home: &Path, key: &str, value: Option<&str>) -> Result<(), SetErr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn report_repo_is_a_table_key_the_environment_beats() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        std::fs::write(path_in(&dir), "name = \"Ana\"\n").unwrap();
+        set_key(&dir, "report.repo", Some("owner/reports")).unwrap();
+        let text = std::fs::read_to_string(path_in(&dir)).unwrap();
+        assert!(text.contains("[report]") && text.contains("repo = \"owner/reports\""), "{text}");
+        let file = FileConfig::parse(&text).unwrap();
+        assert_eq!(resolve(&file, &[]).report_repo.as_deref(), Some("owner/reports"));
+        assert_eq!(resolve(&file, &[("ALONDRA_REPORT_REPO", "other/repo")]).report_repo.as_deref(), Some("other/repo"));
+        assert_eq!(set_key(&dir, "report.repo", Some("not a repo")), Err(SetError::Invalid));
+        assert_eq!(set_key(&dir, "report.other", Some("x")), Err(SetError::UnknownKey));
+        set_key(&dir, "report.repo", None).unwrap();
+        assert_eq!(std::fs::read_to_string(path_in(&dir)).unwrap(), "name = \"Ana\"\n");
+        assert!(FileConfig::parse("[report]\nrepo = \"nope\"\n").is_err());
+    }
+
     #[test]
     fn set_key_changes_one_key_keeps_the_rest_and_refuses_bad_values() {
         let dir = crate::test_support::Directory::new();

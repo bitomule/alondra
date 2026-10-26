@@ -4,6 +4,7 @@
 //! follow the scripts a run writes, and write down every call.
 mod claude;
 mod gh;
+pub mod github_api;
 mod mcp;
 pub mod native;
 pub mod node;

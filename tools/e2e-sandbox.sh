@@ -137,6 +137,8 @@ if [ -n "${SANDBOX_IROH_RELAY:-}" ]; then
 	(umask 077 && printf '%s' "${SANDBOX_IROH_TOKEN:?SANDBOX_IROH_RELAY needs SANDBOX_IROH_TOKEN}" >"$dir/iroh-access-token")
 	export ALONDRA_IROH_RELAY_URL="$SANDBOX_IROH_RELAY" ALONDRA_IROH_ACCESS_TOKEN_FILE="$dir/iroh-access-token"
 fi
+# With the fakes, the relay announces the fake gh's repository for crash reports.
+[ "$fakes" = 0 ] || export ALONDRA_REPORT_REPO=sandbox/reports
 ALONDRA_RELAY_CONFIG="$dir/relay.json" nohup "$dir/bin/alondra-relay" >"$dir/relay.log" 2>&1 &
 echo $! >"$dir/relay.pid"
 wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"

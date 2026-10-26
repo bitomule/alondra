@@ -44,6 +44,8 @@ struct Server {
     iroh_access_token: Option<String>,
     /// The iroh relay this relay admits endpoints to, announced to Macs and phones in bootstrap.
     iroh_relay: Option<String>,
+    /// The `owner/repo` crash reports go to, announced in bootstrap when whoever runs the relay sets it.
+    report_repo: Option<String>,
     testflight_url: Option<String>,
     #[cfg(test)]
     test_directory: Option<crate::test_support::Directory>,
@@ -100,13 +102,27 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
     }
 }
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(match &server.iroh_relay {
-            Some(iroh_relay) => json!({"protocol":1,"epoch":server.epoch,"iroh_relay":iroh_relay}),
-            None => json!({"protocol":1,"epoch":server.epoch}),
-        }),
-    )
+    (StatusCode::OK, Json(bootstrap_body(&server.epoch, server.iroh_relay.as_deref(), server.report_repo.as_deref())))
+}
+
+fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&str>) -> Value {
+    let mut body = json!({"protocol":1,"epoch":epoch});
+    if let Some(iroh_relay) = iroh_relay {
+        body["iroh_relay"] = json!(iroh_relay);
+    }
+    if let Some(report_repo) = report_repo {
+        body["report_repo"] = json!(report_repo);
+    }
+    body
+}
+
+/// `ALONDRA_REPORT_REPO`: a GitHub `owner/repo`, or unset for none.
+fn report_repo(value: Option<String>) -> anyhow::Result<Option<String>> {
+    let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else { return Ok(None) };
+    let name = |part: &str| !part.is_empty() && part.len() <= 100 && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let valid = value.split_once('/').is_some_and(|(owner, repo)| name(owner) && name(repo) && !repo.contains('/'));
+    anyhow::ensure!(valid, "ALONDRA_REPORT_REPO must be a GitHub owner/repo");
+    Ok(Some(value))
 }
 
 async fn pairing_open(
@@ -755,6 +771,7 @@ async fn main() -> anyhow::Result<()> {
         epoch,
         iroh_access_token,
         iroh_relay,
+        report_repo: report_repo(std::env::var("ALONDRA_REPORT_REPO").ok())?,
         testflight_url: testflight::from_env()?,
         #[cfg(test)]
         test_directory: None,
@@ -924,6 +941,7 @@ mod http_tests {
             epoch,
             iroh_relay: iroh_access_token.as_ref().map(|_| TEST_IROH_RELAY.to_owned()),
             iroh_access_token,
+            report_repo: None,
             testflight_url: None,
             #[cfg(test)]
             test_directory: Some(directory),
@@ -3211,6 +3229,18 @@ mod http_tests {
                 assert_eq!(boot["iroh_relay"].as_str(), announced, "{boot}");
                 assert!(boot["epoch"].is_string());
                 f.task.abort();
+            }
+        }
+
+        #[test]
+        fn bootstrap_announces_the_report_repo_only_when_one_is_configured() {
+            assert_eq!(bootstrap_body("e", None, None), json!({"protocol": 1, "epoch": "e"}));
+            assert_eq!(bootstrap_body("e", None, Some("owner/reports"))["report_repo"], "owner/reports");
+            assert_eq!(report_repo(None).unwrap(), None);
+            assert_eq!(report_repo(Some(" ".into())).unwrap(), None);
+            assert_eq!(report_repo(Some("bitomule/alondra-issues".into())).unwrap().as_deref(), Some("bitomule/alondra-issues"));
+            for bad in ["bitomule", "a/b/c", "/repo", "owner/", "https://github.com/a/b", "a b/c"] {
+                assert!(report_repo(Some(bad.into())).is_err(), "{bad}");
             }
         }
 

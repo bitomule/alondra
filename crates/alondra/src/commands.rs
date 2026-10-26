@@ -362,6 +362,7 @@ fn config_rows() -> Result<Vec<(&'static str, String)>> {
         ("device_expiry_days", c.device_expiry_days.map(|d| d.to_string()).unwrap_or_else(|| "off".into())),
         ("auto_update", c.auto_update.to_string()),
         ("max_working_nodes", node_limit(&c.home)),
+        ("report.repo", c.report_repo.clone().unwrap_or_default()),
     ])
 }
 
@@ -417,6 +418,7 @@ fn expected(key: &str) -> &'static str {
         "wake" => tr!("true or false", "true o false"),
         "retention_hours" => tr!("a number of hours above 0", "un número de horas mayor que 0"),
         "service_label" => tr!("a launchd label such as dev.alondra.alondrad", "una etiqueta de launchd como dev.alondra.alondrad"),
+        "report.repo" => tr!("a GitHub repository as owner/repo", "un repositorio de GitHub como dueño/repo"),
         _ => "",
     }
 }
@@ -501,10 +503,10 @@ mod tests {
     #[test]
     fn config_set_takes_setups_keys_and_the_node_limit() {
         let keys = settable();
-        for key in ["name", "projects_root", "public_url", "listen", "port", "wake", "retention_hours", "service_label", "max_working_nodes"] {
+        for key in ["name", "projects_root", "public_url", "listen", "port", "wake", "retention_hours", "service_label", "report.repo", "max_working_nodes"] {
             assert!(keys.contains(&key), "{key}");
         }
-        assert_eq!(keys.len(), 9);
+        assert_eq!(keys.len(), 10);
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         assert_eq!(invalid("port"), "port takes a port number from 1 to 65535");
     }

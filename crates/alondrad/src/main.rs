@@ -90,6 +90,7 @@ mod options;
 mod orchestrator_process;
 mod orchestrator_sdk;
 mod plugins;
+mod reports;
 mod preflight;
 mod process_watch;
 mod prs;
@@ -656,6 +657,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         .filter(|service| service.has_relay())
         .map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
+    tokio::spawn(reports::retry_pending(config.home.clone(), plugins::own_cli(), config.fast_timing));
     start_guard::served();
     let stopped = tokio::select! {
         stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
