@@ -1,5 +1,15 @@
 import Foundation
 
+/// What a session commit needs from the platform's push center.
+@MainActor
+public protocol PushAuthorizing: AnyObject {
+    var isAuthorized: Bool { get }
+    func refreshAuthorization() async
+    /// Shows the system alert and registers if the person allows it.
+    func activate(whileCurrent isCurrent: @escaping @MainActor () -> Bool) async
+    func registerWithAPNs()
+}
+
 /// Permission dialogs can outlive a session. Keep one physical activation until it exits,
 /// then service only the latest committed session without holding up its publication.
 @MainActor
@@ -14,6 +24,18 @@ public final class DeferredPushActivation {
 
     public func prepare(_ work: @escaping Work) async -> @MainActor () -> Void {
         { [weak self] in self?.start(work) }
+    }
+
+    /// A committed session only renews the registration of alerts the person already allowed.
+    /// The system alert comes from the screen that first says what alerts are for, or from
+    /// Settings, never from connecting.
+    public func prepareRenewal(_ push: some PushAuthorizing,
+                               committed: @escaping @MainActor () -> Bool) async -> @MainActor () -> Void {
+        await prepare { [push] isCurrent in
+            await push.refreshAuthorization()
+            guard isCurrent(), committed(), push.isAuthorized else { return }
+            push.registerWithAPNs()
+        }
     }
 
     public func start(_ work: @escaping Work) {

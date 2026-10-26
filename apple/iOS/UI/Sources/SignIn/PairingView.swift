@@ -5,7 +5,7 @@ import SwiftUI
 
 /// Linking a Mac: scan the code `alondra device invite` shows, or paste the invitation, then confirm the
 /// code on the Mac. After a failed attempt the camera stays off and the error stays until the
-/// next try.
+/// next try. Once the Mac approves, a last step says what alerts are for before iOS asks.
 public struct PairingView: View {
     @Bindable var store: StoreOf<SignInFeature>
 
@@ -32,6 +32,7 @@ public struct PairingView: View {
     private var title: Text {
         switch store.phase {
         case .approved: Text("You're connected.")
+        case .alerts: Text("Let Alondra alert you.")
         case .pending: Text("One last check.")
         default: Text("Bring your Mac along.")
         }
@@ -40,6 +41,7 @@ public struct PairingView: View {
     private var subtitle: Text {
         switch store.phase {
         case .approved: Text("Your inbox, tasks and conversations are ready.")
+        case .alerts: Text("When an agent asks you something or finishes, you’ll see it here even with the app closed. You can answer from the Lock Screen.")
         case .pending: Text("Confirm this connection on your Mac. Only devices you approve can access your work.")
         default: Text("Connect to the Mac running Alondra to see what needs you, wherever you are.")
         }
@@ -47,7 +49,8 @@ public struct PairingView: View {
 
     private var step: Int {
         switch store.phase {
-        case .pending, .approved: 2
+        case .pending: 2
+        case .alerts, .approved: 3
         default: 1
         }
     }
@@ -67,6 +70,8 @@ public struct PairingView: View {
                 .accessibilityIdentifier("pairing.comparisonCode")
             ProgressView("Waiting for your Mac…").font(.callout)
             Button("Start again") { store.send(.cancel) }.font(.callout)
+        case .alerts(let permission):
+            alerts(permission)
         case .approved:
             Label("Mac connected", systemImage: "checkmark.circle.fill").font(.headline).foregroundStyle(Palette.sage)
             Text("This device has secure access to your workspace.").foregroundStyle(.secondary)
@@ -74,6 +79,26 @@ public struct PairingView: View {
         default:
             scanning
         }
+    }
+
+    @ViewBuilder private func alerts(_ permission: NotificationSettings.Permission) -> some View {
+        Label("Mac connected", systemImage: "checkmark.circle.fill").font(.headline).foregroundStyle(Palette.sage)
+        if permission == .denied {
+            Text("Alerts for Alondra are off in iOS Settings. Turn them on there to get them on this iPhone.")
+                .foregroundStyle(.secondary)
+        }
+        Button { store.send(.turnOnAlerts) } label: {
+            Label(permission == .denied ? "Open Settings" : "Turn On Alerts", systemImage: "bell.badge")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .tint(Palette.dawn)
+        .accessibilityIdentifier("pairing.turnOnAlerts")
+        Button("Not Now") { store.send(.skipAlerts) }
+            .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("pairing.skipAlerts")
     }
 
     @ViewBuilder private var scanning: some View {

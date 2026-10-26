@@ -44,7 +44,7 @@ struct StoredQuietHours: Equatable {
 
 @MainActor
 @Observable
-final class PushCenter {
+final class PushCenter: PushAuthorizing {
     enum Authorization: Equatable {
         case unknown, notDetermined, denied, authorized
     }
@@ -54,6 +54,7 @@ final class PushCenter {
     }
 
     private(set) var authorization = Authorization.unknown
+    var isAuthorized: Bool { authorization == .authorized }
     private(set) var registration = Registration.idle
     private(set) var token: String?
     var route: NotificationRoute?

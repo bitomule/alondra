@@ -164,6 +164,26 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
     }
 
+    func test_pairing_turnOnAlerts() {
+        let store = signIn { $0.phase = .alerts(.notDetermined) }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
+    }
+
+    func test_pairing_turnOnAlerts_spanish() {
+        let store = signIn { $0.phase = .alerts(.notDetermined) }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
+    }
+
+    func test_pairing_alertsTurnedOffInSettings() {
+        let store = signIn { $0.phase = .alerts(.denied) }
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
+    }
+
+    func test_pairing_alertsTurnedOffInSettings_spanish() {
+        let store = signIn { $0.phase = .alerts(.denied) }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
+    }
+
     // MARK: Settings
 
     func test_settings() {

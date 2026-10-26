@@ -21,10 +21,25 @@ public struct SignInClient: Sendable {
     public var approve: @Sendable () async throws -> Void
     public var cancel: @Sendable () async -> Void
     public var logout: @Sendable () async throws -> Void
+    public var alerts = Alerts.unavailable
     public init(restore: @escaping @Sendable () async throws -> Bool, login: @escaping @Sendable () async throws -> Void,
                 begin: @escaping @Sendable (String) async throws -> String, approve: @escaping @Sendable () async throws -> Void,
                 cancel: @escaping @Sendable () async -> Void, logout: @escaping @Sendable () async throws -> Void) {
         self.restore = restore; self.login = login; self.begin = begin; self.approve = approve; self.cancel = cancel; self.logout = logout
+    }
+}
+public extension SignInClient {
+    /// The step that offers alerts after a Mac is linked through the account. Where alerts
+    /// cannot be offered (the Mac app), the permission reads as allowed and the step never shows.
+    struct Alerts: Sendable {
+        public var permission: @Sendable () async -> NotificationSettings.Permission
+        public var request: @Sendable () async -> Void
+        public var openSettings: @Sendable () async -> Void
+        public init(permission: @escaping @Sendable () async -> NotificationSettings.Permission,
+                    request: @escaping @Sendable () async -> Void, openSettings: @escaping @Sendable () async -> Void) {
+            self.permission = permission; self.request = request; self.openSettings = openSettings
+        }
+        public static let unavailable = Alerts(permission: { .authorized }, request: {}, openSettings: {})
     }
 }
 private enum SignInKey: DependencyKey {
@@ -60,6 +75,13 @@ public struct SignInFeature: Sendable {
         /// The way in the person picked on the first screen; `nil` until they pick one.
         public var path: Path?
         public var showsAccount: Bool { path == .account }
+        /// Linking through the account finishes on its own screens: the workspace waits for them.
+        public var finishingPairing: Bool {
+            switch phase {
+            case .pending, .alerts: !additionalMac
+            default: false
+            }
+        }
         public init(additionalMac: Bool = false) {
             self.additionalMac = additionalMac
             if additionalMac { configuration = .saved; phase = .scanning }
@@ -68,14 +90,15 @@ public struct SignInFeature: Sendable {
     /// With the account this iPhone gets alerts and reaches the Mac from anywhere; on the local
     /// network it needs no account and gets no alerts.
     public enum Path: Equatable, Sendable { case account, localNetwork }
-    public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, cancelling, pending(String), approved }
+    public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, cancelling, pending(String), alerts(NotificationSettings.Permission), approved }
     public enum Action: BindableAction {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
         case configurationLoaded(Int, Bool), retryRestore, retryNow, reauthenticate
         case restorationFailed(Int, ConnectionProblem)
         case revocationRequired(Int)
         case cancelled(Int)
-        case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String?)
+        case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int, NotificationSettings.Permission), failed(Int, String?)
+        case turnOnAlerts, skipAlerts, alertsAnswered(Int)
         case findMac(FindMacFeature.Action), showAccount(Bool), choose(Path)
     }
     @Dependency(\.cloudPairing) var service
@@ -224,17 +247,32 @@ public struct SignInFeature: Sendable {
                         let code = try await service.begin(payload)
                         await send(.pending(generation, code))
                         try await service.approve()
-                        await send(.approved(generation))
+                        await send(.approved(generation, await service.alerts.permission()))
                     } catch { await send(.failed(generation, error.isCancellation ? nil : service.describe(error))) }
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
             case .pending(let generation, let code):
                 guard generation == state.generation else { return .none }
                 state.phase = .pending(code)
                 return .none
-            case .approved(let generation):
+            case .approved(let generation, let permission):
                 guard generation == state.generation else { return .none }
-                state.phase = .approved
+                state.phase = permission == .notDetermined || permission == .denied ? .alerts(permission) : .approved
                 state.configuration = .saved
+                return .none
+            case .turnOnAlerts:
+                guard case .alerts(let permission) = state.phase else { return .none }
+                let generation = state.generation
+                return .run { send in
+                    if permission == .denied { await service.alerts.openSettings() } else { await service.alerts.request() }
+                    await send(.alertsAnswered(generation))
+                }.cancellable(id: CancelID.operation, cancelInFlight: true)
+            case .skipAlerts:
+                guard case .alerts = state.phase else { return .none }
+                state.phase = .approved
+                return .none
+            case .alertsAnswered(let generation):
+                guard generation == state.generation, case .alerts = state.phase else { return .none }
+                state.phase = .approved
                 return .none
             case .failed(let generation, let message):
                 guard generation == state.generation else { return .none }

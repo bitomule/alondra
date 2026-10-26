@@ -3,7 +3,7 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// What the sign-in and pairing screens share: the brand line, a large title, the three steps,
+/// What the sign-in and pairing screens share: the brand line, a large title, the steps,
 /// a card for the step at hand, and the error that stays until the next attempt.
 struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: View {
     let store: StoreOf<SignInFeature>
@@ -18,7 +18,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
 
     init(
         store: StoreOf<SignInFeature>, glow: Color, step: Int,
-        steps: [LocalizedStringKey] = ["Account", "Your Mac", "Confirm"], carded: Bool = true,
+        steps: [LocalizedStringKey] = ["Account", "Your Mac", "Confirm", "Alerts"], carded: Bool = true,
         @ViewBuilder title: () -> Title, @ViewBuilder subtitle: () -> Subtitle,
         @ViewBuilder content: () -> Content, @ViewBuilder footer: () -> Footer = { EmptyView() }
     ) {

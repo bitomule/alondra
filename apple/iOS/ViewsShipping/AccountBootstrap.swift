@@ -1,5 +1,6 @@
 import AlondraDesign
 import AlondraAccount
+import AlondraFeatures
 import AlondraIroh
 import AVFoundation
 import UIKit
@@ -25,6 +26,13 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
         try await notifications.deactivate()
     }, pushBinding: { notifications.pushBinding(for: $0) }, irohDialer: { IrohEndpointDialer(identity: $0) },
         startsLive: UIApplication.shared.applicationState != .background)
+    account.alerts = SignInClient.Alerts(permission: { await notifications.alertPermission() },
+        request: { await notifications.requestAlerts() }, openSettings: {
+            await MainActor.run {
+                guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+                UIApplication.shared.open(url)
+            }
+        })
     account.isActive = { UIApplication.shared.applicationState == .active }
     account.openLocalNetworkSettings = {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }

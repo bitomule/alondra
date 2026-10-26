@@ -121,7 +121,7 @@ private struct MacServicePairingStep: View {
                 Text("Enter this code in the setup terminal and approve this Mac. Keep this window open until approval completes.")
                 ProgressView("Waiting for approval…")
                 Button("Cancel pairing") { store.send(.cancel) }
-            case .approved:
+            case .approved, .alerts:
                 Label("Mac connected", systemImage: "checkmark.shield")
                 if !store.additionalMac { Button("Sign out") { store.send(.logout) } }
             }

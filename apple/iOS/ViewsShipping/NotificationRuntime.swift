@@ -1,5 +1,6 @@
 import AlondraDesign
 import AlondraAccount
+import AlondraFeatures
 import AlondraNotifications
 import AlondraPairing
 import CryptoKit
@@ -74,15 +75,7 @@ final class NotificationRuntime {
         guard Set(clients.map(\.identity)).count == clients.count,
               Set(clients.map(\.binding)).count == clients.count else { throw ProvisioningError.binding }
         do {
-            let activate = await activation.prepare { [weak self, push] isCurrent in
-                await push.refreshAuthorization()
-                guard let self, isCurrent(), current == self.generation else { return }
-                if push.authorization == .notDetermined, !clients.isEmpty {
-                    await push.activate(whileCurrent: isCurrent)
-                } else if push.authorization == .authorized {
-                    push.registerWithAPNs()
-                }
-            }
+            let activate = await activation.prepareRenewal(push) { [weak self] in current == self?.generation }
             guard let vault else { throw ProvisioningError.missingKeychainGroup }
             let routes = zip(clients, contexts).map { NotificationRoutingCoordinator.Entry(client: $0.0, context: $0.1) }
             // Validate the routing snapshot before the atomic vault/publication commit.
@@ -106,6 +99,18 @@ final class NotificationRuntime {
             throw error
         }
     }
+
+    func alertPermission() async -> NotificationSettings.Permission {
+        await push.refreshAuthorization()
+        return switch push.authorization {
+        case .unknown: .unknown
+        case .notDetermined: .notDetermined
+        case .denied: .denied
+        case .authorized: .authorized
+        }
+    }
+
+    func requestAlerts() async { await push.activate() }
 
     func deactivate() async throws {
         activation.cancel()

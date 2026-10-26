@@ -52,9 +52,68 @@ struct SignInFeatureTests {
         let store = TestStore(initialState: state) { SignInFeature() }
         await store.send(.cancel) { $0.generation = 1; $0.phase = .signingOut }
         await store.receive(\.loggedOut) { $0.phase = .signedOut; $0.configuration = .missing }
-        await store.send(.approved(0))
+        await store.send(.approved(0, .notDetermined))
         await store.send(.pending(0, "stale"))
         await store.finish()
+    }
+    @Test func linkingTheMacAsksForAlertsOnlyWhenThePersonTurnsThemOn() async {
+        let asked = LockIsolated(0)
+        let store = TestStore(initialState: pairing()) { SignInFeature() } withDependencies: {
+            $0.cloudPairing = SignInClient(restore: { false }, login: {}, begin: { _ in "Ab12Cd34" }, approve: {},
+                cancel: {}, logout: {})
+            $0.cloudPairing.alerts = SignInClient.Alerts(permission: { .notDetermined },
+                request: { asked.withValue { $0 += 1 } }, openSettings: { Issue.record("Settings opened") })
+        }
+        await store.send(.scanned("QR")) { $0.payload = "QR" }
+        await store.receive(\.submit) { $0.payload = ""; $0.phase = .submitting }
+        await store.receive(\.pending) { $0.phase = .pending("Ab12Cd34") }
+        await store.receive(\.approved) { $0.phase = .alerts(.notDetermined); $0.configuration = .saved }
+        #expect(store.state.finishingPairing)
+        #expect(asked.value == 0)
+        await store.send(.turnOnAlerts)
+        await store.receive(\.alertsAnswered) { $0.phase = .approved }
+        #expect(asked.value == 1)
+        #expect(!store.state.finishingPairing)
+    }
+    @Test func notNowLeavesTheAlertsUnasked() async {
+        var state = pairing()
+        state.phase = .alerts(.notDetermined)
+        let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
+            $0.cloudPairing.alerts = SignInClient.Alerts(permission: { .notDetermined },
+                request: { Issue.record("Alerts asked") }, openSettings: { Issue.record("Settings opened") })
+        }
+        await store.send(.skipAlerts) { $0.phase = .approved }
+        await store.finish()
+    }
+    @Test func alertsTurnedOffInSettingsOpenIOSSettingsInsteadOfAsking() async {
+        let opened = LockIsolated(0)
+        var state = pairing()
+        state.phase = .alerts(.denied)
+        let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
+            $0.cloudPairing.alerts = SignInClient.Alerts(permission: { .denied },
+                request: { Issue.record("Alerts asked") }, openSettings: { opened.withValue { $0 += 1 } })
+        }
+        await store.send(.turnOnAlerts)
+        await store.receive(\.alertsAnswered) { $0.phase = .approved }
+        #expect(opened.value == 1)
+    }
+    @Test func alertsAlreadyAllowedSkipTheStep() async {
+        let store = TestStore(initialState: pairing()) { SignInFeature() } withDependencies: {
+            $0.cloudPairing = SignInClient(restore: { false }, login: {}, begin: { _ in "Ab12Cd34" }, approve: {},
+                cancel: {}, logout: {})
+            $0.cloudPairing.alerts = SignInClient.Alerts(permission: { .authorized },
+                request: { Issue.record("Alerts asked") }, openSettings: { Issue.record("Settings opened") })
+        }
+        await store.send(.scanned("QR")) { $0.payload = "QR" }
+        await store.receive(\.submit) { $0.payload = ""; $0.phase = .submitting }
+        await store.receive(\.pending) { $0.phase = .pending("Ab12Cd34") }
+        await store.receive(\.approved) { $0.phase = .approved; $0.configuration = .saved }
+    }
+    private func pairing() -> SignInFeature.State {
+        var state = SignInFeature.State()
+        state.phase = .scanning
+        state.configuration = .missing
+        return state
     }
     @Test func theFirstScreenAsksForAPathAndEitherCanSwitchToTheOther() async {
         var state = SignInFeature.State()

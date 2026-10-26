@@ -67,6 +67,8 @@ public final class AccountSession {
     @ObservationIgnored public private(set) var pairAgainMacID: String?
     /// Set by each app to the system screen where Local Network access is turned back on.
     @ObservationIgnored public var openLocalNetworkSettings: @MainActor () -> Void = {}
+    /// Set by each app that offers alerts once a Mac is linked through the account.
+    @ObservationIgnored public var alerts = SignInClient.Alerts.unavailable
     /// Set by each app: whether it is in front, with no system alert over it.
     @ObservationIgnored public var isActive: @MainActor () -> Bool = { true }
     @ObservationIgnored private var offeredServices: Set<String> = []
@@ -86,6 +88,8 @@ public final class AccountSession {
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = self.prepareCamera
+        $0.cloudPairing.alerts = SignInClient.Alerts(permission: { [self] in await alerts.permission() },
+            request: { [self] in await alerts.request() }, openSettings: { [self] in await alerts.openSettings() })
         $0.findMac = self.findMacClient
         $0.cloudPairing.keepsLocalMacs = { [self] in (try? await restore()) ?? false }
         $0.cloudPairing.classify = {
@@ -146,6 +150,7 @@ public final class AccountSession {
                 await cancel(scope: scope)
             }, logout: { throw CancellationError() })
         service.prepareCamera = prepareCamera
+        service.alerts = alerts
         return service
     }
 

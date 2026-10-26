@@ -177,7 +177,7 @@ import Testing
         await store.receive(\.configurationLoaded) { $0.configuration = .missing }
         await store.receive(\.restored) { $0.restorationInFlight = false; $0.phase = .signedOut }
         #expect(!store.state.showsWorkspace)
-        await store.send(.approved(0)) { $0.phase = .approved; $0.configuration = .saved }
+        await store.send(.approved(0, .authorized)) { $0.phase = .approved; $0.configuration = .saved }
         await store.send(.logout) { $0.generation = 1; $0.phase = .signingOut }
         await store.receive(\.loggedOut) { $0.phase = .signedOut; $0.configuration = .missing }
         await store.send(.restored(0, true))

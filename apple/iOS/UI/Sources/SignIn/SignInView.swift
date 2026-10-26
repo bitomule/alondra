@@ -21,7 +21,7 @@ public struct SignInView: View {
             FindMacView(store: store, demo: demo)
         } else {
             switch store.phase {
-            case .scanning, .submitting, .pending, .approved:
+            case .scanning, .submitting, .pending, .alerts, .approved:
                 PairingView(store: store)
             case .restoring, .signedOut, .signingOut, .loggingIn, .cancelling:
                 signIn

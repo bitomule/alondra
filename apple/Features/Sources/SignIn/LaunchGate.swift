@@ -19,7 +19,8 @@ public struct LaunchGate<Approved: View, Restoring: View, Onboarding: View>: Vie
     }
 
     public var body: some View {
-        if hasServices { approved() }
+        if store.finishingPairing { onboarding() }
+        else if hasServices { approved() }
         else if store.showsWorkspace { restoring() }
         else { onboarding() }
     }
