@@ -14,6 +14,7 @@ struct Fixture {
     home: PathBuf,
     bin: PathBuf,
     port: u16,
+    sandbox: bool,
 }
 
 impl Fixture {
@@ -29,6 +30,7 @@ impl Fixture {
             home,
             bin,
             port: free_port(),
+            sandbox: false,
         }
     }
 
@@ -48,6 +50,9 @@ impl Fixture {
             .stderr(Stdio::piped());
         if supervised {
             command.env("XPC_SERVICE_NAME", LABEL);
+        }
+        if self.sandbox {
+            command.env("ALONDRA_SANDBOX", "1");
         }
         command
     }
@@ -256,6 +261,18 @@ fn the_daemon_says_which_views_protocols_it_serves() {
     let body: serde_json::Value = serde_json::from_str(&fixture.get("/daemon").expect("/daemon answers")).unwrap();
     let range = serde_json::json!({"min": alondra_core::views::VIEWS_PROTOCOL_MIN, "max": alondra_core::views::VIEWS_PROTOCOL});
     assert_eq!(body["views_protocol"], range);
+}
+
+#[test]
+fn the_daemon_says_its_home_and_whether_it_is_a_sandbox() {
+    for sandbox in [false, true] {
+        let mut fixture = Fixture::new(if sandbox { "sandboxed" } else { "plain" });
+        fixture.sandbox = sandbox;
+        let _daemon = serve(&mut fixture, false);
+        let body: serde_json::Value = serde_json::from_str(&fixture.get("/daemon").expect("/daemon answers")).unwrap();
+        assert_eq!(body["home"], serde_json::json!(fixture.home), "{body}");
+        assert_eq!(body["sandbox"], serde_json::json!(sandbox), "{body}");
+    }
 }
 
 #[test]

@@ -1011,6 +1011,68 @@ fn header(screen: &str) -> &str {
     screen.lines().find(|line| line.contains("Bandeja")).unwrap_or_default()
 }
 
+fn rows_and_colours(app: &mut App) -> (Vec<String>, ratatui::style::Color) {
+    let backend = ratatui::backend::TestBackend::new(160, 16);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows = (0..buffer.area.height)
+        .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>().trim_end().to_owned())
+        .collect();
+    (rows, buffer[(1, 0)].bg)
+}
+
+fn account_here() -> identity::Here {
+    identity::Here {
+        account_home: "/Users/someone".into(),
+        home: "/Users/someone".into(),
+        alondra_home: "/Users/someone/.alondra".into(),
+        port: alondra_core::DEFAULT_PORT,
+        sandbox_env: false,
+    }
+}
+
+#[test]
+fn a_sandbox_daemon_is_named_across_the_top_and_the_real_one_changes_nothing() {
+    let domain = DomainState::new("screens");
+    let live = LiveSnapshot::default();
+    let mut app = app_on(Screen::Inbox, build(&domain, &live, "home"));
+    let (before, _) = rows_and_colours(&mut app);
+
+    app.here = Some(account_here());
+    app.on_msg(Msg::DaemonIdentity(identity::Answer { home: "/Users/someone/.alondra".into(), sandbox: false }));
+    let (real, _) = rows_and_colours(&mut app);
+    assert_eq!(real, before);
+
+    app.here = Some(identity::Here {
+        home: "/tmp/s/tui-home".into(),
+        alondra_home: "/tmp/s/mac-1".into(),
+        port: 48211,
+        sandbox_env: true,
+        ..account_here()
+    });
+    app.on_msg(Msg::DaemonIdentity(identity::Answer { home: "/tmp/s/mac-1".into(), sandbox: true }));
+    let (sandbox, colour) = rows_and_colours(&mut app);
+    dump("sandbox daemon", &sandbox.join("\n"));
+    assert_eq!(sandbox[0], " SANDBOX · /tmp/s/mac-1 · 127.0.0.1:48211");
+    assert_eq!(colour, ratatui::style::Color::Yellow);
+    assert_eq!(sandbox[1], before[0]);
+    assert_eq!(sandbox.last(), before.last());
+}
+
+#[test]
+fn the_real_daemon_reached_from_a_temporary_home_is_warned_in_red() {
+    let domain = DomainState::new("screens");
+    let live = LiveSnapshot::default();
+    let mut app = app_on(Screen::Inbox, build(&domain, &live, "home"));
+    app.here = Some(identity::Here { home: "/tmp/fake".into(), alondra_home: "/tmp/fake/.alondra".into(), ..account_here() });
+    app.on_msg(Msg::DaemonIdentity(identity::Answer { home: "/Users/someone/.alondra".into(), sandbox: false }));
+    let (rows, colour) = rows_and_colours(&mut app);
+    dump("real daemon from a temporary home", &rows.join("\n"));
+    assert!(rows[0].starts_with(" DAEMON REAL · ~/.alondra · 127.0.0.1:47800 — no es un sandbox"), "{}", rows[0]);
+    assert_eq!(colour, ratatui::style::Color::Red);
+}
+
 #[test]
 fn the_header_shows_every_mac_as_a_tab_with_how_it_is_reached() {
     let domain = DomainState::new("screens");

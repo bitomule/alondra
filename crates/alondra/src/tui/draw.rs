@@ -28,7 +28,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .or_else(|| status.session_wait.as_ref().map(|notice| notice.text.clone()))
     });
     let accounts = if app.loaded { account_lines(app.view_status.as_ref()) } else { vec![] };
-    let [banner, head, accounts_area, body, foot] = Layout::vertical([
+    let daemon_mark = app.here.as_ref().and_then(|here| super::identity::mark(here, app.daemon_identity.as_ref()));
+    let [identity, banner, head, accounts_area, body, foot] = Layout::vertical([
+        Constraint::Length(u16::from(daemon_mark.is_some())),
         Constraint::Length(u16::from(banner_text.is_some())),
         Constraint::Length(1),
         Constraint::Length(accounts.len() as u16),
@@ -36,6 +38,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(foot_height(app, f.area().width)),
     ])
     .areas(f.area());
+    if let Some(mark) = &daemon_mark {
+        let style = match mark.tone {
+            super::identity::Tone::Elsewhere => Style::new().fg(Color::Black).bg(Color::Yellow),
+            super::identity::Tone::Real => Style::new().fg(Color::White).bg(Color::Red),
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {} ", truncate(&mark.text, (identity.width as usize).saturating_sub(2))),
+                style.add_modifier(Modifier::BOLD),
+            )))
+            .style(style),
+            identity,
+        );
+    }
     if let Some(text) = &banner_text {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(

@@ -3,6 +3,7 @@ mod bindings;
 mod draw;
 mod dropped;
 mod files;
+mod identity;
 mod inbox;
 mod input;
 mod keys;
@@ -610,6 +611,7 @@ enum Msg {
         result: Result<TaskHistory, String>,
     },
     PendingDevices(Vec<PendingDevice>),
+    DaemonIdentity(identity::Answer),
     PairingAnswered {
         device: PendingDevice,
         allow: bool,
@@ -702,6 +704,10 @@ pub struct App {
     pub runtime: Option<Runtime>,
     /// The local daemon's machine, usage and update readings from `/daemon`.
     pub daemon: Option<Runtime>,
+    /// Where this Mac's instance looks for its daemon; `None` draws no mark.
+    pub here: Option<identity::Here>,
+    /// Which daemon answered there, by its own word.
+    pub daemon_identity: Option<identity::Answer>,
     /// Stored files by content route: text to read, an image to draw, or bytes to leave to the Mac.
     pub files: HashMap<String, Result<files::FileBody, String>>,
     loading: HashSet<String>,
@@ -784,6 +790,8 @@ pub fn run() -> Result<()> {
         local.restore(state);
     }
     local.start_pairing_feed();
+    local.here = Some(identity::Here::of_this_process());
+    local.start_identity_feed();
     if let Some(e) = unreadable {
         local.fail(trf!(
             "Could not read the Macs this terminal paired with: {e}",
@@ -1175,6 +1183,8 @@ impl App {
             chip_seq: 0,
             runtime: None,
             daemon: None,
+            here: None,
+            daemon_identity: None,
             files: HashMap::new(),
             loading: HashSet::new(),
             picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
@@ -1221,6 +1231,27 @@ impl App {
         let tx = self.tx.clone();
         let open_views = self.open_views.clone();
         view_feed::start(tx, open_views, self.target.clone());
+    }
+
+    /// Asks this Mac's daemon every few seconds which daemon it is, since another can take its port.
+    fn start_identity_feed(&self) {
+        let tx = self.tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("alondra-daemon-identity".into())
+            .spawn(move || {
+                let client = Client::new(Duration::from_secs(5));
+                let mut last = None;
+                loop {
+                    let answer = client.get::<Value>("/daemon").ok().and_then(|body| identity::Answer::from_daemon(&body));
+                    if let Some(answer) = answer.filter(|answer| last.as_ref() != Some(answer)) {
+                        if tx.send(Msg::DaemonIdentity(answer.clone())).is_err() {
+                            return;
+                        }
+                        last = Some(answer);
+                    }
+                    std::thread::sleep(PAIRING_POLL);
+                }
+            });
     }
 
     /// Asks this Mac's daemon every few seconds which devices wait to be let in.
@@ -2065,6 +2096,7 @@ impl App {
             },
             Msg::Runtime(runtime) => self.runtime = runtime.map(|r| *r),
             Msg::Daemon(daemon) => self.daemon = daemon.map(|d| *d),
+            Msg::DaemonIdentity(answer) => self.daemon_identity = Some(answer),
             Msg::PendingDevices(pending) => {
                 let now = now_millis();
                 self.pairing_answered
