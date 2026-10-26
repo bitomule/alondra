@@ -95,7 +95,7 @@ fn agree(s: &DomainState) -> Result<(), String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::default() })]
 
     #[test]
     fn every_reader_counts_a_task_of_the_agent_sdk_as_its_lifecycle_says(acts in prop::collection::vec(act(), 1..60)) {
@@ -108,18 +108,21 @@ proptest! {
     }
 }
 
-/// A node delivers, is told something while its delivery waits for review, and pauses before it
-/// takes it up: it reads paused, never at work, and holds no slot.
+/// A node delivers, is told something while its delivery waits for review (before or after the
+/// turn that presented it ends), and pauses before it takes it up: it reads paused, never at
+/// work, and holds no slot.
 #[test]
 fn a_node_paused_with_a_message_on_its_delivery_is_not_at_work() {
-    for by_user in [false, true] {
+    let told_after_the_turn = [Act::Task(Step::Deliver(2)), Act::Task(Step::TurnEnded), Act::Task(Step::Tell)];
+    let told_inside_the_turn = [Act::Task(Step::Deliver(2)), Act::Resume, Act::Task(Step::TurnEnded)];
+    for (told, by_user) in [told_inside_the_turn, told_after_the_turn].into_iter().flat_map(|told| [false, true].map(|by_user| (told.clone(), by_user))) {
         let mut s = three_tasks();
-        let acts = [Act::Task(Step::Deliver(2)), Act::Task(Step::TurnEnded), Act::Task(Step::Tell), Act::Pause { by_user }];
+        let acts = told.into_iter().chain([Act::Pause { by_user }]).collect::<Vec<_>>();
         for (n, act) in acts.iter().enumerate() {
             perform(&mut s, act, n);
-            assert_eq!(agree(&s), Ok(()), "after {act:?} (by user: {by_user})");
+            assert_eq!(agree(&s), Ok(()), "after {act:?} in {acts:?}");
         }
-        assert!(s.node_pause(&NODE.into()).is_some(), "the node is paused (by user: {by_user})");
+        assert!(s.node_pause(&NODE.into()).is_some(), "the node is paused after {acts:?}");
     }
 }
 
@@ -190,3 +193,4 @@ fn any_commit_moves_an_older_phase_of_a_node_of_the_agent_sdk() {
     must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into() });
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
 }
+
