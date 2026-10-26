@@ -328,7 +328,7 @@ impl App {
                 if action.enabled && let Some(key) = digit(index)
                     && (!reading || self.takes_the_comments(view, key))
                 {
-                    t.add(vec![key], "", action.label.clone(), answer.clone());
+                    t.add(vec![key], "", super::md::inline_text(&action.label), answer.clone());
                 }
             }
             if !card.more.is_empty() && !reading {
@@ -344,7 +344,7 @@ impl App {
                         && key.code.as_char().is_some_and(|c| c.is_ascii_alphabetic())
                     {
                         let option = super::inbox::only_option(&action).map(Box::new);
-                        t.add(vec![key], "", action.label.clone(), Act::Server(Box::new(action), option));
+                        t.add(vec![key], "", super::md::inline_text(&action.label), Act::Server(Box::new(action), option));
                     }
                 }
             }
@@ -353,7 +353,7 @@ impl App {
         for action in view_render::actions(view).into_iter().filter(|action| action.enabled) {
             if let Some(key) = hinted(view_render::action_hint(&action)) {
                 let option = super::inbox::only_option(&action).map(Box::new);
-                t.add(vec![key], "", action.label.clone(), Act::Server(Box::new(action.clone()), option));
+                t.add(vec![key], "", super::md::inline_text(&action.label), Act::Server(Box::new(action.clone()), option));
             }
             for (index, option) in action.options.iter().enumerate() {
                 let key = match option.key.as_deref() {
@@ -391,7 +391,7 @@ impl App {
         {
             for action in &row.actions {
                 if let Some(key) = action.key.as_deref().and_then(hinted) {
-                    t.add(vec![key], "", action.label.clone(), Act::RowAction(Box::new(action.clone())));
+                    t.add(vec![key], "", super::md::inline_text(&action.label), Act::RowAction(Box::new(action.clone())));
                 }
             }
         }
@@ -447,7 +447,7 @@ impl App {
         let Some(home) = self.shown_home() else { return };
         for (section, action) in super::draw::screen_actions(&home) {
             if let Some(key) = hinted(view_render::action_hint(&action)) {
-                t.add(vec![key], "", action.label.clone(), Act::ScreenAction(Box::new(action), section));
+                t.add(vec![key], "", super::md::inline_text(&action.label), Act::ScreenAction(Box::new(action), section));
             }
         }
     }

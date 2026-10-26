@@ -91,6 +91,15 @@ import Testing
         }
         #expect(shapes == ["table 3", "table 2", "After"])
     }
+
+    @Test func aLineKeepsTheInlineStylesAndDropsTheBlockMarkers() {
+        let line = MarkdownBlock.line("## Done\n\n- **bold** and `code`\n\n---\n\nAfter")
+        #expect(String(line.characters) == "Done · bold and code · After")
+        let bold = line.runs.filter { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true }
+        #expect(bold.map { String(line[$0.range].characters) } == ["bold"])
+        let code = line.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }
+        #expect(code.map { String(line[$0.range].characters) } == ["code"])
+    }
 }
 
 @Suite struct MarkdownBlockCacheTests {

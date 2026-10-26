@@ -131,10 +131,10 @@ public struct CardDetailView: View {
     private func header(_ subject: CardDetailFeature.Subject) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if let card = subject.card { KindBadge(kind: kind, title: card.eyebrow?.text) }
-            Text(subject.title).font(.display(.title2, weight: .bold))
+            Text(MarkdownBlock.line(subject.title)).font(.display(.title2, weight: .bold))
                 .foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
             if let why = subject.card?.why {
-                Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                MarkdownView(markdown: Markdown(text: why), secondary: true).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 6) {
                 if let meta = subject.card?.meta { Text(meta).font(.footnote.weight(.medium)) }
@@ -213,12 +213,12 @@ public struct CardDetailView: View {
             Image(systemName: row.icon == .check ? "checkmark.circle.fill" : "clock.arrow.circlepath")
                 .foregroundStyle(row.icon == .check ? Palette.sage : .secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.title).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
-                if let subtitle = row.subtitle { Text(subtitle).font(.footnote).foregroundStyle(.secondary) }
+                Text(MarkdownBlock.line(row.title)).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
+                if let subtitle = row.subtitle { Text(MarkdownBlock.line(subtitle)).font(.footnote).foregroundStyle(.secondary) }
                 ForEach(row.children, id: \.id) { child in
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(child.title).font(.footnote).foregroundStyle(Palette.ink)
-                        if let subtitle = child.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                        Text(MarkdownBlock.line(child.title)).font(.footnote).foregroundStyle(Palette.ink)
+                        if let subtitle = child.subtitle { Text(MarkdownBlock.line(subtitle)).font(.caption).foregroundStyle(.secondary) }
                     }
                     .padding(.top, 4)
                 }

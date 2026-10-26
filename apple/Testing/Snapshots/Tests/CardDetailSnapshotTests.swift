@@ -114,6 +114,10 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store)
     }
 
+    func test_markdownInWhatTheCardNeedsAndWhy() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.markdownCard()))
+    }
+
     func test_know() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.informationID))
         assertDetail(store)

@@ -177,7 +177,7 @@ struct TaskCard: View {
                 Glyph(symbol: TaskStyle.symbol(icon: line.icon, struck: line.struck), tint: tint,
                       size: .small, pulse: line.icon == .mission)
                 if let state = line.state {
-                    Text(verbatim: state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
+                    Text(MarkdownBlock.line(state)).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                 }
                 ForEach(line.marks, id: \.self) { mark in
                     Text(verbatim: mark)
@@ -197,7 +197,7 @@ struct TaskCard: View {
                         .accessibilityHidden(true)
                 }
             }
-            Text(verbatim: line.title)
+            Text(MarkdownBlock.line(line.title))
                 .font(.body.weight(.semibold))
                 .foregroundStyle(line.struck ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
                 .strikethrough(line.struck)
@@ -216,7 +216,7 @@ struct TaskCard: View {
                     : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
                 layout {
                     if let activity = line.activity {
-                        Text(verbatim: activity).font(.footnote).foregroundStyle(.secondary)
+                        Text(MarkdownBlock.line(activity)).font(.footnote).foregroundStyle(.secondary)
                             .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                     }
                     if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
@@ -286,7 +286,7 @@ struct WaitsRow: View {
                             .foregroundStyle(Palette.ink)
                             .lineLimit(2)
                     }
-                    Text(verbatim: line.title)
+                    Text(MarkdownBlock.line(line.title))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

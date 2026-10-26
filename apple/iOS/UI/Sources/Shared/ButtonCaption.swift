@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
@@ -9,7 +10,7 @@ struct ButtonCaption: View {
 
     var body: some View {
         if let description = action.description {
-            Text(Self.markdown(description))
+            Text(MarkdownBlock.inline(description))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.leading)
@@ -21,10 +22,5 @@ struct ButtonCaption: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    static func markdown(_ text: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
     }
 }

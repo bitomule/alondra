@@ -111,9 +111,13 @@ pub(super) fn step(node: &super::LiveNode, lang: super::Lang) -> Option<String> 
 
 const SAID_LIMIT: usize = 80;
 
-/// The first sentence of what a node said, when it is prose: not a tool, a path or code.
+/// The first sentence of what a node said, when it is prose: not a tool, a path or code. Its Markdown
+/// headings are skipped and a list item or quote loses its mark.
 fn said(message: &str) -> Option<String> {
-    let line = message.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let line = message.lines().map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && line.chars().any(char::is_alphanumeric))
+        .map(item_text)
+        .find(|line| !line.is_empty())?;
     if line.starts_with(['`', '/', '~', '$']) || line.starts_with("mcp__") || line.starts_with("./")
         || line.split_once(':').is_some_and(|(head, _)| TOOLS.contains(&head)) {
         return None;
@@ -126,6 +130,18 @@ fn said(message: &str) -> Option<String> {
     }
     let cut: String = sentence.chars().take(SAID_LIMIT - 1).collect();
     Some(format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head)))
+}
+
+fn item_text(mut line: &str) -> &str {
+    loop {
+        let numbered = line.find(|c: char| !c.is_ascii_digit())
+            .filter(|&at| at > 0 && line[at..].starts_with(['.', ')']))
+            .map(|at| &line[at + 1..]);
+        match numbered.or_else(|| line.strip_prefix(['-', '*', '+', '>'])) {
+            Some(rest) if rest.is_empty() || rest.starts_with(' ') => line = rest.trim_start(),
+            _ => return line,
+        }
+    }
 }
 
 const TOOLS: [&str; 12] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Grep", "Glob", "Agent", "Task", "WebSearch", "WebFetch"];

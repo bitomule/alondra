@@ -50,6 +50,17 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         return (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
     }
 
+    /// Markdown flattened to one line for a field that never grows into blocks: each block's text,
+    /// with its inline styles and without its heading or list marker, joined by « · ».
+    public static func line(_ source: String) -> AttributedString {
+        var line = AttributedString()
+        for block in MarkdownParser.blocks(from: source) where block.kind != .rule && !block.content.characters.isEmpty {
+            if !line.characters.isEmpty { line.append(AttributedString(" · ")) }
+            line.append(block.content)
+        }
+        return line
+    }
+
     public var isCommentable: Bool {
         if case .rule = kind { return false }
         return true

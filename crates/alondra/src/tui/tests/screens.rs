@@ -580,6 +580,95 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
     );
 }
 
+const MARKDOWN_WHY: &str = "## What changed\n\n- The parser keeps **every** heading\n- Lists stay `lists`";
+
+/// The question card with Markdown where agents write it: its need, its why, a button and an option.
+fn markdown_card() -> views::View {
+    edited("card-question.json", |card| {
+        card["need"] = serde_json::json!("Choose the **welcome** copy");
+        card["title"] = card["need"].clone();
+        card["why"] = serde_json::json!(MARKDOWN_WHY);
+        card["subtitle"] = card["why"].clone();
+        card["actions"][1]["label"] = serde_json::json!("Keep the *warmer* copy");
+        card["actions"][1]["options"] = serde_json::json!([{
+            "id": "warm", "label": "Use the **warm** one", "description": "## Why\n- It reads `friendlier`",
+            "style": "default", "input": {"kind": "none"},
+        }]);
+    })
+}
+
+#[test]
+fn an_agents_markdown_in_a_card_is_drawn_never_its_marks() {
+    let mut app = english(markdown_card());
+    let screen = rendered(&mut app, 120, 40);
+    dump("detail: Markdown from the agent", &screen);
+    for mark in ["**", "##", "- The", "`"] {
+        assert!(!screen.contains(mark), "{mark:?} shows: {screen}");
+    }
+    let at = |needle: &str| screen.find(needle).unwrap_or_else(|| panic!("{needle}: {screen}"));
+    assert!(at("Choose the welcome copy") < at("What changed"));
+    assert!(at("What changed") < at("• The parser keeps every heading"), "the why keeps its heading and list: {screen}");
+    assert!(at("• The parser keeps every heading") < at("• Lists stay lists"));
+    assert!(at(" 2  Keep the warmer copy") > at("Lists stay lists"));
+    let footer = draw::footer_keys(&app);
+    assert!(footer.iter().any(|(_, label)| label == "Keep the warmer copy"), "the key bar reads the words: {footer:?}");
+
+    let card = view_render::detail_card(app.card_view.as_ref().unwrap()).unwrap().clone();
+    let lines = view_render::card_lines(&card, 80);
+    let need = lines.iter().flat_map(|line| &line.spans).find(|span| span.content == "welcome").expect("need span");
+    assert!(need.style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+
+    let row = view_render::card_row_lines(&card, 80, false);
+    assert_eq!(text(&row[0]).trim_start_matches([' ', '?']).trim(), "Choose the welcome copy", "{row:?}");
+
+    let menu = view_render::menu_lines(&view_render::option_menu(&card.actions[1]), 10);
+    let menu = menu.iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(menu.contains("Use the warm one") && menu.contains("    Why · It reads friendlier"), "{menu}");
+    assert!(!menu.contains("**") && !menu.contains("##"), "{menu}");
+}
+
+#[test]
+fn a_row_draws_an_agents_markdown_on_its_one_line() {
+    let row: views::Row = serde_json::from_value(serde_json::json!({
+        "id": "h-1", "icon": "check", "title": "Answered **Ship it**",
+        "subtitle": "## Summary\n- Merged `#12`\n- Released", "depth": 0, "struck": false,
+    })).unwrap();
+    let lines = view_render::row_lines(&row, 80, false, false);
+    let drawn = lines.iter().map(text).collect::<Vec<_>>();
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+    assert!(drawn[0].contains("Answered Ship it"), "{drawn:?}");
+    assert!(drawn[1].contains("Summary · Merged #12 · Released"), "{drawn:?}");
+    assert!(lines[0].spans.iter().any(|span| span.content == "Ship it" && span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)), "{lines:?}");
+}
+
+#[test]
+fn the_reader_reads_a_cards_why_as_markdown() {
+    let mut app = english(markdown_card());
+    app.open_reader();
+    let screen = rendered(&mut app, 120, 30);
+    assert!(screen.lines().nth(1).is_some_and(|border| border.contains("Choose the welcome copy")), "{screen}");
+    assert!(!screen.contains("**"), "{screen}");
+    let reader = app.reader.as_ref().unwrap();
+    let headings: Vec<String> = reader.blocks.iter().filter(|block| matches!(block.kind, md::Kind::Heading(_))).map(md::Block::plain).collect();
+    assert!(headings.iter().any(|heading| heading == "What changed"), "{headings:?}");
+    assert!(reader.blocks.iter().any(|block| matches!(block.kind, md::Kind::Item(_)) && block.plain() == "The parser keeps every heading"));
+}
+
+#[test]
+fn a_fact_draws_the_markdown_it_quotes_on_its_line() {
+    let mut view = super::parity::view_fixture("card-question.json");
+    view["sections"] = serde_json::json!([{"id": "facts", "collapsed": false, "items": [{"type": "facts", "items": [
+        {"label": "State", "value": "Needs you · “Pick the **parser** for `settings.json`”"},
+    ]}]}]);
+    let view: views::View = serde_json::from_value(view).unwrap();
+    let drawn = view_render::document_lines(&view, 80).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(drawn.contains("State: Needs you · “Pick the parser for settings.json”"), "{drawn}");
+}
+
+fn text(line: &ratatui::text::Line) -> String {
+    line.spans.iter().map(|span| span.content.as_ref()).collect()
+}
+
 #[test]
 fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
     use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold};

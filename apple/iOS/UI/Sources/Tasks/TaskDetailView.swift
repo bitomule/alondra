@@ -521,7 +521,7 @@ private struct HistoryLine: View {
             .frame(width: 44, alignment: .leading)
             Glyph(symbol: "circle.fill", tint: Palette.slate, size: .tiny)
                 .background(Palette.card, in: .circle)
-            Text("\(Text(verbatim: step.state).fontWeight(.semibold))\(Text(verbatim: step.summary.map { " · \($0)" } ?? ""))")
+            Text("\(Text(verbatim: step.state).fontWeight(.semibold))\(Text(step.summary.map { AttributedString(" · ") + MarkdownBlock.line($0) } ?? AttributedString()))")
                 .font(.subheadline)
                 .foregroundStyle(Palette.ink.opacity(0.86))
                 .fixedSize(horizontal: false, vertical: true)

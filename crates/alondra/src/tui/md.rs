@@ -732,6 +732,38 @@ fn spans(text: &[Run], base: Style, hosts: bool) -> Vec<Span<'static>> {
         .collect()
 }
 
+/// Markdown for a field that stays on one line: bold, italic, code and links keep their style, and
+/// headings, paragraphs and list items join with « · », without their marks.
+pub fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for block in parse(text).iter().filter(|block| block.kind != Kind::Rule) {
+        let mut joined: Vec<Span<'static>> = Vec::new();
+        for line in &block.lines {
+            let line = spans(line, base, false);
+            if line.iter().all(|span| span.content.trim().is_empty()) {
+                continue;
+            }
+            if !joined.is_empty() {
+                joined.push(Span::styled(" ", base));
+            }
+            joined.extend(line);
+        }
+        if joined.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(Span::styled(" · ", base));
+        }
+        out.extend(joined);
+    }
+    out
+}
+
+/// The words of `inline`, for a place that draws no styles: a key bar, a menu title.
+pub fn inline_text(text: &str) -> String {
+    inline(text, Style::new()).iter().map(|span| span.content.as_ref()).collect()
+}
+
 pub fn char_width(c: char) -> usize {
     let mut b = [0u8; 4];
     Span::raw(&*c.encode_utf8(&mut b)).width()
@@ -1453,6 +1485,19 @@ mod tests {
                 "a    │     b │  c"
             ]
         );
+    }
+
+    #[test]
+    fn inline_keeps_a_fields_styles_on_one_line_without_its_block_marks() {
+        let spans = inline("## Done\n\n- **bold** and `code`\n1. *two*\n\n---\n\n> quoted", Style::new().fg(Color::Gray));
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Done · bold and code · two · quoted");
+        let style_of = |text: &str| spans.iter().find(|s| s.content == text).unwrap_or_else(|| panic!("{text} in {spans:?}")).style;
+        assert!(style_of("bold").add_modifier.contains(Modifier::BOLD));
+        assert!(style_of("two").add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(style_of("code").fg, Some(CODE));
+        assert_eq!(style_of("Done").fg, Some(Color::Gray));
+        assert!(inline("", Style::new()).is_empty());
     }
 
     #[test]

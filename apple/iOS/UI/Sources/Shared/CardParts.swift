@@ -173,7 +173,7 @@ public struct CompositionSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: picked ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(picked ? tint : .secondary)
-                Text(option.label).font(.body.weight(.medium)).foregroundStyle(Palette.ink)
+                Text(MarkdownBlock.line(option.label)).font(.body.weight(.medium)).foregroundStyle(Palette.ink)
                     .multilineTextAlignment(.leading)
                 Spacer()
             }

@@ -15,7 +15,7 @@ struct ProgressLine: View {
                 ForEach(facts.enumerated(), id: \.offset) { _, fact in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(verbatim: fact.label).foregroundStyle(.secondary)
-                        Text(verbatim: fact.value)
+                        Text(MarkdownBlock.line(fact.value))
                             .foregroundStyle(fact.tone.map { TaskStyle.tint(tone: $0) } ?? Palette.ink)
                             .lineLimit(2)
                     }
@@ -42,13 +42,13 @@ private struct RowLine: View {
                 .frame(width: 20)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: row.title)
+                Text(MarkdownBlock.line(row.title))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(row.struck ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
                     .strikethrough(row.struck)
                     .fixedSize(horizontal: false, vertical: true)
                 if let subtitle = row.subtitle {
-                    Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(MarkdownBlock.line(subtitle)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             Spacer(minLength: 4)

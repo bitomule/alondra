@@ -309,10 +309,10 @@ pub struct Card {
     pub id: String,
     #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub kind: Option<CardKind>,
-    /// What the user must do, in the imperative; the same text as `title`.
+    /// What the user must do, in the imperative; the same text as `title`. Markdown, drawn on one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<String>,
-    /// Why, and whom it holds back; the same text as `subtitle`.
+    /// Why, and whom it holds back; the same text as `subtitle`. Markdown: whole in a detail, on one line in a list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// One line: who sent it and where ("node · project"). The age is in `timestamps`.
@@ -403,6 +403,7 @@ pub struct Row {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
     pub icon: Icon,
+    /// Markdown, drawn on one line, like `subtitle`.
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
@@ -468,6 +469,7 @@ pub struct Facts {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fact {
     pub label: String,
+    /// Markdown, drawn on one line: a task's state quotes its question or its node's words.
     pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tone: Option<Tone>,
@@ -545,6 +547,7 @@ impl std::ops::Deref for CardAction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Action {
     pub id: String,
+    /// Markdown, drawn on one line.
     pub label: String,
     pub style: Style,
     /// How the button reads: green to advance, red when advancing is risky, grey otherwise.
@@ -589,6 +592,7 @@ pub enum Role {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionOption {
     pub id: String,
+    /// Markdown, drawn on one line, like `description`.
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

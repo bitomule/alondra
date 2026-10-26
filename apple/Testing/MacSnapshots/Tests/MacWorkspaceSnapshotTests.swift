@@ -521,6 +521,32 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 1500)) { MacServiceDetail(presentation: store) }
     }
 
+    /// A node's last words as its card, written in Markdown: the need keeps its styles on one line
+    /// and the reason reads as the blocks it was written in.
+    func test_card_markdownInWhatItNeedsAndWhy() throws {
+        let card = try markdownCard()
+        let store = try presentation(detail: "card-question-mac") { $0.detailDocument = card }
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    private func markdownCard() throws -> ViewDocument {
+        let environment = ProcessInfo.processInfo.environment
+        let url = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+            .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards/card-question-mac.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        let index = try XCTUnwrap(sections.firstIndex { $0["id"] as? String == "card" })
+        var items = try XCTUnwrap(sections[index]["items"] as? [[String: Any]])
+        let need = "Review the **diagram fix** in `MarkdownBlocks.swift`"
+        items[0]["need"] = need
+        items[0]["title"] = need
+        items[0]["why"] = "## Done\n\n- Diagrams draw in **both** apps\n- `make snapshots` passes\n\nOne golden changed: the plan card."
+        sections[index]["items"] = items
+        object["sections"] = sections
+        return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
     /// A node whose turn ended with nothing for the user: what it wrote in its terminal is a card.
     func test_card_aNodesLastWords_spanish() throws {
         let store = try presentation(detail: "card-unheard-es-mac", spanish: true)

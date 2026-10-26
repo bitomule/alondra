@@ -1,3 +1,4 @@
+import AlondraDesign
 import SwiftUI
 
 /// The buttons floating at the foot of a review screen, as one Liquid Glass group: every button
@@ -63,8 +64,8 @@ struct GlassBarLabel: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            if let systemImage { Label(title, systemImage: systemImage) }
-            Text(title)
+            if let systemImage { Label { Text(MarkdownBlock.line(title)) } icon: { Image(systemName: systemImage) } }
+            Text(MarkdownBlock.line(title))
         }
         .frame(maxWidth: .infinity)
     }

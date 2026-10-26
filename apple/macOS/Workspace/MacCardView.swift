@@ -26,8 +26,14 @@ struct MacCardView: View {
         VStack(alignment: .leading, spacing: 14) {
             MacCardHeader(card: card)
             VStack(alignment: .leading, spacing: 6) {
-                Text(card.need ?? card.title).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                if let why = card.why { Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                Text(MarkdownBlock.line(card.need ?? card.title)).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if let why = card.why {
+                    if card.detail == .included {
+                        MarkdownView(markdown: Markdown(text: why), secondary: true).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(MarkdownBlock.line(why)).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 if let meta = card.meta { Text(meta).font(.caption).foregroundStyle(.tertiary) }
             }
             if let row = card.contentRow { MacContentRow(row: row, open: onContent) }

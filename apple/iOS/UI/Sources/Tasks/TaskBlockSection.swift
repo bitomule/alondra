@@ -89,12 +89,12 @@ struct CompactTaskLine: View {
         Button { if let link = line.link { open(link) } } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: line.title)
+                    Text(MarkdownBlock.line(line.title))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Palette.ink)
                         .lineLimit(2)
                     if !detail.isEmpty {
-                        Text(verbatim: detail)
+                        Text(MarkdownBlock.line(detail))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)

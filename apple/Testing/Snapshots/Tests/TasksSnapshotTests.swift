@@ -164,6 +164,11 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
+    func test_taskDetail_markdownInItsHistory() throws {
+        let document = try Fixtures.taskDetailWithMarkdownHistory()
+        assertScreen(lightAndDark) { ScreenFrame(height: 1700) { TaskDetailView(store: task(document)) } }
+    }
+
     func test_taskDetail_spanish() throws {
         let document = try SampleViews.document("task-detail-es")
         assertScreen(language: .spanish) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }

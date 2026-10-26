@@ -2923,6 +2923,9 @@ impl App {
                         }
                         alondra_core::views::Item::Card(card) => {
                             text.push_str(&format!("\n\n## {}", card.title));
+                            if let Some(why) = card.why.as_ref().filter(|why| !why.is_empty()) {
+                                text.push_str(&format!("\n\n{why}"));
+                            }
                             for context in &card.context {
                                 text.push_str(&format!("\n\n{}", context.text));
                             }
@@ -3012,6 +3015,9 @@ impl App {
             let task_id = view_render::card_task_id(&card);
             let (glyph, color) = (view_render::icon(card.icon), view_render::icon_color(card.icon));
             let mut text = format!("# {}", card.title);
+            if let Some(why) = card.why.as_ref().filter(|why| !why.is_empty()) {
+                text.push_str(&format!("\n\n{why}"));
+            }
             for context in &card.context {
                 text.push_str(&format!("\n\n{}", context.text));
             }

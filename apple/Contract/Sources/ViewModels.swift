@@ -606,6 +606,9 @@ public enum JSONValue: Codable, Equatable, Sendable {
 }
 
 extension Markdown {
+    /// Agent-written text the app reads as Markdown, whole and with no link to more.
+    public init(text: String) { self.init(text: text, truncated: false, more: nil, commentable: false) }
+
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         text = try c.decode(String.self, forKey: .text); truncated = try c.decode(Bool.self, forKey: .truncated)

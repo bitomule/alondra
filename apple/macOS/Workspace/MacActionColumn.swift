@@ -1,5 +1,6 @@
 import AlondraContract
 import AlondraFeatures
+import AlondraDesign
 import SwiftUI
 
 /// The buttons in a column by role, and what does not fit behind "More…".
@@ -43,7 +44,7 @@ struct MacActionColumn: View {
                         onAction(action)
                     } label: {
                         HStack(spacing: 16) {
-                            Text(action.label)
+                            Text(MarkdownBlock.line(action.label))
                             Spacer(minLength: 12)
                             if let key = action.key { MacKeyHint(key: key) }
                         }

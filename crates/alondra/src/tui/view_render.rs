@@ -233,11 +233,12 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         .filter(|subtitle| !subtitle.is_empty() && !seen.contains(*subtitle));
     let lead_width: usize = first.iter().map(Span::width).sum();
     let meta_width: usize = meta.iter().map(Span::width).sum();
-    let title_width = super::md::str_width(&row.title);
+    let title = super::md::inline(&row.title, title_style);
+    let title_width: usize = title.iter().map(Span::width).sum();
     let under = if nested { format!("{indent}    ") } else { "  ".to_owned() };
     let mut lines = Vec::new();
     if meta.is_empty() || lead_width + title_width + 2 + meta_width <= width {
-        first.push(Span::styled(row.title.clone(), title_style));
+        first.extend(title);
         if !meta.is_empty() {
             first.push(Span::raw(
                 " ".repeat(width - lead_width - title_width - meta_width),
@@ -248,7 +249,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     } else {
         let wrapped = vec![bar.clone(), Span::raw(" ".repeat(lead_width.saturating_sub(1)))];
         lines.extend(
-            super::md::wrap(vec![Span::styled(row.title.clone(), title_style)], width, first, wrapped)
+            super::md::wrap(title, width, first, wrapped)
                 .into_iter()
                 .map(|line| fit(line.spans, width)),
         );
@@ -257,14 +258,9 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         lines.push(fit(second, width));
     }
     if let Some(subtitle) = subtitle {
-        lines.push(fit(
-            vec![
-                bar,
-                Span::raw(under),
-                Span::styled(subtitle.clone(), Style::new().fg(Color::Gray)),
-            ],
-            width,
-        ));
+        let mut line = vec![bar, Span::raw(under)];
+        line.extend(super::md::inline(subtitle, Style::new().fg(Color::Gray)));
+        lines.push(fit(line, width));
     }
     lines
 }
@@ -349,7 +345,7 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
     }
     let under = vec![bar.clone(), Span::raw("  ")];
     let mut lines =
-        super::md::wrap(vec![Span::styled(need.to_owned(), need_style)], lead_width + column, lead, under.clone());
+        super::md::wrap(super::md::inline(need, need_style), lead_width + column, lead, under.clone());
     if right_beside {
         let first = &mut lines[0];
         let padding = width.saturating_sub(first.width() + right_width);
@@ -402,9 +398,9 @@ fn card_header(card: &Card) -> Line<'static> {
 pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     let mut out = vec![card_header(card)];
     let need = card.need.as_deref().unwrap_or(&card.title);
-    out.push(Line::from(Span::styled(need.to_owned(), Style::new().add_modifier(Modifier::BOLD))));
+    out.push(Line::from(super::md::inline(need, Style::new().add_modifier(Modifier::BOLD))));
     if let Some(why) = card.why.as_ref().or(card.subtitle.as_ref()) {
-        out.push(Line::from(Span::styled(why.clone(), Style::new().fg(Color::Gray))));
+        out.extend(super::md::render(&super::md::parse(why), width).lines.into_iter().map(|line| grey(line, Color::Gray)));
     }
     for chip in card.blocked_by.iter().chain(&card.blocks) {
         out.push(Line::from(chip.label.clone().fg(ACCENT)));
@@ -461,9 +457,14 @@ fn role_color(action: &Action) -> Color {
 fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
     if !action.enabled {
         let why = action.disabled_reason.as_ref().map(|reason| format!(" — {reason}")).unwrap_or_default();
-        return vec![Line::from(vec![keycap_span(key, DIM), Span::styled(format!(" {}{why}", action.label), Style::new().fg(DIM))])];
+        let mut spans = vec![keycap_span(key, DIM), Span::styled(" ", Style::new().fg(DIM))];
+        spans.extend(super::md::inline(&action.label, Style::new().fg(DIM)));
+        spans.push(Span::styled(why, Style::new().fg(DIM)));
+        return vec![Line::from(spans)];
     }
-    vec![Line::from(vec![keycap_span(key, role_color(action)), Span::raw(format!(" {}", action.label))])]
+    let mut spans = vec![keycap_span(key, role_color(action)), Span::raw(" ")];
+    spans.extend(super::md::inline(&action.label, Style::new()));
+    vec![Line::from(spans)]
 }
 
 /// A button's description under it, indented past its key and wrapped to the pane, in grey.
@@ -475,13 +476,23 @@ fn button_description(description: &str, width: usize) -> Vec<Line<'static>> {
         .flat_map(|line| super::md::render(&super::md::parse(line), width.saturating_sub(INDENT.len())).lines)
         .map(|line| {
             let mut spans = vec![Span::raw(INDENT)];
-            spans.extend(line.spans.into_iter().map(|span| match span.style.fg {
-                Some(_) => span,
-                None => span.fg(DIM),
-            }));
+            spans.extend(grey(line, DIM).spans);
             Line::from(spans)
         })
         .collect()
+}
+
+/// Text Markdown left without a colour of its own, in `color`.
+fn grey(line: Line<'static>, color: Color) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| match span.style.fg {
+                Some(_) => span,
+                None => span.fg(color),
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// A list the user picks from: the rest of a card's actions, or the options of one. 1 to 9 pick the
@@ -509,7 +520,7 @@ pub fn more_menu(card: &Card) -> Menu {
 
 pub fn option_menu(action: &Action) -> Menu {
     Menu {
-        title: action.label.clone(),
+        title: super::md::inline_text(&action.label),
         entries: action.options.iter().map(|option| (action.clone(), Some(option.clone()))).collect(),
         sel: 0,
     }
@@ -530,7 +541,9 @@ pub fn menu_lines(menu: &Menu, room: usize) -> Vec<Line<'static>> {
             }
         }
         if let Some(description) = option.as_ref().and_then(|option| option.description.as_ref()) {
-            lines.push(Line::from(Span::styled(format!("    {description}"), Style::new().fg(DIM))));
+            let mut line = vec![Span::raw("    ")];
+            line.extend(super::md::inline(description, Style::new().fg(DIM)));
+            lines.push(Line::from(line));
         }
         lines
     }).collect();
@@ -631,10 +644,9 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 ])),
                 Item::Facts(facts) => {
                     for fact in &facts.items {
-                        lines.push(Line::from(vec![
-                            Span::styled(format!("{}: ", fact.label), Style::new().fg(DIM)),
-                            Span::raw(fact.value.clone()),
-                        ]));
+                        let mut line = vec![Span::styled(format!("{}: ", fact.label), Style::new().fg(DIM))];
+                        line.extend(super::md::inline(&fact.value, Style::new()));
+                        lines.push(Line::from(line));
                     }
                 }
                 Item::Checks(checks) => {

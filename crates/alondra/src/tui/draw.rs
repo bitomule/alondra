@@ -762,7 +762,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         let mut actions = action_menu(&app.bindings());
         actions.extend(super::view_render::actions(document).into_iter().filter(|action| !action.enabled).map(|action| {
             let why = action.disabled_reason.map(|reason| format!(" — {reason}")).unwrap_or_default();
-            Line::from(Span::styled(format!("    {}{why}", action.label), Style::new().fg(DIM)))
+            Line::from(Span::styled(format!("    {}{why}", md::inline_text(&action.label)), Style::new().fg(DIM)))
         }));
         if let Some(menu) = &app.card_menu {
             keys = super::view_render::menu_lines(menu, inner.height.saturating_sub(4) as usize);
@@ -955,7 +955,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         };
         title.push(Span::styled(gone, Style::new().fg(Color::Black).bg(Color::LightRed)));
     }
-    let heading = md::one_line(&r.title);
+    let heading = md::one_line(&md::inline_text(&r.title));
     let around: usize = title.iter().map(Span::width).sum();
     if around + md::str_width(&heading) + 2 <= area.width as usize {
         title.insert(3, Span::styled(heading, Style::new().bold()));
@@ -1590,7 +1590,7 @@ fn header_actions(section: &alondra_core::views::Section, header: &[Span], width
             spans.push(Span::raw("  "));
         }
         spans.push(keycap(&hint));
-        spans.push(Span::styled(format!(" {}", action.label), Style::new().fg(DIM)));
+        spans.push(Span::styled(format!(" {}", md::inline_text(&action.label)), Style::new().fg(DIM)));
     }
     let used: usize = header.iter().chain(&spans).map(Span::width).sum();
     if spans.is_empty() || used >= width {

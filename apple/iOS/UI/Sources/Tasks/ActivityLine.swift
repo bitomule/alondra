@@ -17,7 +17,7 @@ struct ActivityLine: View {
                     if let since = activity.since { TimeText(raw: since).font(.caption).foregroundStyle(.tertiary) }
                 }
                 if let detail = activity.detail {
-                    Text(verbatim: detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(MarkdownBlock.line(detail)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

@@ -65,6 +65,31 @@ extension Fixtures {
         }
     }
 
+    /// A node's last words as its card: what it needs and why, written in Markdown as nodes write them.
+    static func markdownCard(id: String = "last-words-1") throws -> ViewDocument {
+        try retargeted(
+            id: id, kind: "decide", need: "Review the **diagram fix** in `MarkdownBlocks.swift`",
+            why: "## Done\n\n- Diagrams draw in **both** apps\n- `make snapshots` passes\n\nOne golden changed: the plan card."
+        ) { item in
+            item["actions"] = [
+                button("ans:\(id)@1", "Ship **now**", role: "advance", optionID: "ship"),
+                button("ans:\(id)@1", "Hold it", optionID: "hold"),
+            ]
+        }
+    }
+
+    /// The sample task detail with a history step summed up in Markdown, as a node writes it.
+    static func taskDetailWithMarkdownHistory() throws -> ViewDocument {
+        try Samples.document("task-detail") { object in
+            guard var sections = object["sections"] as? [[String: Any]],
+                  let index = sections.firstIndex(where: { $0["id"] as? String == "history" }),
+                  var items = sections[index]["items"] as? [[String: Any]], !items.isEmpty else { return }
+            items[items.count - 1]["subtitle"] = "## Waiting\n\n- pick the **welcome copy** for `EmptyState`"
+            sections[index]["items"] = items
+            object["sections"] = sections
+        }
+    }
+
     static let orchestratorDecideID = "memory-pause-livelock-ask"
 
     /// The orchestrator's Decide card as the daemon renders it: its reply field answers it.

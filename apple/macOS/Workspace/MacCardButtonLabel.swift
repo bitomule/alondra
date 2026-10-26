@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import SwiftUI
 
 struct MacCardButtonLabel: View {
@@ -6,9 +7,9 @@ struct MacCardButtonLabel: View {
     var body: some View {
         ZStack {
             VStack(spacing: 2) {
-                Text(action.label).font(.subheadline.weight(.semibold)).multilineTextAlignment(.center)
+                Text(MarkdownBlock.line(action.label)).font(.subheadline.weight(.semibold)).multilineTextAlignment(.center)
                 if let description = action.description {
-                    Text(description).font(.caption).opacity(0.85).multilineTextAlignment(.center).lineLimit(2)
+                    Text(MarkdownBlock.line(description)).font(.caption).opacity(0.85).multilineTextAlignment(.center).lineLimit(2)
                 }
             }
             .padding(.horizontal, 36)

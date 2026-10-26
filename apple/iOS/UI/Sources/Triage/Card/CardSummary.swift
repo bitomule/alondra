@@ -13,11 +13,11 @@ struct CardSummary: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
+            Text(MarkdownBlock.line(card.need ?? card.title)).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
                 .lineLimit(large ? 2 : 3)
                 .accessibilityIdentifier("triage.need.\(card.id)")
             if why, let why = card.why {
-                Text(why).font(.subheadline).foregroundStyle(.secondary).lineLimit(large ? 2 : 4)
+                Text(MarkdownBlock.line(why)).font(.subheadline).foregroundStyle(.secondary).lineLimit(large ? 2 : 4)
             }
             if meta, let meta = card.meta {
                 Text(meta).font(.footnote.weight(.medium)).foregroundStyle(.secondary).lineLimit(large ? 1 : 2)

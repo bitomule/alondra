@@ -6549,6 +6549,10 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
     assert_eq!(doing(&node("Edit: src/main.rs"), Lang::En), None);
     let long = "word ".repeat(40);
     assert!(doing(&node(&long), Lang::En).unwrap().chars().count() <= 80 + "Said: “”".chars().count());
+    assert_eq!(doing(&node("## Summary\n\n- Parser **done**. Tests next."), Lang::En).as_deref(), Some("Said: “Parser **done**.”"),
+        "a heading is skipped and a list item loses its mark");
+    assert_eq!(doing(&node("> 1. Shipped it. Then more."), Lang::En).as_deref(), Some("Said: “Shipped it.”"));
+    assert_eq!(doing(&node("---\n2) Merged the fix."), Lang::En).as_deref(), Some("Said: “Merged the fix.”"));
     let working = LiveNode { tool: Some("Bash: cargo test".into()), ..node("Earlier") };
     assert_eq!(task_node::doing(&working, true, Lang::En), None, "at work, nothing inferred from its tool");
 }

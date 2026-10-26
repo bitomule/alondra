@@ -255,7 +255,7 @@ public struct RowView: View {
             if row.folded {
                 Button { withAnimation(.smooth) { opened.toggle() } } label: {
                     HStack(spacing: 6) {
-                        Text(row.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(MarkdownBlock.line(row.title)).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                         Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.secondary)
                             .rotationEffect(.degrees(opened ? 90 : 0)).accessibilityHidden(true)
                         Spacer()
@@ -266,7 +266,7 @@ public struct RowView: View {
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: iconName(row.icon)).foregroundStyle(ViewPalette.dawn)
-                    VStack(alignment: .leading, spacing: 2) { Text(row.title).font(.subheadline.weight(.semibold)).strikethrough(row.struck); if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) } }
+                    VStack(alignment: .leading, spacing: 2) { Text(MarkdownBlock.line(row.title)).font(.subheadline.weight(.semibold)).strikethrough(row.struck); if let subtitle = row.subtitle { Text(MarkdownBlock.line(subtitle)).font(.caption).foregroundStyle(.secondary) } }
                     Spacer()
                     if let trailing = row.trailing { TrailingView(trailing: trailing) }
                 }
@@ -298,7 +298,9 @@ private struct TrailingView: View {
 
 public struct MarkdownView: View {
     public let markdown: Markdown
-    public init(markdown: Markdown) { self.markdown = markdown }
+    /// Text set back from the ink, as a card's reasons are; headings keep the ink.
+    public var secondary = false
+    public init(markdown: Markdown, secondary: Bool = false) { self.markdown = markdown; self.secondary = secondary }
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(MarkdownParser.segments(from: markdown.text)) { segment in
@@ -308,7 +310,7 @@ public struct MarkdownView: View {
                 }
             }
             if markdown.truncated { Text("Content is truncated.").font(.caption).foregroundStyle(.secondary) }
-        }.foregroundStyle(ViewPalette.ink)
+        }.foregroundStyle(secondary ? AnyShapeStyle(.secondary) : AnyShapeStyle(ViewPalette.ink))
     }
 }
 private struct MarkdownLine: View {
@@ -375,7 +377,7 @@ public struct FactsView: View {
     public let facts: Facts
     public var onLink: (Link) -> Void
     public init(facts: Facts, onLink: @escaping (Link) -> Void = { _ in }) { self.facts = facts; self.onLink = onLink }
-    public var body: some View { VStack(alignment: .leading, spacing: 7) { ForEach(Array(facts.items.enumerated()), id: \.offset) { _, fact in HStack(alignment: .firstTextBaseline) { Text(fact.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Spacer(minLength: 12); Text(fact.value).font(.subheadline).foregroundStyle(fact.tone.map(toneColor) ?? ViewPalette.ink).multilineTextAlignment(.trailing) }.contentShape(Rectangle()).onTapGesture { if let link = fact.link { onLink(link) } } } }.padding(12).background(ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 12)) }
+    public var body: some View { VStack(alignment: .leading, spacing: 7) { ForEach(Array(facts.items.enumerated()), id: \.offset) { _, fact in HStack(alignment: .firstTextBaseline) { Text(fact.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Spacer(minLength: 12); Text(MarkdownBlock.line(fact.value)).font(.subheadline).foregroundStyle(fact.tone.map(toneColor) ?? ViewPalette.ink).multilineTextAlignment(.trailing) }.contentShape(Rectangle()).onTapGesture { if let link = fact.link { onLink(link) } } } }.padding(12).background(ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 12)) }
 }
 
 public struct ChecksView: View {
@@ -437,7 +439,7 @@ public struct OptionGrid: View {
     public var selection: String?
     public var onSelect: (ActionOption) -> Void
     public init(options: [ActionOption], selection: String? = nil, onSelect: @escaping (ActionOption) -> Void = { _ in }) { self.options = options; self.selection = selection; self.onSelect = onSelect }
-    public var body: some View { LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)], alignment: .leading, spacing: 8) { ForEach(options, id: \.id) { option in Button { onSelect(option) } label: { VStack(alignment: .leading, spacing: 3) { Text(option.label).font(.subheadline.weight(.semibold)); if let detail = option.description { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(10).background(selection == option.id ? ViewPalette.dawn.opacity(0.14) : ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 10)) }.buttonStyle(.plain).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selection == option.id ? ViewPalette.dawn : ViewPalette.hairline)) } } }
+    public var body: some View { LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)], alignment: .leading, spacing: 8) { ForEach(options, id: \.id) { option in Button { onSelect(option) } label: { VStack(alignment: .leading, spacing: 3) { Text(MarkdownBlock.line(option.label)).font(.subheadline.weight(.semibold)); if let detail = option.description { Text(MarkdownBlock.line(detail)).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(10).background(selection == option.id ? ViewPalette.dawn.opacity(0.14) : ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 10)) }.buttonStyle(.plain).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selection == option.id ? ViewPalette.dawn : ViewPalette.hairline)) } } }
 }
 
 public struct FormView: View {

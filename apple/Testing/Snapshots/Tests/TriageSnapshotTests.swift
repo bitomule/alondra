@@ -303,6 +303,11 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    func test_markdownInWhatTheCardNeedsAndWhy() throws {
+        let store = try single(try Fixtures.markdownCard())
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
     func test_know() throws {
         let store = try single(try Fixtures.card(Fixtures.informationID))
         assertScreen(inWindow: true) { Harness(store: store) }
