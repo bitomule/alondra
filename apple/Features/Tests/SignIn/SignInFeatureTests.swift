@@ -56,4 +56,36 @@ struct SignInFeatureTests {
         await store.send(.pending(0, "stale"))
         await store.finish()
     }
+    @Test func theFirstScreenAsksForAPathAndEitherCanSwitchToTheOther() async {
+        var state = SignInFeature.State()
+        state.phase = .signedOut
+        state.configuration = .missing
+        let store = TestStore(initialState: state) { SignInFeature() }
+        #expect(store.state.path == nil)
+        await store.send(.choose(.localNetwork)) { $0.path = .localNetwork }
+        await store.send(.showAccount(true))
+        await store.receive(\.choose) { $0.path = .account }
+        #expect(store.state.showsAccount)
+        await store.send(.showAccount(false))
+        await store.receive(\.choose) { $0.path = .localNetwork }
+    }
+    @Test func aPathCannotChangeWhileAMacIsBeingLinkedOnThisNetwork() async {
+        var state = SignInFeature.State()
+        state.phase = .signedOut
+        state.path = .localNetwork
+        state.findMac.step = .connecting("Studio")
+        let store = TestStore(initialState: state) { SignInFeature() }
+        await store.send(.choose(.account))
+    }
+    @Test func signingOutGoesBackToTheChoiceOfPath() async {
+        var state = SignInFeature.State()
+        state.phase = .approved
+        state.configuration = .saved
+        state.path = .account
+        let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
+            $0.cloudPairing = SignInClient(restore: { false }, login: {}, begin: { _ in "" }, approve: {}, cancel: {}, logout: {})
+        }
+        await store.send(.logout) { $0.generation = 1; $0.phase = .signingOut }
+        await store.receive(\.loggedOut) { $0.phase = .signedOut; $0.configuration = .missing; $0.path = nil }
+    }
 }

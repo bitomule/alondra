@@ -3,8 +3,8 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// The first screen: sign in with your account, or look around the app on sample data. Once the
-/// account is in, the same screen walks on to linking the Mac.
+/// The first screen: the account or this Wi-Fi, each with what it brings, or a look around the app
+/// on sample data. Once the account is in, the same screen walks on to linking the Mac.
 public struct SignInView: View {
     @Bindable var store: StoreOf<SignInFeature>
     let demo: (() -> Void)?
@@ -15,7 +15,9 @@ public struct SignInView: View {
     }
 
     public var body: some View {
-        if showsFindMac {
+        if choosesPath {
+            ChoosePathView(store: store, demo: demo)
+        } else if showsFindMac {
             FindMacView(store: store, demo: demo)
         } else {
             switch store.phase {
@@ -27,7 +29,10 @@ public struct SignInView: View {
         }
     }
 
-    /// Pairing on this network comes first; the account flow only after the person asks for it.
+    private var choosesPath: Bool {
+        store.phase == .signedOut && store.path == nil && !store.additionalMac
+    }
+
     private var showsFindMac: Bool {
         guard !store.showsAccount else { return false }
         switch store.phase {
@@ -40,13 +45,13 @@ public struct SignInView: View {
 
     private var signIn: some View {
         PairingLayout(store: store, glow: Palette.dawn, step: 0) {
-            Text("Your work.\nWithin reach.")
+            Text("Start with your account.")
         } subtitle: {
-            Text("Keep up with your tasks, answer a question, and help your work move forward.")
+            Text("Alerts on this iPhone, and your Mac within reach from anywhere.")
         } content: {
             switch store.phase {
             case .signedOut:
-                Label("Start with your account", systemImage: "person.crop.circle").font(.headline)
+                Label("Sign in with Alondra", systemImage: "person.crop.circle").font(.headline)
                 Text("Use the same account on your iPhone and Mac.").foregroundStyle(.secondary)
                 Button { store.send(.login) } label: {
                     Label("Sign in", systemImage: "arrow.right").frame(maxWidth: .infinity)

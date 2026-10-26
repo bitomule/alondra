@@ -1363,16 +1363,6 @@
         }
       }
     },
-    "Start with your account": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Empieza con tu cuenta"
-          }
-        }
-      }
-    },
     "Use the same account on your iPhone and Mac.": {
       "localizations": {
         "es": {
@@ -1409,26 +1399,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Conectando de forma segura…"
-          }
-        }
-      }
-    },
-    "Open Alondra on your Mac": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abre Alondra en tu Mac"
-          }
-        }
-      }
-    },
-    "Run this command in Terminal to show your connection code.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ejecuta este comando en Terminal para mostrar tu código de conexión."
           }
         }
       }

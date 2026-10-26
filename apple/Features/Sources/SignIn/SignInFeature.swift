@@ -56,14 +56,18 @@ public struct SignInFeature: Sendable {
         public var payload = ""
         public var error: String?
         public var generation = 0
-        /// Pairing on this network comes first; the account and QR flow is the alternative.
         public var findMac = FindMacFeature.State()
-        public var showsAccount = false
+        /// The way in the person picked on the first screen; `nil` until they pick one.
+        public var path: Path?
+        public var showsAccount: Bool { path == .account }
         public init(additionalMac: Bool = false) {
             self.additionalMac = additionalMac
             if additionalMac { configuration = .saved; phase = .scanning }
         }
     }
+    /// With the account this iPhone gets alerts and reaches the Mac from anywhere; on the local
+    /// network it needs no account and gets no alerts.
+    public enum Path: Equatable, Sendable { case account, localNetwork }
     public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, cancelling, pending(String), approved }
     public enum Action: BindableAction {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
@@ -72,7 +76,7 @@ public struct SignInFeature: Sendable {
         case revocationRequired(Int)
         case cancelled(Int)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String?)
-        case findMac(FindMacFeature.Action), showAccount(Bool)
+        case findMac(FindMacFeature.Action), showAccount(Bool), choose(Path)
     }
     @Dependency(\.cloudPairing) var service
     @Dependency(\.continuousClock) var clock
@@ -91,8 +95,10 @@ public struct SignInFeature: Sendable {
                 return .none
             case .findMac: return .none
             case .showAccount(let shows):
+                return .send(.choose(shows ? .account : .localNetwork))
+            case .choose(let path):
                 guard state.findMac.step == .browsing else { return .none }
-                state.showsAccount = shows
+                state.path = path
                 state.error = nil
                 return .none
             case .camera:
@@ -189,6 +195,7 @@ public struct SignInFeature: Sendable {
                 guard generation == state.generation else { return .none }
                 state.configuration = .missing; state.restorationInFlight = false; state.reauthenticationRequired = false
                 state.phase = .signedOut
+                state.path = nil
                 state.logoutIncomplete = false
                 return .none
             case .login:

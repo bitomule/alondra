@@ -77,14 +77,16 @@ public struct PairingView: View {
     }
 
     @ViewBuilder private var scanning: some View {
-        Label("Open Alondra on your Mac", systemImage: "laptopcomputer").font(.headline)
-        Text("Run this command in Terminal to show your connection code.").foregroundStyle(.secondary)
-        Text(verbatim: "alondra device invite")
-            .font(.mono(.body))
-            .textSelection(.enabled)
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.night, in: .rect(cornerRadius: 12))
+        Label("Open Terminal on your Mac", systemImage: "laptopcomputer").font(.headline)
+        if store.additionalMac {
+            Text("Run this command to show your connection code.").foregroundStyle(.secondary)
+            command("alondra device invite")
+        } else {
+            Text("Sign in there with the same account:").foregroundStyle(.secondary)
+            command("alondra account login")
+            Text("Then show your connection code:").foregroundStyle(.secondary)
+            command("alondra device invite")
+        }
         if store.phase == .submitting {
             ProgressView("Connecting securely…").frame(maxWidth: .infinity).padding(.vertical, 12)
             Button("Cancel") { store.send(.cancel) }.frame(maxWidth: .infinity)
@@ -131,5 +133,14 @@ public struct PairingView: View {
         } else {
             Button("Use another account") { store.send(.logout) }.font(.footnote)
         }
+    }
+
+    private func command(_ command: String) -> some View {
+        Text(verbatim: command)
+            .font(.mono(.body))
+            .textSelection(.enabled)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.night, in: .rect(cornerRadius: 12))
     }
 }

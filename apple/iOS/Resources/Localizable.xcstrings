@@ -9,16 +9,6 @@
     "Run this in Terminal on the Mac to sign in to Claude:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta esto en Terminal en el Mac para iniciar sesión en Claude:"}}}},
     "Finish in Terminal": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en Terminal"}}}},
     "Finish on the Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en el Mac"}}}},
-    "Keep up with your tasks, answer a question, and help your work move forward.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sigue tus tareas, responde preguntas y haz avanzar tu trabajo."
-          }
-        }
-      }
-    },
     "Your tasks carry on by themselves. When one needs you, it will show up here.": {
       "localizations": {
         "es": {
@@ -186,6 +176,21 @@
     "For a Mac on Tailscale or another network, type its address.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Para un Mac en Tailscale o en otra red, escribe su dirección."}}}},
     "192.168.1.20 or studio.tailnet.ts.net": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "192.168.1.20 o studio.tailnet.ts.net"}}}},
     "Find a Mac on this network": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscar un Mac en esta red"}}}},
+    "Alondra on your iPhone connects to the Mac where your agents work.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra en el iPhone se conecta al Mac donde trabajan tus agentes."}}}},
+    "With your account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Con tu cuenta"}}}},
+    "Alerts on this iPhone, and access from anywhere.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avisos en este iPhone y acceso desde cualquier sitio."}}}},
+    "Only on this Wi-Fi": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solo en esta Wi‑Fi"}}}},
+    "No account. No alerts on this iPhone: open the app to see what needs you.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin cuenta. Sin avisos en este iPhone: abre la app para ver qué te necesita."}}}},
+    "Recommended": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Recomendado"}}}},
+    "Don't have Alondra on your Mac yet?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Aún no tienes Alondra en el Mac?"}}}},
+    "Run in Terminal:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta en Terminal:"}}}},
+    "Start with your account.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Empieza con tu cuenta."}}}},
+    "Alerts on this iPhone, and your Mac within reach from anywhere.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avisos en este iPhone y tu Mac a mano desde cualquier sitio."}}}},
+    "Sign in with Alondra": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Inicia sesión en Alondra"}}}},
+    "Open Terminal on your Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abre Terminal en tu Mac"}}}},
+    "Run this command to show your connection code.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta este comando para mostrar tu código de conexión."}}}},
+    "Sign in there with the same account:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Inicia sesión allí con la misma cuenta:"}}}},
+    "Then show your connection code:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Después muestra tu código de conexión:"}}}},
     "Find a Mac on this network instead": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscar un Mac en esta red"}}}},
     "Use an account instead": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Usar una cuenta"}}}},
     "That Mac asks whether to allow this one. Allow it only if it shows this same code.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ese Mac pregunta si permite este. Permítelo solo si muestra este mismo código."}}}},
@@ -2071,16 +2076,6 @@
         }
       }
     },
-    "Start with your account": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Empieza con tu cuenta"
-          }
-        }
-      }
-    },
     "Use the same account on your iPhone and Mac.": {
       "localizations": {
         "es": {
@@ -2117,26 +2112,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Conectando de forma segura…"
-          }
-        }
-      }
-    },
-    "Open Alondra on your Mac": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abre Alondra en tu Mac"
-          }
-        }
-      }
-    },
-    "Run this command in Terminal to show your connection code.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ejecuta este comando en Terminal para mostrar tu código de conexión."
           }
         }
       }

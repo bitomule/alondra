@@ -10,6 +10,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
     let glow: Color
     let step: Int
     let stepLabels: [LocalizedStringKey]
+    let carded: Bool
     @ViewBuilder let title: Title
     @ViewBuilder let subtitle: Subtitle
     @ViewBuilder let content: Content
@@ -17,7 +18,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
 
     init(
         store: StoreOf<SignInFeature>, glow: Color, step: Int,
-        steps: [LocalizedStringKey] = ["Account", "Your Mac", "Confirm"],
+        steps: [LocalizedStringKey] = ["Account", "Your Mac", "Confirm"], carded: Bool = true,
         @ViewBuilder title: () -> Title, @ViewBuilder subtitle: () -> Subtitle,
         @ViewBuilder content: () -> Content, @ViewBuilder footer: () -> Footer = { EmptyView() }
     ) {
@@ -25,6 +26,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
         self.glow = glow
         self.step = step
         self.stepLabels = steps
+        self.carded = carded
         self.title = title()
         self.subtitle = subtitle()
         self.content = content()
@@ -53,13 +55,12 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                steps
-                VStack(alignment: .leading, spacing: 20) { content }
-                    .padding(24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Palette.card, in: .rect(cornerRadius: 28, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Palette.hairline) }
-                    .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
+                if !stepLabels.isEmpty { steps }
+                if carded {
+                    VStack(alignment: .leading, spacing: 20) { content }.pairingCard()
+                } else {
+                    content
+                }
                 if let error = store.error {
                     Label(error, systemImage: "exclamationmark.circle")
                         .font(.callout)
@@ -95,5 +96,15 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+extension View {
+    func pairingCard() -> some View {
+        padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.card, in: .rect(cornerRadius: 28, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Palette.hairline) }
+            .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
     }
 }

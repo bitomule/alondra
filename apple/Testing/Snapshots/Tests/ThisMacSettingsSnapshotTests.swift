@@ -123,6 +123,7 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
     private func lookingForMacs() -> StoreOf<SignInFeature> {
         var state = SignInFeature.State(additionalMac: false)
         state.phase = .signedOut
+        state.path = .localNetwork
         return Store(initialState: state) { EmptyReducer<SignInFeature.State, SignInFeature.Action>() }
     }
 

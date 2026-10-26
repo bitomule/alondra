@@ -15,7 +15,7 @@ final class AccountSnapshotTests: XCTestCase {
     private func signIn(_ edit: (inout SignInFeature.State) -> Void = { _ in }, additionalMac: Bool = false)
         -> StoreOf<SignInFeature> {
         var state = SignInFeature.State(additionalMac: additionalMac)
-        if !additionalMac { state.phase = .signedOut }
+        if !additionalMac { state.phase = .signedOut; state.path = .localNetwork }
         edit(&state)
         return Store(initialState: state) { EmptyReducer<SignInFeature.State, SignInFeature.Action>() }
     }
@@ -36,13 +36,23 @@ final class AccountSnapshotTests: XCTestCase {
 
     // MARK: Sign in
 
+    func test_choosePath() {
+        let store = signIn { $0.path = nil }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_choosePath_spanish() {
+        let store = signIn { $0.path = nil }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
     func test_signIn() {
-        let store = signIn { $0.showsAccount = true }
+        let store = signIn { $0.path = .account }
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
     func test_signIn_spanish() {
-        let store = signIn { $0.showsAccount = true }
+        let store = signIn { $0.path = .account }
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
@@ -128,6 +138,16 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     // MARK: Pairing
+
+    func test_pairing_withTheAccountShowsTheMacSteps() {
+        let store = signIn { $0.path = .account; $0.phase = .scanning }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_pairing_withTheAccountShowsTheMacSteps_spanish() {
+        let store = signIn { $0.path = .account; $0.phase = .scanning }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
 
     func test_pairing_beforeTheCamera() {
         let store = signIn(additionalMac: true)
