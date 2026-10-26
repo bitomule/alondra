@@ -233,6 +233,13 @@ impl ObservationFailures {
     }
 }
 
+/// Records what GitHub reported of one PR, outside the watcher's round.
+pub(crate) fn observe(domain: &DomainRuntime, pr_id: &PrId, facts: &PrFacts) -> Result<()> {
+    let state = domain.state()?;
+    let Some(pr) = state.pull_requests.get(pr_id) else { return Ok(()) };
+    apply(domain, &state, pr, facts)
+}
+
 fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &PrFacts) -> Result<()> {
     let unchanged = pr.head == facts.head && pr.base == facts.base
         && pr.state == facts.state && pr.merged_head == facts.merged_head;

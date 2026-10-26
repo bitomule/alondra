@@ -942,6 +942,9 @@ async fn execute_command<H: DomainHost>(
             Err(_) => return storage_error(),
         };
         if let Some(client) = host.new_work_client() {
+            if matches!(principal, Principal::Agent { .. }) {
+                client.catch_up_heads(&envelope.command).await;
+            }
             if let Err(error) = client.verify_presentation(&envelope.command).await {
                 return domain_error(error);
             }

@@ -259,6 +259,29 @@ fn a_review_targets_the_current_head_of_its_own_open_pr() {
 }
 
 #[test]
+fn a_pr_presented_without_a_head_shows_the_commit_it_is_at_when_the_delivery_commits() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    let omitted: Vec<DeliveryTarget> = serde_json::from_value(serde_json::json!([{"kind":"pull_request","pr_id":"pr"}])).unwrap();
+    ok(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "pr".into(), head: "head2".into(), base: "main".into(), state: PrState::Open, merged_head: None,
+    });
+    ok(&mut s, agent(), present("d", omitted, true, review()));
+    let InteractionPayload::Delivery { targets, .. } = &s.interactions[&"d".into()].payload else { panic!("a delivery") };
+    assert_eq!(targets, &vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head2".into() }]);
+}
+
+#[test]
+fn a_head_the_pr_is_not_at_is_refused_naming_the_commit_it_is_at() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    let stale = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head0".into() }];
+    let error = exec(&mut s, agent(), present("d", stale, true, review())).unwrap_err();
+    assert_eq!(error.message, "targets.head: PR #7 is at head1, not head0. If head0 is your latest commit, push it and present again; \
+        to present the commit the PR is at, give head head1 or leave head out");
+}
+
+#[test]
 fn a_merged_pr_is_reported_not_reviewed() {
     let mut s = fixture();
     register_pr(&mut s);

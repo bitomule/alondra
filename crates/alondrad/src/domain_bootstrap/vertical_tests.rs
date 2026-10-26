@@ -42,6 +42,7 @@ struct Fixture {
     agent: String,
     next_id: u64,
     pr_view: Arc<crate::client_routes::FakePrView>,
+    work: Arc<crate::client_routes::Client>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
 }
@@ -67,6 +68,7 @@ impl Fixture {
         let domain = state.domain();
         let pr_view = Arc::new(crate::client_routes::FakePrView::default());
         state.client().use_pr_view(pr_view.clone());
+        let work = state.client();
         let registration = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: epoch.clone().into(),
@@ -123,6 +125,7 @@ impl Fixture {
             agent,
             next_id: 0,
             pr_view,
+            work,
             _cleanup: Cleanup(home),
         }
     }
@@ -433,6 +436,99 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
     let state = fixture.domain.state().unwrap();
     assert!(state.interactions.contains_key(&"pr-delivery".into()));
     assert!(user_pushes(&fixture.domain).contains(&Some("pr-delivery".into())), "the push follows the card");
+    fixture.finish().await;
+}
+
+const PUSHED: &str = "1111111111111111111111111111111111111111";
+const ELSEWHERE: &str = "2222222222222222222222222222222222222222";
+const REGISTERED: &str = "0123456789abcdef0123456789abcdef01234567";
+
+impl Fixture {
+    async fn registered_pr(&mut self) {
+        self.task("pr-task", true).await;
+        self.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
+            "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
+            "number":7, "head":REGISTERED, "base":"main", "allowed_methods":["squash"]})).await;
+    }
+
+    fn pr_id(&self) -> PrId {
+        self.domain.state().unwrap().tasks[&"pr-task".into()].pr_id.clone().unwrap()
+    }
+
+    /// Sends a presentation as the MCP server does, with no revision of its own: Alondra checks it
+    /// against the state it commits on.
+    async fn present_as_mcp(&mut self, target: Value) -> (StatusCode, Value) {
+        let mut envelope = self.envelope(present_pr(target));
+        envelope["expected_revision"] = json!(0);
+        self.post(&self.agent, &envelope).await
+    }
+
+    fn presented_head(&self) -> String {
+        let state = self.domain.state().unwrap();
+        let InteractionPayload::Delivery { targets, .. } = &state.interactions[&"pr-delivery".into()].payload else { panic!("a delivery") };
+        let [DeliveryTarget::PullRequest { head, .. }] = targets.as_slice() else { panic!("one PR target: {targets:?}") };
+        head.clone()
+    }
+}
+
+fn present_pr(target: Value) -> Value {
+    json!({"kind":"present_result", "task_id":"pr-task", "interaction_id":"pr-delivery",
+        "body":"Code ready", "is_final":true, "targets":[target]})
+}
+
+fn github_at(head: &str) -> Value {
+    json!({"state":"OPEN", "headRefOid":head, "baseRefName":"main", "mergeable":"MERGEABLE", "mergeStateStatus":"CLEAN"})
+}
+
+/// GitHub as the PR watcher sees it: while the presentation waits on GitHub, the watcher records
+/// the commit the node just pushed.
+struct WatcherRecordsPush(Arc<DomainRuntime>, PrId);
+
+impl crate::client_routes::PrView for WatcherRecordsPush {
+    fn view<'a>(&'a self, _: &'a str) -> crate::client_routes::Viewed<'a> {
+        if self.0.state().unwrap().pull_requests[&self.1].head != PUSHED {
+            crate::domain_github::execute_system(&self.0, Command::ObservePrState {
+                pr_id: self.1.clone(), head: PUSHED.into(), base: "main".into(),
+                state: alondra_core::domain::PrState::Open, merged_head: None,
+            }).unwrap();
+        }
+        Box::pin(async { None })
+    }
+}
+
+#[tokio::test]
+async fn http_a_pr_presented_without_a_head_while_the_watcher_records_a_push_shows_the_pushed_commit() {
+    let mut fixture = Fixture::start().await;
+    fixture.registered_pr().await;
+    fixture.work.use_pr_view(Arc::new(WatcherRecordsPush(fixture.domain.clone(), fixture.pr_id())));
+    let (status, body) = fixture.present_as_mcp(json!({"kind":"pull_request", "pr_id":"pr-1"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fixture.presented_head(), PUSHED);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_head_pushed_before_alondra_saw_it_is_presented_once_github_reports_it() {
+    let mut fixture = Fixture::start().await;
+    fixture.registered_pr().await;
+    fixture.pr_view.answer(Some(github_at(PUSHED)));
+    let (status, body) = fixture.present_as_mcp(json!({"kind":"pull_request", "pr_id":"pr-1", "head":PUSHED})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fixture.presented_head(), PUSHED);
+    assert_eq!(fixture.domain.state().unwrap().pull_requests[&fixture.pr_id()].head, PUSHED);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_head_the_pr_is_not_at_on_github_is_refused_naming_the_commit_github_reports() {
+    let mut fixture = Fixture::start().await;
+    fixture.registered_pr().await;
+    fixture.pr_view.answer(Some(github_at(ELSEWHERE)));
+    let (status, refused) = fixture.present_as_mcp(json!({"kind":"pull_request", "pr_id":"pr-1", "head":PUSHED})).await;
+    assert_ne!(status, StatusCode::OK, "{refused}");
+    assert_eq!(refused["code"], "pr_mismatch");
+    assert!(refused["message"].as_str().unwrap().contains(&format!("PR #7 is at {ELSEWHERE}, not {PUSHED}")), "{refused}");
+    assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()), "no card");
     fixture.finish().await;
 }
 

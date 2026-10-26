@@ -234,7 +234,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         let target = json!({"type":"array","items":{"type":"object","oneOf":[
             {"type":"object","properties":{"kind":{"type":"string","const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
             {"type":"object","properties":{"kind":{"type":"string","const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
-            {"type":"object","description":"The PR your task registered","properties":{"kind":{"type":"string","const":"pull_request"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra uses the commit it knows the PR is at"}},"required":["kind"],"additionalProperties":false}
+            {"type":"object","description":"The PR your task registered","properties":{"kind":{"type":"string","const":"pull_request"},"head":{"type":"string","description":"The full 40-character commit sha the PR is at (git rev-parse HEAD after git push), never a branch name. Leave it out and Alondra presents the commit the PR is at; a commit you just pushed is checked with GitHub"}},"required":["kind"],"additionalProperties":false}
         ]}});
         tools.push(domain_tool(
             "present_result",

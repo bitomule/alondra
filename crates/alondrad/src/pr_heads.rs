@@ -6,7 +6,9 @@ use alondra_core::domain::{DomainError, DomainState, PrId};
 use serde_json::Value;
 
 /// Checks the heads a node sends with `register_pr` and `present_result`. A pull request target
-/// of `present_result` without a head gets the commit Alondra knows the PR is at.
+/// of `present_result` may leave its head out: the domain then presents the commit the PR is at
+/// when the delivery commits. Whether a given head is the PR's current one is the domain's to say,
+/// once Alondra has asked GitHub about a head it has not seen yet.
 pub(crate) fn check(state: &DomainState, method: &str, path: &str, body: &mut Value) -> Result<(), DomainError> {
     if method != "POST" || !path.starts_with("/tasks/") {
         return Ok(());
@@ -18,27 +20,13 @@ pub(crate) fn check(state: &DomainState, method: &str, path: &str, body: &mut Va
     if !path.ends_with("/results") {
         return Ok(());
     }
-    let Some(targets) = body.get_mut("targets").and_then(Value::as_array_mut) else { return Ok(()) };
-    for target in targets.iter_mut().filter(|t| t.get("kind").and_then(Value::as_str) == Some("pull_request")) {
-        let Some(pr_id) = target.get("pr_id").and_then(Value::as_str).map(str::to_owned) else { continue };
-        let Some(pr) = state.pull_requests.get(&PrId(pr_id.clone())) else { continue };
-        match target.get("head") {
-            None | Some(Value::Null) => {
-                target["head"] = Value::String(pr.head.clone());
-            }
-            Some(head) => {
-                let head = head.as_str().unwrap_or_default();
-                commit(head, "targets.head", &format!(
-                    "the commit PR #{} is at ({}), or leave head out and Alondra uses it", pr.number, pr.head))?;
-                if head != pr.head {
-                    let mut error = DomainError::new("pr_mismatch", format!(
-                        "targets.head: PR #{} is at {}, not {head}: push your work, then present again with its current commit or leave head out",
-                        pr.number, pr.head));
-                    error.subject = Some("targets.head".into());
-                    return Err(error);
-                }
-            }
-        }
+    let Some(targets) = body.get("targets").and_then(Value::as_array) else { return Ok(()) };
+    for target in targets.iter().filter(|t| t.get("kind").and_then(Value::as_str) == Some("pull_request")) {
+        let Some(head) = target.get("head").filter(|head| !head.is_null()) else { continue };
+        let at = target.get("pr_id").and_then(Value::as_str)
+            .and_then(|pr_id| state.pull_requests.get(&PrId(pr_id.to_owned())))
+            .map_or_else(|| "the commit the PR is at".to_owned(), |pr| format!("the commit PR #{} is at ({})", pr.number, pr.head));
+        commit(head.as_str().unwrap_or_default(), "targets.head", &format!("{at}, or leave head out and Alondra uses it"))?;
     }
     Ok(())
 }
@@ -94,17 +82,16 @@ mod tests {
     }
 
     #[test]
-    fn a_head_that_is_not_the_prs_commit_is_refused_with_the_commit_it_is_at() {
+    fn a_head_the_pr_is_not_at_is_left_to_the_domain() {
         let other = "89abcdef0123456789abcdef0123456789abcdef";
-        let error = present(json!({"kind":"pull_request","pr_id":"pr-763","head":other})).unwrap_err();
-        assert_eq!(error.code, "pr_mismatch");
-        assert!(error.message.contains(&format!("PR #763 is at {HEAD}, not {other}")), "{}", error.message);
+        let target = present(json!({"kind":"pull_request","pr_id":"pr-763","head":other})).unwrap();
+        assert_eq!(target["head"], other);
     }
 
     #[test]
-    fn a_presented_pr_without_a_head_gets_the_commit_it_is_at() {
+    fn a_presented_pr_without_a_head_stays_without_one() {
         let target = present(json!({"kind":"pull_request","pr_id":"pr-763"})).unwrap();
-        assert_eq!(target["head"], HEAD);
+        assert!(target.get("head").is_none(), "{target}");
     }
 
     #[test]

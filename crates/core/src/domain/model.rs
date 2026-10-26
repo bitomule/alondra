@@ -484,6 +484,8 @@ pub enum DeliveryTarget {
     },
     PullRequest {
         pr_id: PrId,
+        /// Left out of a presentation, it is the commit the PR is at when the delivery commits.
+        #[serde(default)]
         head: String,
     },
 }

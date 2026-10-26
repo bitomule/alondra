@@ -28,6 +28,10 @@ fn refuse<T>(code: &str, field: &str, fix: &str) -> Result<T> {
     error.subject = Some(field.into());
     Err(error)
 }
+fn pr_head_mismatch(pr: &PullRequest, head: &str) -> String {
+    format!("PR #{} is at {}, not {head}. If {head} is your latest commit, push it and present again; \
+        to present the commit the PR is at, give head {} or leave head out", pr.number, pr.head, pr.head)
+}
 /// Stopping for the subscription's usage is decided by the user on the usage card and by
 /// Alondra's pacing, never by a node or the orchestrator: a node's question about it is refused
 /// before anyone can answer "hold".
@@ -1095,10 +1099,21 @@ impl DomainState {
                 return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} belongs to another Task: present only your own Task's PR"));
             }
             if &pr.head != head {
-                return refuse("pr_mismatch", "targets.head", &format!("PR {pr_id} is at {}: present its current head", pr.head));
+                return refuse("pr_mismatch", "targets.head", &pr_head_mismatch(pr, head));
             }
         }
         Ok(())
+    }
+    /// A pull request target presented without a head shows the commit its PR is at in this same
+    /// state, the one R12 checks it against.
+    fn with_current_heads(&self, targets: &[DeliveryTarget]) -> Vec<DeliveryTarget> {
+        targets.iter().map(|target| match target {
+            DeliveryTarget::PullRequest { pr_id, head } if head.is_empty() => DeliveryTarget::PullRequest {
+                pr_id: pr_id.clone(),
+                head: self.pull_requests.get(pr_id).map(|pr| pr.head.clone()).unwrap_or_default(),
+            },
+            other => other.clone(),
+        }).collect()
     }
     /// A message to the orchestrator that made tasks is done once the last of them ends: nobody
     /// is left to close it, since `close_request` waits for its tasks.
@@ -3898,6 +3913,7 @@ impl DomainState {
                 card,
             } => {
                 self.assigned(actor, task_id)?;
+                let targets = &self.with_current_heads(targets);
                 if *nothing_to_review && (!*is_final || targets.iter().any(|t| !matches!(t, DeliveryTarget::Text { .. }))) {
                     return refuse("invalid_input", "nothing_to_review",
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");

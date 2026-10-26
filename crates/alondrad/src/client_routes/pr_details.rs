@@ -234,16 +234,56 @@ impl super::Client {
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open) else { continue };
+            let head = if head.is_empty() { &pr.head } else { head };
+            if *head != pr.head {
+                continue;
+            }
             if self.merge_state(pr, head, PRESENT_ATTEMPTS, PRESENT_PAUSE).await == Merge::Conflicts {
                 return Err(DomainError::new("pr_conflicts", presentation_conflicts_text(pr)));
             }
         }
         Ok(())
     }
+
+    /// A node presenting a head Alondra has not seen has usually just pushed it, before the
+    /// watcher's next round: Alondra asks GitHub for the PR and records what it reports, so the
+    /// domain judges the head against the PR's real commit. GitHub can take a moment to move the
+    /// PR after a push, so it is asked again while it still reports another commit.
+    pub(crate) async fn catch_up_heads(&self, command: &Command) {
+        let Command::PresentResult { targets, interaction_id, .. } = command else { return };
+        let Ok(state) = self.domain.state() else { return };
+        if state.interactions.contains_key(interaction_id) {
+            return;
+        }
+        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        for target in targets {
+            let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
+            let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open) else { continue };
+            if head.is_empty() || *head == pr.head {
+                continue;
+            }
+            let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+            for attempt in 0..HEAD_ATTEMPTS {
+                if attempt > 0 {
+                    tokio::time::sleep(HEAD_PAUSE).await;
+                }
+                let Some(facts) = view.view(&url).await.and_then(|answer| crate::domain_github::parse(&answer).ok()) else { continue };
+                if let Err(error) = crate::domain_github::observe(&self.domain, pr_id, &facts) {
+                    log!("could not record what GitHub reports of {}: {error}", pr.id);
+                    return;
+                }
+                if facts.head == *head || facts.state != PrState::Open {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 const PRESENT_ATTEMPTS: usize = 3;
 const PRESENT_PAUSE: Duration = Duration::from_secs(2);
+const HEAD_ATTEMPTS: usize = 3;
+const HEAD_PAUSE: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
 
 fn presentation_conflicts_text(pr: &PullRequest) -> String {
     let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
