@@ -1,7 +1,8 @@
 //! The usage limit as a fact of a task's lifecycle. Whatever Claude does while the limit is out
 //! (its own turns, background work ending, the user's pauses), every turn the limit ends is
 //! recorded, no task is left at work with nothing that works for it, and once usage is back no
-//! task still waits for it.
+//! task still waits for it. Nor, whatever Claude does, even in a turn its host never reported, is
+//! a task left at work with nothing that works for it once a turn of its node ends.
 use super::lifecycle_tests::{exec, sdk_turn, world};
 use super::*;
 use alondra_domain::{Capacity, LiveState, Worker};
@@ -17,6 +18,8 @@ enum Act {
     StartWork(usize),
     EndWork(usize),
     TakeUpWork(usize),
+    UnheardTurn(usize),
+    RegisterPr(usize),
     EndTurn(usize),
     Pause(usize, bool),
     Resume(usize),
@@ -33,6 +36,8 @@ fn act() -> impl Strategy<Value = Act> {
         2 => task.clone().prop_map(Act::StartWork),
         2 => task.clone().prop_map(Act::EndWork),
         2 => task.clone().prop_map(Act::TakeUpWork),
+        1 => task.clone().prop_map(Act::UnheardTurn),
+        1 => task.clone().prop_map(Act::RegisterPr),
         4 => task.clone().prop_map(Act::EndTurn),
         1 => (task.clone(), any::<bool>()).prop_map(|(task, by_user)| Act::Pause(task, by_user)),
         1 => task.prop_map(Act::Resume),
@@ -46,7 +51,10 @@ fn act() -> impl Strategy<Value = Act> {
 struct Claude {
     turn: Option<String>,
     work: Vec<String>,
+    /// Work that ended after its turn: the next turn Claude opens reads its notification.
     ended: Vec<String>,
+    /// Claude ran a turn its host never reported, and no reported turn has ended since.
+    unheard: bool,
 }
 
 struct World {
@@ -80,6 +88,7 @@ impl World {
         exec(&mut self.s, Actor::System, Command::RecordTurnBoundary { task_id: TASKS[at].0.into(), generation: 1, turn: turn.clone(), failure, failed: None })
             .map_err(|error| format!("the end of {turn} of {} was refused: {error}", TASKS[at].0))?;
         self.claude[at].turn = None;
+        self.claude[at].unheard = false;
         Ok(())
     }
 
@@ -89,6 +98,7 @@ impl World {
         let taken = self.facts(at, vec![RuntimeObservation::TurnStarted { turn: turn.clone(), input }]);
         if taken {
             self.claude[at].turn = Some(turn);
+            self.claude[at].ended.clear();
         }
         taken
     }
@@ -102,6 +112,7 @@ impl World {
                 let turn = format!("turn-{n}");
                 if self.facts(at, vec![RuntimeObservation::TurnUnprompted { turn: turn.clone() }]) {
                     self.claude[at].turn = Some(turn);
+                    self.claude[at].ended.clear();
                 }
             }
             Act::StartWork(at) => if let Some(turn) = self.claude[at].turn.clone() {
@@ -127,10 +138,18 @@ impl World {
             Act::TakeUpWork(at) => if let Some(continuation) = self.claude[at].ended.first().cloned().filter(|_| self.claude[at].turn.is_none()) {
                 let turn = format!("turn-{n}");
                 if self.facts(at, vec![RuntimeObservation::TurnResumed { turn: turn.clone(), continuation }]) {
-                    self.claude[at].ended.remove(0);
+                    self.claude[at].ended.clear();
                     self.claude[at].turn = Some(turn);
                 }
             },
+            Act::UnheardTurn(at) => if self.claude[at].turn.is_none() && !self.claude[at].ended.is_empty() {
+                self.claude[at].ended.clear();
+                self.claude[at].unheard = true;
+            },
+            Act::RegisterPr(at) => drop(exec(&mut self.s, super::lifecycle_tests::node(node(at)), Command::RegisterPr {
+                task_id: TASKS[at].0.into(), pr_id: format!("pr-{at}").into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1000 + at as u64,
+                head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+            })),
             Act::EndTurn(at) => self.end_turn(at)?,
             Act::Pause(at, by_user) => {
                 let reason = if by_user { PauseReason::ByUser } else { PauseReason::Declared { reason: "The build queue is full".into() } };
@@ -174,7 +193,7 @@ impl World {
             match &live {
                 Some(LiveState::Working(Worker::Turn)) if claude.turn.is_none() => return Err(format!("{task} is in a turn its Claude does not run")),
                 Some(LiveState::Working(Worker::OwnWork)) if !works => return Err(format!("{task} runs work its Claude does not have")),
-                Some(LiveState::Working(_)) if self.out && claude.turn.is_none() && !works && self.pending(at).is_none() =>
+                Some(LiveState::Working(_)) if claude.turn.is_none() && !works && !claude.unheard && self.pending(at).is_none() =>
                     return Err(format!("{task} is at work with no turn, no work and nothing to read: {live:?}")),
                 Some(LiveState::WaitingCapacity(Capacity::Usage)) if !self.out => return Err(format!("{task} waits for usage that is back")),
                 _ => {}

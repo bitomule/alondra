@@ -1362,10 +1362,11 @@ impl DomainState {
         }
         let unexplained = failure.is_none() && failed.is_none() && !interrupted;
         let awaits = self.turn_await(task).filter(|_| unexplained);
+        let wake_text = self.empty_turn(task).wake_text();
         let ended = |wake: Option<String>, awaits: Option<TurnAwait>| LifecycleRecord::TurnEnded {
             turn: turn.into(),
             unheard_card: card.clone(),
-            text: wake.as_ref().map(|_| WAKE_INSTRUCTION.to_owned()),
+            text: wake.as_ref().map(|_| wake_text.clone()),
             wake,
             awaits,
         };
@@ -1433,9 +1434,10 @@ impl DomainState {
             if !self.lapsed(&task, &awaits) || self.interactions.contains_key(&card) {
                 continue;
             }
+            let wake_text = self.empty_turn(&task).wake_text();
             let ended = |wake: Option<String>| LifecycleRecord::AwaitEnded {
                 unheard_card: card.clone(),
-                text: wake.as_ref().map(|_| WAKE_INSTRUCTION.to_owned()),
+                text: wake.as_ref().map(|_| wake_text.clone()),
                 wake,
             };
             if self.decide(lifecycles, &task, ended(Some(self.next_input(&task)))).is_err() {
@@ -1448,6 +1450,15 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+
+    /// Why a turn of `task` that ended with nothing explaining its next step is empty.
+    pub fn empty_turn(&self, task: &TaskId) -> EmptyTurn {
+        let Some(t) = self.tasks.get(task) else { return EmptyTurn::Unexplained };
+        t.pr_id.as_ref()
+            .and_then(|pr| self.pull_requests.get(pr))
+            .filter(|pr| pr.state == PrState::Open && t.final_presentation.is_none())
+            .map_or(EmptyTurn::Unexplained, |pr| EmptyTurn::UnpresentedPr { number: pr.number })
     }
 
     /// Whether what a turn ended waiting for ended with nothing told to the node.
@@ -2271,6 +2282,23 @@ const CANCEL_TASK_MEANS: &str = "The task ends and its execution is closed";
 const CARRY_ON_INSTRUCTION: &str = "Go on with your task: deliver your result, or ask the user through a card when you need them.";
 const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.";
 pub const TURN_ENDED_TWICE_WHY: &str = "A turn of it ended without a result, a question or work of its own, Alondra told it so, and its next turn ended the same way. Tell it to go on, write to it what to do, or cancel the task.";
+/// Why a turn ended empty: what the node is told when Alondra wakes it, and what whoever settles a
+/// second empty turn reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EmptyTurn {
+    /// Nothing explains the task's next step.
+    Unexplained,
+    /// The node registered pull request `number`, still open, and never presented it.
+    UnpresentedPr { number: u64 },
+}
+impl EmptyTurn {
+    pub fn wake_text(&self) -> String {
+        match self {
+            Self::Unexplained => WAKE_INSTRUCTION.to_owned(),
+            Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. If this turn ends the same way, Alondra asks the user how you go on."),
+        }
+    }
+}
 /// What a node is told when its turn ended empty: the first time, Alondra wakes it with this.
 pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, Alondra asks the user how you go on.";
 

@@ -1010,6 +1010,25 @@ fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_wi
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the pause's end hands it what it was told");
 }
 
+/// 26 Oct, t-alpha-report-1-local: the turn that read the notification of the node's background
+/// work never reached Alondra, so its continuation still waited. The next turn, which «sigue»
+/// started, ended with that continuation waiting again, nothing woke the node, and the task stayed
+/// at work with nothing working for it for three hours.
+#[test]
+fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wakes_the_node() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
+    assert_eq!(task.activity(), ActivityView::Continuation);
+    apply(&mut task, Event::Tell { input: input("told") });
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None });
+    assert_eq!(task.pending_inputs(), vec![&input("wake")], "the empty turn wakes the node");
+    assert_eq!(task.activity(), ActivityView::Starting);
+    assert!(task.cards().is_empty(), "nobody is asked yet");
+}
+
 /// One step of an arbitrary history: an event the task may or may not accept.
 fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
     let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -1053,6 +1072,7 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         53 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake-again")) }),
         54 => Some(Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Machine) }),
         55 => Some(Event::EndPause { card: "pause".into() }),
+        56 => runtime(RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None }),
         22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
         23 => runtime(RuntimeFact::Notification),
         24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
@@ -1150,6 +1170,39 @@ proptest! {
                 prop_assert!(!task.cards().is_empty(), "an empty turn nobody wakes asks the user: {:?}", task);
             }
             woke = woken;
+        }
+    }
+
+    /// No history leaves a task in progress with no turn, no work of its node's own, no input on
+    /// its way, no delivery and no wait someone owns. A continuation is the node's own only until
+    /// its next turn starts: Claude reads every notification waiting before anything else.
+    #[test]
+    fn no_task_in_progress_is_left_without_a_turn_work_a_delivery_or_an_owned_wait(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
+        3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56]),
+        1 => 0u8..57,
+    ], 1..160)) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        let (mut fresh, mut callback_waits) = (false, false);
+        for action in actions {
+            let Some(event) = arbitrary_event(&task, action) else { continue };
+            let observed = event.clone();
+            if task.apply(task.revision(), event).is_err() { continue }
+            match observed {
+                Event::Runtime { fact: RuntimeFact::TurnStarted { .. }, .. } => fresh = callback_waits,
+                Event::Runtime { fact: RuntimeFact::WorkEnded { .. }, .. } => fresh = true,
+                Event::Decide { .. } | Event::Runtime { fact: RuntimeFact::CallbackSettled { .. } | RuntimeFact::AnsweredByPolicy { .. }, .. } => (fresh, callback_waits) = (true, true),
+                _ => {}
+            }
+            if task.phase() != TaskPhase::InProgress { continue }
+            let activity = task.activity();
+            let owned = task.turn().is_some()
+                || matches!(activity, ActivityView::OwnWork | ActivityView::Starting)
+                || (activity == ActivityView::Continuation && fresh)
+                || !task.pending_inputs().is_empty()
+                || !task.cards().is_empty()
+                || !task.dependencies().is_empty()
+                || task.awaits().is_some();
+            prop_assert!(owned, "nothing works for the task and nobody owns its wait: {:?}", task);
         }
     }
 

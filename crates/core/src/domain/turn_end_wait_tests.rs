@@ -516,6 +516,46 @@ fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_asks_the_user(
     assert_aggregate_rules(&s);
 }
 
+/// 26 Oct, t-alpha-report-1-local: the node's tests ran in the background and the turn that read
+/// their end never reached Alondra; in that turn it registered its PR. The usage limit paused
+/// it, «sigue» resumed it, and its turn ended with no `present_result`. Nothing woke it, nobody
+/// was asked, and it held its slot at work for three hours.
+#[test]
+fn the_26_october_turn_that_ended_with_its_pr_registered_and_unpresented_wakes_the_node_to_present_it() {
+    let mut s = world();
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:tests".into() },
+    ] });
+    end_turn(&mut s, "turn-1");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:tests".into(), continuation: "claude-notification:tests".into() },
+    ] });
+    must(&mut s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1265,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let pause = Pause { reason: PauseReason::Usage, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into() });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
+    let input = lifecycle(&s).pending_inputs().first().map(|input| input.as_str().to_owned()).expect("«sigue» waits for the node");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
+    ] });
+    let ended = end_turn(&mut s, "turn-2");
+    let second = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    assert!(!notified(&ended, &second) && !s.interactions.contains_key(&second) && !s.interactions.contains_key(&card), "nobody is asked yet");
+    let LifecycleRecord::TurnEnded { wake: Some(_), text: Some(text), .. } = super::lifecycle_tests::last(&s, "t") else {
+        panic!("the empty turn wakes the node: {:?}", super::lifecycle_tests::last(&s, "t"));
+    };
+    assert_eq!(text, EmptyTurn::UnpresentedPr { number: 1265 }.wake_text());
+    assert!(text.contains("#1265") && text.contains("present_result"), "{text}");
+    assert_eq!(s.empty_turn(&"t".into()), EmptyTurn::UnpresentedPr { number: 1265 });
+    assert_eq!(lifecycle(&s).activity(), alondra_domain::ActivityView::Starting);
+    assert_aggregate_rules(&s);
+}
+
 /// A turn recorded before turns woke the node, read back from its journal, still asks the user at once.
 #[test]
 fn a_turn_end_recorded_before_wakes_existed_reads_back_as_the_card() {

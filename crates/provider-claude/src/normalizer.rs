@@ -55,7 +55,8 @@ struct Checkpoint {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     isolated: Vec<String>,
     /// Work that ended after its turn, oldest first: its notification wakes a root turn of
-    /// Claude's own, whose result names the run it took up.
+    /// Claude's own, which takes up every notification waiting, and whose result comes from a
+    /// notification, naming the run it took up when the work had one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     woken: Vec<Woken>,
     /// The calls to an MCP server's tool whose result is still to come, by tool use id.
@@ -87,7 +88,10 @@ impl Checkpoint {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Woken {
-    run: String,
+    /// The run of the work that ended. A background Bash has none: Claude Code 2.1.300 names a
+    /// run only for a subagent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
     continuation: String,
     /// The work that ended, as Claude names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +114,9 @@ struct LogicalTurn {
     /// The run of the work whose notification opened this turn, when no input of Alondra's did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     woken_by: Option<String>,
+    /// A notification opened this turn: its result comes from one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    notified: bool,
     /// Claude opened this turn by itself: whatever result comes next ends it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     unprompted: bool,
@@ -423,6 +430,7 @@ fn fold(
                     error: None,
                     resets_at: None,
                     woken_by: None,
+                    notified: false,
                     unprompted: true,
                 });
             }
@@ -515,7 +523,7 @@ fn fold(
                 // wakes another.
                 if state.turn.is_some() {
                     facts.push(Observation::ContinuationConsumed { continuation });
-                } else if let Some(run) = run {
+                } else {
                     state.woken.push(Woken { run, continuation: continuation.as_str().into(), task: Some(task.into()), description: work.description });
                 }
             }
@@ -566,8 +574,11 @@ fn fold(
         }
         return Ok(facts);
     }
-    if kind == "assistant" && state.turn.is_none() && payload.get("user_message_uuids").is_none() && !state.woken.is_empty() {
-        let woken = state.woken.remove(0);
+    // The turn a notification opens takes up every notification waiting. A work that was
+    // stopped opens one that only has its result.
+    let opens = kind == "assistant" || (kind == "result" && from_notification(payload));
+    if opens && state.turn.is_none() && payload.get("user_message_uuids").is_none() && !state.woken.is_empty() {
+        let woken = std::mem::take(&mut state.woken).remove(0);
         let logical = format!("claude-message:{}", native_uuid(payload, "uuid")?.as_str());
         facts.push(Observation::TurnResumed {
             continuation: ContinuationId::new(woken.continuation).map_err(|_| AdapterError::InvalidObservation)?,
@@ -579,7 +590,8 @@ fn fold(
             answered: false,
             error: None,
             resets_at: None,
-            woken_by: Some(woken.run),
+            woken_by: woken.run,
+            notified: true,
             unprompted: false,
         });
     }
@@ -613,6 +625,7 @@ fn fold(
             take(state, id.clone());
         }
         if state.turn.is_none() {
+            state.woken.clear();
             let basis = native_uuid(payload, "uuid")?;
             let logical = format!("claude-message:{}", basis.as_str());
             facts.push(Observation::TurnStarted {
@@ -626,6 +639,7 @@ fn fold(
                 error: None,
                 resets_at: None,
                 woken_by: None,
+                notified: false,
                 unprompted: false,
             });
         }
@@ -657,20 +671,15 @@ fn fold(
         // A singular failed-delivery echo alone cannot prove input consumption or a turn.
         let turn = state.turn.as_ref().ok_or(AdapterError::Unsupported)?;
         if consumed.is_empty() && !turn.unprompted {
-            match &turn.woken_by {
-                Some(run) => {
-                    let origin = payload.get("origin");
-                    if origin.and_then(|origin| origin.get("kind")).and_then(Value::as_str) != Some("task-notification")
-                        || origin.and_then(|origin| origin.get("runId")).and_then(Value::as_str) != Some(run.as_str())
-                    {
-                        return Err(AdapterError::Unsupported);
-                    }
+            if turn.notified || turn.woken_by.is_some() {
+                let run = payload.get("origin").and_then(|origin| origin.get("runId")).and_then(Value::as_str);
+                if !from_notification(payload) || turn.woken_by.as_deref().is_some_and(|woken| run != Some(woken)) {
+                    return Err(AdapterError::Unsupported);
                 }
-                None => {
-                    let singular = native_uuid(payload, "user_message_uuid")?;
-                    if !turn.consumed.contains(&singular) {
-                        return Err(AdapterError::Unsupported);
-                    }
+            } else {
+                let singular = native_uuid(payload, "user_message_uuid")?;
+                if !turn.consumed.contains(&singular) {
+                    return Err(AdapterError::Unsupported);
                 }
             }
         }
@@ -710,8 +719,12 @@ fn undelivered(payload: &Value, failures: &[alondra_agent_protocol::SdkFailure],
         return None;
     }
     let input = native_uuid(payload, "user_message_uuid").ok()?;
-    let answers_turn = state.turn.as_ref().is_some_and(|turn| turn.woken_by.is_some() || turn.consumed.contains(&input));
+    let answers_turn = state.turn.as_ref().is_some_and(|turn| turn.notified || turn.woken_by.is_some() || turn.consumed.contains(&input));
     (!answers_turn).then_some(input)
+}
+/// A result Claude ran because a notification of its background work came.
+fn from_notification(payload: &Value) -> bool {
+    payload.get("origin").and_then(|origin| origin.get("kind")).and_then(Value::as_str) == Some("task-notification")
 }
 /// Claude took `input` in: its end, later, is no drop. One it already finished stays finished.
 fn take(state: &mut Checkpoint, input: MessageUuid) {
@@ -1238,6 +1251,7 @@ mod tests {
             error: None,
             resets_at: None,
             woken_by: None,
+            notified: false,
             unprompted: false,
         });
         let started = event(
@@ -1730,13 +1744,15 @@ mod tests {
         fold(&event(json!({"type":"result","uuid":THIRD,"subtype":"success","user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
         fold(&event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"completed"})),
             &session(), &mut state, input).unwrap();
-        let woken = TurnId::new(format!("claude-message:{FOURTH}")).unwrap();
-        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":FOURTH})), &session(), &mut state, input).unwrap(),
-            vec![Observation::TurnUnprompted { turn: woken.clone() }], "the notification's prompt is a turn of Claude's own");
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":FOURTH})), &session(), &mut state, input).unwrap(), vec![]);
+        let woken = TurnId::new("claude-message:10000000-0000-4000-8000-000000000010").unwrap();
         let facts = turn_end(&mut state, vec![
             json!({"type":"rate_limit_event","uuid":REPLY,"rate_limit_info":{"status":"rejected","resetsAt":1_792_972_800_u64,"rateLimitType":"seven_day"}}),
             json!({"type":"assistant","uuid":"10000000-0000-4000-8000-000000000010","parent_tool_use_id":null,"error":"rate_limit"}),
         ]);
+        assert!(facts.contains(&Observation::TurnResumed {
+            continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(), turn: woken.clone(),
+        }), "the notification's prompt takes up the work that ended: {facts:?}");
         let result = failing(event(json!({"type":"result","uuid":"10000000-0000-4000-8000-000000000011","subtype":"success","is_error":true,"api_error_status":429,
             "terminal_reason":"api_error","origin":{"kind":"task-notification","producer":"session-task"}})), &[(alondra_agent_protocol::FailureSurface::Result, "success_is_error")]);
         let ended = fold(&result, &session(), &mut state, input).expect("the result ends the woken turn");
@@ -1745,6 +1761,51 @@ mod tests {
             turn: woken,
             outcome: TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(1_792_972_800) }),
         }]);
+    }
+    // 25 Oct, t-alpha-report-1-local, from its host's outbox: a background Bash names no run, nor
+    // does the result of the turn its notification opens. That turn and the nine after it, the
+    // pull request's registration among them, were dropped, and the work's continuation was left
+    // waiting for a turn that had already run.
+    #[test]
+    fn the_turn_a_background_bash_without_a_run_wakes_is_recorded_whole() {
+        let mut state = state();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bdzu2notx","task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":THIRD,"subtype":"success","terminal_reason":"completed","user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        let continuation = ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap();
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bdzu2notx","status":"completed"})), &session(), &mut state, input).unwrap(),
+            vec![Observation::WorkEnded { work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(), continuation: continuation.clone() }]);
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":FOURTH})), &session(), &mut state, input).unwrap(), vec![]);
+        let turn = TurnId::new("claude-message:10000000-0000-4000-8000-000000000020").unwrap();
+        assert_eq!(
+            fold(&event(json!({"type":"assistant","uuid":"10000000-0000-4000-8000-000000000020","parent_tool_use_id":null})), &session(), &mut state, |_| panic!("no input of Alondra's opened this turn")).unwrap(),
+            vec![Observation::TurnResumed { continuation, turn: turn.clone() }, Observation::ModelAnswered],
+        );
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"task_started","uuid":"10000000-0000-4000-8000-000000000021","task_id":"b6buw6kkb","task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap(),
+            vec![Observation::WorkStarted { turn: turn.clone(), work: WorkId::new("claude-task:10000000-0000-4000-8000-000000000021").unwrap() }], "the woken turn starts work of its own");
+        let result = event(json!({"type":"result","uuid":"10000000-0000-4000-8000-000000000022","subtype":"success","terminal_reason":"completed","origin":{"kind":"task-notification","producer":"session-task"}}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn, outcome: TurnOutcome::Completed }]);
+    }
+    // Two background commands stopped at once: Claude Code answers both notifications with one
+    // turn that has only its result.
+    #[test]
+    fn one_turn_takes_up_every_notification_waiting_even_with_nothing_but_its_result() {
+        let mut state = state();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        for (task, id) in [("bp4z36ytc", SECOND), ("bdx5wrplj", THIRD)] {
+            fold(&event(json!({"type":"system","subtype":"task_started","uuid":id,"task_id":task,"task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap();
+        }
+        fold(&event(json!({"type":"result","uuid":FOURTH,"subtype":"success","user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bp4z36ytc","status":"stopped"})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_notification","uuid":"10000000-0000-4000-8000-000000000030","task_id":"bdx5wrplj","status":"stopped"})), &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":"10000000-0000-4000-8000-000000000031"})), &session(), &mut state, input).unwrap(), vec![]);
+        let turn = TurnId::new("claude-message:10000000-0000-4000-8000-000000000032").unwrap();
+        let result = event(json!({"type":"result","uuid":"10000000-0000-4000-8000-000000000032","subtype":"success","is_error":false,"origin":{"kind":"task-notification"}}));
+        assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![
+            Observation::TurnResumed { continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(), turn: turn.clone() },
+            Observation::TurnEnded { turn, outcome: TurnOutcome::Completed },
+        ]);
+        assert!(state.turn.is_none() && state.woken.is_empty(), "nothing is left to wake another turn");
     }
     /// A prompt as the native Claude 2.1.300 runs it, from a resting session.
     #[derive(Clone, Copy, Debug)]

@@ -216,8 +216,8 @@ def own_turn_ended():
 
 # Like the native Claude 2.1.300 with a Bash command it left running in the background: a real
 # process in the host's process group, whose PID is kept next to the capture. The command ends once
-# the test writes a line to the FIFO beside it; its notification wakes a turn of Claude's own,
-# which takes it up and ends, and the node rests.
+# the test writes a line to the FIFO beside it; its notification, which names no run, wakes a turn
+# of Claude's own that opens with init, takes it up and ends, and the node rests.
 def background_command(message):
     global serial
     release = capture + '.release'
@@ -230,15 +230,17 @@ def background_command(message):
         os.fsync(stream.fileno())
     consume(message, dict(type='tool_use', id='toolu_fixture_background', name='Bash', input=dict(command='read line < release', run_in_background=True)))
     serial += 1
-    send(dict(type='system', subtype='task_started', task_id='fixture-command', tool_use_id='toolu_fixture_background', run_id='run-fixture-command',
+    send(dict(type='system', subtype='task_started', task_id='fixture-command', tool_use_id='toolu_fixture_background',
               description='read line < release', task_type='local_bash', is_backgrounded=True, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
     result(message)
     def ended():
         global serial
         status = 'completed' if command.wait() == 0 else 'failed'
         serial += 1
-        send(dict(type='system', subtype='task_notification', task_id='fixture-command', tool_use_id='toolu_fixture_background', run_id='run-fixture-command', status=status,
+        send(dict(type='system', subtype='task_notification', task_id='fixture-command', tool_use_id='toolu_fixture_background', status=status,
                   output_file='fixture-output', summary='read line < release', uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+        serial += 1
+        send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
         serial += 1
         send(dict(type='assistant', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None,
                   message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant', model='fixture',
@@ -246,7 +248,7 @@ def background_command(message):
         serial += 1
         send(dict(type='result', subtype='success', is_error=False, session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
                   duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
-                  result='The command ended', terminal_reason='completed', origin=dict(kind='task-notification', producer='session-task', runId='run-fixture-command')))
+                  result='The command ended', terminal_reason='completed', origin=dict(kind='task-notification', producer='session-task')))
     import threading
     threading.Thread(target=ended, daemon=True).start()
 

@@ -182,6 +182,9 @@ impl TaskLifecycle {
                     (Activity::OwnWork { work, continuations }, Trigger::Unprompted) => (work.values(), continuations.clone()),
                     _ => return Err(Refusal::CorrelationMismatch),
                 };
+                // Claude Code opens the turn of a notification before it reads anything else, and
+                // that turn reads every notification waiting: whatever turn starts takes them up.
+                let continuations: BTreeSet<Wake> = continuations.into_iter().filter(|wake| !matches!(wake, Wake::Owned(_))).collect();
                 unprompted = trigger_unprompted;
                 execution.activity = Activity::Turn {
                     id: turn,
