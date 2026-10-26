@@ -42,6 +42,12 @@ pub struct DomainRuntime {
     pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
     /// The executions the user asked to take over again, while that runs.
     pub(crate) retakes: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// The executions whose takeover found the disk full: taken over again once the machine watch
+    /// measures space, never given up for it.
+    pub(crate) waiting_for_space: Mutex<std::collections::BTreeSet<TaskId>>,
+    /// Makes every write of the capability registry fail as on a full disk.
+    #[cfg(test)]
+    pub(crate) full_disk: std::sync::atomic::AtomicBool,
     /// Each `claude --bg` node's move to the SDK, once this daemon has an SDK backend.
     pub(crate) handovers: crate::sdk_handover::Handovers,
     /// Each move of an SDK task to another account when its own reaches its usage limit.
@@ -120,6 +126,9 @@ impl DomainRuntime {
             sdk: Default::default(),
             sdk_owners: Default::default(),
             retakes: Default::default(),
+            waiting_for_space: Default::default(),
+            #[cfg(test)]
+            full_disk: Default::default(),
             handovers: Default::default(),
             moves: Default::default(),
             contexts: Default::default(),
@@ -414,7 +423,7 @@ impl DomainRuntime {
         let capability = authority
             .issue(principal)
             .map_err(|message| DomainError::new("forbidden", message))?;
-        capabilities::persist(&self.home, &authority)?;
+        self.persist_issued(&mut authority, &capability)?;
         Ok(capability)
     }
 
@@ -435,8 +444,23 @@ impl DomainRuntime {
                 provider_agent_id: None,
             })
             .map_err(|message| DomainError::new("forbidden", message))?;
-        capabilities::persist(&self.home, &authority)?;
+        self.persist_issued(&mut authority, &capability)?;
         Ok(capability)
+    }
+
+    /// A capability that could not be written is never handed out, so it leaves the registry in
+    /// memory too: memory and disk hold the same live capabilities. Revocations stay in memory
+    /// even unwritten, so a revoked bearer is refused either way.
+    fn persist_issued(&self, authority: &mut Authority, capability: &Capability) -> Result<()> {
+        self.persist_authority(authority).inspect_err(|_| authority.forget(capability))
+    }
+
+    fn persist_authority(&self, authority: &Authority) -> Result<()> {
+        #[cfg(test)]
+        if self.full_disk.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).context("writing the domain capability registry"));
+        }
+        capabilities::persist(&self.home, authority)
     }
 
     /// Bind one orchestrator execution to the current generation.
@@ -450,7 +474,7 @@ impl DomainRuntime {
                 execution_id: execution_id.to_owned(),
             })
             .map_err(|message| DomainError::new("forbidden", message))?;
-        capabilities::persist(&self.home, &authority)?;
+        self.persist_issued(&mut authority, &capability)?;
         Ok(capability)
     }
 
@@ -473,13 +497,13 @@ impl DomainRuntime {
     pub fn revoke_agent(&self, session: &str) -> Result<()> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
         authority.revoke_agent(session);
-        capabilities::persist(&self.home, &authority).map_err(anyhow::Error::from)
+        self.persist_authority(&authority)
     }
     /// Revokes an orchestrator execution and returns what it was let change.
     pub fn end_execution(&self, execution: &str) -> Vec<String> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
         let changes = authority.end_execution(execution);
-        if let Err(error) = capabilities::persist(&self.home, &authority) {
+        if let Err(error) = self.persist_authority(&authority) {
             log!("domain: cannot persist the revoked capability of {execution}: {error:#}");
         }
         changes

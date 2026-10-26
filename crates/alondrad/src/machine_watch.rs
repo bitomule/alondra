@@ -502,6 +502,39 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     domain.live.gate.poke();
 }
 
+/// One look at a sample of the machine: the incident it opens, keeps or ends, and the actions that
+/// follow. A sample that measures space on the disk takes over the executions that found it full.
+pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
+    let watch = &domain.live.machine_watch;
+    pace(domain, &machine);
+    let (machine, disk) = tightest(machine, &watch.volumes());
+    if machine.disk_total > 0 && watch.measure_disk(disk_space(&machine)) {
+        domain.live.gate.poke();
+    }
+    let previous = watch.incident();
+    let fixed = fixed(domain, previous.as_ref());
+    let waiting = waiters(domain);
+    let now = now_millis();
+    let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
+    let space = has_space(&machine, next.as_ref());
+    watch.set_incident(next);
+    if fixed {
+        domain.live.gate.release_declared(domain);
+    }
+    if space {
+        crate::sdk_owner::retake_waiting_for_space(domain);
+    }
+    #[cfg(test)]
+    domain.live.machine_watch.sampled.notify_one();
+    actions
+}
+
+/// Whether the sample measured the disk with room, past the line it is low at, and no disk
+/// incident stays open.
+fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
+    machine.disk_total > 0 && failing(machine, None).is_none() && incident.is_none_or(|incident| incident.cause != MachineCause::Disk)
+}
+
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
 pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
     watch(domain, move || crate::log::recover(&gauges, "the machine gauges").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
@@ -514,27 +547,7 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
     loop {
         if let Some(machine) = sample() {
             let measuring = domain.clone();
-            let actions = tokio::task::spawn_blocking(move || {
-                let domain = measuring;
-                let watch = &domain.live.machine_watch;
-                pace(&domain, &machine);
-                let (machine, disk) = tightest(machine, &watch.volumes());
-                if machine.disk_total > 0 && watch.measure_disk(disk_space(&machine)) {
-                    domain.live.gate.poke();
-                }
-                let previous = watch.incident();
-                let fixed = fixed(&domain, previous.as_ref());
-                let waiting = waiters(&domain);
-                let now = now_millis();
-                let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
-                watch.set_incident(next);
-                if fixed {
-                    domain.live.gate.release_declared(&domain);
-                }
-                #[cfg(test)]
-                domain.live.machine_watch.sampled.notify_one();
-                actions
-            }).await.expect("machine watch worker failed");
+            let actions = tokio::task::spawn_blocking(move || look(&measuring, machine)).await.expect("machine watch worker failed");
             act(&domain, &alerts, actions).await;
         }
         tokio::select! {

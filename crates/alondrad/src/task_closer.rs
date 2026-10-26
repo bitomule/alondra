@@ -427,7 +427,7 @@ fn end_unowned_host(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
         return Ok(());
     }
     let backend = backend.clone();
-    blocking(|| crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())).map_err(|crate::sdk_owner::Failed(why)| why)
+    blocking(|| crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())).map_err(|crate::sdk_owner::Failed { why, .. }| why)
 }
 
 /// No owner of this daemon holds the host of a closing SDK task: it takes the execution as a daemon
@@ -440,7 +440,7 @@ fn take_over(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
     let backend = backend.clone();
     let plugin = crate::plugins::node_in(domain.home());
     let driver = blocking(|| crate::sdk_owner::adopt(Arc::clone(&runtime), &backend, task.id.clone(), plugin.as_deref()))
-        .map_err(|crate::sdk_owner::Failed(why)| why)?;
+        .map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     Ok(())
 }

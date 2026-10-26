@@ -75,11 +75,17 @@ pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
         Err(error) => return Err(error).with_context(|| format!("clearing {}", next.display())),
     }
-    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW).open(&next)?;
-    file.write_all(&serde_json::to_vec(&registry)?)?;
-    file.sync_all()?;
-    std::fs::rename(&next, home.join(FILE))?;
+    let written = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW).open(&next)?;
+        file.write_all(&serde_json::to_vec(&registry)?)?;
+        file.sync_all()?;
+        std::fs::rename(&next, home.join(FILE))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&next);
+    }
+    written.with_context(|| format!("writing {}", home.join(FILE).display()))?;
     File::open(home)?.sync_all()?;
     Ok(())
 }
@@ -171,6 +177,29 @@ mod tests {
         let reopened = fixture.open();
         assert!(reopened.resolve_bearer(&first).is_err());
         assert!(reopened.resolve_bearer(&second).is_ok());
+    }
+
+    // Production, 25 October 07:03: the disk filled up while the daemon started, and binding two
+    // nodes could not write the registry. A capability that could not be written was never handed
+    // out, so it is not kept in memory either: the registry written next holds only the live ones.
+    #[test]
+    fn a_capability_the_full_disk_could_not_write_is_not_kept_in_memory() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        register(&domain, "session-a");
+        register(&domain, "session-b");
+        let a = domain.bind_agent("session-a").unwrap().expose_for_child_environment().to_owned();
+        let before = std::fs::read(fixture.0.join(FILE)).unwrap();
+        domain.full_disk.store(true, std::sync::atomic::Ordering::SeqCst);
+        let refused = domain.bind_agent("session-b").err().expect("a registry that cannot be written issues nothing");
+        assert!(matches!(&refused, crate::domain_store::StoreError::Storage(error) if crate::disk::no_space(error)), "{refused}");
+        assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), before, "the registry before is whole");
+        domain.full_disk.store(false, std::sync::atomic::Ordering::SeqCst);
+        domain.revoke_agent("session-unknown").unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.0.join(FILE)).unwrap()).unwrap();
+        assert_eq!(registry["entries"].as_array().unwrap().len(), 1, "only session-a's capability is live: {registry}");
+        assert!(domain.resolve_bearer(&a).is_ok());
+        assert!(!fixture.0.join(format!("{FILE}.next")).exists());
     }
 
     #[test]

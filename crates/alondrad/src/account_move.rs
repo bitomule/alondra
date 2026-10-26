@@ -181,7 +181,7 @@ async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), S
     let folder = backend.state_root.join(&moving.plan.instance);
     let (runtime, node) = (Arc::clone(domain), moving.plan.node.clone());
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        runtime.stop_sdk_host(&node).map_err(|crate::sdk_owner::Failed(why)| format!("its host did not stop: {why}"))?;
+        runtime.stop_sdk_host(&node).map_err(|crate::sdk_owner::Failed { why, .. }| format!("its host did not stop: {why}"))?;
         if folder.join("host.lock").exists() {
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).map_err(|error| format!("its host did not stop: {error}"))?;
         }
@@ -202,7 +202,7 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
     let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&moving.task).ok_or("the task is gone")?;
-    let options = crate::sdk_owner::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed(why)| why)?;
+    let options = crate::sdk_owner::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
     let launch = crate::sdk_owner::Launch {
         task: moving.task.clone(),
         name: state.agents.get(&moving.plan.node).map_or_else(|| task.title.clone(), |agent| agent.name.clone()),
@@ -216,7 +216,7 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
     let continuation = crate::sdk_owner::Continuation::Moved { session: moving.plan.session.clone(), card: moving.plan.card.clone(), number: moving.number };
     let admitted = tokio::task::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))
         .await
-        .map_err(|error| crate::sdk_owner::Failed(format!("the admission stopped: {error}")))
+        .map_err(|error| crate::sdk_owner::Failed::new(format!("the admission stopped: {error}")))
         .and_then(|admitted| admitted);
     match admitted {
         Ok(driver) => {
@@ -224,10 +224,10 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
             domain.live.forget_closed_task(&moving.task.0);
             Ok(())
         }
-        Err(crate::sdk_owner::Failed(why)) if latest(domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
+        Err(crate::sdk_owner::Failed { why, .. }) if latest(domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
             Err(format!("the execution on account {} was admitted but did not start: {why}", moving.plan.to))
         }
-        Err(crate::sdk_owner::Failed(why)) => {
+        Err(crate::sdk_owner::Failed { why, .. }) => {
             undo(domain, moving, &format!("the execution on account {} was not admitted: {why}", moving.plan.to))?;
             Err(why)
         }
@@ -252,7 +252,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
         })
         .await
         .map_err(|error| format!("starting the SDK node stopped: {error}"))?
-        .map_err(|crate::sdk_owner::Failed(why)| format!("the SDK node did not start: {why}"))?;
+        .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK node did not start: {why}"))?;
         domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     }
     if let Err(failure) = crate::domain_agent_lifecycle::node_event(domain, &moving.plan.node, NodeEvent::SessionClosed) {

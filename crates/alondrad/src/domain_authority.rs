@@ -117,6 +117,12 @@ impl Authority {
             .ok_or("invalid or revoked domain capability")
     }
 
+    /// Drops a capability this registry issued and never handed out.
+    pub fn forget(&mut self, capability: &Capability) {
+        let digest: [u8; 32] = Sha256::digest(capability.0.as_bytes()).into();
+        self.entries.remove(&digest);
+    }
+
     pub fn revoke_agent(&mut self, session_id: &str) {
         self.entries.retain(|_, principal| !matches!(principal, Principal::Agent { session_id: id, .. } if id == session_id));
     }

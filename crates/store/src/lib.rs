@@ -94,7 +94,15 @@ impl std::fmt::Display for Error {
         write!(f, "{self:?}")
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Codec(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
         Self::Database(value)

@@ -1,15 +1,22 @@
 //! Saving a small state file whole, and telling a save that fails once rather than on every try.
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Writes `bytes` beside `file` and renames them over it, so a reader sees the old file or the
-/// new one, never half of one.
+/// Writes `bytes` beside `file`, flushes them to disk and renames them over it, so a reader sees
+/// the old file or the new one, never half of one. When a step fails, what was written beside is
+/// removed, so it takes none of the little space left, and `file` keeps what it held.
 pub(crate) fn atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(test)]
     full_disk::write()?;
     let next = file.with_extension("next");
-    std::fs::write(&next, bytes)?;
-    std::fs::rename(&next, file)
+    let written = std::fs::File::create(&next)
+        .and_then(|mut written| written.write_all(bytes).and_then(|()| written.sync_all()))
+        .and_then(|()| std::fs::rename(&next, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&next);
+    }
+    written
 }
 
 /// Whether the last save of one file failed. A full disk fails every save until there is space:
@@ -96,5 +103,39 @@ pub(crate) mod full_disk {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entries(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_saved_file_holds_the_new_bytes_and_nothing_is_left_beside_it() {
+        let folder = crate::test_support::Directory::new();
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("admission.json");
+        std::fs::write(&file, b"before").unwrap();
+        atomic(&file, b"after").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"after");
+        assert_eq!(entries(&folder), ["admission.json"]);
+    }
+
+    #[test]
+    fn a_save_that_fails_leaves_the_file_before_whole_and_nothing_beside_it() {
+        let folder = crate::test_support::Directory::new();
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("launch-options.json");
+        std::fs::create_dir(&file).unwrap();
+        std::fs::write(file.join("kept"), b"before").unwrap();
+        assert!(atomic(&file, b"after").is_err(), "a file is never renamed over a folder that holds something");
+        assert_eq!(std::fs::read(file.join("kept")).unwrap(), b"before");
+        assert_eq!(entries(&folder), ["launch-options.json"]);
     }
 }

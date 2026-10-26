@@ -1316,7 +1316,7 @@ fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_t
     let mut taken = take_all(&restarted, &slice.backend);
     let (task, driver) = taken.pop().expect("the daemon's start takes the execution");
     assert_eq!(task, TaskId::from(TASK));
-    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
     assert_eq!(driver.agent(), &agent, "the same node goes on");
     assert_replaced(&slice, &restarted, driver, &session, &stranded);
 }
@@ -1381,7 +1381,7 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
     let (session, _) = strand_host(&slice, driver);
     let restarted = slice.restart();
     let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
-    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
     assert_told_the_work_ended(&slice, &restarted, driver, &session);
     assert_eq!(Slice::read_cards(&restarted).iter().filter(|(_, answered)| !answered).count(), 1, "the task goes on: its turn ended on a card");
 }
@@ -1415,7 +1415,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     let (session, _) = strand_host(&slice, driver);
     let restarted = slice.restart();
     let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
-    let driver = driver.unwrap_or_else(|Failed(why)| panic!("the execution was left as it was: {why}"));
+    let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
     assert_eq!(lifecycle(&restarted).phase(), alondra_domain::TaskPhase::Delivered, "the delivery stays the one the user reviews");
     assert_told_the_work_ended(&slice, &restarted, driver, &session);
 }
@@ -1738,7 +1738,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
 
     slice.task("sdk-on-other");
     std::fs::DirBuilder::new().mode(0o700).create(slice._home.join("accounts/other")).unwrap();
-    let Err(Failed(refused)) = slice.launch_on("sdk-on-other", "other") else { panic!("an account the user never added runs nothing") };
+    let Err(Failed { why: refused, .. }) = slice.launch_on("sdk-on-other", "other") else { panic!("an account the user never added runs nothing") };
     assert!(refused.contains("not one of the accounts"), "{refused}");
 
     slice.accounts_seen("seen-2", AccountState::SignedOut);
@@ -2182,7 +2182,7 @@ fn a_turn_end_alondra_cannot_record_fails_only_that_turn_and_a_new_host_resumes_
     let mut driver = slice.launch();
     crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
     let failed = loop {
-        if let Err(Failed(why)) = driver.observe() {
+        if let Err(Failed { why, .. }) = driver.observe() {
             break why;
         }
     };
@@ -2203,7 +2203,7 @@ fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     let unrecorded = |driver: &mut Driver| loop {
-        if let Err(Failed(why)) = driver.observe() {
+        if let Err(Failed { why, .. }) = driver.observe() {
             break why;
         }
     };
@@ -2259,6 +2259,52 @@ fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
     assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "with one card");
     driver.stop().unwrap();
+}
+
+// Production, 25 October 07:03: the disk filled up and the daemon restarted with 953 MB free.
+// Taking over two SDK executions could not write the node's capability (No space left on device)
+// and each was given up with a card, though nothing about the task had failed. A takeover that
+// finds the disk full now waits with no card; a sample of the machine that still measures it full
+// takes nothing over, and the first that measures space again takes it over with the same session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_same_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    restarted.full_disk.store(true, std::sync::atomic::Ordering::SeqCst);
+    adopt_all(&restarted, &slice.backend);
+    let task = TaskId::from(TASK);
+    let agent = restarted.state().unwrap().tasks[&task].agent_id.clone().unwrap();
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "a full disk is not the task's failure: no card");
+    assert_ne!(restarted.state().unwrap().tasks[&task].state, TaskState::NeedsYou);
+    assert!(!restarted.owns_sdk_host(&agent));
+    assert!(restarted.waiting_for_space.lock().unwrap().contains(&task), "the takeover waits for space");
+    restarted.full_disk.store(false, std::sync::atomic::Ordering::SeqCst);
+    let disk = |free: u64| alondra_core::Machine { disk_total: 500_000_000_000, disk_available: free, ..alondra_core::Machine::default() };
+    crate::machine_watch::look(&restarted, disk(900_000_000));
+    restarted.join_retakes();
+    assert!(!restarted.owns_sdk_host(&agent), "a sample that measures the disk full takes nothing over");
+    assert!(restarted.waiting_for_space.lock().unwrap().contains(&task));
+    loop {
+        crate::machine_watch::look(&restarted, disk(400_000_000_000));
+        if !restarted.live.machine_watch.disk_low() {
+            break;
+        }
+    }
+    restarted.join_retakes();
+    assert!(restarted.owns_sdk_host(&agent), "the sample that measured space took the execution over");
+    assert!(restarted.waiting_for_space.lock().unwrap().is_empty());
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
+    let mut changed = restarted.subscribe();
+    let capture = slice.capture.clone();
+    changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    restarted.stop_sdk_owners();
+    let starts = slice.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
 // The task of 2026-10-21 as its «Try again» card left it: its host ended with Claude's request to
@@ -3711,7 +3757,7 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     let upgraded = slice.restart();
     upgraded.enable_sdk(slice.backend.clone());
     let (_, adopted) = take_all(&upgraded, &slice.backend).pop().expect("the start takes the execution");
-    let adopted = adopted.unwrap_or_else(|Failed(why)| panic!("the execution was not taken over: {why}"));
+    let adopted = adopted.unwrap_or_else(|Failed { why, .. }| panic!("the execution was not taken over: {why}"));
     assert!(alondra_process_group::alive(&command).unwrap(), "the background command survived the upgrade");
     assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
     assert_eq!(slice.starts().len(), 1, "no Claude started again");

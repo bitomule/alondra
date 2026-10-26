@@ -438,7 +438,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
                     domain.stop_sdk_host(old)?;
                     crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
                 })
-                .map_err(|crate::sdk_owner::Failed(why)| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
+                .map_err(|crate::sdk_owner::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
             }
             Some(old) => {
                 stop_replaced(domain, old).await.map_err(|reason| DomainError::new("replace_failed", format!(

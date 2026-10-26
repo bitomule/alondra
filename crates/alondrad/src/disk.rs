@@ -186,9 +186,34 @@ pub(crate) fn recovered_lines() -> Lines {
     Lines { usable: low.usable + RECOVERY_MARGIN_BYTES, free: low.free + FLOOR_RECOVERY_MARGIN_BYTES }
 }
 
+/// Whether a write failed because the disk, or the user's quota on it, had no room left.
+pub(crate) fn io_no_space(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::StorageFull || matches!(error.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT))
+}
+
+/// `io_no_space` anywhere in the error's chain, or SQLite saying its database is full.
+pub(crate) fn no_space(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(io_no_space)
+            || cause.downcast_ref::<rusqlite::Error>().is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_disk_is_told_from_other_failures_through_the_whole_chain() {
+        let full = || std::io::Error::from_raw_os_error(libc::ENOSPC);
+        assert!(io_no_space(&full()));
+        assert!(io_no_space(&std::io::Error::from_raw_os_error(libc::EDQUOT)));
+        assert!(!io_no_space(&std::io::Error::from_raw_os_error(libc::EACCES)));
+        assert!(no_space(&anyhow::Error::from(full()).context("writing domain-capabilities.json")));
+        let sqlite = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL), None);
+        assert!(no_space(&anyhow::Error::from(alondra_store::Error::Database(sqlite)).context("committing")));
+        assert!(!no_space(&anyhow::anyhow!("No space left on device")), "only the error itself counts, never its text");
+    }
 
     #[test]
     fn the_free_space_of_a_real_folder_is_what_df_reports() {
