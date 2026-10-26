@@ -1070,10 +1070,11 @@ fn a_stopped_session_is_one_claude_agents_no_longer_shows_running() {
     }
 }
 
-/// What `alondra models --json` shows after a sonnet task launched by the orchestrator goes
-/// through a review that asks for changes twice, every call made over the daemon's own routes.
+/// What `alondra metrics --json` shows once a sonnet task launched by the orchestrator went
+/// through a review that asked for changes twice and the user accepted it, every call made over
+/// the daemon's own routes.
 #[tokio::test]
-async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findings_in_the_model_report() {
+async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() {
     let root = Directory::new();
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -1136,14 +1137,16 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
         call(&reviewer, "/tasks/review/verdict".into(), json!({"task_id": "review", "presentation_id": format!("review-{round}"), "verdict": verdict})).await;
     }
 
-    let report: Value = client.get(format!("{base}/models")).send().await.unwrap().json().await.unwrap();
-    println!("GET /models (what alondra models --json prints):\n{}", serde_json::to_string_pretty(&report).unwrap());
+    command(&domain, user(), Command::AcceptDelivery { presentation_id: "delivery-2".into(),
+        targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "The result".into() }] });
+    command(&domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
+
+    let report: Value = client.get(format!("{base}/metrics?period=all&compare=none")).send().await.unwrap().json().await.unwrap();
+    println!("GET /metrics (what alondra metrics --json prints):\n{}", serde_json::to_string_pretty(&report).unwrap());
     let sonnet = &report["by_model"][0];
-    assert_eq!((&sonnet["model"], &sonnet["effort"], &sonnet["tasks"]), (&json!("sonnet"), &json!("medium"), &json!(1)));
-    assert_eq!((&sonnet["change_rounds"], &sonnet["reviewer_rounds"], &sonnet["serious_findings"]), (&json!(2), &json!(2), &json!(3)));
-    let attempt = &report["attempts"][0];
-    assert_eq!((&attempt["task_id"], &attempt["change_rounds"], &attempt["serious_findings"]), (&json!("t"), &json!(2), &json!(3)));
-    assert_eq!(report["sonnet_trouble"][0]["task_id"], "t", "rounds on a delivery without a PR still make a sonnet task go badly");
+    assert_eq!((&sonnet["name"], &sonnet["effort"], &sonnet["figures"]["sums"]["tasks"]), (&json!("sonnet"), &json!("medium"), &json!(1)));
+    let sums = &sonnet["figures"]["sums"];
+    assert_eq!((&sums["change_rounds"], &sums["reviewer_rounds"], &sums["clean"]), (&json!(2), &json!(2), &json!(0)));
     server.abort();
 }
 

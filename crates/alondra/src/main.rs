@@ -19,7 +19,7 @@ mod doc_images;
 mod help;
 mod mcp;
 mod mcp_arguments;
-mod models;
+mod metrics;
 mod provider_accounts;
 mod ops;
 mod pty;
@@ -190,11 +190,18 @@ enum Cmd {
         #[arg(long, required = true, help = tr!("Only show what would happen; required, since the daemon moves each node by itself", "Solo enseña lo que pasaría; obligatorio, porque el daemon pasa cada nodo por sí mismo"))]
         dry_run: bool,
     },
-    #[command(about = tr!("How each model the orchestrator chose did: outcomes, questions, time and cost", "Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste"),
-        after_help = examples(&["alondra models --since 7d"]))]
-    Models {
-        #[arg(long, help = tr!("Only launches in this period, like 7d, 12h or 2w", "Solo los lanzamientos de este periodo, como 7d, 12h o 2w"))]
-        since: Option<String>,
+    #[command(about = tr!("What ended tasks cost and how they went, by model and project, against another period", "Cuánto costaron las tareas terminadas y cómo fueron, por modelo y proyecto, frente a otro periodo"),
+        long_about = tr!("The report the Metrics screen shows: tasks done with no rework, change rounds and your interventions; cost in total, per task, per merged PR, per changed line and per session; tokens and steps; and where each task's time went. Costs are the provider's estimate, not your bill.", "El informe que muestra la pantalla Métricas: tareas sin retrabajo, rondas de cambios e intervenciones tuyas; coste total, por tarea, por PR fusionado, por línea cambiada y por sesión; tokens y pasos; y en qué se fue el tiempo de cada tarea. Los costes son la estimación del proveedor, no la factura."),
+        after_help = examples(&["alondra metrics", "alondra metrics --period 30d --project alondra", "alondra metrics --compare release:0.3.5", "alondra metrics --compare 2026-10-19 --json"]))]
+    Metrics {
+        #[arg(long, default_value = "7d", help = tr!("7d, 30d, 90d or all", "7d, 30d, 90d o all"))]
+        period: String,
+        #[arg(long, default_value = "previous", help = tr!("previous, none, release:<version> or a day (YYYY-MM-DD): from then until now, against as long before", "previous, none, release:<versión> o un día (AAAA-MM-DD): desde entonces hasta ahora, frente al mismo tiempo antes"))]
+        compare: String,
+        #[arg(long, help = tr!("Only this project's tasks", "Solo las tareas de este proyecto"))]
+        project: Option<String>,
+        #[arg(long, help = tr!("Only the tasks this model ended", "Solo las tareas que terminó este modelo"))]
+        model: Option<String>,
     },
     #[command(about = tr!("Audit or safely rebuild the local event-derived state", "Audita o reconstruye de forma segura el estado local derivado de eventos"),
         after_help = examples(&["alondra state audit"]))]
@@ -434,7 +441,7 @@ fn main() -> Result<()> {
 /// The commands that print a document with `--json`; any other one refuses the flag.
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
-        Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
+        Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
         | Cmd::Report { command: None, .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
@@ -517,7 +524,9 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         },
         Some(Cmd::Cleanup { dry_run }) => cleanup::run(dry_run, json),
         Some(Cmd::Handover { .. }) => handover::run(json),
-        Some(Cmd::Models { since }) => models::run(since.as_deref(), json),
+        Some(Cmd::Metrics { period, compare, project, model }) => metrics::run(&metrics::Options {
+            period: &period, compare: &compare, project: project.as_deref(), model: model.as_deref(),
+        }, json),
         Some(Cmd::State { command }) => {
             let home = client::config().home.clone();
             match command {
@@ -899,7 +908,7 @@ mod api_tests {
         assert!(cli.json && cli.no_input && takes_json(cli.command.as_ref()));
         let cli = parsed(&["--json", "mac", "list"]);
         assert!(cli.json && takes_json(cli.command.as_ref()));
-        for args in [&["doctor"][..], &["models"], &["cleanup"], &["config", "list"], &["config", "get", "port"], &["account", "status"], &["relay", "status"]] {
+        for args in [&["doctor"][..], &["metrics"], &["cleanup"], &["config", "list"], &["config", "get", "port"], &["account", "status"], &["relay", "status"]] {
             assert!(takes_json(parsed(args).command.as_ref()), "{args:?}");
         }
         for args in [&["answer", "q", "--option", "1"][..], &["device", "approve", "r"], &["relay", "on"], &["config", "set", "port", "1"], &["status"]] {

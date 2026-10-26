@@ -1,6 +1,7 @@
 //! What each model call of an agent did, by the tools it called. A step is one model call: every
 //! step re-reads the whole context, so steps that only look or wait are the ones worth batching.
-//! The rules are the ones `tools/node_token_usage.py` measured nodes with.
+//! The rules are the ones the token usage script, since replaced by `alondra metrics`, measured
+//! nodes with in `docs/node-token-usage.md`.
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 

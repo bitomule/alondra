@@ -22,7 +22,7 @@ rust_doc_test(
 
 rust_test(
     name = "alondra_core_test",
-    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards"],
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics"],
     crate = ":alondra_core",
     deps = all_crate_deps(normal_dev = True),
     edition = "2024",

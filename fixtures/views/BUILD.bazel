@@ -32,3 +32,11 @@ filegroup(
     srcs = glob(["newer-daemon/*.json"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+# The Metrics screen, which the apps do not open yet: its links stay out of the cards' contract
+# until they do.
+filegroup(
+    name = "metrics",
+    srcs = glob(["metrics/*.json"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

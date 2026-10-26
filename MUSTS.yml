@@ -130,15 +130,6 @@ checks:
       targets:
         - //tools:load_bench_test
 
-  node-token-usage:
-    uses: bazel/test
-    paths:
-      - "tools/node_token_usage.py"
-      - "tools/tests/test_node_token_usage.py"
-    with:
-      targets:
-        - //tools:node_token_usage_test
-
   bazel-speed:
     uses: bazel/test
     paths:

@@ -100,7 +100,7 @@ fn help_more_lists_the_advanced_commands() {
     let more = mac.run(&["help", "more"]);
     assert!(more.status.success(), "{more:?}");
     let text = String::from_utf8_lossy(&more.stdout);
-    for command in ["cleanup", "models", "state", "delivery", "orchestrator"] {
+    for command in ["cleanup", "metrics", "state", "delivery", "orchestrator"] {
         assert!(text.contains(&format!("  {command}")), "{command}: {text}");
     }
 }

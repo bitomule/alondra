@@ -1,0 +1,401 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "metrics",
+  "key": "metrics?period=7d&compare=previous",
+  "client": "ios",
+  "version": "v002e0940fcbcfc30",
+  "cursor": "metrics-cursor",
+  "title": "Métricas",
+  "status": {
+    "version": "v22faa503d0e2ceea",
+    "summary": "0 nodos trabajando",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "period",
+      "title": "Periodo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "period:7d",
+          "icon": "history",
+          "title": "Últimos 7 días",
+          "badges": [
+            {
+              "text": "Mostrado",
+              "tone": "accent"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:30d",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=30d&compare=previous"
+          },
+          "icon": "history",
+          "title": "Últimos 30 días",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:90d",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=90d&compare=previous"
+          },
+          "icon": "history",
+          "title": "Últimos 90 días",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:all",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=all&compare=none"
+          },
+          "icon": "history",
+          "title": "Todo",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "compare",
+      "title": "Comparar con",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "compare:previous",
+          "icon": "history",
+          "title": "El periodo anterior",
+          "badges": [
+            {
+              "text": "Mostrado",
+              "tone": "accent"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:release:0.3.5",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=release:0.3.5"
+          },
+          "icon": "history",
+          "title": "Desde la versión 0.3.5, frente al mismo tiempo antes",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:release:0.3.4",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=release:0.3.4"
+          },
+          "icon": "history",
+          "title": "Desde la versión 0.3.4, frente al mismo tiempo antes",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:none",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=none"
+          },
+          "icon": "history",
+          "title": "Nada",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "title": "Resumen",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tareas terminadas",
+              "value": "3 · antes 2 (+50 %)"
+            },
+            {
+              "label": "Sin retrabajo",
+              "value": "67 % · antes 50 % (+33 %)",
+              "tone": "success"
+            },
+            {
+              "label": "Rondas de cambios por tarea",
+              "value": "0,3 · antes 1,0 (-67 %)",
+              "tone": "success"
+            },
+            {
+              "label": "Intervenciones tuyas por tarea",
+              "value": "1,0 · antes 1,0"
+            },
+            {
+              "label": "Reabiertas",
+              "value": "0 · antes 0"
+            },
+            {
+              "label": "Relanzadas",
+              "value": "0 · antes 0"
+            },
+            {
+              "label": "Canceladas",
+              "value": "0 · antes 0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cost",
+      "title": "Coste",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Total",
+              "value": "8,30 $ · antes 5,00 $ (+66 %)"
+            },
+            {
+              "label": "Por tarea",
+              "value": "3,75 $ · antes 2,50 $ (+50 %)",
+              "tone": "warning"
+            },
+            {
+              "label": "Mediana por tarea",
+              "value": "3,75 $ · antes 2,50 $ (+50 %)",
+              "tone": "warning"
+            },
+            {
+              "label": "Por PR fusionado",
+              "value": "2,50 $ · antes 2,50 $"
+            },
+            {
+              "label": "Por línea cambiada",
+              "value": "0,0104 $ · antes 0,0104 $"
+            },
+            {
+              "label": "Por sesión",
+              "value": "0,83 $ · antes 1,25 $ (-34 %)",
+              "tone": "success"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tokens_and_steps",
+      "title": "Tokens y pasos",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Entrada",
+              "value": "29k · antes 18k (+61 %)"
+            },
+            {
+              "label": "Salida",
+              "value": "210k · antes 120k (+75 %)"
+            },
+            {
+              "label": "Caché leída",
+              "value": "84,0 M · antes 50,0 M (+68 %)"
+            },
+            {
+              "label": "Caché escrita",
+              "value": "2,3 M · antes 1,4 M (+64 %)"
+            },
+            {
+              "label": "Pasos por tarea",
+              "value": "170,0 · antes 170,0"
+            },
+            {
+              "label": "Mediana de pasos por tarea",
+              "value": "170 · antes 170"
+            },
+            {
+              "label": "Pasos que solo miran o esperan",
+              "value": "39 % · antes 39 %"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "title": "Tiempo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tiempo por tarea (mediana)",
+              "value": "1,5 h · antes 1,5 h"
+            },
+            {
+              "label": "Trabajando, por tarea",
+              "value": "50 min · antes 50 min"
+            },
+            {
+              "label": "Esperando por ti, por tarea",
+              "value": "20 min · antes 20 min"
+            },
+            {
+              "label": "En cola, por tarea",
+              "value": "2 min · antes 2 min"
+            },
+            {
+              "label": "Bloqueada, por tarea",
+              "value": "0 min · antes 0 min"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "by_model",
+      "title": "Por modelo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "model:codex:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=codex&effort=medium"
+          },
+          "icon": "node",
+          "title": "codex · Medio",
+          "subtitle": "1 tarea · 100 % sin retrabajo",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "model:opus:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=opus&effort=medium"
+          },
+          "icon": "node",
+          "title": "opus · Medio",
+          "subtitle": "1 tarea · 0 % sin retrabajo · 6,00 $ por tarea",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "model:sonnet:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=sonnet&effort=medium"
+          },
+          "icon": "node",
+          "title": "sonnet · Medio",
+          "subtitle": "1 tarea · 100 % sin retrabajo · 1,50 $ por tarea",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "by_project",
+      "title": "Por proyecto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "project:alondra:",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&project=alondra"
+          },
+          "icon": "project",
+          "title": "alondra",
+          "subtitle": "2 tareas · 50 % sin retrabajo · 3,75 $ por tarea",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "project:quill:",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&project=quill"
+          },
+          "icon": "project",
+          "title": "quill",
+          "subtitle": "1 tarea · 100 % sin retrabajo",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    }
+  ],
+  "notices": [
+    {
+      "text": "Estimación del proveedor, no la factura · medido en 3 de 3 tareas",
+      "tone": "info"
+    }
+  ]
+}

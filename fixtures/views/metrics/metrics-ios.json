@@ -1,0 +1,401 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "metrics",
+  "key": "metrics?period=7d&compare=previous",
+  "client": "ios",
+  "version": "v2e7f362467b68b69",
+  "cursor": "metrics-cursor",
+  "title": "Metrics",
+  "status": {
+    "version": "v88a117097b2bb9b9",
+    "summary": "0 nodes working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "period",
+      "title": "Period",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "period:7d",
+          "icon": "history",
+          "title": "Last 7 days",
+          "badges": [
+            {
+              "text": "Shown",
+              "tone": "accent"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:30d",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=30d&compare=previous"
+          },
+          "icon": "history",
+          "title": "Last 30 days",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:90d",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=90d&compare=previous"
+          },
+          "icon": "history",
+          "title": "Last 90 days",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "period:all",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=all&compare=none"
+          },
+          "icon": "history",
+          "title": "All time",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "compare",
+      "title": "Compare with",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "compare:previous",
+          "icon": "history",
+          "title": "The period before",
+          "badges": [
+            {
+              "text": "Shown",
+              "tone": "accent"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:release:0.3.5",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=release:0.3.5"
+          },
+          "icon": "history",
+          "title": "Since version 0.3.5, against as long before",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:release:0.3.4",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=release:0.3.4"
+          },
+          "icon": "history",
+          "title": "Since version 0.3.4, against as long before",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "compare:none",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=none"
+          },
+          "icon": "history",
+          "title": "Nothing",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "title": "Summary",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tasks ended",
+              "value": "3 · before 2 (+50%)"
+            },
+            {
+              "label": "Done with no rework",
+              "value": "67% · before 50% (+33%)",
+              "tone": "success"
+            },
+            {
+              "label": "Change rounds per task",
+              "value": "0.3 · before 1.0 (-67%)",
+              "tone": "success"
+            },
+            {
+              "label": "Your interventions per task",
+              "value": "1.0 · before 1.0"
+            },
+            {
+              "label": "Reopened",
+              "value": "0 · before 0"
+            },
+            {
+              "label": "Relaunched",
+              "value": "0 · before 0"
+            },
+            {
+              "label": "Cancelled",
+              "value": "0 · before 0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cost",
+      "title": "Cost",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Total",
+              "value": "$8.30 · before $5.00 (+66%)"
+            },
+            {
+              "label": "Per task",
+              "value": "$3.75 · before $2.50 (+50%)",
+              "tone": "warning"
+            },
+            {
+              "label": "Median per task",
+              "value": "$3.75 · before $2.50 (+50%)",
+              "tone": "warning"
+            },
+            {
+              "label": "Per merged PR",
+              "value": "$2.50 · before $2.50"
+            },
+            {
+              "label": "Per changed line",
+              "value": "$0.0104 · before $0.0104"
+            },
+            {
+              "label": "Per session",
+              "value": "$0.83 · before $1.25 (-34%)",
+              "tone": "success"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tokens_and_steps",
+      "title": "Tokens and steps",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Input",
+              "value": "29k · before 18k (+61%)"
+            },
+            {
+              "label": "Output",
+              "value": "210k · before 120k (+75%)"
+            },
+            {
+              "label": "Cache read",
+              "value": "84.0 M · before 50.0 M (+68%)"
+            },
+            {
+              "label": "Cache written",
+              "value": "2.3 M · before 1.4 M (+64%)"
+            },
+            {
+              "label": "Steps per task",
+              "value": "170.0 · before 170.0"
+            },
+            {
+              "label": "Median steps per task",
+              "value": "170 · before 170"
+            },
+            {
+              "label": "Steps that only look or wait",
+              "value": "39% · before 39%"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "title": "Time",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Time per task (median)",
+              "value": "1.5 h · before 1.5 h"
+            },
+            {
+              "label": "Working, per task",
+              "value": "50 min · before 50 min"
+            },
+            {
+              "label": "Waiting for you, per task",
+              "value": "20 min · before 20 min"
+            },
+            {
+              "label": "Queued, per task",
+              "value": "2 min · before 2 min"
+            },
+            {
+              "label": "Blocked, per task",
+              "value": "0 min · before 0 min"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "by_model",
+      "title": "By model",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "model:codex:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=codex&effort=medium"
+          },
+          "icon": "node",
+          "title": "codex · Medium",
+          "subtitle": "1 task · 100% no rework",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "model:opus:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=opus&effort=medium"
+          },
+          "icon": "node",
+          "title": "opus · Medium",
+          "subtitle": "1 task · 0% no rework · $6.00 per task",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "model:sonnet:medium",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&model=sonnet&effort=medium"
+          },
+          "icon": "node",
+          "title": "sonnet · Medium",
+          "subtitle": "1 task · 100% no rework · $1.50 per task",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "by_project",
+      "title": "By project",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "project:alondra:",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&project=alondra"
+          },
+          "icon": "project",
+          "title": "alondra",
+          "subtitle": "2 tasks · 50% no rework · $3.75 per task",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "project:quill:",
+          "link": {
+            "kind": "view",
+            "key": "metrics?period=7d&compare=previous&project=quill"
+          },
+          "icon": "project",
+          "title": "quill",
+          "subtitle": "1 task · 100% no rework",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    }
+  ],
+  "notices": [
+    {
+      "text": "Provider's estimate, not your bill · measured in 3 of 3 tasks",
+      "tone": "info"
+    }
+  ]
+}

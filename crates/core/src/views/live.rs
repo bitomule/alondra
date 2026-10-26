@@ -80,6 +80,9 @@ pub struct LiveSnapshot {
     /// The MCP servers the user deleted while this daemon runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_removed: Vec<LiveMcpRemoval>,
+    /// What the Metrics screen sums, read from the store only while a `metrics` key is on screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::metrics::report::MetricsInputs>,
 }
 
 /// An MCP server the user deleted from the agent's settings. The nodes that had it loaded keep it

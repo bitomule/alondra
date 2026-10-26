@@ -4,7 +4,7 @@ fn shell(command: &str) -> Tool {
     Tool::Shell(command.into())
 }
 
-/// The cases of `tools/tests/test_node_token_usage.py`, which measured nodes before this did.
+/// The cases of the token usage script's tests, which measured nodes before this did.
 #[test]
 fn steps_are_classified_as_the_token_usage_script_classified_them() {
     let cases = [

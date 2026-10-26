@@ -10,6 +10,8 @@ use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountSta
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use alondra_core::views::{Client, Family, Lang, LiveNode, LivePullRequest, LiveSnapshot, LiveTaskStart, RenderContext, Transport, build};
+use alondra_core::metrics::fold::Outcome;
+use alondra_core::metrics::report::{DayRow, MetricsInputs, Release, Spend, Sums, TaskRow, Tokens, WeekRow};
 use std::time::Instant;
 
 const BUDGET_MS: f64 = 50.0;
@@ -317,8 +319,45 @@ fn live(state: &DomainState) -> LiveSnapshot {
             until: task.state.terminal().then(|| "2026-10-15T09:30:00".into()),
             ran_secs: task.state.terminal().then_some(1_200),
         })).collect(),
+        metrics: Some(metrics_inputs()),
         ..LiveSnapshot::default()
     }
+}
+
+/// 90 days of ended tasks at 250 a week, on three projects and four models, two years of weeks
+/// before them, and a day of the orchestrator's spend per model for each of those days.
+fn metrics_inputs() -> MetricsInputs {
+    const DAY: i64 = 86_400_000;
+    let now = 20_752 * DAY;
+    let (projects, models) = (["alondra", "quill", "lumo"], ["sonnet", "opus", "haiku", "codex"]);
+    let tasks = (0..3_250).map(|n: i64| {
+        let finished_at = now - n * 90 * DAY / 3_250;
+        TaskRow {
+            project: Some(projects[n as usize % 3].into()), model: Some(models[n as usize % 4].into()), effort: Some("medium".into()),
+            approach: Some("solo".into()), outcome: if n % 20 == 0 { Outcome::Cancelled } else { Outcome::Done },
+            started_at: Some(finished_at - 3_600_000), finished_at, clean: n % 3 != 0, change_rounds: n % 3, reviewer_rounds: n % 2,
+            interventions: n % 4, reopened: n % 17 == 0, relaunched: n % 23 == 0, work_ms: 1_800_000, waiting_user_ms: 600_000,
+            queued_ms: 60_000, blocked_ms: 0, sessions: 2, steps: 150, subagent_steps: 20, looks: 60, polls: 7, pr_merged: n % 5 != 0,
+            pr_lines: (n % 7 != 0).then_some(200), spend: Some(Spend { cost_micros: (n % 4 != 3).then_some(2_000_000 + n),
+                tokens: Tokens { input: 10_000, output: 90_000, cache_read: 30_000_000, cache_write: 400_000 } }),
+        }
+    }).collect();
+    let (mut weeks, mut days) = (vec![], vec![]);
+    for model in models {
+        for week in 13..117 {
+            for project in projects {
+                weeks.push(WeekRow {
+                    week: now - week * 7 * DAY, project: project.into(), model: model.into(), effort: "medium".into(), approach: "solo".into(),
+                    sums: Sums { tasks: 20, done: 19, clean: 12, measured: 20, costed: 15, cost_micros: 40_000_000, sessions: 40, steps: 3_000, ..Sums::default() },
+                });
+            }
+        }
+        for day in 0..180 {
+            days.push(DayRow { day: now - day * DAY, model: model.into(), cost_micros: 3_000_000, costed: 5, sessions: 5, tokens: Tokens::default() });
+        }
+    }
+    let releases = (0..30).map(|n: i64| Release { version: format!("0.3.{n}"), first_seen_at: now - (30 - n) * 6 * DAY }).collect();
+    MetricsInputs { now, tasks, weeks, days, releases }
 }
 
 /// The card of the tasks that wait for the MCP server: one for all of them.
@@ -361,6 +400,8 @@ fn keys() -> Vec<(String, Client)> {
         ("mcp_servers".to_owned(), Client::Ios),
         ("mcp_servers".to_owned(), Client::Tui),
         ("accounts".to_owned(), Client::Tui),
+        ("metrics?period=90d&compare=previous".to_owned(), Client::Ios),
+        ("metrics?period=all&compare=release:0.3.29&project=alondra".to_owned(), Client::Mac),
     ]
     .into_iter()
     .collect()

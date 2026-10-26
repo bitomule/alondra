@@ -15,6 +15,7 @@ pub mod resolves;
 pub mod review_export;
 mod merge_method;
 mod messages;
+pub mod metrics;
 mod misc;
 mod pacing;
 mod schedules;
@@ -144,7 +145,7 @@ macro_rules! families {
     };
 }
 families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine, McpServers, Accounts);
+    IssuePicker, Search, Machine, McpServers, Accounts, Metrics);
 
 impl Family {
     /// The family a key belongs to, or none for a key no view answers.
@@ -184,6 +185,8 @@ impl Family {
             Family::McpServers
         } else if key == "accounts" {
             Family::Accounts
+        } else if listed(metrics::KEY) {
+            Family::Metrics
         } else {
             return None;
         })
@@ -210,6 +213,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::Machine => misc::machine(&context),
         Family::McpServers => mcp_servers::build(&context),
         Family::Accounts => accounts::list(&context),
+        Family::Metrics => metrics::build(key, &context)?,
     };
     view.version = version(&view);
     Ok(view)

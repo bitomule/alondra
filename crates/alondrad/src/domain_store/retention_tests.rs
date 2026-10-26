@@ -91,13 +91,14 @@ fn clock(store: &mut DomainStore, now: i64) -> String {
     assert!(!messages.is_empty());
     let history: Vec<(i64, String)> = store.task_history(&"task-1".into()).unwrap().into_iter().map(|step| (step.at, step.state)).collect();
     assert!(!history.is_empty());
+    store.fold_ended_tasks(64).unwrap();
+    let metrics = store.metrics_inputs(now).unwrap();
     format!(
-        "{rows:?} {history:?} {:?} {:?} {:?} {:?} {:?}",
+        "{rows:?} {history:?} {:?} {:?} {:?} {:?} {metrics:?}",
         store.task_state_times().unwrap(),
         store.revision_times(&revisions).unwrap(),
         messages.iter().map(|id| store.message_origin(*id).unwrap()).collect::<Vec<_>>(),
         store.write_mark().unwrap().1,
-        store.model_report(None, now).unwrap(),
     )
 }
 

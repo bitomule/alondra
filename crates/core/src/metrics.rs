@@ -1,6 +1,7 @@
 //! What agents spend and how their tasks go, in terms no provider owns. Each provider's adapter
 //! turns its own reports into these; the daemon's store keeps them and folds each ended task.
 pub mod fold;
+pub mod report;
 pub mod steps;
 
 use serde::{Deserialize, Serialize};

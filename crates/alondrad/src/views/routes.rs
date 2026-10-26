@@ -87,19 +87,16 @@ pub(super) async fn respond(
             "client" => &mut kind,
             "lang" => &mut lang,
             "known" => &mut known,
-            "focus" => &mut options.focus,
-            "section" => &mut options.section,
-            "after" => &mut options.after,
-            "project" => &mut options.project,
-            "q" => &mut options.q,
-            "refresh" => &mut options.refresh,
-            _ => {
-                return error_lang(
-                    requested_language,
-                    "invalid_input",
-                    "unsupported view parameter",
-                );
-            }
+            name => match options.slot(name) {
+                Some(slot) => slot,
+                None => {
+                    return error_lang(
+                        requested_language,
+                        "invalid_input",
+                        "unsupported view parameter",
+                    );
+                }
+            },
         };
         if slot.replace(value.into_owned()).is_some() {
             return error_lang(
@@ -239,13 +236,10 @@ pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
                 if value.len() == 17
                     && value.starts_with('v')
                     && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()) => {}
-            "focus" => options.focus = Some(value.into_owned()),
-            "section" => options.section = Some(value.into_owned()),
-            "after" => options.after = Some(value.into_owned()),
-            "project" => options.project = Some(value.into_owned()),
-            "q" => options.q = Some(value.into_owned()),
-            "refresh" => options.refresh = Some(value.into_owned()),
-            _ => return false,
+            name => match options.slot(name) {
+                Some(slot) => *slot = Some(value.into_owned()),
+                None => return false,
+            },
         }
     }
     ["protocol", "client", "lang"]
@@ -262,9 +256,32 @@ struct ViewOptions {
     project: Option<String>,
     q: Option<String>,
     refresh: Option<String>,
+    period: Option<String>,
+    compare: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl ViewOptions {
+    fn slot(&mut self, name: &str) -> Option<&mut Option<String>> {
+        Some(match name {
+            "focus" => &mut self.focus,
+            "section" => &mut self.section,
+            "after" => &mut self.after,
+            "project" => &mut self.project,
+            "q" => &mut self.q,
+            "refresh" => &mut self.refresh,
+            "period" => &mut self.period,
+            "compare" => &mut self.compare,
+            "model" => &mut self.model,
+            "effort" => &mut self.effort,
+            _ => return None,
+        })
+    }
 }
 
 fn view_key(base: &str, options: &ViewOptions) -> Option<String> {
+    use alondra_core::metrics::report::{Compare, Period, Query};
     let ViewOptions {
         focus,
         section,
@@ -272,8 +289,32 @@ fn view_key(base: &str, options: &ViewOptions) -> Option<String> {
         project,
         q,
         refresh,
+        period,
+        compare,
+        model,
+        effort,
     } = options;
     let clean = |value: &str| value.len() <= 256 && !value.chars().any(char::is_control);
+    if base == alondra_core::views::metrics::KEY {
+        if [focus, section, after, q, refresh].iter().any(|option| option.is_some()) {
+            return None;
+        }
+        let text = |value: &Option<String>| match value.as_deref() {
+            Some(value) if !clean(value) => None,
+            value => Some(value.filter(|value| !value.is_empty()).map(str::to_owned)),
+        };
+        let query = Query {
+            period: period.as_deref().map_or(Some(Period::default()), Period::parse)?,
+            compare: compare.as_deref().map_or(Some(Compare::default()), Compare::parse)?,
+            project: text(project)?,
+            model: text(model)?,
+            effort: text(effort)?,
+        };
+        return Some(query.key());
+    }
+    if [period, compare, model, effort].iter().any(|option| option.is_some()) {
+        return None;
+    }
     if base == "home"
         && section.is_none()
         && after.is_none()
@@ -370,14 +411,8 @@ pub(super) fn valid_open_key(key: &str) -> bool {
     };
     let mut options = ViewOptions::default();
     for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        let slot = match name.as_ref() {
-            "focus" => &mut options.focus,
-            "section" => &mut options.section,
-            "after" => &mut options.after,
-            "project" => &mut options.project,
-            "q" => &mut options.q,
-            "refresh" => &mut options.refresh,
-            _ => return false,
+        let Some(slot) = options.slot(&name) else {
+            return false;
         };
         if slot.replace(value.into_owned()).is_some() {
             return false;
@@ -428,6 +463,7 @@ fn normalize_key(raw: &str) -> Option<String> {
             | "machine"
             | "mcp_servers"
             | "accounts"
+            | "metrics"
     ) {
         return Some(raw.into());
     }
@@ -499,7 +535,7 @@ mod tests {
 
     #[test]
     fn every_family_of_views_is_reached_by_a_device() {
-        let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts",
+        let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts", "metrics",
             "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1"];
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");

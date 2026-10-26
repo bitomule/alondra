@@ -18,13 +18,13 @@ fn user() -> Actor {
 fn agent() -> Actor {
     Actor::Agent { agent_id: "agent-1".into() }
 }
-fn usage(model: &str, cost: Option<i64>, tokens: i64) -> Usage {
+pub(in crate::domain_store) fn usage(model: &str, cost: Option<i64>, tokens: i64) -> Usage {
     Usage { model: model.into(), cost_micros: cost, input: tokens, output: tokens / 10, cache_read: tokens * 10, cache_write: tokens }
 }
-fn spend(store: &mut DomainStore, session: &str, task: Option<&str>, role: Role, usage: &[Usage], steps: StepCounts, at: Millis) {
+pub(in crate::domain_store) fn spend(store: &mut DomainStore, session: &str, task: Option<&str>, role: Role, usage: &[Usage], steps: StepCounts, at: Millis) {
     store.record_spend(&Spent { session_id: session, task_id: task, role, provider: "claude", usage, steps, at }).unwrap();
 }
-fn steps(steps: i64, looks: i64) -> StepCounts {
+pub(in crate::domain_store) fn steps(steps: i64, looks: i64) -> StepCounts {
     StepCounts { steps, subagent_steps: 1, looks, polls: 1, tool_calls: steps }
 }
 fn present(id: &str) -> Command {
@@ -40,7 +40,7 @@ fn text() -> Vec<DeliveryTarget> {
 
 /// task-1, launched on sonnet at medium effort, asks one question, gets changes asked on its first
 /// delivery and is accepted on its second, its session having spent on two models.
-fn done_task(fixture: &Fixture) -> DomainStore {
+pub(in crate::domain_store) fn done_task(fixture: &Fixture) -> DomainStore {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     store.record_model_decision(&Chosen {
@@ -222,7 +222,7 @@ fn sessions_without_a_task_go_after_a_week_without_spending() {
     assert_eq!(days, 1, "its day keeps what it spent");
 }
 
-fn insert_task(store: &DomainStore, task: &str, finished_at: Millis, model: &str, merged: bool, lines: Option<i64>, cost: Option<i64>) {
+pub(in crate::domain_store) fn insert_task(store: &DomainStore, task: &str, finished_at: Millis, model: &str, merged: bool, lines: Option<i64>, cost: Option<i64>) {
     store.conn.execute(
         "INSERT INTO task_metrics(task_id,project,model,effort,approach,role,outcome,started_at,finished_at,clean,change_rounds,reviewer_rounds,
           interventions,reopened,relaunched,work_ms,waiting_user_ms,queued_ms,blocked_ms,measured,sessions,steps,subagent_steps,looks,polls,

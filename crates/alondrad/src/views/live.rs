@@ -622,6 +622,7 @@ async fn gather_inner(
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
         mcp_removed: keyed.mcp_removed,
+        metrics: keyed.metrics,
     }
 }
 
@@ -640,6 +641,7 @@ struct Keyed {
     allow_always_missing: Vec<String>,
     mcp_probes: BTreeMap<String, alondra_core::views::LiveMcpProbe>,
     mcp_removed: Vec<alondra_core::views::LiveMcpRemoval>,
+    metrics: Option<alondra_core::metrics::report::MetricsInputs>,
 }
 
 impl Keyed {
@@ -656,6 +658,7 @@ impl Keyed {
         live.allow_always_missing = self.allow_always_missing;
         live.mcp_probes = self.mcp_probes;
         live.mcp_removed = self.mcp_removed;
+        live.metrics = self.metrics;
     }
 }
 
@@ -767,7 +770,10 @@ async fn gather_keyed(
     }
     let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
     let (mcp_probes, mcp_removed) = if wants_mcp { (client.mcp_probes.snapshot(), client.mcp_probes.removals()) } else { Default::default() };
-    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes, mcp_removed }
+    let wants_metrics = keys.iter().any(|key| alondra_core::views::Family::of(key) == Some(alondra_core::views::Family::Metrics));
+    let metrics = wants_metrics.then(|| client.domain.metrics_inputs(alondra_core::now_millis()))
+        .and_then(|read| read.inspect_err(|error| log!("the metrics could not be read: {error:#}")).ok());
+    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes, mcp_removed, metrics }
 }
 
 /// This Mac's rules «allow always», checked against their files only when its settings are on

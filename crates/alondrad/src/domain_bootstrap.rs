@@ -3,7 +3,7 @@ use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{AttachmentRef, DomainError};
 use anyhow::{Context, Result, ensure};
-use axum::extract::{ConnectInfo, Path as RoutePath, Query, State, rejection::JsonRejection};
+use axum::extract::{ConnectInfo, Path as RoutePath, Query, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -121,7 +121,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/devices/pending", get(pending_devices))
         .route("/devices/pending/{id}/approve", post(approve_pending_device))
         .route("/devices/pending/{id}/deny", post(deny_pending_device))
-        .route("/models", get(models))
+        .route("/metrics", get(metrics))
         .route("/cleanup", post(cleanup))
         .route("/sdk-handover", get(sdk_handover))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
@@ -587,25 +587,24 @@ async fn devices(
     Json(json!({"devices": list, "expired": expired})).into_response()
 }
 
-#[derive(Deserialize)]
-struct ModelsQuery {
-    since: Option<i64>,
-}
-
-/// How each model the orchestrator chose did, for `alondra models`; local only.
-async fn models(
+/// The report the Metrics screen shows, for `alondra metrics`; local only. Its query is a metrics
+/// view key's: `period`, `compare`, `project`, `model` and `effort`.
+async fn metrics(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Query(query): Query<ModelsQuery>,
+    RawQuery(query): RawQuery,
 ) -> Response {
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
+    let Some(query) = alondra_core::metrics::report::Query::parse(query.as_deref().unwrap_or_default()) else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "the metrics query names an unknown period, comparison or filter"));
+    };
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || domain.model_report(query.since, alondra_core::now_millis())).await {
-        Ok(Ok(report)) => Json(report).into_response(),
-        _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the model report could not be read")),
+    match tokio::task::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+        Ok(Ok(inputs)) => Json(alondra_core::metrics::report::report(&inputs, &query)).into_response(),
+        _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the metrics could not be read")),
     }
 }
 
@@ -1527,11 +1526,13 @@ mod tests {
             .unwrap();
         assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
-        for path in ["/models", "/models?since=0"] {
-            let report: alondra_core::model_report::ModelReport =
+        for path in ["/metrics", "/metrics?period=all&compare=none"] {
+            let report: alondra_core::metrics::report::MetricsReport =
                 client.get(format!("{base}{path}")).send().await.unwrap().json().await.unwrap();
-            assert!(report.by_model.is_empty() && report.sonnet_trouble.is_empty(), "{path}");
+            assert!(report.by_model.is_empty() && report.figures.sums.tasks == 0, "{path}");
         }
+        let refused = client.get(format!("{base}/metrics?period=1y")).send().await.unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY, "an unknown period is refused, not read as the default");
         let unsigned = client.post(format!("{base}/cleanup")).json(&json!({"dry_run": true})).send().await.unwrap();
         assert_eq!(unsigned.status(), StatusCode::FORBIDDEN, "cleanup needs a paired device: it closes sessions");
         for (method, path) in [

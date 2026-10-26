@@ -653,8 +653,11 @@ impl DomainRuntime {
         self.store.lock().expect("domain store poisoned").record_pr_lines(task_id, lines)
     }
 
-    pub(crate) fn model_report(&self, since: Option<alondra_core::Millis>, until: alondra_core::Millis) -> Result<alondra_core::model_report::ModelReport> {
-        self.store.lock().expect("domain store poisoned").model_report(since, until)
+    /// What the Metrics screen sums, with the tasks that ended since the last fold folded first.
+    pub(crate) fn metrics_inputs(&self, now: alondra_core::Millis) -> Result<alondra_core::metrics::report::MetricsInputs> {
+        const PASS: usize = 256;
+        while self.store.lock().expect("domain store poisoned").fold_ended_tasks(PASS)? == PASS {}
+        self.store.lock().expect("domain store poisoned").metrics_inputs(now)
     }
 
     /// What the user chose when asking for the Request, if it was asked for with choices.
