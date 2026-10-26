@@ -6,6 +6,7 @@
     "Alerts for Alondra are off in iOS Settings. Turn them on there to get them on this iPhone.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Los avisos de Alondra están desactivados en los Ajustes de iOS. Actívalos allí para recibirlos en este iPhone."}}}},
     "Turn On Alerts": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Activar los avisos"}}}},
     "Not Now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no"}}}},
+    "MCP servers": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidores MCP"}}}},
     "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
     "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},
     "Add": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir"}}}},

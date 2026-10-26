@@ -18,11 +18,15 @@ import Foundation
         @Presents public var signIn: McpSignInFeature.State?
         public var newAccount: NewAccount?
         public var claudeSignIn: ClaudeSignIn?
+        /// The row each action that takes it away (`resolves_card`) hides while it goes, by its command.
+        public var hidden: [String: String] = [:]
 
         public init(key: ViewKey, client: ViewClient = .ios, lang: String = MachineSettingsFeature.State.deviceLanguage) {
             self.key = key
             actions = ActionFeature.State(dataEpoch: "", client: client, lang: lang)
         }
+
+        public var hiddenRows: Set<String> { Set(hidden.values) }
     }
 
     public enum Action {
@@ -85,6 +89,8 @@ import Foundation
             case .loaded(let document):
                 state.document = document
                 state.actions.dataEpoch = document.dataEpoch
+                let rows = Set(document.sections.flatMap(\.items).compactMap { item in if case .row(let row) = item { row.id } else { nil } })
+                state.hidden = state.hidden.filter { rows.contains($0.value) }
                 return .none
             case .perform(let action):
                 state.notice = nil
@@ -146,6 +152,13 @@ import Foundation
                 state.error = nil
                 state.notice = String(localized: "Signed in to \(server): the waiting tasks go on.")
                 return .none
+            case .actions(.sending(let request)):
+                guard state.actions.action?.resolvesCard == true, let row = state.row(with: request.actionId) else { return .none }
+                state.hidden[request.commandId] = row
+                return .none
+            case .actions(.settled(let request, applied: false)), .actions(.undelivered(let request, _)):
+                state.hidden[request.commandId] = nil
+                return .none
             case .actions, .signIn:
                 return .none
             }
@@ -157,5 +170,14 @@ import Foundation
         .run { [claudeTerminal] send in
             await send(.terminalAnswered(command: command, opened: await claudeTerminal.open(command)))
         }
+    }
+}
+
+private extension ServerSettingsFeature.State {
+    func row(with actionID: String) -> String? {
+        document?.sections.flatMap(\.items).lazy.compactMap { item -> String? in
+            guard case .row(let row) = item, row.actions.contains(where: { $0.id == actionID }) else { return nil }
+            return row.id
+        }.first
     }
 }

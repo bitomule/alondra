@@ -8,8 +8,9 @@ import SwiftUI
 /// `.task`.
 public struct ServerSettingsSection: View {
     @Bindable var store: StoreOf<ServerSettingsFeature>
+    private let showsTitle: Bool
 
-    public init(store: StoreOf<ServerSettingsFeature>) { self.store = store }
+    public init(store: StoreOf<ServerSettingsFeature>, showsTitle: Bool = true) { self.store = store; self.showsTitle = showsTitle }
 
     public var body: some View {
         Group {
@@ -64,7 +65,7 @@ public struct ServerSettingsSection: View {
     }
 
     @ViewBuilder private func title(_ document: ViewDocument) -> some View {
-        if let title = document.title { Text(verbatim: title).font(.headline).foregroundStyle(Palette.ink).textCase(nil) }
+        if showsTitle, let title = document.title { Text(verbatim: title).font(.headline).foregroundStyle(Palette.ink).textCase(nil) }
     }
 
     @ViewBuilder private var messages: some View {
@@ -77,7 +78,8 @@ public struct ServerSettingsSection: View {
     }
 
     private func rows(_ section: ViewSection) -> [AlondraContract.Row] {
-        section.items.compactMap { item in if case .row(let row) = item { row } else { nil } }
+        let hidden = store.hiddenRows
+        return section.items.compactMap { item in if case .row(let row) = item, !hidden.contains(row.id) { row } else { nil } }
     }
 
     private func notes(_ section: ViewSection) -> [String] {

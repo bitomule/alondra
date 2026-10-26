@@ -6,10 +6,12 @@ import XCTest
 
 @MainActor
 final class ServerSettingsFeatureTests: XCTestCase {
-    private func store(reconnected: LockIsolated<[String]> = LockIsolated([])) -> TestStoreOf<ServerSettingsFeature> {
+    private func store(reconnected: LockIsolated<[String]> = LockIsolated([]),
+                       reply: @escaping @Sendable () async throws -> ActionResponse = { try Responses.applied() }) -> TestStoreOf<ServerSettingsFeature> {
         let store = TestStore(initialState: ServerSettingsFeature.State(key: .mcpServers, client: .ios, lang: "es")) { ServerSettingsFeature() } withDependencies: {
             $0.uuid = .incrementing
             $0.mcpSignIn.reconnect = { target in reconnected.withValue { $0.append(target) } }
+            $0.viewsClient.perform = { _ in try await reply() }
         }
         store.exhaustivity = .off
         return store
@@ -47,5 +49,63 @@ final class ServerSettingsFeatureTests: XCTestCase {
         await store.receive(\.reconnected)
         XCTAssertEqual(reconnected.value.count, 1)
         XCTAssertNotNil(store.state.notice)
+    }
+
+    private func deleteAction(_ document: ViewDocument) throws -> (AlondraContract.Row, WireAction) {
+        let github = try row(document, "yours", "github")
+        return (github, try XCTUnwrap(github.actions.first { $0.resolvesCard == true }))
+    }
+
+    func testDeletingAServerHidesItsRowOnceConfirmedAndKeepsItHiddenWhenTheMacDeletesIt() async throws {
+        let document = try Fixtures.document("mcp-servers-ios-es")
+        let gate = Gate()
+        let store = store(reply: {
+            await gate.wait()
+            return try Responses.applied("Borrado")
+        })
+        await store.send(.loaded(document))
+        let (github, delete) = try deleteAction(document)
+        await store.send(.perform(delete))
+        await store.receive(\.actions.submit)
+        XCTAssertTrue(store.state.hiddenRows.isEmpty, "nothing goes while the confirmation is open")
+
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sending)
+        XCTAssertEqual(store.state.hiddenRows, [github.id], "the row goes before the Mac answers")
+        await gate.open()
+        await store.receive(\.actions.answered)
+        XCTAssertEqual(store.state.hiddenRows, [github.id], "kept hidden until the Mac's view drops it")
+        XCTAssertNil(store.state.error ?? store.state.actions.error)
+
+        await store.send(.loaded(document))
+        XCTAssertEqual(store.state.hiddenRows, [github.id], "a view from before the delete does not bring it back")
+    }
+
+    func testAFailedDeleteBringsTheRowBackWithTheMacsReason() async throws {
+        let document = try Fixtures.document("mcp-servers-ios-es")
+        let store = store(reply: {
+            try Fixtures.response(#"{"protocol":1,"outcome":"rejected","message":"Claude Code no pudo borrar github"}"#)
+        })
+        await store.send(.loaded(document))
+        let (_, delete) = try deleteAction(document)
+        await store.send(.perform(delete))
+        await store.receive(\.actions.submit)
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.delegate.failed)
+        XCTAssertTrue(store.state.hiddenRows.isEmpty, "the row is back")
+        XCTAssertEqual(store.state.error, "Claude Code no pudo borrar github")
+    }
+
+    func testAnActionThatKeepsItsRowNeverHidesIt() async throws {
+        let document = try Fixtures.document("mcp-servers-ios-es")
+        let store = store()
+        await store.send(.loaded(document))
+        let check = try XCTUnwrap(document.sections.flatMap(\.items).compactMap { item -> WireAction? in
+            guard case .row(let row) = item else { return nil }
+            return row.actions.first { $0.resolvesCard == false && $0.confirm == nil && $0.link == nil }
+        }.first)
+        await store.send(.perform(check))
+        await store.receive(\.actions.sending)
+        XCTAssertTrue(store.state.hiddenRows.isEmpty)
     }
 }

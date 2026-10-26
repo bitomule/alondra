@@ -17,7 +17,7 @@ public struct SettingsView: View {
             MachineSettingsSection(store: store.scope(state: \.machineSettings, action: \.machineSettings))
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             ServerSettingsSection(store: store.scope(state: \.accounts, action: \.accounts))
-            ServerSettingsSection(store: store.scope(state: \.mcpServers, action: \.mcpServers))
+            McpServersRow(store: store.scope(state: \.mcpServers, action: \.mcpServers))
             if store.supportsNotifications { notifications } else if store.alertsNeedAccount { alertsNeedAccount }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             about

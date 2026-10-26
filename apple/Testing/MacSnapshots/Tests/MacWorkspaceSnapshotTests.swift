@@ -131,10 +131,14 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     }
 
     func test_settings_mcpServers() throws {
-        var state = ServerSettingsFeature.State(key: .mcpServers, client: .mac)
-        state.document = try document("mcp-servers-mac")
-        let store = Store(initialState: state) { ServerSettingsFeature() }
-        assertWindow(size: CGSize(width: 640, height: 1200)) { Form { ServerSettingsSection(store: store) }.formStyle(.grouped) }
+        for spanish in [false, true] {
+            var state = ServerSettingsFeature.State(key: .mcpServers, client: .mac)
+            state.document = try document(spanish ? "mcp-servers-ios-es" : "mcp-servers-mac")
+            let store = Store(initialState: state) { ServerSettingsFeature() }
+            assertWindow(size: CGSize(width: 640, height: 1200), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                McpServersScreen(store: store)
+            }
+        }
     }
 
     func test_settings_claudeAccounts() throws {

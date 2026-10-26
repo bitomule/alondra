@@ -71,6 +71,8 @@ public struct ViewDocument: Codable, Equatable, Sendable {
     public let cursor: String
     public let dataEpoch: String
     public let title: String?
+    /// One line that stands for the whole view where a parent screen links to it; absent from a daemon that does not send it.
+    public let summary: String?
     public let status: ViewStatus
     public let sections: [ViewSection]
     public let empty: Notice?
@@ -79,7 +81,7 @@ public struct ViewDocument: Codable, Equatable, Sendable {
     /// daemon that does not send them.
     public let firstCards: [ViewDocument]
     enum CodingKeys: String, CodingKey {
-        case protocolVersion = "protocol", view, key, client, version, cursor, dataEpoch = "data_epoch", title, status, sections, empty, notices
+        case protocolVersion = "protocol", view, key, client, version, cursor, dataEpoch = "data_epoch", title, summary, status, sections, empty, notices
         case firstCards = "first_cards"
     }
     public init(from decoder: Decoder) throws {
@@ -88,6 +90,7 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         view = try c.decode(String.self, forKey: .view); key = try c.decode(String.self, forKey: .key)
         client = try c.decode(ViewClient.self, forKey: .client); version = try c.decode(String.self, forKey: .version)
         cursor = try c.decode(String.self, forKey: .cursor); dataEpoch = try c.decode(String.self, forKey: .dataEpoch); title = try c.decodeIfPresent(String.self, forKey: .title)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
         status = try c.decode(ViewStatus.self, forKey: .status); sections = try c.decode([ViewSection].self, forKey: .sections)
         empty = try c.decodeIfPresent(Notice.self, forKey: .empty); notices = try c.decodeIfPresent([Notice].self, forKey: .notices) ?? []
         firstCards = try c.decodeIfPresent([ViewDocument].self, forKey: .firstCards) ?? []
@@ -96,7 +99,7 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(protocolVersion, forKey: .protocolVersion); try c.encode(view, forKey: .view); try c.encode(key, forKey: .key)
         try c.encode(client, forKey: .client); try c.encode(version, forKey: .version); try c.encode(cursor, forKey: .cursor); try c.encode(dataEpoch, forKey: .dataEpoch)
-        try c.encodeIfPresent(title, forKey: .title); try c.encode(status, forKey: .status); try c.encode(sections, forKey: .sections)
+        try c.encodeIfPresent(title, forKey: .title); try c.encodeIfPresent(summary, forKey: .summary); try c.encode(status, forKey: .status); try c.encode(sections, forKey: .sections)
         try c.encodeIfPresent(empty, forKey: .empty); if !notices.isEmpty { try c.encode(notices, forKey: .notices) }
         if !firstCards.isEmpty { try c.encode(firstCards, forKey: .firstCards) }
     }

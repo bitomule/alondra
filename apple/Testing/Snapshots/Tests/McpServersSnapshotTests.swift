@@ -5,21 +5,16 @@ import ComposableArchitecture
 import SwiftUI
 import XCTest
 
-/// Settings › MCP servers as the daemon serves it to the iPhone: two projects with nodes, Linear
-/// to sign in to in one and connected in the other, and two projects without a node, one checked.
+/// Settings › MCP servers as the daemon serves it to the iPhone, on its own screen: two projects
+/// with nodes, Linear to sign in to in one and connected in the other, and two projects without a
+/// node, one checked.
 @MainActor
 final class McpServersSnapshotTests: XCTestCase {
     private func settings(_ document: ViewDocument) -> some View {
         var state = ServerSettingsFeature.State(key: .mcpServers)
         state.document = document
         let store = Store(initialState: state) { ServerSettingsFeature() }
-        return NavigationStack {
-            Form { ServerSettingsSection(store: store) }
-                .scrollContentBackground(.hidden)
-                .background(DawnBackground())
-                .navigationTitle("Settings")
-                .navigationBarTitleDisplayMode(.inline)
-        }
+        return NavigationStack { McpServersScreen(store: store) }
     }
 
     func test_mcpServers() throws {

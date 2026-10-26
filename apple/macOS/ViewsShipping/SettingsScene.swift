@@ -12,9 +12,13 @@ struct MacServiceSettingsScene: View {
     let context: MacSettingsContext
     var body: some View {
         Group {
-            if let store = context.store { MacSettingsView(store: store) { pairing in
-                MacServicePairingScreen(store: pairing).frame(minWidth: 600, minHeight: 600)
-            } }
+            if let store = context.store {
+                NavigationStack {
+                    MacSettingsView(store: store) { pairing in
+                        MacServicePairingScreen(store: pairing).frame(minWidth: 600, minHeight: 600)
+                    }
+                }
+            }
             else { ProgressView("Loading settings…") }
         }.task { await context.connect(services: services, owner: owner, workspace: workspace) }
     }

@@ -52,12 +52,14 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
 
     func test_settings_thisMacItsPairedMacsAndItsDevices() throws {
         let document = try machine("machine-settings-mac")
-        assertWindow(size: CGSize(width: 560, height: 1320)) { settings(thisMac: "This Mac", machine: document) }
+        let mcpServers = try machine("mcp-servers-mac")
+        assertWindow(size: CGSize(width: 560, height: 1320)) { settings(thisMac: "This Mac", machine: document, mcpServers: mcpServers) }
     }
 
     func test_settings_thisMacItsPairedMacsAndItsDevices_spanish() throws {
         let document = try machine("machine-settings-ios-es")
-        assertWindow(size: CGSize(width: 560, height: 1400), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document) }
+        let mcpServers = try machine("mcp-servers-ios-es")
+        assertWindow(size: CGSize(width: 560, height: 1400), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document, mcpServers: mcpServers) }
     }
 
     private func machine(_ name: String) throws -> ViewDocument {
@@ -68,7 +70,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         return try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
     }
 
-    private func settings(thisMac: String, machine: ViewDocument) -> some View {
+    private func settings(thisMac: String, machine: ViewDocument, mcpServers: ViewDocument) -> some View {
         var state = SettingsFeature.State(service: "127.0.0.1", device: "mac", supportsNotifications: false, usesAccount: false)
         let ids = (1...3).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
         state.macs = [
@@ -80,13 +82,14 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         state.showsSignOutWithMacs = true
         state.machineSettings.settings = MachineSetting.all(in: machine)
         state.allowedRules.rules = AllowedRule.all(in: machine)
+        state.mcpServers.document = mcpServers
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [
             TrustedDevice(id: "phone-1", name: "iPhone", origin: .direct, lastUsed: Date(timeIntervalSinceNow: -300)),
             TrustedDevice(id: "phone-2", name: "iPad", origin: .relay),
         ]
         let store = Store(initialState: state) { EmptyReducer<SettingsFeature.State, SettingsFeature.Action>() }
-        return MacSettingsView(store: store) { _ in EmptyView() }
+        return NavigationStack { MacSettingsView(store: store) { _ in EmptyView() } }
     }
 
     private var thisMacSettings: some View {

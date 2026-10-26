@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "MCP servers": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidores MCP"}}}},
     "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
     "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},
     "Add": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir"}}}},
