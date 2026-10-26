@@ -885,14 +885,55 @@ mod tests {
             .map(|message| crate::domain_transport::render(&state, message)).collect()
     }
 
-    async fn until(what: &str, check: impl Fn() -> bool) {
-        for _ in 0..300 {
-            if check() {
-                return;
+    #[derive(Default)]
+    struct Ticks { at: Millis, handed: Millis, done: Millis }
+
+    /// The time the watcher samples at, moved by the test; `done` is the last sample the watcher
+    /// finished with, known when it asks for the next one.
+    #[derive(Clone, Default)]
+    struct Clock { ticks: Arc<Mutex<Ticks>>, asked: Arc<tokio::sync::Notify> }
+
+    impl Clock {
+        /// The watcher's sample source: `machine(at)` once the test has moved the clock, nothing before.
+        fn source(&self, machine: impl Fn(Millis) -> Machine + Send + 'static) -> impl Fn() -> Option<Machine> + Send + 'static {
+            let clock = self.clone();
+            move || {
+                let at = {
+                    let mut ticks = clock.ticks.lock().unwrap();
+                    let at = ticks.at;
+                    ticks.done = std::mem::replace(&mut ticks.handed, at);
+                    at
+                };
+                clock.asked.notify_one();
+                (at != 0).then(|| machine(at))
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("never happened: {what}");
+
+        /// Samples every `SAMPLE` up to `to`, each one only once the watcher is done with the one before.
+        async fn sample_until(&self, to: Millis) {
+            loop {
+                let at = {
+                    let mut ticks = self.ticks.lock().unwrap();
+                    if ticks.at >= to {
+                        return;
+                    }
+                    ticks.at += SAMPLE;
+                    ticks.at
+                };
+                while self.ticks.lock().unwrap().done != at {
+                    self.asked.notified().await;
+                }
+            }
+        }
+
+        async fn samples(&self, count: Millis) {
+            let to = self.ticks.lock().unwrap().at + count * SAMPLE;
+            self.sample_until(to).await;
+        }
+    }
+
+    fn watching(domain: &Arc<DomainRuntime>, clock: &Clock, machine: impl Fn(Millis) -> Machine + Send + 'static, told: &Arc<Told>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(watch(domain.clone(), clock.source(machine), told.clone(), Duration::from_millis(1)))
     }
 
     #[tokio::test]
@@ -904,10 +945,12 @@ mod tests {
         let disk = Arc::new(Mutex::new(0u64));
         let reading = disk.clone();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let watcher = tokio::spawn(watch(domain.clone(), move || Some(machine(*reading.lock().unwrap(), 50)), told.clone(), Duration::from_millis(20)));
+        let clock = Clock::default();
+        let watcher = watching(&domain, &clock, move |at| Machine { at, ..machine(*reading.lock().unwrap(), 50) }, &told);
 
-        until("the card", || open_machine_cards(&domain).len() == 1).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        clock.samples(1).await;
+        assert_eq!(open_machine_cards(&domain).len(), 1, "the first sample puts the card");
+        clock.samples(5).await;
         let cards = open_machine_cards(&domain);
         assert_eq!(cards.len(), 1, "one card for the incident, not one per sample");
         assert_eq!(cards[0].card.need, "Free up disk space: 0 B left");
@@ -920,8 +963,9 @@ mod tests {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixed".into(), expected_revision: state.revision,
             command: Command::AnswerQuestion { attachments: vec![], interaction_id: cards[0].id.clone(), option_id: MACHINE_FIXED_OPTION.into(), inputs: Default::default() },
         }, None, || Ok(())).unwrap();
-        until("the incident closed", || domain.live.machine_watch.incident().is_none()).await;
+        clock.samples(1).await;
         watcher.abort();
+        assert!(domain.live.machine_watch.incident().is_none(), "the next sample after the answer closes the incident");
         assert!(open_machine_cards(&domain).is_empty());
         assert!(node.texts().is_empty(), "the admission gate brings the node back, not the machine watch");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
@@ -931,13 +975,9 @@ mod tests {
     async fn a_cpu_load_opens_no_incident_no_card_and_no_notice() {
         let (_home, domain) = world();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let watcher = tokio::spawn(watch(domain.clone(), || {
-            let mut sample = machine(50 * GB, 50);
-            sample.load = [90.0; 3];
-            sample.unreliable = true;
-            Some(sample)
-        }, told.clone(), Duration::from_millis(20)));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let clock = Clock::default();
+        let watcher = watching(&domain, &clock, |at| Machine { at, load: [90.0; 3], unreliable: true, ..machine(50 * GB, 50) }, &told);
+        clock.samples(10).await;
         watcher.abort();
         assert!(domain.live.machine_watch.incident().is_none());
         assert!(open_machine_cards(&domain).is_empty());
@@ -956,9 +996,11 @@ mod tests {
         domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
             alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None },
         ], None).unwrap();
-        let watcher = tokio::spawn(watch(domain.clone(), || Some(machine(0, 50)), told.clone(), Duration::from_millis(20)));
-        until("the push", || !told.0.lock().unwrap().is_empty()).await;
+        let clock = Clock::default();
+        let watcher = watching(&domain, &clock, |at| Machine { at, ..machine(0, 50) }, &told);
+        clock.samples(1).await;
         watcher.abort();
+        assert_eq!(told.0.lock().unwrap().len(), 1, "{:?}", told.0.lock().unwrap());
         assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: fase0. Continúan solos cuando se recupere.");
     }
 
@@ -1024,55 +1066,27 @@ mod tests {
         crate::admission::decide(&head, 0, 4, &domain.live.machine_watch.mac(), 0, None, 0, now).is_err()
     }
 
-    /// The Mac the watcher samples: `at` and `under` are set by the test; `done` is the last
-    /// sample the watcher finished with, known when it asks for the next one.
-    struct Clock { at: Millis, under: bool, handed: Millis, done: Millis }
-
-    /// Samples every `SAMPLE` up to `to`, each one only once the watcher is done with the one before.
-    async fn sample_until(clock: &Mutex<Clock>, asked: &tokio::sync::Notify, to: Millis) {
-        loop {
-            let at = {
-                let mut clock = clock.lock().unwrap();
-                if clock.at >= to {
-                    return;
-                }
-                clock.at += SAMPLE;
-                clock.at
-            };
-            while clock.lock().unwrap().done != at {
-                asked.notified().await;
-            }
-        }
-    }
-
     #[tokio::test]
     async fn sustained_memory_pressure_puts_no_card_and_no_push_while_the_nodes_are_held_and_resumed() {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("s1", "killed for lack of memory", 0, now_millis());
-        let clock = Arc::new(Mutex::new(Clock { at: 0, under: true, handed: 0, done: 0 }));
-        let asked = Arc::new(tokio::sync::Notify::new());
-        let (reading, asking) = (clock.clone(), asked.clone());
+        let clock = Clock::default();
+        let under = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let reading = under.clone();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let watcher = tokio::spawn(watch(domain.clone(), move || {
-            let mut clock = reading.lock().unwrap();
-            let at = clock.at;
-            let done = std::mem::replace(&mut clock.handed, at);
-            clock.done = done;
-            asking.notify_one();
-            (at != 0).then(|| pressed(at, clock.under))
-        }, told.clone(), Duration::from_millis(1)));
+        let watcher = watching(&domain, &clock, move |at| pressed(at, reading.load(std::sync::atomic::Ordering::SeqCst)), &told);
 
-        sample_until(&clock, &asked, 2 * MIN).await;
+        clock.sample_until(2 * MIN).await;
         assert!(holds(&domain, 2 * MIN), "the gate holds starts while memory has no room");
-        sample_until(&clock, &asked, 60 * MIN).await;
+        clock.sample_until(60 * MIN).await;
         assert!(holds(&domain, 60 * MIN));
         assert!(domain.live.machine_watch.incident().is_none());
         assert!(open_machine_cards(&domain).is_empty(), "{:?}", open_machine_cards(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "no push: {:?}", told.0.lock().unwrap());
         assert!(orchestrator_inbox(&domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&domain));
 
-        clock.lock().unwrap().under = false;
-        sample_until(&clock, &asked, 62 * MIN).await;
+        under.store(false, std::sync::atomic::Ordering::SeqCst);
+        clock.sample_until(62 * MIN).await;
         watcher.abort();
         assert!(!holds(&domain, 62 * MIN), "the gate lets nodes start and resume once memory is back");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
@@ -1097,9 +1111,9 @@ mod tests {
         assert!(domain.live.machine_watch.incident().is_none(), "the memory incident is dropped on load");
 
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let watcher = tokio::spawn(watch(domain.clone(), || Some(pressed(0, true)), told.clone(), Duration::from_millis(20)));
-        until("the memory card withdrawn", || open_machine_cards(&domain).is_empty()).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let clock = Clock::default();
+        let watcher = watching(&domain, &clock, |at| pressed(at, true), &told);
+        clock.samples(5).await;
         watcher.abort();
         assert!(open_machine_cards(&domain).is_empty(), "no new card in its place");
         assert!(told.0.lock().unwrap().is_empty());
