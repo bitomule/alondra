@@ -3767,6 +3767,44 @@ impl Slice {
         std::fs::write(format!("{}.release", self.capture.display()), "done\n").unwrap();
     }
 
+    /// A daemon of this release that took over a node running a command in the background on a
+    /// host of the release before, as an upgrade leaves it: the daemon, its driver, the node's
+    /// Claude session and the old host's processes.
+    fn upgraded_during_a_background_command(&self) -> (Arc<DomainRuntime>, Driver, String, Vec<alondra_process_group::Member>) {
+        let before = self.release_before();
+        let mut driver = self.launch_with_backend(&before, "background-command", capabilities());
+        while lifecycle(&self.domain).activity() != ActivityView::OwnWork {
+            driver.observe().unwrap();
+        }
+        let command = self.background_command();
+        let session = self.starts()[0]["session"].as_str().unwrap().to_owned();
+        let old_host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+        // The daemon upgrades: it exits and leaves its hosts running for the next one.
+        drop(driver);
+        let upgraded = self.restart();
+        upgraded.enable_sdk(self.backend.clone());
+        let (_, adopted) = take_all(&upgraded, &self.backend).pop().expect("the start takes the execution");
+        let adopted = adopted.unwrap_or_else(|Failed { why, .. }| panic!("the execution was not taken over: {why}"));
+        assert!(alondra_process_group::alive(&command).unwrap(), "the background command survived the upgrade");
+        assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
+        assert_eq!(self.starts().len(), 1, "no Claude started again");
+        (upgraded, adopted, session, old_host)
+    }
+
+    /// What the user said after the move reached the same session on a host of this release, the
+    /// host of the release before is gone, and nothing was asked.
+    fn assert_moved_to_this_release(&self, upgraded: &DomainRuntime, session: &str, old_host: &[alondra_process_group::Member]) {
+        let starts = self.starts();
+        assert_eq!(starts.len(), 2, "one more Claude started, on this release's host: {starts:?}");
+        assert_eq!(starts[1]["resume"].as_str(), Some(session), "it resumed the same session");
+        let prompts = self.prompts();
+        assert_eq!(prompts.len(), 2, "the new host's Claude got only what the user said, nothing about a cut: {prompts:?}");
+        assert!(prompts[1].ends_with("Add the tests first") && !prompts[1].contains("cut off"), "nothing about a cut: {prompts:?}");
+        let left: Vec<String> = old_host.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
+        assert!(left.is_empty(), "the host of the release before is gone: {left:?}");
+        assert_eq!(Self::other_cards(upgraded), Vec::<String>::new(), "moving the node asked the user nothing");
+    }
+
     /// The cards of the task that are not how a turn ended, open or not.
     fn other_cards(domain: &DomainRuntime) -> Vec<String> {
         domain.read().state().interactions.keys()
@@ -3785,23 +3823,7 @@ impl Slice {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before_and_moves_the_node_once_it_rests() {
     let slice = Slice::new();
-    let before = slice.release_before();
-    let mut driver = slice.launch_with_backend(&before, "background-command", capabilities());
-    while lifecycle(&slice.domain).activity() != ActivityView::OwnWork {
-        driver.observe().unwrap();
-    }
-    let command = slice.background_command();
-    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    let old_host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
-    // The daemon upgrades: it exits and leaves its hosts running for the next one.
-    drop(driver);
-    let upgraded = slice.restart();
-    upgraded.enable_sdk(slice.backend.clone());
-    let (_, adopted) = take_all(&upgraded, &slice.backend).pop().expect("the start takes the execution");
-    let adopted = adopted.unwrap_or_else(|Failed { why, .. }| panic!("the execution was not taken over: {why}"));
-    assert!(alondra_process_group::alive(&command).unwrap(), "the background command survived the upgrade");
-    assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
-    assert_eq!(slice.starts().len(), 1, "no Claude started again");
+    let (upgraded, adopted, session, old_host) = slice.upgraded_during_a_background_command();
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
     slice.release_background_command();
@@ -3811,15 +3833,34 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     let rested = Slice::read_cards(&upgraded).len();
     carry_on(&upgraded, "Add the tests first");
     changed.wait_for(|_| Slice::read_cards(&reader).len() > rested).await.unwrap();
-    let starts = slice.starts();
-    assert_eq!(starts.len(), 2, "one more Claude started, on this release's host: {starts:?}");
-    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "it resumed the same session");
-    let prompts = slice.prompts();
-    assert_eq!(prompts.len(), 2, "the new host's Claude got only what the user said, nothing about a cut: {prompts:?}");
-    assert!(prompts[1].ends_with("Add the tests first") && !prompts[1].contains("cut off"), "nothing about a cut: {prompts:?}");
-    let left: Vec<String> = old_host.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
-    assert!(left.is_empty(), "the host of the release before is gone: {left:?}");
-    assert_eq!(Slice::other_cards(&upgraded), Vec::<String>::new(), "moving the node asked the user nothing");
+    slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
+    upgraded.add_sdk_owner(owner);
+    upgraded.stop_sdk_owners();
+}
+
+// Production can answer the node in the moment between the commit that brings it to rest on the
+// host of the release before and its owner's next step. The answer is not handed to that host:
+// a host of this release takes its place first, and the answer reaches the same session there.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_reaches_this_release() {
+    let slice = Slice::new();
+    let (upgraded, adopted, session, old_host) = slice.upgraded_during_a_background_command();
+    let answered_at: Arc<Mutex<Option<usize>>> = Arc::default();
+    let (answering, answered) = (Arc::downgrade(&upgraded), Arc::clone(&answered_at));
+    upgraded.on_acknowledge(move || {
+        let Some(domain) = answering.upgrade() else { return };
+        let mut answered = answered.lock().unwrap();
+        if answered.is_none() && lifecycle(&domain).activity() == ActivityView::Resting {
+            *answered = Some(Slice::read_cards(&domain).len());
+            carry_on(&domain, "Add the tests first");
+        }
+    });
+    let mut changed = upgraded.subscribe();
+    let owner = Owner::spawn(adopted);
+    slice.release_background_command();
+    let reader = Arc::clone(&upgraded);
+    changed.wait_for(|_| answered_at.lock().unwrap().is_some_and(|cards| Slice::read_cards(&reader).len() > cards)).await.unwrap();
+    slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
     upgraded.add_sdk_owner(owner);
     upgraded.stop_sdk_owners();
 }

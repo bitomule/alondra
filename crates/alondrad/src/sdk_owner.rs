@@ -961,13 +961,25 @@ impl Driver {
     }
 
     /// Whether the node rests on a host a daemon of another release left running: no turn, no
-    /// work of Claude's own, no input, answer or event of the host on its way. Nothing runs in it,
-    /// so a host of this release can take its place before the node is told anything else.
+    /// work of Claude's own, no answer or event of the host on its way, and no input handed to it.
+    /// Nothing runs in it, so a host of this release can take its place before the node is told
+    /// anything else. An input the user sent as the node came to rest, which this owner has not
+    /// handed yet, goes to that host instead.
     fn rests_on_another_release(&mut self) -> Result<bool, Failed> {
-        if !self.worker.runs_another_release() || self.expects_host()? {
+        if !self.worker.runs_another_release() || (self.expects_host()? && !self.only_unsent_input()?) {
             return Ok(false);
         }
         Ok(!self.worker.readable(Duration::ZERO).unwrap_or(true))
+    }
+
+    /// Whether all the lifecycle waits for is an input this owner has not handed to its host.
+    fn only_unsent_input(&self) -> Result<bool, Failed> {
+        if self.awaiting.is_some() || !self.results.is_empty() {
+            return Ok(false);
+        }
+        let read = self.domain.read();
+        let lifecycle = read.state().lifecycle_of(&self.task).map_err(|error| Failed::new(format!("{error:#}")))?;
+        Ok(lifecycle.activity() == ActivityView::Starting && !lifecycle.pending_inputs().is_empty())
     }
 
     /// One step: send a waiting control first, then a waiting dispatch unless a pause holds it,
