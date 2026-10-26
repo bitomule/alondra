@@ -3093,9 +3093,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ChangeAccounts { .. } => 101,
         Command::RevokeTaskGrant { .. } => 102,
         Command::AdoptSdkNodes => 103,
+        Command::ReviewWaits => 104,
     }
 }
-const COMMAND_KINDS: usize = 104;
+const COMMAND_KINDS: usize = 105;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3128,6 +3129,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RaiseStartProblem { task_id: ids.task.into(), problem: StartProblem::NodeClosed }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::AdoptSdkNodes, true),
+        (Command::ReviewWaits, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),

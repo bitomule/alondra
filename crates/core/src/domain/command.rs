@@ -73,6 +73,9 @@ pub enum Command {
     /// Every node of the Agent SDK an older daemon left in a phase of its own takes `ThroughSdk`,
     /// its pause moved to its task's lifecycle: the daemon runs it when it opens its domain.
     AdoptSdkNodes,
+    /// Every task the store keeps waiting whose waits are over goes on, saved and with its node
+    /// told: the daemon runs it when it opens its domain, since opening it tells no node.
+    ReviewWaits,
     CreateRequest {
         request_id: RequestId,
         body: String,

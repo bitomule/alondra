@@ -1016,7 +1016,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         journals.push((task, records, stored.lifecycle));
     }
     let lifecycles = state.load_journal(journals)?;
-    state.derive_states();
+    state.derive_loaded_states();
     state.validate()?;
     state.validate_loaded(&lifecycles)?;
     Ok(state)

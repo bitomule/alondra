@@ -144,6 +144,7 @@ impl DomainRuntime {
             index_builds: Default::default(),
         };
         runtime.adopt_sdk_nodes()?;
+        runtime.review_waits()?;
         Ok(runtime)
     }
     /// Moves every node of the Agent SDK an older daemon left in a phase of its own to its task's
@@ -164,6 +165,34 @@ impl DomainRuntime {
             Ok(_) => Ok(()),
             Err(StoreError::Domain(error)) => {
                 log!("could not move the nodes of the Agent SDK to their tasks' lifecycles: {}", error.message);
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+    /// Ends every wait the store keeps whose waits are over, such as one whose dependency a newer
+    /// release counts as landed: the task goes on, saved, and its node is told or it starts.
+    fn review_waits(&self) -> Result<()> {
+        let state = self.state()?;
+        let ended = state.ended_waits();
+        if ended.is_empty() {
+            return Ok(());
+        }
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("review-waits-{}", crate::auth::random_hex(8)).into(),
+            expected_revision: 0,
+            command: Command::ReviewWaits,
+        };
+        let names = ended.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ");
+        match self.execute_as_system(envelope) {
+            Ok(_) => {
+                log!("what {names} waited for is done: each goes on");
+                Ok(())
+            }
+            Err(StoreError::Domain(error)) => {
+                log!("could not end the waits of {names}: {}", error.message);
                 Ok(())
             }
             Err(error) => Err(error.into()),
@@ -942,6 +971,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::AdoptSdkNodes
+        | Command::ReviewWaits
         | Command::RegisterAgent { .. }
         | Command::MoveNode { .. }
         | Command::RecordLastWords { .. }
@@ -1291,3 +1321,5 @@ mod cost_tests;
 mod mcp_flow_tests;
 #[cfg(test)]
 mod system_command_tests;
+#[cfg(test)]
+mod wait_review_tests;

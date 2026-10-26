@@ -225,3 +225,74 @@ fn a_turn_ending_while_the_work_waits_for_another_task_leaves_it_owed() {
     turn(&mut s, NodeEvent::TurnEnded, 13);
     assert_eq!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work, None, "the turn the landing woke it for ended without declaring it again");
 }
+
+/// A started task of node `c` waiting on the fix, and one without a node waiting on it too.
+fn waiting_on_the_fix() -> DomainState {
+    let mut s = release_and_fix();
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
+    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
+        task_id: "next".into(), request_id: "r".into(), title: "Next".into(), agent_id: Some("c".into()), review_prs: false,
+        dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+    });
+    must(&mut s, node("c"), Command::StartTask { task_id: "next".into() });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None });
+    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
+        task_id: "unowned".into(), request_id: "r".into(), title: "Unowned".into(), agent_id: None, review_prs: false,
+        dependencies: BTreeSet::from([FIX.into()]), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+    });
+    assert_eq!((state(&s, "next"), state(&s, "unowned")), (TaskState::WaitingDependency, TaskState::WaitingDependency));
+    s
+}
+
+/// What a daemon opens after a release that counted fewer dependencies as landed: the rows keep
+/// the waits the older one saved.
+fn opened_after_an_upgrade(mut s: DomainState) -> DomainState {
+    for id in ["next", "unowned"] {
+        s.tasks.get_mut(&id.into()).unwrap().state = TaskState::WaitingDependency;
+    }
+    s.derive_loaded_states();
+    s
+}
+
+/// «Pebble: progreso diario» waited on «Publicar el daemon 0.3.6», whose PR had merged with no
+/// work declared after it. The 0.3.5 daemon saved the wait; the 0.3.6 one counted the release as
+/// landed while it opened its domain, moved the task on in memory only and told its node nothing.
+#[test]
+fn a_wait_that_ended_while_the_daemon_was_closed_goes_on_with_its_node_told_once() {
+    let mut s = waiting_on_the_fix();
+    deliver_and_merge(&mut s, FIX, "b", "Fixed");
+    let mut s = opened_after_an_upgrade(s);
+    assert_eq!((state(&s, "next"), state(&s, "unowned")), (TaskState::WaitingDependency, TaskState::WaitingDependency),
+        "opening the domain changes no saved wait");
+    assert_eq!(s.ended_waits(), vec![TaskId::from("next"), TaskId::from("unowned")]);
+
+    let reviewed = must(&mut s, Actor::System, Command::ReviewWaits);
+    assert!(reviewed.changed);
+    assert_eq!(state(&s, "next"), TaskState::Running);
+    assert_eq!(state(&s, "unowned"), TaskState::NotStarted, "a task without a node is left for the queue to start");
+    let expected = dependencies_done_notice(&[Landed {
+        title: "Fix the Mac package".into(), cancelled: false, result: Some("Fixed".into()),
+        merged_pr: Some("https://github.com/owner/repo/pull/2".into()),
+    }]);
+    assert_eq!(told(&reviewed, "c"), vec![expected]);
+    assert!(s.ended_waits().is_empty());
+
+    let again = must(&mut s, Actor::System, Command::ReviewWaits);
+    assert!(!again.changed && told(&again, "c").is_empty(), "the node is told once");
+}
+
+#[test]
+fn a_dependency_that_ends_with_the_first_command_after_opening_wakes_its_node() {
+    let mut s = opened_after_an_upgrade(waiting_on_the_fix());
+    assert!(s.ended_waits().is_empty());
+    let landed = deliver_and_merge(&mut s, FIX, "b", "Fixed");
+    assert_eq!((state(&s, "next"), state(&s, "unowned")), (TaskState::Running, TaskState::NotStarted));
+    assert_eq!(told(&landed, "c").len(), 1);
+}
+
+#[test]
+fn only_the_system_reviews_the_waits() {
+    let mut s = opened_after_an_upgrade(waiting_on_the_fix());
+    refused(&mut s, user(), Command::ReviewWaits);
+    refused(&mut s, orchestrator(), Command::ReviewWaits);
+}

@@ -2045,6 +2045,29 @@ impl DomainState {
             }
         }
     }
+    /// What opening the domain derives. A task stored waiting whose waits are over keeps waiting:
+    /// only a command may end the wait, saving it and telling its node (`Command::ReviewWaits`).
+    pub fn derive_loaded_states(&mut self) {
+        let waiting: BTreeSet<TaskId> = self.tasks.values()
+            .filter(|t| t.state == TaskState::WaitingDependency)
+            .map(|t| t.id.clone())
+            .collect();
+        self.derive_states();
+        for id in waiting {
+            let task = self.tasks.get_mut(&id).unwrap();
+            if matches!(task.state, TaskState::NotStarted | TaskState::Running | TaskState::NeedsYou) {
+                task.state = TaskState::WaitingDependency;
+            }
+        }
+    }
+    /// The tasks kept waiting whose waits are over: what `Command::ReviewWaits` moves on.
+    pub fn ended_waits(&self) -> Vec<TaskId> {
+        let cards = TaskCards::new(self);
+        self.tasks.values()
+            .filter(|t| t.state == TaskState::WaitingDependency && self.state_within_phase(t, &cards) != TaskState::WaitingDependency)
+            .map(|t| t.id.clone())
+            .collect()
+    }
     fn derive_states_once(&mut self) -> bool {
         let cards = TaskCards::new(self);
         let updates: Vec<_> = self
@@ -2638,6 +2661,7 @@ impl DomainState {
                 system(actor)?;
                 self.adopt_sdk_nodes(lifecycles)?;
             }
+            Command::ReviewWaits => system(actor)?,
             Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;
                 let mut seen = BTreeSet::new();
