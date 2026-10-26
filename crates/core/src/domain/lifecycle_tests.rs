@@ -857,6 +857,55 @@ fn usage_turn(s: &mut DomainState, id: &str, resets_at: u64) {
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn: "turn-1".into(),
         failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(resets_at) }), failed: None });
 }
+// 25 Oct, t-codex-support-design: the limit paused the task, then work of its own ended and
+// Claude opened a turn by itself that hit the limit again. The domain refused that second pause,
+// so the whole end of the turn went unrecorded and the SDK owner stopped.
+#[test]
+fn a_turn_that_hits_the_limit_while_the_limit_already_holds_its_task_ends_on_the_same_wait() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "claude-task:bash".into() },
+    ] });
+    usage_turn(&mut s, "t", 4_102_444_800);
+    let usage = alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage);
+    assert_eq!(s.live_state(&"t".into()), Some(usage.clone()));
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnUnprompted { turn: "turn-2".into() },
+        RuntimeObservation::WorkEnded { work: "claude-task:bash".into(), continuation: "claude-notification:bash".into() },
+        RuntimeObservation::WorkContinued { continuation: "claude-notification:bash".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "the end of the turn is recorded");
+    assert_eq!(s.live_state(&"t".into()), Some(usage), "the task still waits for the usage limit");
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "on one card");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
+    assert!(matches!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(_))), "the reset lets it go on");
+    assert_aggregate_rules(&s);
+}
+
+// The API failed, and Claude's next turn of its own met the usage limit: the limit is what holds
+// the task now, on its own card, and the reset lets it go on.
+#[test]
+fn a_turn_the_limit_ends_while_the_api_holds_its_task_waits_for_the_limit_instead() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let outage = |s: &DomainState| s.interactions.values().find(|i| i.id.0.starts_with(OUTAGE_PREFIX)).unwrap().clone();
+    fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnUnprompted { turn: "turn-2".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+    assert!(outage(&s).withdrawn, "the API answered, with the limit");
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)]);
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
+    assert!(held(&s).is_empty());
+    assert_aggregate_rules(&s);
+}
+
 fn accounts_seen(s: &mut DomainState, states: &[(&str, crate::accounts::AccountState)]) {
     let accounts = states.iter().map(|(id, state)| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: crate::accounts::AccountId::parse(id).unwrap(), name: id.to_uppercase(), state: *state,

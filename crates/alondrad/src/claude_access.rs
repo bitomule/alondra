@@ -84,6 +84,18 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
     }
 }
 
+/// Claude usage is back: each account whose usage limit holds tasks is probed now, whatever its
+/// cards say of when it resets. A limit that still stands holds its probe again.
+pub(crate) fn probe_usage_holds(domain: &DomainRuntime) {
+    let waits: std::collections::BTreeSet<Wait> = domain.read().state().claude_held().into_iter()
+        .filter(|held| held.hold == ClaudeHold::Usage)
+        .map(|held| held.waits_for())
+        .collect();
+    for (hold, account) in waits {
+        probe(domain, hold, account);
+    }
+}
+
 pub(crate) fn probe(domain: &DomainRuntime, hold: ClaudeHold, account: Option<AccountId>) {
     let state = domain.read();
     let named = account.as_ref().map_or_else(String::new, |account| format!("-{account}"));

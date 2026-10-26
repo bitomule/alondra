@@ -59,6 +59,8 @@ mod lifecycle_cache_tests;
 #[cfg(test)]
 mod sdk_node_tests;
 #[cfg(test)]
+mod usage_limit_tests;
+#[cfg(test)]
 mod journal_tests;
 #[cfg(test)]
 pub(crate) mod mcp_wait_tests;

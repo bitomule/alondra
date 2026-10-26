@@ -230,7 +230,21 @@ impl DomainState {
     /// The task waits on `hold`, on a card of its own, before its failed turn ends. An expired
     /// sign-in leaves its account signed out, so no new work starts on it. The user hears of a
     /// sign-in only when no other task of its account waits for one; of the API and the limit, never.
+    ///
+    /// Claude goes on by itself while its task waits (a subagent hands back, background work
+    /// ends), so a turn can end on Claude again while a pause already holds the task. That never
+    /// refuses the end of the turn: the same hold stays as it is, a hold on the API gives way to
+    /// the sign-in or the limit, and any other pause (the user's, the machine's) stands, so the
+    /// next turn meets the hold again if it still holds. Nor does a lifecycle that cannot wait now.
     pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, resets_at: Option<u64>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let standing = self.lifecycle(lifecycles, task)?.cards().into_iter()
+            .find(|(_, reason)| *reason == LifecycleWait::Pause)
+            .map(|(card, _)| card.clone());
+        let replaced = match &standing {
+            None => None,
+            Some(card) if ClaudeHold::of(card) == Some(ClaudeHold::Outage) && hold != ClaudeHold::Outage => Some(card.clone()),
+            Some(_) => return Ok(()),
+        };
         let revision = self.revision + 1;
         let id = InteractionId(match (hold, resets_at) {
             (ClaudeHold::SignedOut, _) => format!("{SIGNED_OUT_PREFIX}{task}-{revision}"),
@@ -238,17 +252,26 @@ impl DomainState {
             (ClaudeHold::Usage, Some(at)) => format!("{USAGE_UNTIL}{at}-{task}-{revision}"),
             (ClaudeHold::Usage, None) => format!("{USAGE_PREFIX}{task}-{revision}"),
         });
+        let paused = LifecycleRecord::Paused { card: id.clone(), owner: Some(hold.owner().into()) };
+        let records: Vec<LifecycleRecord> = replaced.iter().map(|card| LifecycleRecord::PauseEnded { card: card.clone() }).chain([paused]).collect();
+        let mut probe = self.lifecycle_of(task)?;
+        if records.iter().try_for_each(|record| self.judge(task, &mut probe, record)).is_err() {
+            return Ok(());
+        }
         let account = self.task_account(task);
         let announce = hold == ClaudeHold::SignedOut
             && !self.claude_held().iter().any(|held| held.waits_for() == (hold, Some(account.clone())));
         if hold == ClaudeHold::SignedOut {
             self.account_signed_out(&account);
         }
+        if let Some(card) = &replaced {
+            self.withdraw_hold(card);
+        }
         self.interactions.insert(id.clone(), hold_card(id.clone(), task, hold, revision));
         if announce {
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: id.clone() });
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: id });
         }
-        self.decide(lifecycles, task, LifecycleRecord::Paused { card: id, owner: Some(hold.owner().into()) })
+        records.into_iter().try_for_each(|record| self.decide(lifecycles, task, record))
     }
 
     /// The daemon's schedule: the task of the oldest card of `hold` goes on, to probe whether

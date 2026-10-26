@@ -1626,6 +1626,47 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     driver.stop().unwrap();
 }
 
+// 25 Oct, t-codex-support-design: the usage limit held the task, a subagent handed its report
+// back and Claude's own turn hit the limit again. The domain refused that second wait, so the end
+// of the turn went unrecorded and the owner stopped. Both ends are recorded and the task waits for
+// the limit once.
+#[test]
+fn a_turn_claude_opens_by_itself_on_the_usage_limit_that_holds_its_task_keeps_the_owner_going() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("Write the release notes rate-limited-twice");
+    let ended = |slice: &Slice| slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter()
+        .filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count();
+    while ended(&slice) < 2 {
+        driver.observe().unwrap();
+    }
+    assert!(!driver.host_to_replace(), "the owner keeps its host");
+    let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
+    assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Usage)], "one wait for the limit");
+    assert_eq!(slice.domain.read().state().live_state(&TASK.into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+    driver.stop().unwrap();
+}
+
+// 25-26 Oct: the usage limit came back at 01:00 and the daemon woke only the nodes its hooks saw
+// stop. Usage coming back probes Claude with a task of the Agent SDK the limit holds too, whatever
+// its card says of the reset, and Claude answering it lets the task go on.
+#[test]
+fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("Write the release notes rate-limited");
+    slice.settle(&mut driver);
+    let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
+    assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Usage)]);
+    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    crate::usage_pause::wake_nodes(&slice.domain);
+    assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    let prompts = slice.prompts();
+    assert!(prompts.last().is_some_and(|prompt| prompt.starts_with("Your usage limit has renewed")), "{prompts:?}");
+    assert!(slice.domain.read().state().claude_held().is_empty(), "Claude answered: nothing waits for the limit");
+    driver.stop().unwrap();
+}
+
 // Each launch made a provider binding of its own while the store keeps one active binding per
 // host: every task after the first was refused with BindingRevoked.
 #[test]

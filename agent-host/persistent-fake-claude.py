@@ -477,6 +477,21 @@ for raw in sys.stdin:
             result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
             consume(message)
+        elif text.endswith('rate-limited-twice'):
+            # Like the native Claude whose subagent hands its report back after the usage limit
+            # ended the turn: it opens a turn of its own, which the limit ends too.
+            refuse(message, 429)
+            serial += 1
+            send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
+            serial += 1
+            send(dict(type='assistant', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), parent_tool_use_id=None, error='rate_limit',
+                      message=dict(id='msg_fixture_' + str(serial), type='message', role='assistant', model='fixture',
+                                   content=[dict(type='text', text=REFUSALS[429][1])], stop_reason=None, stop_sequence=None, usage=SMALL_USAGE)))
+            serial += 1
+            send(dict(type='result', subtype='success', is_error=True, api_error_status=429, session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12),
+                      duration_ms=0, duration_api_ms=0, num_turns=1, total_cost_usd=0, usage={}, modelUsage={}, permission_denials=[],
+                      result=REFUSALS[429][1], terminal_reason='api_error', stop_reason=None,
+                      origin=dict(kind='task-notification', producer='session-task')))
         elif text == 'own-turn-later':
             # The turn ends; once the test drops a file next to the capture, Claude starts a turn
             # of its own, as when a subagent hands its report back while the task rests.

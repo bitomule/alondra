@@ -512,8 +512,10 @@ pub(crate) fn session_is_back(domain: &crate::domain_runtime::DomainRuntime) {
 }
 
 /// Puts every node the limit stopped in the admission gate's queue, which tells them to carry on one
-/// at a time, and brings back the ones whose connection was lost meanwhile.
+/// at a time, brings back the ones whose connection was lost meanwhile, and probes Claude with a
+/// task of each account whose limit holds tasks of the Agent SDK.
 pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
+    crate::claude_access::probe_usage_holds(domain);
     let now = now_millis();
     for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
         if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now)

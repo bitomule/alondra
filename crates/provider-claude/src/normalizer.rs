@@ -64,6 +64,25 @@ struct Checkpoint {
     /// The inputs of ours Claude started or consumed and has not finished yet, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     taken: Vec<MessageUuid>,
+    /// The inputs of ours Claude finished, oldest first: a result that names one after its end
+    /// does not take it again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    finished: Vec<MessageUuid>,
+    /// When the usage limit Claude refused a request on outside a turn resets, in Unix seconds:
+    /// the next turn the limit ends carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit_resets_at: Option<u64>,
+}
+impl Checkpoint {
+    /// A host launched after the execution's previous one ended: the turn, the work and the inputs
+    /// that host's Claude had open ended with it.
+    fn forget_ended_host(&mut self) {
+        self.turn = None;
+        self.work.clear();
+        self.woken.clear();
+        self.taken.clear();
+        self.finished.clear();
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -184,9 +203,7 @@ impl ObservationNormalizer for Normalizer {
             }
         };
         if self.first_cursor == Some(batch.cursor) {
-            checkpoint.turn = None;
-            checkpoint.work.clear();
-            checkpoint.woken.clear();
+            checkpoint.forget_ended_host();
         }
         let session = self
             .session
@@ -370,6 +387,7 @@ fn fold(
             Some("completed" | "cancelled") => {
                 if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
                     state.taken.remove(index);
+                    remember(&mut state.finished, command);
                 } else if state.initialized {
                     let input = lookup(std::slice::from_ref(&command))?.remove(0);
                     facts.push(Observation::InputDropped { input });
@@ -387,10 +405,11 @@ fn fold(
                 facts.push(Observation::TurnEnded {
                     turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
                     outcome: match turn.error {
-                        Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at }),
+                        Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
                         None => TurnOutcome::Failed { code: TURN_SUPERSEDED.into() },
                     },
                 });
+                state.limit_resets_at = None;
             }
             // A prompt no input of ours started and no work woke: Claude goes on by itself, as
             // when a subagent hands its report back after the last turn ended.
@@ -508,8 +527,10 @@ fn fold(
     if kind == "rate_limit_event" {
         let info = payload.get("rate_limit_info");
         if info.and_then(|info| info.get("status")).and_then(Value::as_str) == Some("rejected") {
-            if let Some(turn) = state.turn.as_mut() {
-                turn.resets_at = info.and_then(|info| info.get("resetsAt")).and_then(Value::as_u64);
+            let resets_at = info.and_then(|info| info.get("resetsAt")).and_then(Value::as_u64);
+            match state.turn.as_mut() {
+                Some(turn) => turn.resets_at = resets_at,
+                None => state.limit_resets_at = resets_at.or(state.limit_resets_at),
             }
         }
         if let Some(window) = info.and_then(rate_limit_window) {
@@ -660,7 +681,7 @@ fn fold(
                     .get("api_error_status")
                     .and_then(Value::as_u64)
                     .and_then(|status| u16::try_from(status).ok()),
-                resets_at: turn.resets_at,
+                resets_at: turn.resets_at.or(state.limit_resets_at),
             }),
             None => match failures.iter().find(|failure| ends_turn(failure)) {
                 Some(failure) => TurnOutcome::Failed { code: failure.code.clone() },
@@ -672,6 +693,7 @@ fn fold(
             outcome,
         });
         state.turn = None;
+        state.limit_resets_at = None;
     }
     Ok(facts)
 }
@@ -691,15 +713,18 @@ fn undelivered(payload: &Value, failures: &[alondra_agent_protocol::SdkFailure],
     let answers_turn = state.turn.as_ref().is_some_and(|turn| turn.woken_by.is_some() || turn.consumed.contains(&input));
     (!answers_turn).then_some(input)
 }
-/// Claude took `input` in: its end, later, is no drop.
+/// Claude took `input` in: its end, later, is no drop. One it already finished stays finished.
 fn take(state: &mut Checkpoint, input: MessageUuid) {
-    if state.taken.contains(&input) {
+    if state.taken.contains(&input) || state.finished.contains(&input) {
         return;
     }
-    if state.taken.len() >= MAX_TAKEN {
-        state.taken.remove(0);
+    remember(&mut state.taken, input);
+}
+fn remember(inputs: &mut Vec<MessageUuid>, input: MessageUuid) {
+    if inputs.len() >= MAX_TAKEN {
+        inputs.remove(0);
     }
-    state.taken.push(input);
+    inputs.push(input);
 }
 fn report(server: McpServer) -> McpServerReport {
     let traits = crate::mcp::mcp_traits(server.source.as_deref(), server.transport.as_deref(), &server.status);
@@ -1688,6 +1713,228 @@ mod tests {
         assert!(fold(&lifecycle(NOTIFIED, "completed"), &session(), &mut state, foreign).is_err(), "another's command is evidence");
         let mut early = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut early, |_| panic!("before init nothing is dropped")).unwrap(), vec![]);
+    }
+    // 25 Oct, t-duo-parcel and t-release-apps-beta-61: Claude Code folded an input of ours into a
+    // running turn and finished it before that turn's result, which named it again. The input
+    // stayed taken, so the init of the turn a background Bash woke later opened nothing, and the
+    // whole turn, its usage limit too, was dropped: the task stayed at work for 13 hours.
+    #[test]
+    fn a_turn_a_background_command_wakes_after_an_input_finished_before_its_result_ends_on_the_limit() {
+        let mut state = state();
+        let lifecycle = |state: &str| event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":state,"uuid":REPLY}));
+        fold(&lifecycle("started"), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true})),
+            &session(), &mut state, input).unwrap();
+        fold(&lifecycle("completed"), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":THIRD,"subtype":"success","user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"completed"})),
+            &session(), &mut state, input).unwrap();
+        let woken = TurnId::new(format!("claude-message:{FOURTH}")).unwrap();
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":FOURTH})), &session(), &mut state, input).unwrap(),
+            vec![Observation::TurnUnprompted { turn: woken.clone() }], "the notification's prompt is a turn of Claude's own");
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"rate_limit_event","uuid":REPLY,"rate_limit_info":{"status":"rejected","resetsAt":1_792_972_800_u64,"rateLimitType":"seven_day"}}),
+            json!({"type":"assistant","uuid":"10000000-0000-4000-8000-000000000010","parent_tool_use_id":null,"error":"rate_limit"}),
+        ]);
+        let result = failing(event(json!({"type":"result","uuid":"10000000-0000-4000-8000-000000000011","subtype":"success","is_error":true,"api_error_status":429,
+            "terminal_reason":"api_error","origin":{"kind":"task-notification","producer":"session-task"}})), &[(alondra_agent_protocol::FailureSurface::Result, "success_is_error")]);
+        let ended = fold(&result, &session(), &mut state, input).expect("the result ends the woken turn");
+        assert!(facts.iter().all(|fact| !matches!(fact, Observation::TurnEnded { .. })), "{facts:?}");
+        assert_eq!(ended, vec![Observation::TurnEnded {
+            turn: woken,
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(1_792_972_800) }),
+        }]);
+    }
+    /// A prompt as the native Claude 2.1.300 runs it, from a resting session.
+    #[derive(Clone, Copy, Debug)]
+    enum Prompt {
+        /// An input of ours. Another may join the running turn; Claude Code finishes the inputs
+        /// before or after the turn's result; a Bash may stay running in the background.
+        Input { joined: bool, finished_first: bool, background: bool, limited: bool },
+        /// The oldest background Bash ends and its notification wakes a turn of Claude's own,
+        /// naming its run or not.
+        Woken { run: bool, limited: bool },
+        /// A subagent hands its report back: Claude opens a turn by itself.
+        Own { limited: bool },
+    }
+
+    fn prompts() -> Vec<Prompt> {
+        let flags = [false, true];
+        let mut all = vec![];
+        for joined in flags {
+            for finished_first in flags {
+                for background in flags {
+                    for limited in flags {
+                        all.push(Prompt::Input { joined, finished_first, background, limited });
+                    }
+                }
+            }
+        }
+        for limited in flags {
+            all.extend([Prompt::Woken { run: false, limited }, Prompt::Woken { run: true, limited }, Prompt::Own { limited }]);
+        }
+        all
+    }
+
+    struct Session {
+        state: Checkpoint,
+        serial: u64,
+        background: Vec<(String, bool)>,
+    }
+
+    impl Session {
+        fn uuid(&mut self) -> String {
+            self.serial += 1;
+            format!("20000000-0000-4000-8000-{:012}", self.serial)
+        }
+        fn fold(&mut self, payload: Value) -> Result<Vec<Observation>, String> {
+            let shown = payload.to_string();
+            fold(&event(payload), &session(), &mut self.state, input).map_err(|error| format!("{shown} was dropped: {error:?}"))
+        }
+        fn fold_all(&mut self, payloads: Vec<Value>) -> Result<Vec<Observation>, String> {
+            let mut facts = vec![];
+            for payload in payloads {
+                facts.extend(self.fold(payload)?);
+            }
+            Ok(facts)
+        }
+        fn init(&mut self) -> Value {
+            json!({"type":"system","subtype":"init","uuid":self.uuid()})
+        }
+        fn answer(&mut self, limited: bool) -> Value {
+            let mut answer = json!({"type":"assistant","uuid":self.uuid(),"parent_tool_use_id":null});
+            if limited {
+                answer["error"] = json!("rate_limit");
+            }
+            answer
+        }
+        fn result(&mut self, limited: bool, mut extra: Value) -> Value {
+            let mut result = json!({"type":"result","uuid":self.uuid(),"subtype":"success","is_error":limited});
+            if limited {
+                result["api_error_status"] = json!(429);
+                result["terminal_reason"] = json!("api_error");
+            }
+            result.as_object_mut().unwrap().append(extra.as_object_mut().unwrap());
+            result
+        }
+
+        /// Runs `prompt`: its turn ends, on the limit when the limit ended it.
+        fn run(&mut self, prompt: Prompt) -> Result<(), String> {
+            let (facts, limited) = match prompt {
+                Prompt::Input { joined, finished_first, background, limited } => {
+                    let first = self.uuid();
+                    let mut inputs = vec![first.clone()];
+                    let lifecycle = |command: &str, state: &str, uuid: String| json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":uuid});
+                    let mut payloads = vec![lifecycle(&first, "started", self.uuid()), self.init(),
+                        json!({"type":"assistant","uuid":self.uuid(),"parent_tool_use_id":null,"user_message_uuid":first,"user_message_uuids":[first]})];
+                    if background {
+                        let task = format!("bash-{}", self.serial);
+                        let run = self.serial % 2 == 0;
+                        let mut started = json!({"type":"system","subtype":"task_started","uuid":self.uuid(),"task_id":task,"tool_use_id":format!("toolu-{task}"),"task_type":"local_bash","is_backgrounded":true});
+                        if run {
+                            started["run_id"] = json!(format!("run-{task}"));
+                        }
+                        payloads.push(started);
+                        self.background.push((task, run));
+                    }
+                    if joined {
+                        let second = self.uuid();
+                        payloads.push(lifecycle(&second, "started", self.uuid()));
+                        payloads.push(json!({"type":"assistant","uuid":self.uuid(),"parent_tool_use_id":null,"user_message_uuid":second,"user_message_uuids":[first, second]}));
+                        inputs.push(second);
+                    }
+                    payloads.push(self.answer(limited));
+                    let finished: Vec<Value> = inputs.iter().map(|input| lifecycle(input, "completed", self.uuid())).collect();
+                    let result = self.result(limited, json!({"user_message_uuid":first,"user_message_uuids":inputs}));
+                    if finished_first {
+                        payloads.extend(finished);
+                        payloads.push(result);
+                    } else {
+                        payloads.push(result);
+                        payloads.extend(finished);
+                    }
+                    (self.fold_all(payloads)?, limited)
+                }
+                Prompt::Woken { limited, .. } if self.background.is_empty() => return self.run(Prompt::Own { limited }),
+                Prompt::Woken { run, limited } => {
+                    let (task, named) = self.background.remove(0);
+                    let mut notification = json!({"type":"system","subtype":"task_notification","uuid":self.uuid(),"task_id":task,"tool_use_id":format!("toolu-{task}"),"status":"completed"});
+                    let mut origin = json!({"kind":"task-notification","producer":"session-task"});
+                    if named && run {
+                        notification["run_id"] = json!(format!("run-{task}"));
+                        origin["runId"] = json!(format!("run-{task}"));
+                    } else if named {
+                        self.background.insert(0, (task, named));
+                        return self.run(Prompt::Own { limited });
+                    }
+                    let payloads = vec![notification, self.init(), self.answer(limited), self.result(limited, json!({"origin":origin}))];
+                    (self.fold_all(payloads)?, limited)
+                }
+                Prompt::Own { limited } => {
+                    let payloads = vec![self.init(), self.answer(limited), self.result(limited, json!({}))];
+                    (self.fold_all(payloads)?, limited)
+                }
+            };
+            let ended: Vec<&TurnOutcome> = facts.iter().filter_map(|fact| match fact {
+                Observation::TurnEnded { outcome, .. } => Some(outcome),
+                _ => None,
+            }).collect();
+            match ended.as_slice() {
+                [outcome] if limited && !matches!(outcome, TurnOutcome::ApiFailed(failure) if failure.error == "rate_limit") =>
+                    Err(format!("the limit ended the turn as {outcome:?}")),
+                [_] => Ok(()),
+                other => Err(format!("the prompt ended {} turns: {facts:?}", other.len())),
+            }
+        }
+    }
+
+    // Every prompt the native Claude runs ends one turn, whatever came before it, and one the
+    // usage limit ends says so: a turn that ends nowhere leaves its task at work for nothing.
+    #[test]
+    fn every_turn_claude_runs_ends_and_one_the_limit_ends_says_so_after_any_three_prompts() {
+        let all = prompts();
+        for a in &all {
+            for b in &all {
+                for c in &all {
+                    let mut session = Session { state: state(), serial: 0, background: vec![] };
+                    for (n, prompt) in [a, b, c].into_iter().enumerate() {
+                        if let Err(why) = session.run(*prompt) {
+                            panic!("prompt {} of {:?}: {why}", n + 1, [a, b, c]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn a_host_that_takes_over_forgets_the_inputs_the_ended_host_had_taken() {
+        let mut state = state();
+        fold(&event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":REPLY})), &session(), &mut state, input).unwrap();
+        state.forget_ended_host();
+        assert_eq!(fold(&event(json!({"type":"system","subtype":"init","uuid":SECOND})), &session(), &mut state, input).unwrap(),
+            vec![Observation::TurnUnprompted { turn: TurnId::new(format!("claude-message:{SECOND}")).unwrap() }],
+            "the new host's Claude opens its own turn: nothing of ours is still being taken");
+    }
+    // 25 Oct, t-codex-support-design: the refusal came for a subagent's request before the init of
+    // the turn the limit then ended, and its card had no reset to wait for.
+    #[test]
+    fn a_limit_refused_before_its_turn_opens_still_says_when_it_resets() {
+        let mut state = state();
+        fold(&event(json!({"type":"rate_limit_event","uuid":REPLY,"rate_limit_info":{"status":"rejected","resetsAt":1_792_972_800_u64,"rateLimitType":"seven_day"}})),
+            &session(), &mut state, input).unwrap();
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"system","subtype":"init","uuid":SECOND}),
+            json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null,"error":"rate_limit"}),
+            json!({"type":"result","uuid":FOURTH,"is_error":true,"api_error_status":429,"terminal_reason":"api_error"}),
+        ]);
+        assert_eq!(failure(&facts).and_then(|failure| failure.resets_at), Some(1_792_972_800));
+        let next = turn_end(&mut state, vec![
+            json!({"type":"system","subtype":"init","uuid":NOTIFIED}),
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"error":"rate_limit"}),
+            json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"api_error"}),
+        ]);
+        assert_eq!(failure(&next).and_then(|failure| failure.resets_at), None, "a reset is said once, for the turn it came before");
     }
     #[test]
     fn the_inputs_claude_took_in_are_bounded_and_the_oldest_is_forgotten() {
