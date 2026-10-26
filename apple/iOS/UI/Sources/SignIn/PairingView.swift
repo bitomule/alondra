@@ -103,7 +103,7 @@ public struct PairingView: View {
 
     @ViewBuilder private var scanning: some View {
         Label("Open Terminal on your Mac", systemImage: "laptopcomputer").font(.headline)
-        if store.additionalMac {
+        if store.additionalMac, !store.linksAccount {
             Text("Run this command to show your connection code.").foregroundStyle(.secondary)
             command("alondra device invite")
         } else {
@@ -153,10 +153,10 @@ public struct PairingView: View {
             .padding(.top, 12)
         }
         .font(.callout)
-        if store.additionalMac {
-            Button("Find a Mac on this network instead") { store.send(.showAccount(false)) }.font(.footnote)
-        } else {
+        if !store.additionalMac {
             Button("Use another account") { store.send(.logout) }.font(.footnote)
+        } else if !store.linksAccount {
+            Button("Find a Mac on this network instead") { store.send(.showAccount(false)) }.font(.footnote)
         }
     }
 

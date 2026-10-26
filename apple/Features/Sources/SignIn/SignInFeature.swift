@@ -57,6 +57,9 @@ public struct SignInFeature: Sendable {
     public struct State: Equatable {
         public enum Configuration: Equatable { case unknown, missing, saved }
         public let additionalMac: Bool
+        /// Settings signs in to the account here, then links the Mac through it.
+        public let linksAccount: Bool
+        public var signedIn = false
         public var configuration: Configuration = .unknown
         public var restorationInFlight = false
         /// Why the saved workspace could not be restored. Set only after a failure, and kept while
@@ -82,9 +85,11 @@ public struct SignInFeature: Sendable {
             default: false
             }
         }
-        public init(additionalMac: Bool = false) {
-            self.additionalMac = additionalMac
-            if additionalMac { configuration = .saved; phase = .scanning }
+        public init(additionalMac: Bool = false, linksAccount: Bool = false) {
+            self.additionalMac = additionalMac || linksAccount
+            self.linksAccount = linksAccount
+            if linksAccount { configuration = .saved; phase = .signedOut; path = .account }
+            else if additionalMac { configuration = .saved; phase = .scanning }
         }
     }
     /// With the account this iPhone gets alerts and reaches the Mac from anywhere; on the local
@@ -98,7 +103,7 @@ public struct SignInFeature: Sendable {
         case revocationRequired(Int)
         case cancelled(Int)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int, NotificationSettings.Permission), failed(Int, String?)
-        case turnOnAlerts, skipAlerts, alertsAnswered(Int)
+        case turnOnAlerts, skipAlerts, alertsAnswered(Int), offerAlerts(NotificationSettings.Permission)
         case findMac(FindMacFeature.Action), showAccount(Bool), choose(Path)
     }
     @Dependency(\.cloudPairing) var service
@@ -231,6 +236,7 @@ public struct SignInFeature: Sendable {
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
             case .loggedIn(let generation):
                 guard generation == state.generation else { return .none }
+                state.signedIn = true
                 state.phase = .scanning
                 return .none
             case .scanned(let payload):
@@ -266,6 +272,11 @@ public struct SignInFeature: Sendable {
                     if permission == .denied { await service.alerts.openSettings() } else { await service.alerts.request() }
                     await send(.alertsAnswered(generation))
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
+            case .offerAlerts(let permission):
+                guard !state.additionalMac, state.phase == .approved,
+                      permission == .notDetermined || permission == .denied else { return .none }
+                state.phase = .alerts(permission)
+                return .none
             case .skipAlerts:
                 guard case .alerts = state.phase else { return .none }
                 state.phase = .approved
@@ -295,7 +306,7 @@ public struct SignInFeature: Sendable {
                 return .none
             case .cancelled(let generation):
                 guard generation == state.generation, state.additionalMac, state.phase == .cancelling else { return .none }
-                state.phase = .scanning
+                state.phase = state.linksAccount && !state.signedIn ? .signedOut : .scanning
                 return .none
             case .cancel, .logout:
                 if state.additionalMac {

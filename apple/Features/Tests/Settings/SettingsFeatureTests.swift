@@ -129,6 +129,28 @@ import Foundation
         await store.receive(\.pairingCleanupFinished) { $0.pairingCleanup = false }
         await store.finish()
     }
+
+    @Test func useMyAccountSignsInThenAsksForTheMacsCodeWithoutDroppingItsLocalMacs() async {
+        var state = SettingsFeature.State(service: "service", device: "phone", supportsNotifications: false, usesAccount: false)
+        state.macs = [MacChoice(id: UUID(), macID: "mac-1", local: true)]
+        let store = TestStore(initialState: state) { SettingsFeature() } withDependencies: {
+            $0.cloudPairing.login = {}
+            $0.cloudPairing.logout = { Issue.record("Signing in from Settings logged out") }
+        }
+        await store.send(.useAccount) { $0.pairing = .init(linksAccount: true) }
+        #expect(store.state.pairing?.phase == .signedOut)
+        #expect(store.state.pairing?.showsAccount == true)
+        await store.send(.pairing(.presented(.login))) { $0.pairing?.phase = .loggingIn }
+        await store.receive(\.pairing.presented.loggedIn) { $0.pairing?.signedIn = true; $0.pairing?.phase = .scanning }
+        await store.finish()
+    }
+
+    @Test func useMyAccountIsOnlyOfferedWhileEveryMacIsLinkedWithoutOne() async {
+        var state = SettingsFeature.State(service: "service", device: "phone", supportsNotifications: true)
+        state.macs = [MacChoice(id: UUID(), macID: "mac-1", local: false)]
+        let store = TestStore(initialState: state) { SettingsFeature() }
+        await store.send(.useAccount)
+    }
 }
 
 private actor PairingCleanupGate {

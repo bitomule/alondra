@@ -71,7 +71,7 @@ public struct SignInView: View {
                 }
             }
         } footer: {
-            if store.phase == .signedOut {
+            if store.phase == .signedOut, !store.linksAccount {
                 Button("Find a Mac on this network", systemImage: "wifi") { store.send(.showAccount(false)) }
                     .buttonStyle(.glass)
                     .controlSize(.large)

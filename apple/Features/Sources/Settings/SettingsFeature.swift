@@ -152,7 +152,7 @@ public extension DependencyValues {
         case autosaveFinished(QuietHours, UInt64, String?)
         case refreshPermission, requestPermission, openSystemSettings
         case checkConnection, checked(UInt64), checkFailed(ConnectionProblem, UInt64)
-        case linkMac, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
+        case linkMac, useAccount, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
         case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(ConnectionProblem?, UInt64)
         case loadMacStatuses, macStatusesLoaded([UUID: MacStatus])
         case openMacSettings(UUID), macSettingsReady(UUID, MacSettingsClient), macSettings(PresentationAction<MacSettingsFeature.Action>)
@@ -345,6 +345,10 @@ public extension DependencyValues {
             case .linkMac:
                 guard state.selectingMacID == nil, !state.pairingCleanup else { return .none }
                 state.pairing = SignInFeature.State(additionalMac: true)
+                return .none
+            case .useAccount:
+                guard state.alertsNeedAccount, state.selectingMacID == nil, !state.pairingCleanup else { return .none }
+                state.pairing = SignInFeature.State(linksAccount: true)
                 return .none
             case .pairing(.dismiss):
                 state.pairingCleanup = true

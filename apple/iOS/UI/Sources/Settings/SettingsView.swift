@@ -195,6 +195,9 @@ public struct SettingsView: View {
                   systemImage: "bell.slash")
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("settings.alertsNeedAccount")
+            Button("Use my account", systemImage: "person.crop.circle") { store.send(.useAccount) }
+                .disabled(store.selectingMacID != nil || store.pairingCleanup)
+                .accessibilityIdentifier("settings.useAccount")
         }
     }
 

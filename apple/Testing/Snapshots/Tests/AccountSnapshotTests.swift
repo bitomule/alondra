@@ -159,6 +159,33 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
     }
 
+    /// Use my account, in Settings with only Macs on this network: sign in, then the Mac's code.
+    private func linkAccount(_ phase: SignInFeature.Phase) -> StoreOf<SignInFeature> {
+        var state = SignInFeature.State(linksAccount: true)
+        state.phase = phase
+        return Store(initialState: state) { EmptyReducer<SignInFeature.State, SignInFeature.Action>() }
+    }
+
+    func test_useMyAccount_signIn() {
+        let store = linkAccount(.signedOut)
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store) } }
+    }
+
+    func test_useMyAccount_signIn_spanish() {
+        let store = linkAccount(.signedOut)
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store) } }
+    }
+
+    func test_useMyAccount_theMacsCode() {
+        let store = linkAccount(.scanning)
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store) } }
+    }
+
+    func test_useMyAccount_theMacsCode_spanish() {
+        let store = linkAccount(.scanning)
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store) } }
+    }
+
     func test_pairing_connected() {
         let store = signIn({ $0.phase = .approved }, additionalMac: true)
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }

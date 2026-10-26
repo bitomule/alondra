@@ -16,7 +16,7 @@ struct SignInFeatureTests {
         await store.receive(\.configurationLoaded) { $0.configuration = .missing }
         await store.receive(\.restored) { $0.phase = .signedOut; $0.restorationInFlight = false }
         await store.send(.login) { $0.phase = .loggingIn }
-        await store.receive(\.loggedIn) { $0.phase = .scanning }
+        await store.receive(\.loggedIn) { $0.signedIn = true; $0.phase = .scanning }
         await store.send(.scanned("QR")) { $0.payload = "QR" }
         await store.receive(\.submit) { $0.payload = ""; $0.phase = .submitting }
         await store.receive(\.pending) { $0.phase = .pending("Ab12Cd34") }
@@ -146,5 +146,40 @@ struct SignInFeatureTests {
         }
         await store.send(.logout) { $0.generation = 1; $0.phase = .signingOut }
         await store.receive(\.loggedOut) { $0.phase = .signedOut; $0.configuration = .missing; $0.path = nil }
+    }
+    @Test func cancellingTheSignInFromSettingsGoesBackToSignIn() async {
+        let (logins, finishLogin) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: SignInFeature.State(linksAccount: true)) { SignInFeature() } withDependencies: {
+            $0.cloudPairing = SignInClient(restore: { Issue.record("Settings restored the workspace"); return false },
+                login: { for await _ in logins {} ; throw CancellationError() },
+                begin: { _ in "code" }, approve: {}, cancel: {}, logout: { Issue.record("Settings logged out") })
+        }
+        await store.send(.login) { $0.phase = .loggingIn }
+        await store.send(.cancel) { $0.generation = 1; $0.phase = .cancelling }
+        await store.receive(\.cancelled) { $0.phase = .signedOut }
+        finishLogin.finish()
+        await store.finish()
+    }
+    @Test func afterSigningInFromSettingsCancellingAScanKeepsTheAccount() async {
+        var state = SignInFeature.State(linksAccount: true)
+        state.signedIn = true
+        state.phase = .pending("code")
+        let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
+            $0.cloudPairing.cancel = {}
+        }
+        await store.send(.cancel) { $0.generation = 1; $0.phase = .cancelling }
+        await store.receive(\.cancelled) { $0.phase = .scanning }
+    }
+    @Test func aMacLinkedThroughTheAccountFromSettingsHandsTheAlertsStepToTheFirstScreen() async {
+        var state = SignInFeature.State()
+        state.phase = .approved
+        state.configuration = .saved
+        let store = TestStore(initialState: state) { SignInFeature() }
+        await store.send(.offerAlerts(.authorized))
+        await store.send(.offerAlerts(.notDetermined)) { $0.phase = .alerts(.notDetermined) }
+        #expect(store.state.finishingPairing)
+        await store.send(.skipAlerts) { $0.phase = .approved }
+        let sheet = TestStore(initialState: SignInFeature.State(linksAccount: true)) { SignInFeature() }
+        await sheet.send(.offerAlerts(.notDetermined))
     }
 }

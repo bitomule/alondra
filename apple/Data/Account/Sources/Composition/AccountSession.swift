@@ -112,6 +112,7 @@ public final class AccountSession {
                 willDeactivate: @escaping @MainActor () async throws -> Void = {},
                 pushBinding: @escaping @MainActor (ApprovedServicePairing) -> String? = { _ in nil },
                 pairingStore: any ApprovedPairingStore = KeychainApprovedPairingStore(),
+                pairingTransport: (any HTTPTransport)? = nil,
                 localNetwork: LocalNetworkAccess = .standard,
                 browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil,
                 irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil, startsLive: Bool = false) {
@@ -121,7 +122,7 @@ public final class AccountSession {
         self.pushBinding = pushBinding
         self.localNetwork = localNetwork
         self.browse = browse ?? { MacBrowser.browse(access: localNetwork) }
-        pairing = PairingClient(store: pairingStore)
+        pairing = PairingClient(transport: pairingTransport, store: pairingStore)
         #if os(macOS)
         directPairing = DirectPairingClient(store: pairingStore, devicePrefix: "client", localNetwork: localNetwork)
         #else
@@ -137,7 +138,7 @@ public final class AccountSession {
     public var additionalMacPairing: SignInClient {
         let scope = UUID()
         let expectedSession = services
-        var service = SignInClient(restore: { throw CancellationError() }, login: { throw CancellationError() },
+        var service = SignInClient(restore: { throw CancellationError() }, login: { [self] in try await signInBesideLocalMacs() },
             begin: { [self] payload in
                 guard let expectedSession else { throw CancellationError() }
                 return try await begin(payload, scope: scope, expectedSession: expectedSession)
@@ -150,7 +151,6 @@ public final class AccountSession {
                 await cancel(scope: scope)
             }, logout: { throw CancellationError() })
         service.prepareCamera = prepareCamera
-        service.alerts = alerts
         return service
     }
 
@@ -475,6 +475,12 @@ public final class AccountSession {
         try await auth.login()
         _ = try await auth.verifiedSubject()
     }
+    /// Signing in from Settings keeps the Macs paired on this network: the account only adds the
+    /// relay, and linking a Mac through it replaces that Mac's local pairing.
+    private func signInBesideLocalMacs() async throws {
+        try await auth.login()
+        _ = try await auth.verifiedSubject()
+    }
     private func begin(_ payload: String, scope: UUID? = nil, expectedSession: Connection? = nil) async throws -> String {
         if let expectedSession { guard services === expectedSession else { throw CancellationError() } }
         let ticket = try attempts.acquire(scope: scope)
@@ -516,7 +522,12 @@ public final class AccountSession {
         guard current == generation, subject == approved.ownerSub else { throw CancellationError() }
         let collection = try await pairing.approvedPairings()
         guard expectedSession == nil || services === expectedSession else { throw CancellationError() }
+        let permission = scope == nil ? nil : await alerts.permission()
+        guard expectedSession == nil || services === expectedSession else { throw CancellationError() }
         try await reconcile(collection, subject: subject, preferred: ApprovedPairingID(approved), generation: current)
+        // The new Mac's workspace replaces the one Settings was open in, so the first screen
+        // offers alerts, in the same update that shows the new Mac.
+        if let permission { store.send(.offerAlerts(permission)) }
     }
     private func cancel(scope: UUID? = nil) async {
         if let ticket = attempts.current(scope: scope) { attempts.release(ticket) }

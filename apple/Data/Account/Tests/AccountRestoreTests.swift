@@ -10,7 +10,7 @@ import Network
 import Synchronization
 import Testing
 
-private final class MemoryPairings: ApprovedPairingStore {
+final class MemoryPairings: ApprovedPairingStore {
     private let value: Mutex<ApprovedPairingCollection>
     init(_ pairings: [ApprovedServicePairing]) throws {
         var collection = ApprovedPairingCollection()
@@ -32,7 +32,7 @@ private final class MemoryPairings: ApprovedPairingStore {
     }
 }
 
-private final class MemoryCredential: RefreshTokenStorage, @unchecked Sendable {
+final class MemoryCredential: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var credential: RefreshCredential?
     init(_ credential: RefreshCredential?) { self.credential = credential }
