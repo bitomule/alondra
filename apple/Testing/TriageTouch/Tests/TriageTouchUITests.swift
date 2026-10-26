@@ -13,6 +13,7 @@ final class TriageTouchUITests: XCTestCase {
         app = XCUIApplication()
         app.launch()
         XCTAssertTrue(done(of: front).waitForExistence(timeout: 20), "the front card never showed its Done button")
+        expectInFront(front)
     }
 
     override func tearDown() async throws {
@@ -29,8 +30,9 @@ final class TriageTouchUITests: XCTestCase {
     func test_swipingAwayFromDoneAnswersNothing() throws {
         for (card, next, dx) in [(front, back, -260.0), (back, front, 260.0)] {
             let start = done(of: card).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let received = trail().count
             start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0)), withVelocity: .fast, thenHoldForDuration: 0)
-            XCTAssertTrue(done(of: next).waitForExistence(timeout: 5), "the swipe did not bring the next card to the front")
+            expectInFront(next, after: "dragEnded", since: received)
             try expectAnswers("none", after: .seconds(2))
         }
     }
@@ -54,15 +56,44 @@ final class TriageTouchUITests: XCTestCase {
 
     func test_afterLeavingTheFrontCardForLaterDoneAnswersTheNewFrontCard() throws {
         let later = app.buttons["triage.later.\(front)"]
-        XCTAssertTrue(later.waitForExistence(timeout: 5))
+        XCTAssertTrue(later.isHittable, "the front card has no Leave for Later to tap")
+        let received = trail().count
         later.tap()
-        XCTAssertTrue(done(of: back).waitForExistence(timeout: 5))
+        expectInFront(back, after: "later", since: received)
         done(of: back).tap()
         try expectAnswers("\(back):done")
     }
 
     private func done(of card: String) -> XCUIElement {
         app.buttons["triage.action.\(card).done"]
+    }
+
+    /// Waits until `card` is in front, the stack has stopped moving and its Done button takes a tap.
+    /// When it does not, the failure says how far the touch got, from what the stack received since.
+    private func expectInFront(_ card: String, after action: String? = nil, since received: Int = 0) {
+        let deadline = Date().addingTimeInterval(5)
+        var stack = Stack(app.staticTexts["stack"].label)
+        while Date() < deadline {
+            if stack.front == card, stack.settled, done(of: card).isHittable { return }
+            Thread.sleep(forTimeInterval: 0.1)
+            stack = Stack(app.staticTexts["stack"].label)
+        }
+        let since = Array(stack.trail.dropFirst(received))
+        let reason = if let action, !since.contains(where: { $0.hasPrefix(action) }) {
+            "the \(action) never reached the stack"
+        } else if !stack.settled {
+            "the stack never settled"
+        } else if stack.front != card {
+            "the stack settled with \(stack.front) in front"
+        } else {
+            "\(card) is in front and settled, but its Done button cannot be tapped"
+        }
+        print("[touch-proof] \(name): \(reason)\n\(app.debugDescription)")
+        XCTFail("\(card) did not come to the front: \(reason); the stack received \(since)")
+    }
+
+    private func trail() -> [String] {
+        Stack(app.staticTexts["stack"].label).trail
     }
 
     private func expectAnswers(_ expected: String, after wait: Duration = .zero) throws {
@@ -73,5 +104,22 @@ final class TriageTouchUITests: XCTestCase {
         while label.label != expected, Date() < deadline { Thread.sleep(forTimeInterval: 0.2) }
         print("[touch-proof] \(name): answers=\(label.label)")
         XCTAssertEqual(label.label, expected)
+    }
+}
+
+/// The host's `stack` label: `front=<card>;settled=<bool>;trail=<action>|<action>…`.
+private struct Stack {
+    let front: String
+    let settled: Bool
+    let trail: [String]
+
+    init(_ label: String) {
+        let fields = Dictionary(label.split(separator: ";").compactMap { field -> (String, String)? in
+            let pair = field.split(separator: "=", maxSplits: 1).map(String.init)
+            return pair.count == 2 ? (pair[0], pair[1]) : nil
+        }, uniquingKeysWith: { first, _ in first })
+        front = fields["front"] ?? "none"
+        settled = fields["settled"] == "true"
+        trail = fields["trail"].map { $0.split(separator: "|").map(String.init) } ?? []
     }
 }

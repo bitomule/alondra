@@ -7,7 +7,8 @@ import Foundation
 import SwiftUI
 
 /// Waiting for You with two «Do» cards, each answered with Done, for UI tests that touch it the way
-/// a person does. Every answer the screen sends is listed, by card and option, in `answers`.
+/// a person does. Every answer the screen sends is listed, by card and option, in `answers`; the
+/// card in front, whether the stack is still moving and what it received are in `stack`.
 @main
 struct TriageTouchHostApp: App {
     static let frontID = "t-holepunch-ports-1"
@@ -31,12 +32,21 @@ struct TriageTouchHostApp: App {
 @Observable
 final class Answers {
     var sent: [String] = []
+    let trail: Trail
     let store: StoreOf<TriageFeature>
 
     init() {
         let documents = Self.documents()
         let recorder = Recorder()
-        store = Store(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+        let trail = Trail()
+        self.trail = trail
+        store = Store(initialState: TriageFeature.State()) {
+            Reduce { _, action in
+                MainActor.assumeIsolated { trail.record(action) }
+                return .none
+            }
+            TriageFeature()
+        } withDependencies: {
             $0.viewsClient = ViewsClient(
                 load: { key, _ in
                     guard let document = documents[key.rawValue] else { throw ViewsClientError.missingView }
@@ -135,6 +145,26 @@ final class Answers {
     }
 }
 
+/// What the stack received and did, in order, so a test can wait for a swipe to settle and a
+/// failure says whether the touch arrived.
+@MainActor
+@Observable
+final class Trail {
+    var events: [String] = []
+
+    func record(_ action: TriageFeature.Action) {
+        switch action {
+        case .task: events.append("task")
+        case .disappeared: events.append("disappeared")
+        case .leaveForLater: events.append("later")
+        case .dragChanged: events.append("dragChanged")
+        case .dragEnded(let translation, let predicted): events.append("dragEnded(\(Int(translation)),\(Int(predicted)))")
+        case .swipeSettled: events.append("settled")
+        default: break
+        }
+    }
+}
+
 /// Hands each request the screen delivers to the label the UI test reads.
 final class Recorder: @unchecked Sendable {
     @MainActor weak var answers: Answers?
@@ -159,5 +189,17 @@ private struct Host: View {
                 .accessibilityIdentifier("answers")
                 .allowsHitTesting(false)
         }
+        .overlay(alignment: .top) {
+            Text(stack)
+                .font(.caption2)
+                .lineLimit(1)
+                .accessibilityIdentifier("stack")
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var stack: String {
+        let store = answers.store
+        return "front=\(store.currentID ?? "none");settled=\(store.swipe == nil);trail=\(answers.trail.events.joined(separator: "|"))"
     }
 }
