@@ -441,7 +441,7 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
         if reply { continue; }
         let id = request.id.clone();
         daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest {
-            request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None,
+            request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None, headline: None,
         });
         let state = daemon.domain.state().unwrap();
         assert!(state.requests[&id].closed);

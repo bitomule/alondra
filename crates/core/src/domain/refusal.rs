@@ -78,7 +78,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "request_title_required", "pr_owned_by_other_task", "pr_missing", "pr_needs_final", "no_task", "incompatible_protocol",
     "dependency_not_delivered", "clarification_pending", "blocking_open", "blocking_interaction",
     "unanswered_questions", "ask_already_open", "already_withdrawn", "already_answered", "agent_used", "agent_busy",
-    "maintenance_request", "launch_plan_required", "too_many_suggestions", "suggestion_needs_decision",
+    "maintenance_request", "outcome_card", "launch_plan_required", "too_many_suggestions", "suggestion_needs_decision",
     "plan_without_checklist", "plan_checklist_too_long", "checklist_not_final", "checklist_without_plan",
     "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
     "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task",

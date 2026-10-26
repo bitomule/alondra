@@ -422,7 +422,7 @@ impl DomainState {
     }
 
     /// What clearing the completed work takes off the lists: the ended Tasks the user saw at
-    /// revision `seen`, and the closed Requests listed without Tasks.
+    /// revision `seen`, and the closed Requests listed without Tasks (an answered one is not listed).
     pub(super) fn clear_guard(&self, actor: &Actor, seen: Revision) -> Result<(Vec<TaskId>, Vec<RequestId>)> {
         user(actor)?;
         if seen > self.revision {
@@ -433,7 +433,7 @@ impl DomainState {
             .map(|t| t.id.clone()).collect();
         let with_tasks: BTreeSet<&RequestId> = self.tasks.values().map(|t| &t.request_id).collect();
         let requests: Vec<RequestId> = self.requests.values()
-            .filter(|r| r.closed && !r.cleared && !r.message && !with_tasks.contains(&r.id))
+            .filter(|r| r.closed && !r.cleared && !r.message && !r.answered() && !with_tasks.contains(&r.id))
             .map(|r| r.id.clone()).collect();
         if tasks.is_empty() && requests.is_empty() {
             return fail("nothing_to_clear", "Nothing completed is left to clear");

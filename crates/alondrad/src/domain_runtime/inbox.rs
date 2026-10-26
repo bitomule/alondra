@@ -10,7 +10,7 @@ impl DomainRuntime {
             data_epoch: state.data_epoch.clone(),
             command_id: format!("settle-{request_id}").into(),
             expected_revision: state.revision,
-            command: Command::CloseRequest { request_id: request_id.clone(), answer: None, withdrawn, title: None },
+            command: Command::CloseRequest { request_id: request_id.clone(), answer: None, withdrawn, title: None, headline: None },
         })
     }
 }

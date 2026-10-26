@@ -990,7 +990,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_orchestrator_answer_is_pushed_and_badged_even_when_its_request_closes_with_it() {
+    async fn the_answer_of_a_closed_request_is_pushed_and_badged_once() {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
@@ -1000,30 +1000,23 @@ mod tests {
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
-            attachments: vec![],
-            interaction_id: "a7efd99d-answer-1".into(),
-            scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
-            recipient: Recipient::User,
-            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
-            card: CardSpec::new(CardKind::Know, "Cifrar imágenes con R2 es posible").why("Una imagen son bytes como cualquier otro."),
-        });
         apply_command(&domain, orchestrator, "close", Command::CloseRequest {
             request_id: "a7efd99d".into(),
             answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
             withdrawn: false,
             title: Some("Cifrar imágenes vía R2".into()),
+            headline: Some("Cifrar imágenes con R2 es posible".into()),
         });
         let user: Vec<_> = domain.store.lock().unwrap().pending_messages().unwrap()
             .into_iter().filter(|message| message.recipient_kind == "user").collect();
-        assert_eq!(user.len(), 1, "one push for the answer, none for the close");
-        assert_eq!(user[0].interaction_id.as_deref(), Some("a7efd99d-answer-1"));
+        assert_eq!(user.len(), 1, "one push for the answer");
+        assert_eq!(user[0].interaction_id.as_deref(), Some("a7efd99d-answer"));
         let state = domain.state().unwrap();
         let payload = user_push_payload(&state, user[0].interaction_id.as_deref(), Lang::Es);
-        assert_eq!(payload["alondra"]["card"], "a7efd99d-answer-1");
+        assert_eq!(payload["alondra"]["card"], "a7efd99d-answer");
         assert_eq!(payload["alondra"]["kind"], "information");
         assert_eq!(payload["aps"]["alert"]["title"], "Cifrar imágenes con R2 es posible");
-        assert_eq!(payload["aps"]["alert"]["body"], "Una imagen son bytes como cualquier otro.");
+        assert_eq!(payload["aps"]["alert"]["body"], "Sí: se cifran en el cliente antes de subirlas a R2");
         assert_eq!(payload["aps"]["interruption-level"], "passive");
         assert_eq!(payload["aps"]["thread-id"], "a7efd99d", "the answer groups with its Request");
         assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");

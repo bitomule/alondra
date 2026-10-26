@@ -48,7 +48,7 @@ fn card<'s>(s: &'s DomainState, id: &str) -> &'s Interaction {
 fn working() -> DomainState {
     let mut s = DomainState::new("epoch");
     ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
-    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Make it smaller".into(), auto_merge: false, maintenance: false, message: false });
+    ok(&mut s, orchestrator(), Command::CreateRequest { request_id: "r".into(), body: "Make it smaller".into(), auto_merge: false, maintenance: false, message: false });
     ok(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Smaller store".into() });
     ok(&mut s, orchestrator(), task("t", &[]));
     ok(&mut s, orchestrator(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None });

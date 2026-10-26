@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v0694d4c5fcc3f296",
+  "version": "v1bea91cb05be1914",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -398,12 +398,12 @@
     {
       "id": "finished",
       "title": "Completed",
-      "count": 2,
+      "count": 1,
       "collapsed": true,
       "items": [],
       "more": {
         "key": "tasks?section=finished&after=0",
-        "remaining": 2
+        "remaining": 1
       },
       "actions": [
         {

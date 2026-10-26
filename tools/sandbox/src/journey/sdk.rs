@@ -246,7 +246,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let mut batches = vec![];
         for n in 1..=CONTEXT_BATCHES {
             let request_id = format!("req-ctx-{n}");
-            let script = RequestScript { request_id: request_id.clone(), tasks: vec![], answer: Some(format!("Noted: message {n} needs no task")) };
+            let script = RequestScript { request_id: request_id.clone(), tasks: vec![], answer: Some(format!("Noted: message {n} needs no task")), headline: None, summary: None };
             request(report, fakes, &user, &script, &format!("Message {n} for the orchestrator"))?;
             let batch = wait(report, &format!("the orchestrator closes {request_id} and its turn ends"), || {
                 let requests = orchestrator_requests(sandbox)?;

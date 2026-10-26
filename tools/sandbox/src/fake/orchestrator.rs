@@ -70,12 +70,24 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
     }
     for script in fakes.request_scripts()? {
         let handled = dir.join(format!("{}.handled", script.request_id));
+        let summarized = dir.join(format!("{}.summarized", script.request_id));
+        let mut calls: Vec<(&'static str, Value)> = vec![];
+        if let Some(summary) = script.summary.as_ref().filter(|_| {
+            handled.exists() && !summarized.exists() && prompt.contains(&format!("Every Task of Request {}", script.request_id))
+        }) {
+            calls.push(("close_request", json!({"request_id": script.request_id, "answer": summary})));
+            std::fs::write(&summarized, "")?;
+        }
         if !prompt.contains(&script.request_id) || handled.exists() {
+            made.extend(call_all(&dir, &program, &server_args, calls)?);
             continue;
         }
-        let mut calls: Vec<(&'static str, Value)> = vec![];
         if let Some(answer) = &script.answer {
-            calls.push(("close_request", json!({"request_id": script.request_id, "answer": answer})));
+            let mut close = json!({"request_id": script.request_id, "answer": answer});
+            if let Some(headline) = &script.headline {
+                close["headline"] = json!(headline);
+            }
+            calls.push(("close_request", close));
         }
         for task in &script.tasks {
             let launch = json!({"name": format!("sandbox/{}", task.task_id), "cwd": fakes.repo(), "model": "sonnet", "reason": "A scripted sandbox node"});
@@ -85,12 +97,21 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
             })));
             calls.push(("launch", json!({"task": task.task_id, "title": task.title, "model": "sonnet", "reason": "A scripted sandbox node"})));
         }
-        let replies = mcp::call(&program, &server_args, &[], &calls)?;
-        for ((tool, call), reply) in calls.into_iter().zip(replies) {
-            append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": tool, "arguments": call, "refused": reply.refused, "text": reply.text}))?;
-            made.push((tool, call, reply));
-        }
+        made.extend(call_all(&dir, &program, &server_args, calls)?);
         std::fs::write(&handled, "")?;
+    }
+    Ok(made)
+}
+
+fn call_all(dir: &std::path::Path, program: &std::path::Path, server_args: &[String], calls: Vec<(&'static str, Value)>) -> Result<Vec<(&'static str, Value, mcp::Reply)>> {
+    if calls.is_empty() {
+        return Ok(vec![]);
+    }
+    let replies = mcp::call(program, server_args, &[], &calls)?;
+    let mut made = vec![];
+    for ((tool, call), reply) in calls.into_iter().zip(replies) {
+        append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": tool, "arguments": call, "refused": reply.refused, "text": reply.text}))?;
+        made.push((tool, call, reply));
     }
     Ok(made)
 }

@@ -14,6 +14,12 @@ pub struct RequestScript {
     /// An answer the orchestrator closes the request with, for a request that needs no task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    /// The answer's headline on the user's card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headline: Option<String>,
+    /// What came of it: the orchestrator closes the request with it once all its tasks have ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

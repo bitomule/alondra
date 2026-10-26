@@ -1,0 +1,131 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch-outcome",
+  "view": "card",
+  "key": "card:r-encrypt-answer",
+  "client": "mac",
+  "version": "v356465a6e84db199",
+  "cursor": "cursor-1",
+  "title": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
+  "status": {
+    "version": "v2470fc732803317d",
+    "summary": "2 to read · 0 nodes working",
+    "badge": 2,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 2
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "r-encrypt-answer",
+          "kind": "know",
+          "need": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
+          "meta": "Cifrar imágenes en R2",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "2 points"
+          },
+          "reply": {
+            "id": "msg:view@19",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "key": "r",
+            "resolves_card": false
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:r-encrypt-answer"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "read:r-encrypt-answer@2",
+              "label": "Seen",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Read",
+              "key": "1",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Para el cifrado una imagen son bytes como cualquier otro: el iPhone la cifra con la clave del usuario antes de subirla, y R2 solo guarda bytes cifrados.\n\nYa se hace así desde la versión 0.3.0, así que no hace falta ninguna tarea.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    }
+  ]
+}

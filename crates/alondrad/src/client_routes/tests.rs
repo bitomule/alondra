@@ -184,14 +184,14 @@ fn seed_work(fixture: &Fixture) {
         agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan { project: Some("Editor".into()), ..alondra_core::domain::LaunchPlan::new("node", "/tmp") }),
     });
-    fixture.command(Actor::Orchestrator { generation: 0 }, "answer-2", Command::PublishInformation {
+    fixture.command(Actor::System, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
         body: "Nothing to change: it already works".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
-    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
+    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None, headline: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
-    fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()) });
+    fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()), headline: None });
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),

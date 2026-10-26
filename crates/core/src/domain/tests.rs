@@ -351,9 +351,10 @@ fn a_scheduled_request_tells_the_user_its_answer() {
     exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
     receipt(&mut state, "scheduled-task");
     exec(&mut state, Actor::Orchestrator { generation: 0 }, Command::CloseRequest {
-        request_id: "scheduled-request".into(), answer: Some("Nothing to review this week".into()), withdrawn: false, title: None,
+        request_id: "scheduled-request".into(), answer: Some("Nothing to review this week".into()), withdrawn: false, title: None, headline: None,
     }).unwrap();
-    assert!(state.interactions.contains_key(&InteractionId::from("scheduled-request-answer")));
+    let done = &state.interactions[&InteractionId::from("request-done-scheduled-request")];
+    assert_eq!(crate::request_outcome::DoneCard::from_body(&done.body).and_then(|card| card.summary).as_deref(), Some("Nothing to review this week"));
 }
 
 #[test]
@@ -500,7 +501,7 @@ fn information_read_is_not_a_reply_or_acceptance() {
     let mut s = fixture();
     exec(
         &mut s,
-        orchestrator(),
+        Actor::System,
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -1177,7 +1178,7 @@ fn closed_request_prevents_reopening_its_terminal_task() {
             request_id: "r".into(),
             answer: None,
             withdrawn: false,
-            title: None,
+            title: None, headline: None,
         },
     )
     .unwrap();
@@ -1199,17 +1200,17 @@ fn orchestrator() -> Actor {
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
     exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None }, "forbidden");
-    reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None }, "invalid_input");
+    reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None }, "forbidden");
+    reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None, headline: None }, "invalid_input");
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
-        withdrawn: false, title: Some("CI status".into()) }).unwrap();
+        withdrawn: false, title: Some("CI status".into()), headline: None }).unwrap();
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
     exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None }).unwrap();
+    exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None, headline: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
-    reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
+    reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None }, "task_not_active");
 }
 /// Every `alondra send` used to be a Request whose answer became a card for the user.
 #[test]
@@ -1225,16 +1226,17 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
     assert_eq!(error.code, "maintenance_request");
     assert!(error.message.contains("--reply"), "{error}");
     let closed = exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "m".into(), answer: Some("Launched".into()),
-        withdrawn: false, title: Some("Two more nodes".into()) }).unwrap();
+        withdrawn: false, title: Some("Two more nodes".into()), headline: None }).unwrap();
     assert_eq!(cards(&s), 0);
     assert!(!closed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
-        withdrawn: false, title: None }).unwrap();
+        withdrawn: false, title: None, headline: None }).unwrap();
     assert_eq!(cards(&s), 1);
     exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    exec(&mut s, orchestrator(), info("q2-info", "q2")).unwrap();
-    assert_eq!(cards(&s), 2);
+    assert_eq!(exec(&mut s, orchestrator(), info("q2-info", "q2")).unwrap_err().code, "outcome_card",
+        "the user hears the answer of their request from Alondra, never a second time from the orchestrator");
+    assert_eq!(cards(&s), 1);
 }
 #[test]
 fn the_orchestrator_names_a_request_with_a_short_title() {
@@ -2049,7 +2051,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
     .unwrap();
     exec(
         &mut s,
-        orchestrator(),
+        Actor::System,
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -2122,7 +2124,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
     assert_eq!(
         exec(
             &mut s,
-            orchestrator(),
+            Actor::System,
             Command::PublishInformation {
                 attachments: vec![too_big],
                 interaction_id: "bad".into(),
@@ -2427,7 +2429,7 @@ fn information_read_is_shared_across_authorized_devices() {
     let mut s = fixture();
     exec(
         &mut s,
-        orchestrator(),
+        Actor::System,
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "i".into(),
@@ -2784,7 +2786,7 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     let mut s = fixture();
     exec(
         &mut s,
-        orchestrator(),
+        Actor::System,
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -2823,7 +2825,7 @@ fn completed_work() -> DomainState {
         exec(&mut s, user(), Command::CreateRequest { request_id: request.into(), body: "Is main green?".into(),
             auto_merge: false, maintenance: false, message }).unwrap();
         exec(&mut s, orchestrator(), Command::CloseRequest { request_id: request.into(), answer: Some("Yes".into()),
-            withdrawn: false, title: None }).unwrap();
+            withdrawn: false, title: None, headline: None }).unwrap();
     }
     s
 }
@@ -2838,7 +2840,7 @@ fn clearing_takes_every_ended_task_and_every_request_closed_without_tasks() {
     let archived: BTreeSet<&str> = s.tasks.values().filter(|t| t.archived).map(|t| t.id.0.as_str()).collect();
     assert_eq!(archived, BTreeSet::from(["t", "c"]), "the done and the cancelled task, never the one not started");
     let cleared: BTreeSet<&str> = s.requests.values().filter(|r| r.cleared).map(|r| r.id.0.as_str()).collect();
-    assert_eq!(cleared, BTreeSet::from(["q"]), "a request with tasks goes with them, and a message is never listed");
+    assert!(cleared.is_empty(), "a request with tasks goes with them, and neither an answered request nor a message is listed: {cleared:?}");
     assert!(!s.clear_completed_action().enabled);
     let revision = s.revision;
     reject_unchanged(&mut s, user(), Command::ClearCompleted { seen: revision }, "nothing_to_clear");
@@ -2908,7 +2910,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     )
     .unwrap();
     let seen = s.revision;
-    exec(&mut s, orchestrator(), info("i1")).unwrap();
+    exec(&mut s, Actor::System, info("i1")).unwrap();
     assert!(s.revision > seen);
     // A snapshot older than unrelated information still decides this question once.
     run(&mut s, user(), "a1", seen, answer("Blue")).unwrap();
@@ -2922,7 +2924,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     );
     // Information neither blocks nor dates a Task decision.
     let seen = s.revision;
-    exec(&mut s, orchestrator(), info("i3")).unwrap();
+    exec(&mut s, Actor::System, info("i3")).unwrap();
     run(&mut s, agent(), "start", seen, Command::StartTask { task_id: "t".into() }).unwrap();
     // Invalidating a delivery dates every decision taken on it.
     register(&mut s);
@@ -3127,7 +3129,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::AdoptSdkNodes, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
-        (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
+        (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
         (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::TurnStarted, at: 0 }, false),
         (Command::RecordLastWords { agent_id: ids.agent.into(), text: "Done for now".into() }, false),
@@ -3415,7 +3417,7 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
     reject_unchanged(&mut state, Actor::System, Command::RecordScheduleLaunchHanded {
         run_id: "run-1".into(), session_id: Some("ab1234".into()), agent_id: Some("a".into()), finished_at: 104,
     }, "conflict");
-    exec(&mut state, orchestrator(), Command::PublishInformation {
+    exec(&mut state, Actor::System, Command::PublishInformation {
         attachments: vec![], interaction_id: "i".into(),
         scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"),
     }).unwrap();
@@ -3476,7 +3478,7 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
             if message == &instruction.message("Back to you")));
         assert!(!waiting(&s, "d"), "{instruction:?}");
         assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(instruction)));
-        exec(&mut s, orchestrator(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
+        exec(&mut s, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
             scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update") }).unwrap();
         assert!(!waiting(&s, "d"), "{instruction:?}: another word from the Agent never brings the delivery back");
         assert_eq!(s.task_handed_back(&"t".into()), Some(instruction));
@@ -3534,7 +3536,7 @@ fn a_reply_to_a_delivery_takes_it_out_of_the_queue_and_nothing_later_brings_it_b
     assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(Instruction::Reply)));
     assert!(!matches!(s.attention(&s.tasks[&"t".into()]), Attention::Act(_)));
 
-    exec(&mut s, orchestrator(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
+    exec(&mut s, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
         scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(),
         card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update") }).unwrap();
     exec(&mut s, user(), Command::MarkRead { interaction_id: "note".into() }).unwrap();
@@ -3618,7 +3620,7 @@ fn a_permission_offers_always_between_allow_and_deny_only_when_asked() {
 }
 
 #[test]
-fn a_node_cannot_send_the_user_a_notice_but_alondra_and_the_orchestrator_can() {
+fn a_node_cannot_send_the_user_a_notice_and_the_orchestrator_none_about_the_users_request() {
     let mut s = fixture();
     let notice = |id: &str, recipient: Recipient| Command::PublishInformation {
         attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() }, recipient,
@@ -3629,7 +3631,7 @@ fn a_node_cannot_send_the_user_a_notice_but_alondra_and_the_orchestrator_can() {
     assert!(error.to_string().contains("send notices"), "{error}");
     reject_unchanged(&mut s, agent(), notice("n", Recipient::User), "forbidden");
     exec(&mut s, Actor::System, notice("system", Recipient::User)).unwrap();
-    exec(&mut s, orchestrator(), notice("orchestrator", Recipient::User)).unwrap();
+    reject_unchanged(&mut s, orchestrator(), notice("orchestrator", Recipient::User), "outcome_card");
 }
 #[test]
 fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_no_agent() {
@@ -4640,7 +4642,7 @@ fn a_message_closes_when_its_last_task_ends_and_a_users_request_does_not() {
 #[test]
 fn alondra_closes_a_request_but_never_one_with_open_tasks() {
     let mut s = fixture();
-    let close = |withdrawn| Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn, title: None };
+    let close = |withdrawn| Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn, title: None, headline: None };
     assert!(exec(&mut s, Actor::System, close(false)).is_err());
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, Actor::System, close(true)).unwrap();

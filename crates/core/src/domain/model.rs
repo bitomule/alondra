@@ -74,6 +74,10 @@ impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
         Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false, origin: RequestOrigin::User }
     }
+    /// Closed with an answer: for a Request without Tasks, its card carries all there is to read.
+    pub fn answered(&self) -> bool {
+        self.closed && !self.withdrawn && self.answer.is_some()
+    }
 }
 /// Rows written before the origin was recorded read as the user's, so no answer they asked for is lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1236,6 +1240,7 @@ impl DomainState {
 /// What a node is told when it tries to send the user a Know card.
 pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";
 /// What the orchestrator is told when it answers a maintenance message with a card.
+pub const ALONDRA_TELLS_THE_OUTCOME: &str = "Alondra tells the user how their request ended: answer a Request without Tasks with close_request (headline and answer), and close one whose Tasks are over with close_request (answer: what came of it). No card from you for it or its Tasks.";
 pub const MAINTENANCE_GETS_NO_CARD: &str = "this Request is a maintenance message sent with alondra send: act on it and close it with close_request, without a card for the user. It is answered only when sent with --reply.";
 
 /// The one name that always means the orchestrator, whatever session it runs in now.

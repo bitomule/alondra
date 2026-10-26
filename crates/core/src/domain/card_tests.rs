@@ -137,7 +137,7 @@ fn a_closed_task_accepts_only_a_closing_notice() {
         ("task_not_active".into(), Some("scope.task_id".into())));
     assert_eq!(refused(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled")),
         ("forbidden".into(), Some("card.kind".into())));
-    ok(&mut s, orchestrator(), inform("closing", scope("t"), "The task was cancelled"));
+    ok(&mut s, Actor::System, inform("closing", scope("t"), "The task was cancelled"));
     assert_eq!(s.interactions[&"closing".into()].card.kind, CardKind::Know);
 }
 
@@ -205,13 +205,13 @@ fn after_clarify_the_node_must_replace_the_card() {
 #[test]
 fn a_repeated_notice_is_not_shown_twice() {
     let mut s = fixture();
-    ok(&mut s, orchestrator(), inform("i1", scope("t"), "Tests pass"));
-    let out = ok(&mut s, orchestrator(), inform("i2", scope("t"), "Tests pass"));
+    ok(&mut s, Actor::System, inform("i1", scope("t"), "Tests pass"));
+    let out = ok(&mut s, Actor::System, inform("i2", scope("t"), "Tests pass"));
     assert!(!out.changed);
     assert_eq!(out.created_ids, vec!["i1".to_owned()], "the existing notice is returned");
     assert!(!s.interactions.contains_key(&"i2".into()));
     ok(&mut s, user(), Command::MarkRead { interaction_id: "i1".into() });
-    ok(&mut s, orchestrator(), inform("i3", scope("t"), "Tests pass"));
+    ok(&mut s, Actor::System, inform("i3", scope("t"), "Tests pass"));
     assert!(s.interactions.contains_key(&"i3".into()), "once read, the same words are news again");
 }
 
@@ -409,21 +409,14 @@ fn closing_with_an_answer_tells_the_user() {
     let mut s = fixture();
     ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false, maintenance: false, message: false });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()),
+        request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()), headline: None,
     });
     let told: Vec<&Interaction> = s.interactions.values()
         .filter(|i| i.scope == Scope::Orchestrator { request_id: Some("q-r".into()) })
         .collect();
     assert_eq!(told.len(), 1);
-    assert_eq!((told[0].card.kind, told[0].card.need.as_str(), told[0].body.as_str()), (CardKind::Know, "Review status", "Yes, since Monday"));
+    assert_eq!((told[0].card.kind, told[0].card.need.as_str(), told[0].body.as_str()), (CardKind::Know, "Yes, since Monday", "Yes, since Monday"));
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id == &told[0].id)));
-    ok(&mut s, user(), Command::CreateRequest { request_id: "told".into(), body: "Encrypt images?".into(), auto_merge: false, maintenance: false, message: false });
-    ok(&mut s, orchestrator(), inform("told-answer", Scope::Orchestrator { request_id: Some("told".into()) }, "Yes, with R2"));
-    ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "told".into(), answer: Some("Yes, with R2".into()), withdrawn: false, title: None,
-    });
-    assert_eq!(s.interactions.values().filter(|i| i.scope == Scope::Orchestrator { request_id: Some("told".into()) }).count(), 1,
-        "an answer already sent is not sent again");
 }
 
 fn answer_cards(s: &DomainState, request: &str) -> usize {
@@ -441,7 +434,7 @@ fn closing_a_request_a_node_raised_tells_the_user_nothing() {
     assert_eq!(s.requests[&"r-readme".into()].origin, RequestOrigin::Node { agent_id: "a".into() });
     ok(&mut s, orchestrator(), Command::CancelTask { task_id: "t-readme".into() });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None,
+        request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None, headline: None,
     });
     assert_eq!(answer_cards(&s, "r-readme"), 0);
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
@@ -454,7 +447,7 @@ fn closing_a_request_the_orchestrator_raised_tells_the_user_nothing() {
     ok(&mut s, orchestrator(), Command::CreateRequest { request_id: "req-measure".into(), body: "Measure the SDK usage".into(), auto_merge: false, maintenance: false, message: false });
     assert_eq!(s.requests[&"req-measure".into()].origin, RequestOrigin::Orchestrator);
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "req-measure".into(), answer: Some("make e2e-sdk passes again".into()), withdrawn: false, title: Some("SDK e2e".into()),
+        request_id: "req-measure".into(), answer: Some("make e2e-sdk passes again".into()), withdrawn: false, title: Some("SDK e2e".into()), headline: None,
     });
     assert_eq!(answer_cards(&s, "req-measure"), 0);
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
@@ -467,7 +460,7 @@ fn closing_a_request_the_user_made_tells_the_user_its_answer() {
     ok(&mut s, user(), Command::CreateRequest { request_id: "mine".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     assert_eq!(s.requests[&"mine".into()].origin, RequestOrigin::User);
     ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "mine".into(), answer: Some("Yes".into()), withdrawn: false, title: None,
+        request_id: "mine".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None,
     });
     assert_eq!(answer_cards(&s, "mine"), 1);
 }
@@ -679,7 +672,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         attachments: vec![], interaction_id: "do".into(), scope: scope("t"), recipient: Recipient::User,
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
-    ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
+    ok(&mut s, Actor::System, inform("know", scope("t"), "Heads up"));
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     let items = inbox_items(&s);
     assert!(items.iter().any(|item| item.pending), "the notice remains");
@@ -708,7 +701,7 @@ fn selected_inbox(s: &DomainState) -> Vec<InboxItem> {
 #[test]
 fn inbox_selection_keeps_user_cards_current_final_delivery_and_action_guards() {
     let mut s = fixture();
-    ok(&mut s, orchestrator(), inform("z-notice", scope("t"), "First notice"));
+    ok(&mut s, Actor::System, inform("z-notice", scope("t"), "First notice"));
     let notice_order = s.revision;
     let mut private = inform("private", scope("t"), "For the node");
     if let Command::PublishInformation { recipient, .. } = &mut private {
@@ -750,7 +743,7 @@ fn inbox_selection_keeps_user_cards_current_final_delivery_and_action_guards() {
 fn inbox_equal_order_uses_id_after_rank_and_excludes_other_recipients() {
     let mut s = fixture();
     for id in ["z", "a"] {
-        ok(&mut s, orchestrator(), inform(id, scope("t"), id));
+        ok(&mut s, Actor::System, inform(id, scope("t"), id));
     }
     let mut private = inform("orchestrator", scope("t"), "For the orchestrator");
     if let Command::PublishInformation { recipient, .. } = &mut private {
@@ -828,7 +821,7 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     let mut blocking = decide("Pick a name");
     blocking.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     ok(&mut s, agent(), ask("q", "t", true, blocking));
-    ok(&mut s, orchestrator(), inform("n", scope("t"), "Heads up"));
+    ok(&mut s, Actor::System, inform("n", scope("t"), "Heads up"));
     assert_eq!(inbox_ids(&s), ["q", "d", "n"], "a question, the delivery of the PR, a notice: three cards");
     assert_eq!(ReadIndex::build(&s).counts().roots, 3);
     for item in &inbox_items(&s) {
@@ -843,10 +836,10 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_know_oldest_fir
     let mut s = fixture();
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
-    ok(&mut s, orchestrator(), inform("know-old", scope("t"), "The first notice"));
+    ok(&mut s, Actor::System, inform("know-old", scope("t"), "The first notice"));
     ok(&mut s, agent(), ask("provide", "t", false,
         CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
-    ok(&mut s, orchestrator(), inform("know-new", scope("t"), "The second notice"));
+    ok(&mut s, Actor::System, inform("know-new", scope("t"), "The second notice"));
     register_agent(&mut s, "c");
     task(&mut s, "t3", "c");
     ok(&mut s, Actor::Agent { agent_id: "c".into() }, Command::PresentResult {
@@ -932,8 +925,8 @@ fn notice(id: &str, need: &str, replaces: Option<&str>) -> Command {
 #[test]
 fn a_correction_replaces_the_earlier_notice() {
     let mut s = fixture();
-    ok(&mut s, orchestrator(), notice("n1", "Build is green", None));
-    ok(&mut s, orchestrator(), notice("n2", "Correction: build is red", Some("n1")));
+    ok(&mut s, Actor::System, notice("n1", "Build is green", None));
+    ok(&mut s, Actor::System, notice("n2", "Correction: build is red", Some("n1")));
     assert!(s.interactions[&"n1".into()].withdrawn);
     assert!(s.open(&s.interactions[&"n2".into()]));
 }

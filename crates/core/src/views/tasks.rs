@@ -128,7 +128,7 @@ fn task_bucket(task: &Task, request: Bucket) -> Bucket {
 }
 
 /// A message to the orchestrator is listed only once it made tasks: until then, and if it never does, it is
-/// in no section.
+/// in no section. A request answered without tasks is in none either: its card in the inbox holds the answer.
 fn request_buckets(domain: &DomainState) -> BTreeMap<&RequestId, Bucket> {
     let mut tasks: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
     for task in domain.tasks.values() {
@@ -137,7 +137,7 @@ fn request_buckets(domain: &DomainState) -> BTreeMap<&RequestId, Bucket> {
     domain.requests.values()
         .filter_map(|request| {
             let own = tasks.get(&request.id).map_or(&[][..], Vec::as_slice);
-            (!request.message || !own.is_empty()).then(|| (&request.id, bucket(request, own)))
+            (!own.is_empty() || !(request.message || request.answered())).then(|| (&request.id, bucket(request, own)))
         })
         .collect()
 }
@@ -280,9 +280,6 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
         row.link = Some(super::Link::View { key: format!("task:{}", task.id) });
     } else if context.client != super::Client::Tui {
         row.link = None;
-    }
-    if request.closed && !request.withdrawn && tasks.is_empty() && request.answer.is_some() {
-        row.icon = Icon::Check;
     }
     let mut children = task_tree(tasks, forest, context);
     if context.client != super::Client::Ios && !split {

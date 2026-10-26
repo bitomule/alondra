@@ -91,6 +91,9 @@ pub enum Command {
         withdrawn: bool,
         #[serde(default)]
         title: Option<String>,
+        /// The answer's headline the user reads on its card, the answer below it.
+        #[serde(default)]
+        headline: Option<String>,
     },
     TitleRequest {
         request_id: RequestId,

@@ -104,7 +104,7 @@ fn a_closed_request_tells_nothing() {
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
     assert_eq!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "design".into() })).len(), 1);
-    let close = ok(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: Some("Not needed after all".into()), withdrawn: false, title: None });
+    let close = ok(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: Some("Not needed after all".into()), withdrawn: false, title: None, headline: None });
     assert!(told(&close).is_empty());
     assert!(s.requests[&"r".into()].closed);
 

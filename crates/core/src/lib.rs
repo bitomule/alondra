@@ -34,6 +34,7 @@ pub mod orchestrator;
 pub mod orchestrator_batch;
 pub mod orchestrator_cards;
 pub mod pr;
+pub mod request_outcome;
 pub mod sessions;
 pub mod stack;
 pub mod start_problem;

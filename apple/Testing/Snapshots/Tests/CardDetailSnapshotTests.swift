@@ -147,6 +147,28 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    // MARK: How a request of the user ended, written by Alondra
+
+    func test_outcomeAnswer() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-answer") { _ in })
+        assertDetail(store)
+    }
+
+    func test_outcomeAnswer_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-answer-es") { _ in })
+        assertDetail(store, language: .spanish)
+    }
+
+    func test_outcomeDone() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-done") { _ in })
+        assertDetail(store)
+    }
+
+    func test_outcomeDone_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-done-es") { _ in })
+        assertDetail(store, language: .spanish)
+    }
+
     func test_pullRequestHeldBackByAnotherCard() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.pullRequestID))
         assertDetail(store)

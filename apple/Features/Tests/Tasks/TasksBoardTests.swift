@@ -157,14 +157,15 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertNil(request.tasks.first?.link)
     }
 
-    func testARequestThatOnlyAnsweredIsFinishedAsAnswered() throws {
+    func testARequestAnsweredWithoutTasksIsNotListed() throws {
         let page = try Fixtures.document("tasks-ios-finished")
         let rows = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> Row? in
             if case .row(let row) = item { row } else { nil }
         } ?? []
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"), pages: ["finished": TasksPage(rows: rows, more: nil)])
 
-        XCTAssertEqual(board.finished.requests.first { $0.id == "r-answer" }?.state, "Answered")
+        XCTAssertFalse(rows.isEmpty)
+        XCTAssertNil(board.finished.requests.first { $0.id == "r-answer" }, "its answer is on its card in the inbox")
     }
 
     func testTheListCarriesOnlyHowMuchIsFinishedAndTheEndedTasksOfLiveRequestsFoldThere() throws {

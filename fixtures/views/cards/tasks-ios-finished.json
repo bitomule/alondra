@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v64b3e3f9ebd56870",
+  "version": "v71eb75b2ee0a2968",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -465,18 +465,9 @@
     {
       "id": "finished",
       "title": "Completed",
-      "count": 2,
+      "count": 1,
       "collapsed": false,
       "items": [
-        {
-          "type": "row",
-          "id": "r-answer",
-          "icon": "check",
-          "title": "Is main green?",
-          "subtitle": "Answered",
-          "depth": 0,
-          "struck": false
-        },
         {
           "type": "row",
           "id": "r-blurcamera:ended",

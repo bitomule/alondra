@@ -1100,7 +1100,6 @@ impl DomainState {
         }
         Ok(())
     }
-    /// R22: a Request closed with an answer tells the user, unless something already did.
     /// A message to the orchestrator that made tasks is done once the last of them ends: nobody
     /// is left to close it, since `close_request` waits for its tasks.
     fn close_finished_messages(&mut self) {
@@ -1122,43 +1121,74 @@ impl DomainState {
             .cloned()
             .collect()
     }
-    fn tell_the_answer(&mut self, actor: &Actor, request: &RequestId, answer: &str, title: Option<&str>,
-        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
-        let tasks: BTreeSet<&TaskId> = self.tasks.values().filter(|t| &t.request_id == request).map(|t| &t.id).collect();
-        let told = self.interactions.values().any(|i| {
+    fn request_of_scope(&self, scope: &Scope) -> Option<&Request> {
+        let id = match scope {
+            Scope::Orchestrator { request_id } => request_id.as_ref()?,
+            Scope::Task { task_id } => &self.tasks.get(task_id)?.request_id,
+        };
+        self.requests.get(id)
+    }
+    /// A card the orchestrator wrote about the request before Alondra wrote its outcome cards.
+    fn orchestrator_told(&self, request: &RequestId) -> bool {
+        self.interactions.values().any(|i| {
             i.recipient == Recipient::User
+                && matches!(i.author, Author::Orchestrator { .. })
                 && matches!(i.payload, InteractionPayload::Information { .. })
-                && match &i.scope {
-                    Scope::Orchestrator { request_id } => request_id.as_ref() == Some(request),
-                    Scope::Task { task_id } => tasks.contains(task_id),
-                }
-        });
-        if told {
+                && matches!(&i.scope, Scope::Orchestrator { request_id: Some(id) } if id == request)
+        })
+    }
+    /// R22: a request of the user closed without tasks tells them its answer.
+    fn tell_the_answer(&mut self, request: &RequestId, answer: &str, headline: Option<&str>,
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        if self.orchestrator_told(request) {
             return Ok(());
         }
-        let mut id = InteractionId(format!("{request}-answer"));
+        let answer = answer.trim();
+        let card = match headline {
+            Some(headline) if answer.chars().count() > CardSpec::WHY_MAX || answer.lines().filter(|l| !l.trim().is_empty()).count() > 1 =>
+                CardSpec::new(CardKind::Know, clip(headline, CardSpec::NEED_MAX)).content(ContentKind::Report, answer),
+            Some(headline) => CardSpec::new(CardKind::Know, clip(headline, CardSpec::NEED_MAX)).why(answer),
+            None => CardSpec::derived(CardKind::Know, answer),
+        };
+        self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, created, effects);
+        Ok(())
+    }
+    /// A request of the user closed once all its tasks are over tells them how it ended.
+    fn tell_it_is_done(&mut self, request: &RequestId, summary: Option<&str>,
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        if self.orchestrator_told(request) {
+            return Ok(());
+        }
+        let mut tasks: Vec<&Task> = self.tasks.values().filter(|t| &t.request_id == request).collect();
+        tasks.sort_by_key(|t| t.revision);
+        let done = crate::request_outcome::DoneCard {
+            request_id: request.0.clone(),
+            summary: summary.map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+            tasks: tasks.iter().map(|t| crate::request_outcome::DoneTask {
+                id: t.id.0.clone(),
+                title: t.title.clone(),
+                cancelled: t.cancelled(),
+                pr: t.pr_id.as_ref().and_then(|id| self.pull_requests.get(id)).map(|pr| pr.number),
+            }).collect(),
+        };
+        let (need, why) = done.text(crate::views::Lang::En);
+        let card = CardSpec::new(CardKind::Know, need).why(why);
+        self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, created, effects);
+        Ok(())
+    }
+    fn tell_the_user(&mut self, id: String, request: &RequestId, body: String, card: CardSpec,
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
+        let mut id = InteractionId(id);
         while self.interactions.contains_key(&id) {
             id.0.push('-');
         }
-        let author = match actor {
-            Actor::Orchestrator { generation } => Author::Orchestrator { generation: *generation },
-            _ => Author::System,
-        };
-        let need = title.map(|t| clip(t, CardSpec::NEED_MAX)).unwrap_or_else(|| CardSpec::derived(CardKind::Know, answer).need);
-        let mut card = CardSpec::new(CardKind::Know, need);
-        if answer.trim().chars().count() > CardSpec::WHY_MAX {
-            card = card.content(ContentKind::Report, answer.trim());
-        } else {
-            card = card.why(answer.trim());
-        }
-        let scope = Scope::Orchestrator { request_id: Some(request.clone()) };
         self.interactions.insert(id.clone(), Interaction {
             attachments: vec![],
             id: id.clone(),
-            scope,
-            author,
+            scope: Scope::Orchestrator { request_id: Some(request.clone()) },
+            author: Author::System,
             recipient: Recipient::User,
-            body: answer.into(),
+            body,
             blocking: false,
             subject: None,
             payload: InteractionPayload::Information { read_by: BTreeSet::new() },
@@ -1170,7 +1200,6 @@ impl DomainState {
         });
         created.push(id.0.clone());
         effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
-        Ok(())
     }
     /// R16: the open cards that hold back this delivery, oldest first.
     pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
@@ -2665,7 +2694,7 @@ impl DomainState {
                     effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
                 }
             }
-            Command::CloseRequest { request_id, answer, withdrawn, title } => {
+            Command::CloseRequest { request_id, answer, withdrawn, title, headline } => {
                 if !matches!(actor, Actor::System) {
                     self.manager(actor)?;
                 }
@@ -2676,7 +2705,7 @@ impl DomainState {
                 {
                     return fail("task_not_active", "Request still has unfinished Tasks");
                 };
-                for text in answer.iter().chain(title) {
+                for text in answer.iter().chain(title).chain(headline) {
                     nonempty(text)?;
                 }
                 let request = self
@@ -2691,8 +2720,12 @@ impl DomainState {
                 if title.is_some() {
                     request.title = title.clone();
                 }
-                if let Some(answer) = answer.as_ref().filter(|_| !request.maintenance && request.origin.the_user_asked()) {
-                    self.tell_the_answer(actor, request_id, answer, title.as_deref(), created, effects)?;
+                let tell = !request.maintenance && !request.withdrawn && request.origin.the_user_asked();
+                let has_tasks = self.tasks.values().any(|t| &t.request_id == request_id);
+                if tell && has_tasks {
+                    self.tell_it_is_done(request_id, answer.as_deref(), created, effects)?;
+                } else if let Some(answer) = answer.as_ref().filter(|_| tell) {
+                    self.tell_the_answer(request_id, answer, headline.as_deref(), created, effects)?;
                 }
             }
             Command::RegisterAgent { agent_id, name, at } => {
@@ -3065,6 +3098,12 @@ impl DomainState {
                     && self.requests.get(request).is_some_and(|r| r.maintenance)
                 {
                     return refuse("maintenance_request", "scope.request_id", MAINTENANCE_GETS_NO_CARD);
+                }
+                if matches!(actor, Actor::Orchestrator { .. })
+                    && matches!(recipient, Recipient::User)
+                    && self.request_of_scope(scope).is_some_and(|r| r.origin.the_user_asked() && !r.maintenance)
+                {
+                    return refuse("outcome_card", "scope", ALONDRA_TELLS_THE_OUTCOME);
                 }
                 if let Some(existing) = self.insert_interaction(
                     actor,

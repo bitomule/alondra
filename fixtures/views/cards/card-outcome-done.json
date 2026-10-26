@@ -1,0 +1,150 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch-outcome",
+  "view": "card",
+  "key": "card:request-done-r-accounts",
+  "client": "ios",
+  "version": "vc015d99bef72265b",
+  "cursor": "cursor-1",
+  "title": "Done in part: 1 of 3 tasks was cancelled",
+  "status": {
+    "version": "v2470fc732803317d",
+    "summary": "2 to read · 0 nodes working",
+    "badge": 2,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 2
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "request-done-r-accounts",
+          "kind": "know",
+          "need": "Done in part: 1 of 3 tasks was cancelled",
+          "why": "Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.",
+          "meta": "Dos cuentas de Claude",
+          "reply": {
+            "id": "msg:view@19",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "resolves_card": false
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:request-done-r-accounts"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "Done in part: 1 of 3 tasks was cancelled",
+          "subtitle": "Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.",
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "read:request-done-r-accounts@19",
+              "label": "Seen",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Read",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Done",
+              "value": "Guardar varias cuentas de Claude · PR #1290",
+              "tone": "success",
+              "link": {
+                "kind": "view",
+                "key": "task:t-store"
+              }
+            },
+            {
+              "label": "Done",
+              "value": "Cambiar de cuenta en Ajustes · PR #1291",
+              "tone": "success",
+              "link": {
+                "kind": "view",
+                "key": "task:t-switch"
+              }
+            },
+            {
+              "label": "Cancelled",
+              "value": "Documentar las cuentas",
+              "link": {
+                "kind": "view",
+                "key": "task:t-docs"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

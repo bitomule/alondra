@@ -34,7 +34,7 @@ fn instructions(role: Role, user: &str) -> String {
             "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode. When you are done, deliver with present_result and is_final true; Alondra merges your one PR: never merge it yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
-            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns one PR. Answer a Request without a Task with publish_information before close_request. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
+            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns one PR. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
         ),
     }
 }
@@ -225,7 +225,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     if !node {
         add(
         "publish_information",
-        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Only for two things: the answer to a Request without a Task, and a Task finished without {user} stepping in. Never to confirm something routine (launching, reassigning, cancelling, adding to a design): Tasks already shows it; a maintenance message (a Request sent with alondra send without --reply) gets no card, and one about it is refused; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one. Send a notice only when knowing it helps {user}, and say its effect for them in plain words (\"You can update Alondra to 0.2.56: it brings X and Y\"), never script names, task ids or internal steps (\"release.sh + tag finished: release 0.2.56 published\" is wrong). An answer to a message from Claude or a maintenance message never becomes a notice for {user}. {rule}"),
+        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Never about a Request {user} made or one of its Tasks: Alondra tells {user} how each of those ended from close_request, and refuses such a card. Never to confirm something routine (launching, reassigning, cancelling, adding to a design): Tasks already shows it; a maintenance message (a Request sent with alondra send without --reply) gets no card, and one about it is refused; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one. Send a notice only when knowing it helps {user}, and say its effect for them in plain words (\"You can update Alondra to 0.2.56: it brings X and Y\"), never script names, task ids or internal steps (\"release.sh + tag finished: release 0.2.56 published\" is wrong). An answer to a message from Claude or a maintenance message never becomes a notice for {user}. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "body"],
         );
@@ -426,8 +426,8 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "close_request",
-            "Close a Request that needs no Task. State the answer or mark it withdrawn. The answer is the Request's record; if you sent no card, Alondra shows it to the user as one, except for a maintenance message, which gets none.",
-            json!({"request_id":{"type":"string"},"answer":{"type":"string"},"withdrawn":{"type":"boolean"},"title":{"type":"string"}}),
+            "Close a Request: one that needs no Task with its answer, one whose Tasks are all over with what came of it, or mark it withdrawn. For a Request the user made, Alondra writes the user's card from it: headline (at most 90 characters, in the user's language) is the card's headline and already says the answer, answer the whole answer below it; once its Tasks are over, the card says Done and answer is its summary. A maintenance message, and a Request a node or you raised, get no card.",
+            json!({"request_id":{"type":"string"},"answer":{"type":"string"},"headline":{"type":"string","maxLength":90},"withdrawn":{"type":"boolean"},"title":{"type":"string"}}),
             vec!["request_id"],
         ),
         (
@@ -2399,7 +2399,7 @@ mod card_tool_tests {
         let skill = skill_text(Role::Node);
         assert!(skill.contains("`answer_clarification`") && skill.contains("`withdraw`") && skill.contains("never in `why`"));
         let orchestrator = instructions(Role::Orchestrator, "Ana");
-        assert!(orchestrator.contains("publish_information") && orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
+        assert!(orchestrator.contains("close_request (headline and answer)") && !orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
     }
 
     #[test]

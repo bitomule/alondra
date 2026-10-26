@@ -2254,17 +2254,15 @@ fn an_untitled_request_with_one_task_is_that_task_and_one_with_none_is_its_text(
 }
 
 #[test]
-fn a_closed_request_that_only_answered_says_so() {
+fn a_request_answered_without_tasks_leaves_the_list_and_one_closed_without_an_answer_stays() {
     let mut state = fixture();
     state.tasks.clear();
     let request = state.requests.get_mut(&"r-1".into()).unwrap();
     request.closed = true;
     request.answer = Some("Yes, since Monday".into());
-    for (lang, label) in [(Lang::En, "Answered"), (Lang::Es, "Respondida")] {
-        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "tasks?section=finished&after=0", "");
-        let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
-        let Item::Row(row) = &finished.items[0] else { panic!("request row") };
-        assert_eq!((row.subtitle.as_deref(), row.icon), (Some(label), Icon::Check));
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "tasks?section=finished&after=0", "");
+        assert!(rows_with_parents(&view).iter().all(|(_, row)| row.id != "r-1"), "{client:?}: its answer is on its card in the inbox");
     }
     state.requests.get_mut(&"r-1".into()).unwrap().answer = None;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "tasks?section=finished&after=0", "");
@@ -3973,9 +3971,6 @@ fn an_answered_request_shows_its_answer() {
     }
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "request:r-1", "");
     assert!(view.sections.iter().all(|section| section.id != "answer"), "an open request has no answer yet");
-    let tasks = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks?section=finished&after=0", "");
-    let row = rows_with_parents(&tasks).into_iter().map(|(_, row)| row).find(|row| row.id == "r-answered").expect("the answered request is listed");
-    assert_eq!(row.link, Some(Link::View { key: "request:r-answered".into() }), "its row opens the request and its answer");
 }
 
 #[test]
@@ -5379,49 +5374,43 @@ fn answered_and_closed_request() -> DomainState {
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
     });
-    let published = run(&mut state, orchestrator.clone(), Command::PublishInformation {
-        attachments: vec![],
-        interaction_id: "a7efd99d-answer-1".into(),
-        scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
-        recipient: Recipient::User,
-        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"),
-    });
-    assert_eq!(published.effects, vec![DomainEffect::NotifyUser {
-        task_id: None, interaction_id: "a7efd99d-answer-1".into(),
-    }]);
-    run(&mut state, orchestrator, Command::CloseRequest {
+    let closed = run(&mut state, orchestrator, Command::CloseRequest {
         request_id: "a7efd99d".into(),
         answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
         withdrawn: false,
         title: Some("Cifrar imágenes vía R2".into()),
+        headline: Some("Cifrar imágenes con R2 es posible".into()),
     });
+    assert_eq!(closed.effects, vec![DomainEffect::NotifyUser {
+        task_id: None, interaction_id: "a7efd99d-answer".into(),
+    }]);
     state
 }
 #[test]
-fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
+fn an_answer_waits_in_every_inbox_after_its_request_closes() {
     let state = answered_and_closed_request();
     let live = LiveSnapshot::default();
     let ios = render(&state, &live, Client::Ios, Lang::Es, "home", "");
-    assert_eq!(ios.sections[0].card_ids, vec!["a7efd99d-answer-1".to_owned()]);
+    assert_eq!(ios.sections[0].card_ids, vec!["a7efd99d-answer".to_owned()]);
     assert_eq!(ios.status.badge, 1);
     assert_eq!(inbox_badge(&state), 1);
     let tui = render(&state, &live, Client::Tui, Lang::En, "home", "");
     let waiting = tui.sections.iter().find(|section| section.id == "waiting").unwrap();
-    assert!(matches!(waiting.items.as_slice(), [Item::Card(card)] if card.id == "a7efd99d-answer-1"));
+    assert!(matches!(waiting.items.as_slice(), [Item::Card(card)] if card.id == "a7efd99d-answer"));
     let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
-    assert!(serde_json::to_string(&sidebar).unwrap().contains("a7efd99d-answer-1"));
-    let card = render(&state, &live, Client::Ios, Lang::Es, "card:a7efd99d-answer-1", "");
+    assert!(serde_json::to_string(&sidebar).unwrap().contains("a7efd99d-answer"));
+    let card = render(&state, &live, Client::Ios, Lang::Es, "card:a7efd99d-answer", "");
     let Some(Item::Card(card)) = card.sections.iter().flat_map(|section| &section.items).next() else {
         panic!("the answer renders as a card");
     };
-    assert_eq!(card.title, "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
+    assert_eq!(card.title, "Cifrar imágenes con R2 es posible");
     assert_eq!(card.meta.as_deref(), Some("Cifrar imágenes vía R2"), "signed with its request, never with the orchestrator");
     assert!(card.actions.iter().any(|action| action.id.starts_with("read:")));
     assert!(card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("msg:view@")),
         "the answer is replied to the orchestrator");
-    let pushed = push_content(&with_cards(&state), "a7efd99d-answer-1", Lang::Es).unwrap();
+    let pushed = push_content(&with_cards(&state), "a7efd99d-answer", Lang::Es).unwrap();
     let alert = pushed.alert.unwrap();
-    assert_eq!(alert.title, "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
+    assert_eq!(alert.title, "Cifrar imágenes con R2 es posible");
     assert_eq!((pushed.interruption_level, pushed.thread.as_deref()), ("passive", Some("a7efd99d")),
         "the answer groups with the rest of its Request");
 }
@@ -8184,4 +8173,134 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
             assert_eq!(shown(&state, client, Lang::Es), es, "{client:?}");
         }
     }
+}
+
+const OUTCOME_ANSWER_CARD: &str = "r-encrypt-answer";
+const OUTCOME_DONE_CARD: &str = "request-done-r-accounts";
+const OUTCOME_CASES: [(&str, &str, Client, Lang); 12] = [
+    ("card-outcome-answer.json", OUTCOME_ANSWER_CARD, Client::Ios, Lang::En),
+    ("card-outcome-answer-es.json", OUTCOME_ANSWER_CARD, Client::Ios, Lang::Es),
+    ("card-outcome-answer-mac.json", OUTCOME_ANSWER_CARD, Client::Mac, Lang::En),
+    ("card-outcome-answer-es-mac.json", OUTCOME_ANSWER_CARD, Client::Mac, Lang::Es),
+    ("card-outcome-answer-tui.json", OUTCOME_ANSWER_CARD, Client::Tui, Lang::En),
+    ("card-outcome-answer-es-tui.json", OUTCOME_ANSWER_CARD, Client::Tui, Lang::Es),
+    ("card-outcome-done.json", OUTCOME_DONE_CARD, Client::Ios, Lang::En),
+    ("card-outcome-done-es.json", OUTCOME_DONE_CARD, Client::Ios, Lang::Es),
+    ("card-outcome-done-mac.json", OUTCOME_DONE_CARD, Client::Mac, Lang::En),
+    ("card-outcome-done-es-mac.json", OUTCOME_DONE_CARD, Client::Mac, Lang::Es),
+    ("card-outcome-done-tui.json", OUTCOME_DONE_CARD, Client::Tui, Lang::En),
+    ("card-outcome-done-es-tui.json", OUTCOME_DONE_CARD, Client::Tui, Lang::Es),
+];
+
+/// Two requests of the user as they ended: one answered without tasks, one whose three tasks are
+/// over, two of them done with their PRs and one cancelled.
+fn outcome_state() -> DomainState {
+    use crate::domain::{Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION};
+    fn run(state: &mut DomainState, actor: Actor, command: Command) {
+        state.execute(&actor, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision,
+            command,
+        }).unwrap();
+    }
+    let user = Actor::User { user_id: "u".into() };
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    let mut state = DomainState::new("epoch-outcome");
+    run(&mut state, user.clone(), Command::CreateRequest {
+        request_id: "r-encrypt".into(), body: "¿Podemos cifrar las imágenes antes de subirlas a R2?".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    run(&mut state, orchestrator.clone(), Command::CloseRequest {
+        request_id: "r-encrypt".into(),
+        answer: Some("Para el cifrado una imagen son bytes como cualquier otro: el iPhone la cifra con la clave del usuario antes de subirla, y R2 solo guarda bytes cifrados.\n\nYa se hace así desde la versión 0.3.0, así que no hace falta ninguna tarea.".into()),
+        withdrawn: false,
+        title: Some("Cifrar imágenes en R2".into()),
+        headline: Some("Sí: el iPhone ya cifra las imágenes antes de subirlas".into()),
+    });
+    run(&mut state, user.clone(), Command::CreateRequest {
+        request_id: "r-accounts".into(), body: "Quiero usar dos cuentas de Claude y cambiar entre ellas".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    run(&mut state, orchestrator.clone(), Command::TitleRequest { request_id: "r-accounts".into(), title: "Dos cuentas de Claude".into() });
+    for (task, title) in [("t-store", "Guardar varias cuentas de Claude"), ("t-switch", "Cambiar de cuenta en Ajustes"), ("t-docs", "Documentar las cuentas")] {
+        run(&mut state, orchestrator.clone(), Command::CreateTask {
+            plan_items: None, task_id: task.into(), request_id: "r-accounts".into(), title: title.into(), agent_id: None,
+            review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
+        });
+    }
+    let text = vec![DeliveryTarget::Text { text: "Hecho".into() }];
+    for (task, number) in [("t-store", 1290), ("t-switch", 1291)] {
+        let node = Actor::Agent { agent_id: format!("node-{task}").into() };
+        run(&mut state, Actor::System, Command::RegisterAgent { agent_id: format!("node-{task}").into(), name: "Node".into(), at: 0 });
+        run(&mut state, orchestrator.clone(), Command::AssignTask { task_id: task.into(), agent_id: format!("node-{task}").into(), model: None });
+        let result = format!("final-{task}");
+        run(&mut state, node, Command::PresentResult {
+            checklist: vec![], attachments: vec![], task_id: task.into(), interaction_id: result.as_str().into(), body: "Hecho".into(),
+            targets: text.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Revisa el resultado", &text, true),
+        });
+        run(&mut state, user.clone(), Command::AcceptDelivery { presentation_id: result.as_str().into(), targets: text.clone() });
+        run(&mut state, Actor::System, Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed, agent_id: None });
+        let id = crate::domain::PrId::from(format!("pr-{number}"));
+        state.pull_requests.insert(id.clone(), PullRequest {
+            id: id.clone(), task_id: task.into(), host: "github.com".into(), repository: "owner/alondra".into(), number,
+            head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
+            allowed_methods: vec![MergeMethod::Squash], review: None,
+        });
+        state.tasks.get_mut(&task.into()).unwrap().pr_id = Some(id);
+    }
+    run(&mut state, user, Command::CancelTask { task_id: "t-docs".into() });
+    run(&mut state, orchestrator, Command::CloseRequest {
+        request_id: "r-accounts".into(),
+        answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),
+        withdrawn: false, title: None, headline: None,
+    });
+    state
+}
+
+#[test]
+fn outcome_cards_match_goldens() {
+    let state = outcome_state();
+    let differ: Vec<&str> = OUTCOME_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer-es-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer-tui.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-answer-es-tui.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done-es-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done-tui.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-done-es-tui.json"),
+    ]).filter_map(|((filename, card, client, lang), expected)| {
+        let actual = render(&state, &LiveSnapshot::default(), client, lang, &format!("card:{card}"), "2026-10-26T10:00:00Z");
+        std::panic::catch_unwind(|| assert_golden(filename, &actual, expected)).is_err().then_some(filename)
+    }).collect();
+    assert!(differ.is_empty(), "{differ:?} differ from their goldens");
+}
+
+#[test]
+fn an_outcome_card_names_its_request_above_and_not_in_its_headline() {
+    let state = outcome_state();
+    for (card, lang, title, meta) in [
+        (OUTCOME_DONE_CARD, Lang::Es, "Hecho en parte: se canceló 1 de 3 tareas", "Dos cuentas de Claude"),
+        (OUTCOME_DONE_CARD, Lang::En, "Done in part: 1 of 3 tasks was cancelled", "Dos cuentas de Claude"),
+        (OUTCOME_ANSWER_CARD, Lang::Es, "Sí: el iPhone ya cifra las imágenes antes de subirlas", "Cifrar imágenes en R2"),
+    ] {
+        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, &format!("card:{card}"), "2026-10-26T10:00:00Z");
+        let Some(Item::Card(shown)) = view.sections.iter().flat_map(|section| &section.items).next() else { panic!("{card} renders as a card") };
+        assert_eq!((shown.title.as_str(), shown.meta.as_deref()), (title, Some(meta)));
+        assert!(shown.actions.iter().any(|action| action.id.starts_with("read:")), "{card} is marked seen");
+    }
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, &format!("card:{OUTCOME_DONE_CARD}"), "2026-10-26T10:00:00Z");
+    let facts: Vec<(String, Option<Link>)> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Facts(facts) => Some(facts.items.iter().map(|fact| (format!("{}: {}", fact.label, fact.value), fact.link.clone())).collect::<Vec<_>>()),
+        _ => None,
+    }).flatten().collect();
+    assert_eq!(facts, [
+        ("Hecha: Guardar varias cuentas de Claude · PR #1290".to_owned(), Some(Link::View { key: "task:t-store".into() })),
+        ("Hecha: Cambiar de cuenta en Ajustes · PR #1291".to_owned(), Some(Link::View { key: "task:t-switch".into() })),
+        ("Cancelada: Documentar las cuentas".to_owned(), Some(Link::View { key: "task:t-docs".into() })),
+    ]);
 }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v0c584a597378bba5",
+  "version": "vbc93c5c4a9a7bace",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -465,12 +465,12 @@
     {
       "id": "finished",
       "title": "Completadas",
-      "count": 2,
+      "count": 1,
       "collapsed": true,
       "items": [],
       "more": {
         "key": "tasks?section=finished&after=0",
-        "remaining": 2
+        "remaining": 1
       },
       "actions": [
         {

@@ -22,6 +22,13 @@ fn reworking(request: &str, task: &str, title: &str, pr: u64, file: &str) -> Req
     script
 }
 
+fn outcome_card(report: &mut Report, user: &User, id: &str, what: &str) -> Result<()> {
+    wait(report, what, || {
+        let (card, seen) = card_in_inbox(user, id)?;
+        Ok((card.filter(|card| card == id).map(drop), seen))
+    })
+}
+
 pub fn run(sandbox: &Sandbox) -> Result<()> {
     let fakes = Fakes::open(&sandbox.dir)?;
     let mut report = Report::new(sandbox.dir.join("seed"))?;
@@ -42,9 +49,21 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         act(report, &fakes, &reviewing, "the node delivers PR #41", &Step::work(41, "greeting.txt"))?;
         review_card(report, &user, &reviewing)?;
 
-        request(report, &fakes, &user, &task_script("req-done", "t-done", "Fix the typo in the README"), "Fix the typo in the README")?;
+        let mut done = task_script("req-done", "t-done", "Fix the typo in the README");
+        done.summary = Some("The README spells the install command right again: PR #42 merged.".into());
+        request(report, &fakes, &user, &done, "Fix the typo in the README")?;
         let finished = launched(report, &fakes, "t-done")?;
         deliver_merge_close(report, &fakes, &user, &finished, "t-done", 42)?;
+        outcome_card(report, &user, "request-done-req-done", "the orchestrator closes the finished request and Alondra tells the user it is done")?;
+
+        let answered = RequestScript {
+            request_id: "req-answered".into(), tasks: vec![],
+            answer: Some("Yes. Every image is encrypted on the iPhone before it is uploaded, and R2 only keeps the encrypted bytes.".into()),
+            headline: Some("Yes: images are already encrypted before they leave the iPhone".into()),
+            summary: None,
+        };
+        request(report, &fakes, &user, &answered, "Are images encrypted before they reach R2?")?;
+        outcome_card(report, &user, "req-answered-answer", "the orchestrator answers without tasks and Alondra writes the answer's card")?;
 
         let mut after_merge = task_script("req-after-merge", "t-after-merge", "Publish the release once it is merged");
         after_merge.tasks[0].cleans_up = false;
@@ -81,6 +100,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, review, finished, after-merge and interrupted tasks on Mac 1, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, review, finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

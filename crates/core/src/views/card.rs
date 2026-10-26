@@ -342,8 +342,7 @@ fn meta_line(item: &InboxItem, interaction: Option<&Interaction>, context: &Rend
         _ => None,
     });
     let who: String = match interaction.map(|i| &i.author) {
-        Some(Author::System) => "Alondra".into(),
-        Some(Author::Orchestrator { .. }) => request_title().unwrap_or_else(|| "Alondra".into()),
+        Some(Author::System | Author::Orchestrator { .. }) => request_title().unwrap_or_else(|| "Alondra".into()),
         _ => match &item.agent_id {
             Some(agent_id) => super::common::agent_label(agent_id, context),
             None => request_title().unwrap_or_else(|| "Alondra".into()),
@@ -1196,6 +1195,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {
         return crate::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX) {
+        return crate::request_outcome::DoneCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if interaction.id.0.starts_with(crate::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX) {
         return crate::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -1768,6 +1770,17 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         if !detail.is_empty() {
             out.push(markdown(detail));
         }
+        return out;
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX)
+        && let Some(card) = crate::request_outcome::DoneCard::from_body(&interaction.body)
+    {
+        out.extend(card.full_summary().map(|summary| markdown(summary.into())));
+        out.push(Item::Facts(Facts { items: card.tasks.iter().map(|task| {
+            let (label, value) = crate::request_outcome::DoneCard::task_line(task, lang);
+            Fact { label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
+        }).collect() }));
         return out;
     }
     if interaction.author == Author::System
