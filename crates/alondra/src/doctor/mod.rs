@@ -29,7 +29,7 @@ pub enum Status {
 }
 
 impl Status {
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Status::Pass => "pass",
             Status::Warn => "warn",

@@ -1,6 +1,31 @@
 load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("//:version.bzl", "VERSION")
+
+REPORT_SOURCES = [
+    "//crates/alondrad:report_sources",
+    "//crates/core:report_sources",
+    "//crates/domain:report_sources",
+    "//crates/foundation:report_sources",
+    "//crates/store:report_sources",
+    "//crates/agent-application:report_sources",
+    "//crates/agent-protocol:report_sources",
+    "//crates/agent-runtime:report_sources",
+    "//crates/provider-claude:report_sources",
+    "//crates/provider-contract:report_sources",
+    "//crates/process-group:report_sources",
+]
+
+# The crash report keeps a line of alondrad.log only as the text of a log! call in the code: this
+# writes the catalog of those calls and the words of the code (`src/report/extract.rs`).
+cargo_build_script(
+    name = "log_catalog",
+    srcs = ["build.rs", "src/report/extract.rs"],
+    crate_root = "build.rs",
+    data = REPORT_SOURCES,
+    edition = "2024",
+)
 
 rust_binary(
     name = "alondra",
@@ -9,7 +34,7 @@ rust_binary(
     edition = "2024",
     version = VERSION,
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
 )
 
 rust_test(
@@ -20,7 +45,7 @@ rust_test(
         "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
     ],
     deps = all_crate_deps(normal_dev = True),
-    data = ["//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/domain-v2:text-completion.commands.json"],
+    data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
 )
 

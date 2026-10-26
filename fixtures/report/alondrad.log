@@ -1,0 +1,18 @@
+2026-10-23T09:00:01.120+02:00 alondrad: domain listener on http://127.0.0.1:47800, data in /Users/ana.lopez/.alondra
+2026-10-23T09:00:02.004+02:00 alondrad: exiting with 75 so launchd starts the new binary
+2026-10-23T09:00:05.630+02:00 alondrad: start failed 3 times in a row (database migration needs exclusive access to HOME: Alondra HOME is busy; stop its daemon before service recovery); waiting 30s before exiting so launchd does not restart it every 10s
+2026-10-24T03:15:58.530+02:00 alondrad: the admission gate holds 65 waiting (next t-fix-acme-invoice-rounding, High): memory has no room for one more node: the daemon is measuring memory for its first minute (41% free)
+2026-10-24T03:16:12.124+02:00 alondrad: input input:t-fix-acme-invoice-rounding:27308 of t-fix-acme-invoice-rounding went to its SDK host (sdk-e5a1927df399effa): Offered
+2026-10-24T03:17:24.020+02:00 alondrad: a turn of the SDK host's Claude ended (completed) (sdk-0abdea5e130f80de, task t-acme-sso-login)
+2026-10-24T03:18:40.000+02:00 alondrad: GitHub could not report github.com/acme/billing#42: gh pr view failed: could not resolve host
+check your internet connection or https://www.githubstatus.com
+2026-10-24T03:19:12.643+02:00 alondrad: the admission gate holds 64 waiting (next scheduled run run-8c937776545c594475e4b21e40102329, Normal): 10 of 10 working (t-acme-sso-login, t-fix-acme-invoice-rounding)
+2026-10-24T04:39:23.860+02:00 alondrad: iroh endpoint 186d5606c2f533b0290c0cc5239b93d2ea7dac6d86ae9383608c263648945ce3 on [0.0.0.0:51138, [::]:49761]
+2026-10-24T05:04:27.100+02:00 alondrad: service push for phone-esXFYEDhKnrAyu-miFmamg failed: relay did not accept encrypted push (HTTP 502 Bad Gateway)
+2026-10-24T05:10:11.637+02:00 alondrad: pausing df27c53d-db4d-4b6d-9400-5b62abb33d38 (t-acme-sso-login) for Memory, cutting until grep -q "^exit=" /Users/ana.lopez/Code/acme-billing/tmp/b.log; do sleep 3; done
+2026-10-24T05:12:00.000+02:00 alondrad: the live SDK host of t-acme-sso-login refused its adoption (Disconnected): it is stopped and a host that resumes the same Claude session takes its place
+Error: bootstrap failed integrity audit: task t-fix-acme-invoice-rounding: blocker question #272 is absent or closed
+Alondra omitted an action with an invalid identifier (Changes)
+alondrad: an older build wrote this line without a time for feature/acme-sso
+2026-10-24T05:20:00.000+02:00 alondrad: a line no template of this build has, about /Users/ana.lopez/Code/acme-billing and feature/acme-sso
+2026-10-24T05:21:30.200+02:00 alondrad: the admission gate holds 11 waiting (next t-fix-acme-invoice-rounding, High): memory has no room for one more node: 1.7 GiB left before macOS's memory warning, 2 GiB needed (42% free)

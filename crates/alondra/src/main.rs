@@ -23,6 +23,7 @@ mod models;
 mod provider_accounts;
 mod ops;
 mod pty;
+mod report;
 mod service_setup;
 mod service_pair;
 mod service_client;
@@ -100,6 +101,21 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         command: ConfigCmd,
+    },
+    #[command(about = tr!("A crash report with everything private left out, to send to whoever asked for it", "Un informe de fallo con todo lo privado fuera, para mandárselo a quien te lo pidió"),
+        long_about = tr!(
+            "Collect a crash report of this Mac with everything private left out, show it in full, and save it as a file only when it passed the final check. It needs no daemon.",
+            "Recoge un informe de fallo de este Mac con todo lo privado fuera, lo enseña entero y solo lo guarda como fichero si pasó la comprobación final. No necesita el daemon."
+        ),
+        args_conflicts_with_subcommands = true,
+        after_help = examples(&["alondra report", "alondra report --window 24h --description \"The node stopped after the Mac slept\"", "alondra report save r-20261025-1a2b3c4d", "alondra report open alondra-report-20261025.txt"]))]
+    Report {
+        #[arg(long, default_value = "72h", value_parser = ["24h", "72h", "7d"], help = tr!("How far back it looks", "Hasta cuándo mira atrás"))]
+        window: String,
+        #[arg(long, help = tr!("What happened, in your words; it goes as you write it", "Qué pasó, con tus palabras; va tal cual lo escribas"))]
+        description: Option<String>,
+        #[command(subcommand)]
+        command: Option<ReportCmd>,
     },
     #[command(about = tr!("Questions and tasks, as text", "Preguntas y tareas, en texto"),
         after_help = examples(&["alondra status"]))]
@@ -213,6 +229,22 @@ enum Cmd {
     /// Prints the raw bytes and the parsed key of every key pressed, to debug terminal input
     #[command(hide = true)]
     Keys,
+}
+
+#[derive(Subcommand)]
+enum ReportCmd {
+    #[command(about = tr!("Save a report already previewed as a file, to send it yourself", "Guarda como fichero un informe ya revisado, para mandarlo tú"))]
+    Save {
+        #[arg(help = tr!("The report's id, as alondra report printed it", "El id del informe, como lo mostró alondra report"))]
+        id: String,
+        #[arg(help = tr!("Where to save it; alondra-report-<date>.txt here by default", "Dónde guardarlo; alondra-report-<fecha>.txt aquí por defecto"))]
+        file: Option<std::path::PathBuf>,
+    },
+    #[command(about = tr!("Open a report someone sent you", "Abre un informe que te mandaron"))]
+    Open {
+        #[arg(help = tr!("The report file", "El fichero del informe"))]
+        file: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -403,6 +435,7 @@ fn main() -> Result<()> {
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
         Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
+        | Cmd::Report { command: None, .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
@@ -429,6 +462,21 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             ConfigCmd::Get { key } => commands::config_get(&key, json),
             ConfigCmd::Set { key, value } => commands::config_set(&key, Some(&value)),
             ConfigCmd::Unset { key } => commands::config_set(&key, None),
+        },
+        Some(Cmd::Report { window, description, command }) => match command {
+            None => report::run(&window, description, json, no_input),
+            Some(ReportCmd::Save { id, file }) => {
+                let file = file.unwrap_or_else(|| report::default_file_name(&id).into());
+                report::save(&report::Mac::new(), &id, &file)?;
+                println!("{}", report::saved_notice(&file));
+                Ok(())
+            }
+            Some(ReportCmd::Open { file }) => {
+                use report::collect::Host as _;
+                let (id, dir, files) = report::open_file(report::Mac::new().home(), &file)?;
+                print!("{}", report::received_summary(&id, &dir, &files));
+                Ok(())
+            }
         },
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),

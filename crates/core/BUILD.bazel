@@ -75,3 +75,10 @@ rust_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# Read by the crash report's build script for its log catalog and the words of the code.
+filegroup(
+    name = "report_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)

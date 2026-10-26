@@ -1,0 +1,5 @@
+filegroup(
+    name = "report",
+    srcs = glob(["*"], exclude = ["BUILD.bazel"]),
+    visibility = ["//visibility:public"],
+)

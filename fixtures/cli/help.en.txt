@@ -21,6 +21,6 @@ Devices and Macs
   relay        Notifications and access away from home  (status · on · off)
 
 More
-  cleanup · handover · models · state · delivery · orchestrator      (alondra help more)
+  cleanup · handover · models · state · delivery · orchestrator · report      (alondra help more)
 
 Options: --json  --no-input  -V, --version  -h, --help
