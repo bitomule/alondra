@@ -969,6 +969,25 @@ fn a_node_s_mcp_servers_and_sign_in_are_recorded_and_its_return_reaches_only_cla
 }
 
 #[test]
+fn a_failed_mcp_call_reads_the_status_where_the_binding_can() {
+    let mcp = binding_with(BTreeSet::from([Capability::OfferInput, Capability::McpStatus]));
+    let (fixture, store, execution) = running_with(&mcp);
+    let runtime = runtime(&fixture, store);
+    let observe = |cursor: u64, facts: Vec<Observation>| {
+        let state = Arc::clone(runtime.read().state());
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&mcp, 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+    };
+    let reads = || {
+        runtime.read().state().lifecycle_journal[&task()].iter().filter(|record| matches!(record,
+            LifecycleRecord::ControlRequested { operation, .. } if format!("{operation:?}").starts_with("ReadMcpStatus"))).count()
+    };
+    observe(1, vec![Observation::Available, mcp_report("needs-auth")]);
+    assert_eq!(reads(), 0);
+    observe(2, vec![Observation::McpToolFailed]);
+    assert_eq!(reads(), 1, "the failed call asks the host for the servers' status");
+}
+
+#[test]
 fn the_retention_gives_the_disk_back_what_normalized_observations_held() {
     let (fixture, store, execution) = running();
     let runtime = runtime(&fixture, store);

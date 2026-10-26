@@ -407,7 +407,9 @@ impl<'connection> OwnerTransaction<'connection> {
                 expected_revision: 0,
                 command,
             };
-            if matches!(envelope.command, Command::ReadMcpStatus { .. }) && self.draft.state.guard(&Actor::System, &envelope).is_err() {
+            if matches!(envelope.command, Command::ReadMcpStatus { .. })
+                && self.draft.state.guard(&Actor::System, &CommandEnvelope { expected_revision: self.draft.state.revision, ..envelope.clone() }).is_err()
+            {
                 continue;
             }
             // What Alondra cannot record never stops the node's owner or its host: a command the
