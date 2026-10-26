@@ -139,6 +139,15 @@ checks:
       targets:
         - //tools:node_token_usage_test
 
+  bazel-speed:
+    uses: bazel/test
+    paths:
+      - "tools/bazel_speed.py"
+      - "tools/tests/test_bazel_speed.py"
+    with:
+      targets:
+        - //tools:bazel_speed_test
+
   buildbuddy-credential-helper:
     uses: bazel/test
     paths:

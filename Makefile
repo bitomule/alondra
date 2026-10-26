@@ -15,7 +15,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench bazel-speed tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -405,6 +405,11 @@ views-measure:
 # Building the read index of a domain the size of the real one; fails over 10 ms.
 read-index-bench:
 	bazelisk run -c opt //crates/core:read_index_cost -- --check-cost
+
+# Where Bazel's time goes: the build queue's receipts, this checkout's last profile and the cache reaper's
+# log (tools/bazel_speed.py). `make bazel-speed ARGS="profile <output base>"` reads another profile.
+bazel-speed:
+	python3 tools/bazel_speed.py $(ARGS)
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:

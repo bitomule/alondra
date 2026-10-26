@@ -44,3 +44,10 @@ sh_test(
     data = ["buildbuddy-credential-helper.sh"],
     size = "small",
 )
+
+sh_test(
+    name = "bazel_speed_test",
+    srcs = ["tests/test_bazel_speed.py"],
+    data = ["bazel_speed.py"],
+    size = "small",
+)
