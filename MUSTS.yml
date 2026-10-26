@@ -118,6 +118,7 @@ checks:
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests
+        - //apple:mac_app_build_test
 
   load-bench-oracles:
     uses: bazel/test

@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extension")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
@@ -186,6 +187,13 @@ macos_application(
     version = ":Version",
     visibility = ["//visibility:public"],
     deps = [":AlondraMacViewsEntry"],
+)
+
+# Only the release builds the Mac app; this test brings it into `bazel test`, so a view that
+# breaks the app breaks the checks before it reaches main.
+build_test(
+    name = "mac_app_build_test",
+    targets = [":AlondraMac"],
 )
 
 swift_library(
