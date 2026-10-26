@@ -317,17 +317,14 @@ fn trash_of(top: &Path) -> Option<PathBuf> {
     top.parent().filter(|parent| parent.ends_with(".claude/worktrees")).map(|parent| parent.join(format!(".{name}.removing")))
 }
 
-/// Deletes the worktree that was at `top`, already moved to `trash`: git's record of it, the
-/// Bazel output base built from it, then its files, whose space on disk it returns.
+/// Deletes the worktree that was at `top`, already moved to `trash`: git's record of it, then
+/// its files, whose space on disk it returns.
 async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<u64, String> {
     let shown = top.display().to_string();
     let emptied = tokio::task::spawn_blocking(move || {
         let failed = |what: &str, e: std::io::Error| format!("could not delete {what} of {}: {e}", top.display());
         if let Some(admin) = git_admin_dir(&trash) {
             remove_tree(&admin).map_err(|e| failed("git's record", e))?;
-        }
-        if let Some(base) = bazel_output_base(&top, &trash) {
-            remove_output_base(&base).map_err(|e| failed("the Bazel output base", e))?;
         }
         let mut tally = crate::disk::Tally::default();
         remove_tree_counting(&trash, &mut tally).map_err(|e| failed("the files", e))?;
@@ -346,35 +343,6 @@ fn git_admin_dir(worktree: &Path) -> Option<PathBuf> {
     let link = std::fs::read_to_string(worktree.join(".git")).ok()?;
     let admin = PathBuf::from(link.trim().strip_prefix("gitdir:")?.trim());
     (admin.is_absolute() && admin.parent().is_some_and(|parent| parent.ends_with("worktrees")) && admin.exists()).then_some(admin)
-}
-
-/// The output base Bazel made for the workspace at `top`, found through the `bazel-out` link it
-/// left in `worktree` and taken only when the base says it was built from `top`.
-fn bazel_output_base(top: &Path, worktree: &Path) -> Option<PathBuf> {
-    let out = std::fs::read_link(worktree.join("bazel-out")).ok()?;
-    let base = out.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "execroot"))?.parent()?.to_path_buf();
-    let built_from = PathBuf::from(std::fs::read_to_string(base.join(BAZEL_WORKSPACE_MARK)).ok()?.trim());
-    (base.is_absolute() && resolved(&built_from).is_some_and(|built| Some(built) == resolved(top))).then_some(base)
-}
-
-/// `path` with its parent's links resolved: `path` itself may be gone already.
-fn resolved(path: &Path) -> Option<PathBuf> {
-    Some(std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?))
-}
-
-/// The file in an output base that names the workspace it was built from.
-const BAZEL_WORKSPACE_MARK: &str = "DO_NOT_BUILD_HERE";
-
-/// Deletes an output base with the file that names its workspace last, so one cut halfway is
-/// still found as this worktree's on the next try.
-fn remove_output_base(base: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(base)? {
-        let entry = entry?;
-        if entry.file_name() != BAZEL_WORKSPACE_MARK {
-            remove_tree(&entry.path())?;
-        }
-    }
-    remove_tree(base)
 }
 
 /// Deletes `path` and everything under it, also folders made read-only, as Bazel makes its
@@ -754,44 +722,25 @@ mod tests {
         assert!(!root.join("repo/.git/worktrees/t-cut").exists());
     }
 
-    /// The output base Bazel built from the worktree goes with it, found through the worktree's
-    /// `bazel-out` link; one built from another workspace is never touched.
+    /// Alondra knows no build tool: what one keeps for the worktree outside it is the project's
+    /// to clean, even a cache that names this worktree as the one it was built from.
     #[tokio::test]
-    async fn a_closed_tasks_worktree_goes_with_the_bazel_output_base_built_from_it() {
-        use std::os::unix::fs::PermissionsExt;
+    async fn a_closed_tasks_worktree_goes_and_leaves_what_its_links_point_to_outside_it() {
         let root = crate::test_support::Directory::new();
-        let output = root.join("bazel-root");
-        let base = |hash: &str, workspace: &Path, read_only: bool| {
-            let base = output.join(hash);
-            std::fs::create_dir_all(base.join("execroot/_main/bazel-out/bin")).unwrap();
-            std::fs::create_dir_all(base.join("external/rules")).unwrap();
-            std::fs::write(base.join("external/rules/BUILD"), "x").unwrap();
-            if read_only {
-                std::fs::set_permissions(base.join("external/rules"), std::fs::Permissions::from_mode(0o555)).unwrap();
-            }
-            std::fs::write(base.join(BAZEL_WORKSPACE_MARK), workspace.to_str().unwrap()).unwrap();
-            base
-        };
-        let built = |slug: &str| {
-            let dir = testing::task_worktree(&root.join(slug), slug);
-            std::fs::write(dir.join(".gitignore"), "/bazel-*\n").unwrap();
-            testing::git(&dir, &["add", ".gitignore"]);
-            testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
-            testing::git(&dir, &["push", "-q", "origin", &format!("worktree-{slug}")]);
-            dir
-        };
-        let dir = built("t-built");
-        let own = base("1111", &dir, true);
-        std::os::unix::fs::symlink(own.join("execroot/_main/bazel-out"), dir.join("bazel-out")).unwrap();
-        let other = built("t-borrowed");
-        let foreign = base("2222", &root.join("elsewhere"), false);
-        std::os::unix::fs::symlink(foreign.join("execroot/_main/bazel-out"), other.join("bazel-out")).unwrap();
+        let dir = testing::task_worktree(&root, "t-built");
+        std::fs::write(dir.join(".gitignore"), "/bazel-*\n").unwrap();
+        testing::git(&dir, &["add", ".gitignore"]);
+        testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
+        testing::git(&dir, &["push", "-q", "origin", "worktree-t-built"]);
+        let cache = root.join("bazel-root/1111");
+        std::fs::create_dir_all(cache.join("execroot/_main/bazel-out/bin")).unwrap();
+        std::fs::write(cache.join("DO_NOT_BUILD_HERE"), dir.to_str().unwrap()).unwrap();
+        std::os::unix::fs::symlink(cache.join("execroot/_main/bazel-out"), dir.join("bazel-out")).unwrap();
 
         assert!(matches!(release_task_worktree(&dir, "t-built", true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!dir.exists());
-        assert!(!own.exists(), "its output base goes with it");
-        assert!(matches!(release_task_worktree(&other, "t-borrowed", true).await, Ok(TaskWorktree::Removed { .. })));
-        assert!(foreign.join("external/rules/BUILD").exists(), "a base built from another workspace stays");
+        assert!(cache.join("DO_NOT_BUILD_HERE").exists(), "the cache outside the worktree stays");
+        assert!(cache.join("execroot/_main/bazel-out/bin").is_dir());
     }
 
     #[tokio::test]

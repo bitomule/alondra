@@ -195,8 +195,8 @@ Pick the tool by what you need:
   work and then present it.
 - When the user accepts your final result (for a PR, once Alondra has merged it) the task is
   closing: Alondra asks you to clean up and call `cleanup_done`. Cleaning up is only what you
-  generated outside the worktree, removed with the project's own tool (for example
-  `bazel clean --expunge` for the worktree's output base in Bazel's cache). Never delete files or
+  generated outside the worktree, removed with the project's own tool as the project's
+  instructions say (for example a build cache kept for this worktree outside it). Never delete files or
   links inside your worktree with `rm`: Alondra deletes the whole worktree right after. If the
   project left nothing outside the worktree, call `cleanup_done` without deleting anything. Change
   nothing else. Alondra then closes this session and its worktree; if you do not answer, it
