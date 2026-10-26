@@ -173,6 +173,38 @@ fn a_new_log_call_enters_the_catalog_by_itself() {
 }
 
 #[test]
+fn a_line_written_to_stderr_enters_the_catalog_and_other_writes_do_not() {
+    let root = Directory::new();
+    std::fs::create_dir_all(root.join("crates/core/src")).unwrap();
+    std::fs::write(
+        root.join("crates/core/src/lib.rs"),
+        "fn f(out: &mut String) {\n    let _ = writeln!(std::io::stderr(), \"Alondra dropped {} cards\", n);\n    let _ = write!(\n        std::io::stderr().lock(),\n        \"a full disk kept {task}\"\n    );\n    let _ = writeln!(out, \"a card body of {task}\");\n    let _ = writeln!(f);\n}\n",
+    )
+    .unwrap();
+    let (catalog, _) = extract::build(&root);
+    assert!(catalog.contains("crates/core/src/lib.rs:2\tAlondra dropped {} cards"), "{catalog}");
+    assert!(catalog.contains("crates/core/src/lib.rs:3\ta full disk kept {task}"), "{catalog}");
+    assert!(!catalog.contains("a card body"), "{catalog}");
+}
+
+#[test]
+fn every_write_to_stderr_of_the_daemon_is_in_the_catalog() {
+    let root = workspace_file("");
+    let mut naive = 0;
+    let mut extracted = 0;
+    for dir in extract::LOG_SOURCES {
+        for file in extract::rust_files(&root.join(dir)) {
+            let source = std::fs::read_to_string(&file).unwrap();
+            let flat: String = source.split_whitespace().collect();
+            naive += flat.matches("writeln!(std::io::stderr()").count() + flat.matches("write!(std::io::stderr()").count();
+            extracted += extract::stderr_writes(&source).len();
+        }
+    }
+    assert!(naive >= 5, "{naive}");
+    assert_eq!(extracted, naive, "a write to stderr the catalog cannot read");
+}
+
+#[test]
 fn a_template_matches_only_its_whole_fixed_text() {
     let template = pieces("input {} of {task} went to its SDK host ({}): {handoff:?}");
     assert_eq!(template[0], Piece::Text("input ".into()));

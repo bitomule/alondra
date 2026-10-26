@@ -1,9 +1,24 @@
-//! Reads the daemon's sources for the text of every `log!`/`eprintln!` and the words of the code:
+//! Reads the daemon's sources for the text of every `log!`/`eprintln!`/`writeln!` to stderr and the
+//! words of the code:
 //! the build writes them into the catalog the report redacts `alondrad.log` with. Plain `std`, so
 //! the build script compiles it too.
 
 /// The format string of every call to one of `macros` in `source`, in order, with its line.
 pub fn calls(source: &str, macros: &[&str]) -> Vec<(usize, String)> {
+    invocations(source, macros, Some)
+}
+
+/// The format string of every `write!`/`writeln!` to stderr in `source`, with its line: the daemon
+/// writes some lines this way so that a full disk drops them instead of panicking.
+pub fn stderr_writes(source: &str) -> Vec<(usize, String)> {
+    invocations(source, &["writeln", "write"], |arguments| {
+        let (target, format) = arguments.split_once(',')?;
+        let to_stderr = target.contains("stderr") && target.chars().all(|c| c.is_alphanumeric() || c.is_whitespace() || "_:.()&".contains(c));
+        to_stderr.then_some(format)
+    })
+}
+
+fn invocations<'a>(source: &'a str, macros: &[&str], format_of: impl Fn(&'a str) -> Option<&'a str>) -> Vec<(usize, String)> {
     let bytes = source.as_bytes();
     let mut found = Vec::new();
     let mut at = 0;
@@ -19,7 +34,8 @@ pub fn calls(source: &str, macros: &[&str]) -> Vec<(usize, String)> {
         if preceded_by_identifier {
             continue;
         }
-        let rest = source[start..].trim_start();
+        let Some(format) = format_of(&source[start..]) else { continue };
+        let rest = format.trim_start();
         let literal_at = source.len() - rest.len();
         if let Some((text, length)) = string_literal(rest) {
             found.push((call_line, text));
@@ -334,7 +350,7 @@ pub fn build(root: &std::path::Path) -> (String, String) {
             let origin = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().into_owned();
             let macros: &[&str] = if origin.ends_with("src/log.rs") { &["log"] } else { &["log", "eprintln"] };
             let builders = LINE_BUILDERS.iter().filter(|(file, _)| *file == origin).flat_map(|(_, function)| builder_formats(&source, function));
-            for (line, format) in calls(&source, macros).into_iter().chain(builders) {
+            for (line, format) in calls(&source, macros).into_iter().chain(stderr_writes(&source)).chain(builders) {
                 vocabulary.extend(fixed_words(&format));
                 catalog.push_str(&catalog_line(&format!("{origin}:{line}"), &format));
                 catalog.push('\n');
