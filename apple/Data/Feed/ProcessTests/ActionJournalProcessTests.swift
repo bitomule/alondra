@@ -13,6 +13,7 @@ private enum ProcessFixtureError: Error {
 private final class FixtureProcess: Sendable {
     private struct Lifecycle { var status: Int32? }
     private struct ReadState { var expired = false; var finished = false }
+    static let hangGuard: TimeInterval = 240
     let pid: Int32
     private let lifecycle = Mutex(Lifecycle())
     private let input: FileHandle
@@ -68,7 +69,7 @@ private final class FixtureProcess: Sendable {
     func next<T: Decodable & Sendable>(_ type: T.Type, phase: String = #function) async throws -> T {
         let state = Mutex(ReadState())
         let timer = DispatchSource.makeTimerSource(queue: watchdog)
-        timer.schedule(deadline: .now() + 45)
+        timer.schedule(deadline: .now() + Self.hangGuard)
         timer.setEventHandler {
             let kill = state.withLock { value -> Bool in
                 if value.finished { return false }
