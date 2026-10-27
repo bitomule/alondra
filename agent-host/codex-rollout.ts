@@ -19,6 +19,10 @@ export class CodexRolloutError extends Error {
 const object = (value: unknown): Json | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : undefined;
 const identity = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f]/.test(value) ? value : undefined;
 const defaultNamespace = (value: unknown): boolean => value === undefined || value === null || value === 'functions';
+const cellHeader = (output: unknown): boolean => {
+  const first = typeof output === 'string' ? output : Array.isArray(output) && object(output[0])?.type === 'input_text' ? object(output[0])?.text : undefined;
+  return typeof first === 'string' && /^Script (?:running with cell ID [^\s]{1,256}|completed|failed|terminated)\n/.test(first);
+};
 const same = (a: Stats, b: Stats): boolean => a.dev === b.dev && a.ino === b.ino;
 
 export class CodexRolloutFollower {
@@ -207,7 +211,7 @@ export class CodexRolloutFollower {
 
   private async consume(line: Json, baseline: boolean): Promise<void> {
     const item = object(line.payload);
-    if (line.type === 'session_meta' && item?.id !== this.options.threadId) throw new CodexRolloutError('wrong_thread');
+    if (line.type === 'session_meta') return;
     const turn = identity(object(item?.internal_chat_message_metadata_passthrough)?.turn_id ?? item?.turn_id);
     if (baseline && turn && this.childTurns!.has(turn)) this.seenTurns.add(turn);
     if (line.type !== 'response_item' || !item) return;
@@ -218,6 +222,7 @@ export class CodexRolloutFollower {
     const nativeExec = item.type === 'custom_tool_call' && item.name === 'exec' && defaultNamespace(item.namespace);
     const nativeWait = item.type === 'function_call' && item.name === 'wait' && defaultNamespace(item.namespace);
     const output = item.type === 'custom_tool_call_output' || item.type === 'function_call_output';
+    if (item.type === 'custom_tool_call_output' && item.name === 'exec' && defaultNamespace(item.namespace) && !cellHeader(item.output)) return;
     const knownOutput = output && callKey && this.calls.has(callKey);
     if (!nativeExec && !nativeWait && !knownOutput) {
       if (output && defaultNamespace(item.namespace) && (item.name === 'exec' || item.name === 'wait')) throw new CodexRolloutError('unmatched_output');
@@ -241,8 +246,9 @@ export class CodexRolloutFollower {
       if (item.type !== (this.calls.get(callKey) === 'exec' ? 'custom_tool_call_output' : 'function_call_output')) throw new CodexRolloutError('invalid_output_kind');
       const first = typeof item.output === 'string' ? item.output : Array.isArray(item.output) && object(item.output[0])?.type === 'input_text' ? object(item.output[0])?.text : undefined;
       if (typeof first !== 'string') throw new CodexRolloutError('missing_header');
+      if (!cellHeader(item.output)) { this.calls.delete(callKey); return; }
       const boundary = first.indexOf('\nOutput:\n');
-      if (boundary < 0 || boundary > 4096 || !/^Script (?:running with cell ID [^\s]{1,256}|completed|failed|terminated)\n/.test(first)) throw new CodexRolloutError('invalid_header');
+      if (boundary < 0 || boundary > 4096) throw new CodexRolloutError('invalid_header');
       projected.output = first.slice(0, boundary + '\nOutput:\n'.length);
       this.calls.delete(callKey);
     }

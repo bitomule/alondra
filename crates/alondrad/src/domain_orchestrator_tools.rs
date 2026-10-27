@@ -362,6 +362,7 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         } else {
             let provider = body.provider.or_else(|| intent.requested.as_ref().map(|model| model.provider))
                 .or_else(|| intent.effective.as_ref().map(|model| model.model.provider))
+                .or_else(|| alondra_core::model_sheets::provider_of(model))
                 .or_else(|| (file.accounts.connected_providers().len() == 1).then(|| file.accounts.connected_providers()[0]))
                 .ok_or_else(|| DomainError::new("invalid_input", "Specify the provider for a native model"))?;
             ModelKey { provider, model: model.into() }

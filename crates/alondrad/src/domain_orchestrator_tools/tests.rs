@@ -1598,6 +1598,16 @@ async fn a_node_of_the_sdk_missing_from_claudes_listing_stays_live() {
     assert!(phase.live() && phase != alondra_core::domain::NodePhase::Lost, "{phase:?}");
 }
 
+#[tokio::test]
+async fn a_bare_model_launches_on_the_provider_whose_sheets_know_it_when_two_are_connected() {
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = world();
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\", \"codex\"]\n").unwrap();
+    command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::Implementation), pending: None });
+    let launched = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await;
+    assert!(launched.as_ref().err().is_none_or(|refusal| !refusal.message.contains("Specify the provider")), "{launched:?}");
+}
+
 // A launch runs through the SDK or does not start, with its reason, and no node takes the task.
 #[tokio::test]
 async fn an_sdk_launch_that_fails_leaves_the_task_without_a_node() {

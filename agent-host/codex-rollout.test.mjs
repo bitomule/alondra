@@ -42,6 +42,23 @@ test('cold resume anchors existing history and emits only new exact code-cell te
   assert.deepEqual(f.errors, []);
 });
 
+test('notify outputs, an aborted wait and a forked parent header are history, not gaps', async (t) => {
+  const f = await fixture(t); const follower = await f.open();
+  const notify = (session) => ({ type: 'custom_tool_call_output', call_id: 'notifying', name: 'exec', output: JSON.stringify({ session_id: session, output: 'PRIVATE_NOTIFY_MUST_NOT_ESCAPE' }), internal_chat_message_metadata_passthrough: { turn_id: 'turn-first' } });
+  await appendFile(f.path, record('session_meta', { id: 'parent-thread' })
+    + record('response_item', exec('notifying')) + record('response_item', output('notifying', 'Script running with cell ID 44'))
+    + record('response_item', notify(1)) + record('response_item', notify(2))
+    + record('response_item', { type: 'function_call', namespace: 'functions', name: 'wait', call_id: 'aborted-wait', arguments: JSON.stringify({ cell_id: '44' }), internal_chat_message_metadata_passthrough: { turn_id: 'turn-first' } })
+    + record('response_item', { type: 'function_call_output', call_id: 'aborted-wait', output: 'aborted by user after 52.5s', internal_chat_message_metadata_passthrough: { turn_id: 'turn-first' } })
+    + record('response_item', notify(3)));
+  await follower.drain();
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.items.map((value) => [value.item.type, value.item.call_id]), [
+    ['custom_tool_call', 'notifying'], ['custom_tool_call_output', 'notifying'], ['function_call', 'aborted-wait'],
+  ]);
+  assert(!JSON.stringify(f.items).includes('PRIVATE_'));
+});
+
 test('partial trailing records remain buffered and are emitted once only after their newline', async (t) => {
   const f = await fixture(t); const follower = await f.open();
   const bytes = record('response_item', exec('partial'));

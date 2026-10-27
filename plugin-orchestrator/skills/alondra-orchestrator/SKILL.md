@@ -199,10 +199,13 @@ not guarantee that an account has access; respect a native rejection.
    tasks); without such measurements, the one whose sheet evidence is strongest for that kind.
 3. **Otherwise the cheapest that fits.** Among the models whose sheet lists the task's kind, take
    the lowest cost, unless its measured results for that kind are clearly worse than the best
-   measured one's. Calling a model worse needs at least 5 tasks of that kind for both. At equal
-   cost, prefer the better measured results, then the better evidence. A model without a sheet
-   is chosen only when the user named it or no model with a sheet lists the kind.
-4. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
+   measured one's. Calling a model worse needs at least 5 tasks of that kind for both. A model
+   without a sheet is chosen only when the user named it or no model with a sheet lists the kind.
+4. **At equal cost, spread the work.** Among the models left, a model with fewer than 5 ended
+   tasks of the task's kind gets it, so every provider gets measured. Otherwise prefer the one
+   whose serving account has the most weekly margin left, so no subscription runs out before its
+   reset while another sits idle. Only then the better measured results, then the better evidence.
+5. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
    little measurement is not worse; it is unmeasured.
 
 Use only reasoning efforts the row lists. Qualify the model as `codex/<model-id>` or

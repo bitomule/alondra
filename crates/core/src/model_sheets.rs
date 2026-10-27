@@ -79,9 +79,27 @@ pub fn sheet_for(provider: Provider, model: &str) -> Option<&'static ModelSheet>
     sheets().iter().find(|sheet| sheet.provider == provider && id.starts_with(&sheet.prefix))
 }
 
+/// The one provider whose sheets know `model` (`opus` is Claude's); none when no sheet or both do.
+pub fn provider_of(model: &str) -> Option<Provider> {
+    let mut known = [Provider::Claude, Provider::Codex].into_iter().filter(|provider| sheet_for(*provider, model).is_some());
+    match (known.next(), known.next()) {
+        (Some(provider), None) => Some(provider),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_model_belongs_to_the_one_provider_whose_sheets_know_it() {
+        assert_eq!(provider_of("opus"), Some(Provider::Claude));
+        assert_eq!(provider_of("claude-sonnet-5-5"), Some(Provider::Claude));
+        let codex = sheets().iter().find(|sheet| sheet.provider == Provider::Codex).expect("a Codex sheet");
+        assert_eq!(provider_of(&codex.prefix), Some(Provider::Codex));
+        assert_eq!(provider_of("no-such-model"), None);
+    }
 
     #[test]
     fn every_shipped_sheet_parses_with_its_evidence() {

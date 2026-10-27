@@ -53,9 +53,14 @@ struct Checkpoint {
     accepted_plans: BTreeMap<String, PlanAcceptance>,
     #[serde(default)]
     code_cells: BTreeMap<String, CodeCell>,
+    /// The native call of each ended cell, with the cursor that ended it: enough to ignore a late
+    /// duplicate, a fraction of the cell, so a long turn keeps the checkpoint within its bound.
+    #[serde(default)]
+    ended_cells: BTreeMap<String, u64>,
     #[serde(default)]
     completed_root_turn: Option<String>,
 }
+const ENDED_CELLS: usize = 256;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CodeCell {origin:String,cell:Option<String>,parent:Option<String>,work:String,work_key:String,finished:bool,woken:bool,cursor:u64}
@@ -116,6 +121,12 @@ impl ObservationNormalizer for Normalizer {
             Some(ref prior) => {
                 let state: Checkpoint = serde_json::from_slice(prior.bytes()).map_err(|_| AdapterError::InvalidObservation)?;
                 if state.cursor != prior.cursor() || state.cursor.checked_add(1) != Some(batch.cursor) { return invalid(); }
+                let mut state = state;
+                let ended: Vec<(String, u64)> = state.code_cells.iter().filter(|(_, cell)| cell.finished).map(|(key, cell)| (key.clone(), cell.cursor)).collect();
+                for (key, cursor) in ended {
+                    state.code_cells.remove(&key);
+                    if let Ok((_, _, call)) = serde_json::from_str::<(String, String, String)>(&key) { end_cell(&mut state, call, cursor); }
+                }
                 state
             }
             None if batch.cursor == 1 => Checkpoint::default(),
@@ -182,6 +193,13 @@ impl ObservationNormalizer for Normalizer {
     }
 }
 
+fn end_cell(state: &mut Checkpoint, call: String, cursor: u64) {
+    state.ended_cells.insert(call, cursor);
+    if state.ended_cells.len() > ENDED_CELLS {
+        let oldest = state.ended_cells.iter().min_by_key(|(_, cursor)| **cursor).map(|(key, _)| key.clone());
+        if let Some(oldest) = oldest { state.ended_cells.remove(&oldest); }
+    }
+}
 fn code_cell_identity(thread: &str, origin: &str, call: &str) -> String {
     serde_json::to_string(&(thread, origin, call)).expect("native identity strings serialize")
 }
@@ -199,6 +217,7 @@ fn code_cell(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, p
     } else { None };
     let Some(origin) = cell_id(params, if method=="alondra/codeCellContinuation" {"originTurnId"} else {"turnId"}) else { return Ok(()); };
     let key = code_cell_identity(thread,origin,call);
+    if state.ended_cells.contains_key(call) { return Ok(()); }
     if method=="alondra/codeCellStarted" {
         let cell = cell_id(params,"cellId").map(str::to_owned);
         if let Some(known)=state.code_cells.get_mut(&key) {
@@ -231,8 +250,9 @@ fn code_cell(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, p
         let same_cell=match known.cell.as_deref(){Some(cell)=>cell_id(params,"cellId")==Some(cell),None=>cell_id(params,"cellId").is_none() && observed==Some(call)};
         if known.finished || known.parent!=parent || !terminal || observed.is_none() || !same_cell {return Ok(());}
         let work_key=known.work_key.clone();
-        state.code_cells.get_mut(&key).unwrap().finished=true;
+        state.code_cells.remove(&key);
         if !child {end_work(batch,state,&work_key,facts,false)?;}
+        end_cell(state,call.to_owned(),batch.cursor);
     } else if method=="alondra/codeCellContinuation" {
         let Some(completed)=state.completed_root_turn.as_deref() else{return Ok(());};
         if state.turn.is_some() || cell_id(params,"turnId")!=Some(completed) || cell_id(params,"activationId")!=Some(call) {return Ok(());}
@@ -466,6 +486,25 @@ mod tests {
     fn batch() -> OrderedObservation {
         OrderedObservation { owner_generation: 1, execution: ExecutionStamp::new(TaskId("task".into()), AgentId("agent".into()), ConversationId::new("conversation").unwrap(), InstanceId::new("instance").unwrap(), HostId::new("alondra-sdk").unwrap(), 1).unwrap(), cursor: 1, evidence: vec![1] }
     }
+    #[test]
+    fn a_long_turn_of_ended_cells_keeps_the_checkpoint_within_its_bound_and_ignores_their_duplicates() {
+        let mut batch=batch();let mut state=Checkpoint{thread:Some("019a4f6e-7c2b-7d31-9a55-0f3c2e8b1d40".into()),process:"process".into(),turn:Some("019a4f6e-8d3c-7e42-ab66-1a4d3f9c2e51".into()),..Checkpoint::default()};let mut facts=vec![];
+        for n in 0..400 {
+            let call=format!("call_{n:032x}");
+            let start=json!({"threadId":state.thread,"turnId":state.turn,"callId":call,"cellId":n.to_string(),"processGeneration":"process"});
+            code_cell(&batch,&mut state,"alondra/codeCellStarted",&start,&mut facts).unwrap();
+            let mut finish=start.clone();finish["status"]=json!("completed");finish["observedCallId"]=json!(call);
+            code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();
+            batch.cursor+=1;
+        }
+        assert!(serde_json::to_vec(&state).unwrap().len() < 32_768, "{} bytes", serde_json::to_vec(&state).unwrap().len());
+        assert!(state.code_cells.is_empty() && state.work.is_empty());
+        let started=facts.iter().filter(|fact|matches!(fact,Observation::WorkStarted{..})).count();
+        let last=json!({"threadId":state.thread,"turnId":state.turn,"callId":format!("call_{:032x}",399),"cellId":"399","processGeneration":"process"});
+        code_cell(&batch,&mut state,"alondra/codeCellStarted",&last,&mut facts).unwrap();
+        assert_eq!(facts.iter().filter(|fact|matches!(fact,Observation::WorkStarted{..})).count(),started,"a late duplicate of an ended cell starts no work");
+    }
+
     #[test]
     fn native_cells_keep_own_work_across_turns_and_wake_once_until_exact_terminal_evidence() {
         let mut batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
