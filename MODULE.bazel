@@ -9,13 +9,15 @@ bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift_package_manager", version = "1.23.0")
 
 # simpool routes `ios_test_runner` through a shared, flock-guarded simulator pool, so concurrent
-# test actions never share one fixed-name simulator.
+# test actions never share one fixed-name simulator. An archive, not git_override: under Bazel
+# 8.4.2, git_repository's strip_prefix leaves absolute symlinks into the output base that fetched
+# it, and once that base is deleted the shared repo contents cache entry has no MODULE.bazel.
 bazel_dep(name = "simpool", version = "0.3.1")
-git_override(
+archive_override(
     module_name = "simpool",
-    remote = "https://github.com/bitomule/simpool.git",
-    commit = "4b06c56133e6fbf03fc8958a50932c1d540c8bc0",
-    strip_prefix = "bazel",
+    integrity = "sha256-UF86kCksfo2oMp4+hcU3j2k573s/B8H3kRMYTfjLX+I=",
+    strip_prefix = "simpool-4b06c56133e6fbf03fc8958a50932c1d540c8bc0/bazel",
+    urls = ["https://github.com/bitomule/simpool/archive/4b06c56133e6fbf03fc8958a50932c1d540c8bc0.tar.gz"],
 )
 
 swift_deps = use_extension("@rules_swift_package_manager//:extensions.bzl", "swift_deps")
