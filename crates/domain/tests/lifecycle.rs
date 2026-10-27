@@ -1051,6 +1051,25 @@ fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknow
     assert_eq!(task.activity(), ActivityView::Resting);
 }
 
+/// A journal recorded before turns took up their notifications replays as it was recorded: a turn
+/// started with two notifications waiting and ended without a wake leaves them waiting, and the
+/// session ending then resumes the node (t-85fa650b… on 26 October; 0.3.8 refused its revision 60).
+#[test]
+fn a_turn_that_ends_without_a_wake_leaves_the_notifications_it_found_waiting() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("first") });
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("second") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("first"), continuation: continuation("first-done") });
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("second"), continuation: continuation("second-done") });
+    apply(&mut task, Event::Tell { input: input("told") });
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None });
+    assert_eq!(task.activity(), ActivityView::Continuation);
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) });
+    assert_eq!(task.pending_inputs(), vec![&input("resumed")]);
+}
+
 /// One step of an arbitrary history: an event the task may or may not accept.
 fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
     let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -1196,8 +1215,9 @@ proptest! {
     }
 
     /// No history leaves a task in progress with no turn, no work of its node's own, no input on
-    /// its way, no delivery and no wait someone owns. A continuation is the node's own only until
-    /// its next turn starts: Claude reads every notification waiting before anything else.
+    /// its way, no delivery and no wait someone owns. A continuation waiting when a turn starts is
+    /// read by that turn; it stays the node's own only when the turn ends neither waking the node
+    /// nor waiting on anything, as journals recorded before this rule did.
     #[test]
     fn no_task_in_progress_is_left_without_a_turn_work_a_delivery_or_an_owned_wait(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56]),
@@ -1208,9 +1228,10 @@ proptest! {
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
             let observed = event.clone();
+            let before = task.activity();
             if task.apply(task.revision(), event).is_err() { continue }
             match observed {
-                Event::Runtime { fact: RuntimeFact::TurnStarted { .. }, .. } => fresh = callback_waits,
+                Event::Runtime { fact: RuntimeFact::TurnStarted { .. }, .. } => fresh = callback_waits || matches!(before, ActivityView::Continuation | ActivityView::OwnWork) && fresh,
                 Event::Runtime { fact: RuntimeFact::WorkEnded { .. }, .. } => fresh = true,
                 Event::Decide { .. } | Event::Runtime { fact: RuntimeFact::CallbackSettled { .. } | RuntimeFact::AnsweredByPolicy { .. }, .. } => (fresh, callback_waits) = (true, true),
                 _ => {}

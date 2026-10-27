@@ -184,7 +184,9 @@ impl TaskLifecycle {
                 };
                 // Claude Code opens the turn of a notification before it reads anything else, and
                 // that turn reads every notification waiting: whatever turn starts takes them up.
-                let (taken, continuations): (BTreeSet<Wake>, BTreeSet<Wake>) = continuations.into_iter().partition(|wake| matches!(wake, Wake::Owned(_)));
+                // They stay pending until its end says what comes next, as journals before this
+                // rule recorded them.
+                let taken: BTreeSet<Wake> = continuations.iter().filter(|wake| matches!(wake, Wake::Owned(_))).cloned().collect();
                 unprompted = trigger_unprompted;
                 execution.activity = Activity::Turn {
                     id: turn,
@@ -253,7 +255,8 @@ impl TaskLifecycle {
                 let wake = Wake::Owned(continuation);
                 match &mut execution.activity {
                     Activity::Turn { continuations, taken, .. } => {
-                        if !continuations.remove(&wake) && !taken.remove(&wake) {
+                        let pending = continuations.remove(&wake);
+                        if !taken.remove(&wake) && !pending {
                             return Err(Refusal::UnknownObligation);
                         }
                     }
@@ -270,6 +273,7 @@ impl TaskLifecycle {
                     id,
                     work,
                     continuations,
+                    taken,
                     ..
                 } = &execution.activity
                 else {
@@ -278,6 +282,11 @@ impl TaskLifecycle {
                 if id != &turn {
                     return Err(Refusal::CorrelationMismatch);
                 }
+                let continuations: BTreeSet<Wake> = if wake.is_some() || awaits.is_some() {
+                    continuations.difference(taken).cloned().collect()
+                } else {
+                    continuations.clone()
+                };
                 execution.activity = if !work.is_empty() {
                     Activity::OwnWork {
                         work: NonEmpty::new(work.clone())?,
