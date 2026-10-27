@@ -210,18 +210,23 @@ def smoke(ver, target, archive):
                 raise RuntimeError(f'Wrong architecture for {name}: expected {arch}')
             run('codesign', '--verify', '--strict', binary)
             run('/usr/bin/arch', f'-{arch}', binary, '--version' if name == 'alondrad-launcher' else '--help')
-        host_smoke(assets / release.HOST)
-        host_smoke(assets / release.CODEX_HOST)
+        for name, refusal in HOST_REFUSALS.items():
+            host_smoke(assets / name, refusal)
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
 
 
-def host_smoke(host):
+# What each signed host prints when it starts with no bootstrap (agent-host/persistent-main.ts,
+# agent-host/codex-main.ts).
+HOST_REFUSALS = {release.HOST: 'Alondra host startup refused', release.CODEX_HOST: 'Alondra Codex host startup refused'}
+
+
+def host_smoke(host, refusal):
     """The signed host runs under the hardened runtime with no Node on PATH: it starts, compiles its
     JavaScript and refuses a start that brings no bootstrap."""
     run('codesign', '--verify', '--strict', host)
     result = subprocess.run([str(host)], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                             env={'PATH': '/usr/bin:/bin'}, timeout=60)
-    if result.returncode != 1 or 'Alondra host startup refused' not in result.stdout + result.stderr:
+    if result.returncode != 1 or refusal not in result.stdout + result.stderr:
         raise RuntimeError(f'The SDK host did not start under its signature: exit {result.returncode}, {(result.stdout + result.stderr).strip()[-300:]}')
 
 

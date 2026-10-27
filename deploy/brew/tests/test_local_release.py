@@ -66,6 +66,19 @@ class LocalReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'identity'):
             l.check_signature(details('com.bitomule.alondrad', True).replace('Timestamp=', 'Signed='), 'com.bitomule.alondrad')
 
+    def test_each_signed_host_is_smoked_with_the_refusal_its_own_entry_prints(self):
+        entries = {l.release.HOST: 'agent-host/persistent-main.ts', l.release.CODEX_HOST: 'agent-host/codex-main.ts'}
+        self.assertEqual(set(l.HOST_REFUSALS), set(entries))
+        with tempfile.TemporaryDirectory() as directory, patch.object(l, 'run'):
+            for name, refusal in l.HOST_REFUSALS.items():
+                self.assertIn(f"'{refusal}\\n'", (REPO_ROOT / entries[name]).read_text())
+                host = pathlib.Path(directory) / pathlib.Path(name).name
+                host.write_text(f"#!/bin/sh\necho '{refusal}' >&2\nexit 1\n")
+                host.chmod(0o755)
+                l.host_smoke(host, refusal)
+            with self.assertRaisesRegex(RuntimeError, 'did not start under its signature'):
+                l.host_smoke(host, l.HOST_REFUSALS[l.release.HOST] + ' elsewhere')
+
     def test_the_daemon_info_plist_names_the_identifier_it_is_signed_with(self):
         import plistlib
         plist = plistlib.loads((REPO_ROOT / 'crates/alondrad/Info.plist').read_bytes())
