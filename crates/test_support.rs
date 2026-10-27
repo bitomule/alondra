@@ -78,6 +78,7 @@ impl Drop for Directory {
         let Some(owner) = self.owner.take() else {
             return;
         };
+        make_folders_writable(owner.path());
         if let Err(error) = owner.close() {
             if error.kind() == std::io::ErrorKind::NotFound {
                 return;
@@ -93,6 +94,31 @@ impl Drop for Directory {
                     self.path.display()
                 );
             }
+        }
+    }
+}
+
+/// Tests leave read-only folders behind (snapshots, fake caches); their files cannot be
+/// unlinked until the folder holding them is writable again.
+fn make_folders_writable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if !metadata.is_dir() {
+            return;
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o700 != 0o700 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            make_folders_writable(&entry.path());
         }
     }
 }

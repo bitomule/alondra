@@ -152,6 +152,15 @@ checks:
       targets:
         - //tools:buildbuddy_credential_helper_test
 
+  bazel-test-tmpdir:
+    uses: bazel/test
+    paths:
+      - "tools/test-tmpdir.sh"
+      - "tools/tests/test_bazel_test_tmpdir.py"
+    with:
+      targets:
+        - //tools:bazel_test_tmpdir_test
+
   native-fixture-lifecycle:
     uses: bazel/test
     paths:
