@@ -1,11 +1,17 @@
 use super::{
-    BuildError, ContentKind, ContentRef, Fact, Facts, Item, Notice, RenderContext, Tone, View,
+    BuildError, ContentKind, ContentRef, Fact, Facts, Item, Markdown, Notice, RenderContext, Tone, View,
     common, text::t,
 };
-use crate::domain::{DocumentRevisionId, PrId, PrState};
+use crate::domain::{DocumentRevisionId, InteractionId, PrId, PrState};
 
 pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
+    if !context.domain.document_revisions.contains_key(&DocumentRevisionId(id.into()))
+        && let Some((card, part)) = id.rsplit_once('.')
+        && (part == "plan" || part.starts_with("file-"))
+    {
+        return card_document(card, part, context);
+    }
     let revision = context
         .domain
         .document_revisions
@@ -74,6 +80,32 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
         let actions: Vec<super::Action> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).map(Into::into).collect();
         if !actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })])); }
     }
+    Ok(view)
+}
+
+/// A document a card carries inside it, a cited file or a proposed plan, on its own screen.
+fn card_document(card: &str, part: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
+    let key = format!("document:{card}.{part}");
+    let interaction = context.domain.interactions.get(&InteractionId(card.into())).ok_or(BuildError::NotFound)?;
+    let document = super::card::documents(interaction, context.domain, context.lang)
+        .into_iter()
+        .find(|document| document.key == key)
+        .ok_or(BuildError::NotFound)?;
+    let markdown = document.markdown.ok_or(BuildError::NotFound)?;
+    let mut view = common::view("document", &key, Some(document.title.clone()), context, vec![]);
+    let mut facts = vec![Fact { label: document.label, value: document.title, tone: None, link: None }];
+    if let crate::domain::Scope::Task { task_id } = &interaction.scope
+        && let Some(task) = context.domain.tasks.get(task_id)
+    {
+        facts.push(Fact {
+            label: t!(context.lang, "Task", "Tarea").into(),
+            value: task.title.clone(),
+            tone: None,
+            link: Some(super::Link::View { key: format!("task:{}", task.id) }),
+        });
+    }
+    view.sections.push(common::section("header", None, vec![Item::Facts(Facts { items: facts })]));
+    view.sections.push(common::section("body", None, vec![Item::Markdown(Markdown { text: markdown, truncated: false, more: None, commentable: false })]));
     Ok(view)
 }
 

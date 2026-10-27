@@ -52,6 +52,67 @@ pub fn without_included_files(text: &str) -> &str {
     text
 }
 
+/// The files included at the end of `text`, in order: each path with its Markdown as the file
+/// had it, its headings back at their own level.
+pub fn included_files(text: &str) -> Vec<(String, String)> {
+    let mut files: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut fence: Option<&str> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if fence.is_none()
+            && let Some(path) = included_heading(line)
+        {
+            if let Some((_, lines)) = files.last_mut() {
+                drop_separator(lines);
+            }
+            files.push((path.to_owned(), Vec::new()));
+            continue;
+        }
+        let Some((_, lines)) = files.last_mut() else { continue };
+        if let Some(open) = fence {
+            if trimmed.starts_with(open) {
+                fence = None;
+            }
+        } else if let Some(marker) = ["```", "~~~"].into_iter().find(|marker| trimmed.starts_with(marker)) {
+            fence = Some(marker);
+        }
+        lines.push(line);
+    }
+    files.into_iter().map(|(path, lines)| (path, unnested(&lines.join("\n")))).collect()
+}
+
+fn drop_separator(lines: &mut Vec<&str>) {
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.last().is_some_and(|line| line.trim() == "---") {
+        lines.pop();
+    }
+}
+
+fn unnested(content: &str) -> String {
+    let mut fence: Option<&str> = None;
+    let mut lines = Vec::new();
+    for line in content.trim().lines() {
+        let trimmed = line.trim_start();
+        if let Some(open) = fence {
+            if trimmed.starts_with(open) {
+                fence = None;
+            }
+            lines.push(line);
+            continue;
+        }
+        if let Some(marker) = ["```", "~~~"].into_iter().find(|marker| trimmed.starts_with(marker)) {
+            fence = Some(marker);
+            lines.push(line);
+            continue;
+        }
+        let level = line.bytes().take_while(|b| *b == b'#').count();
+        lines.push(if (3..=6).contains(&level) && line[level..].starts_with(' ') { &line[2..] } else { line });
+    }
+    lines.join("\n")
+}
+
 /// The cited files whose content `text` does not include yet.
 pub fn files_not_included(text: &str) -> Vec<String> {
     let included: Vec<&str> = text.lines().filter_map(included_heading).collect();

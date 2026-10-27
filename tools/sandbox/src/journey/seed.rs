@@ -43,6 +43,26 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         let ask = Step::Ask { id: "q-flag".into(), need: "Pick the name of the new flag".into(), options: vec!["--quiet".into(), "--silent".into()] };
         act(report, &fakes, &asking, "the node asks", &[ask])?;
 
+        request(report, &fakes, &user, &task_script("req-documents", "t-documents", "Research how other apps index a library"), "Research how other apps index a library")?;
+        let researching = launched(report, &fakes, "t-documents")?;
+        state(report, &user, "t-documents", WORKING)?;
+        let documents = [
+            Step::Commit { file: "research-competitors.md".into(), text: "# How other apps index a library\n\n## Photos\n\nIndexes overnight while charging.\n\n## Lightroom\n\nIndexes on import.\n".into() },
+            Step::Commit { file: "research-measurements.md".into(), text: "# Measurements\n\n| Library | Time |\n|---|---|\n| 10 000 photos | 4 min |\n".into() },
+            Step::Call { tool: "ask".into(), arguments: serde_json::json!({
+                "interaction_id": "q-documents", "scope": {"kind": "task", "task_id": "t-documents"}, "recipient": {"kind": "user"}, "blocking": true,
+                "need": "Choose how Redraft indexes the whole library",
+                "why": "The research found two ways other apps do it; the index starts once you pick one.",
+                "options": [
+                    {"id": "overnight", "label": "Overnight while charging", "description": "Like Photos: no cost while you use the iPhone, done in a night"},
+                    {"id": "import", "label": "On import", "description": "Like Lightroom: each new photo is indexed at once"},
+                ],
+                "recommended": "overnight",
+                "content": {"kind": "report", "body": "## Summary\n\n- **Viable.** Every photo keeps a 360 px copy on the iPhone.\n- How other apps do it: research-competitors.md\n- Measurements: research-measurements.md"},
+            }) },
+        ];
+        act(report, &fakes, &researching, "the node asks with the two documents it cites", &documents)?;
+
         request(report, &fakes, &user, &reworking("req-review", "t-review", "Add a greeting file", 41, "greeting.txt"), "Add a greeting file")?;
         let reviewing = launched(report, &fakes, "t-review")?;
         state(report, &user, "t-review", WORKING)?;
@@ -100,6 +120,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, review, finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, research with documents, review, finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

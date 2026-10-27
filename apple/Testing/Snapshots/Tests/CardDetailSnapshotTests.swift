@@ -208,6 +208,16 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    func test_cardWithItsDocuments() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-documents")))
+        assertDetail(store)
+    }
+
+    func test_cardWithItsDocuments_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-documents-es"))))
+        assertDetail(store, language: .spanish)
+    }
+
     // MARK: A plan to comment on
 
     func test_plan() throws {

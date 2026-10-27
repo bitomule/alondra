@@ -15,6 +15,7 @@ pub(super) enum Act {
     Toggle,
     Open,
     Diff,
+    Documents,
     Form,
     NextScreen,
     NewWork,
@@ -505,6 +506,9 @@ impl App {
             if has_diff(view) {
                 t.add(vec![char('d')], "d", tr!("diff and comments", "diff y comentarios"), Act::Diff);
             }
+            if view_render::documents_menu(view).is_some() {
+                t.add(vec![char('f')], "f", tr!("documents", "documentos"), Act::Documents);
+            }
             self.answer_bindings(t, view, false);
             if !detail && self.detail_view.shown {
                 t.add(vec![char('l'), plain(KeyCode::Right)], "l", tr!("detail", "detalle"), Act::Focus(Pane::Detail));
@@ -594,6 +598,7 @@ impl App {
             }
             Act::Open => self.open_reader(),
             Act::Diff => self.open_reader(),
+            Act::Documents => self.card_menu = self.current_view().and_then(view_render::documents_menu),
             Act::Form => {
                 if let Some(view) = self.current_view().map(|view| view.key.clone()) {
                     self.compose(Target::Form { view }, "");

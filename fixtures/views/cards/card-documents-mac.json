@@ -1,0 +1,285 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:result-1",
+  "client": "mac",
+  "version": "v3757811cf6aa58ec",
+  "cursor": "cursor-1",
+  "title": "Read the report on indexing Redraft's whole library",
+  "status": {
+    "version": "v887807058841bf6a",
+    "summary": "1 to read · 1 node working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "result-1",
+          "kind": "review",
+          "need": "Read the report on indexing Redraft's whole library",
+          "why": "It ends in a plan: approve it to start building it, or only archive the report.",
+          "meta": "redraft/library-index",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "2 points"
+          },
+          "reply": {
+            "id": "reply:result-1@5",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to redraft/library-index…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "key": "r",
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "clarify:result-1@5",
+              "label": "Request clarification",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "It is unclear",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "It contradicts something",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "It lacks context",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "What should it clarify?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clarification requested",
+              "key": "c",
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:result-1"
+          },
+          "icon": "document",
+          "eyebrow": {
+            "text": "Review",
+            "tone": "accent"
+          },
+          "title": "Read the report on indexing Redraft's whole library",
+          "subtitle": "It ends in a plan: approve it to start building it, or only archive the report.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Redraft: analyse the whole library at once",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ],
+          "detail": "included",
+          "actions": [
+            {
+              "id": "accept:result-1@5~implement",
+              "label": "Approve and start implementing",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Implementation requested",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "accept:result-1@5~archive",
+              "label": "Only archive",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Archived",
+              "key": "2",
+              "resolves_card": true
+            },
+            {
+              "id": "changes:result-1@5",
+              "label": "Request changes",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe the changes",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "blocks"
+              },
+              "enabled": true,
+              "stamp": "Changes requested",
+              "key": "3",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "## Summary\n\n- **Viable.** Every photo keeps a 360 px copy on the iPhone.\n- How other apps do it: docs/research/competitors.md",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Documents",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Document",
+              "value": "Library index design",
+              "link": {
+                "kind": "view",
+                "key": "document:design-r1"
+              }
+            },
+            {
+              "label": "Proposed plan",
+              "value": "Index the whole library",
+              "link": {
+                "kind": "view",
+                "key": "document:result-1.plan"
+              }
+            },
+            {
+              "label": "docs/research/competitors.md",
+              "value": "How other apps index a library",
+              "link": {
+                "kind": "view",
+                "key": "document:result-1.file-1"
+              }
+            },
+            {
+              "label": "docs/measurements.md",
+              "value": "Measurements",
+              "link": {
+                "kind": "view",
+                "key": "document:result-1.file-2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Redraft: analyse the whole library at once · redraft/library-index",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

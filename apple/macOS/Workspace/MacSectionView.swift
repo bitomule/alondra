@@ -71,6 +71,8 @@ struct MacSectionView: View {
                         MacCardView(card: card, returnReason: returnReasons[card.id], onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
                     } else if case let .actions(bar) = item {
                         MacActionBar(bar: bar, onAction: onAction)
+                    } else if section.id == "documents", case let .facts(facts) = item {
+                        MacDocumentLinks(facts: facts, onLink: onLink)
                     } else if case let .contentRef(reference) = item, reference.kind == .diff {
                         diffSummary(reference)
                     } else {

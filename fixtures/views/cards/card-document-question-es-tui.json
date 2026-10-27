@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v0d7cfac2578fc62b",
+  "version": "vf27385d329f3d041",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -239,13 +239,30 @@
       "collapsed": false,
       "items": [
         {
-          "type": "content_ref",
-          "kind": "document",
-          "title": "Migration design",
-          "size": 0,
-          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "fetch": "/document-revisions/design-r1/content",
-          "commentable": true
+          "type": "markdown",
+          "text": "Concise: a short title and one explanatory sentence.\nWarm: the more conversational explanation.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Documentos",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Documento",
+              "value": "Migration design",
+              "link": {
+                "kind": "view",
+                "key": "document:design-r1"
+              }
+            }
+          ]
         }
       ]
     },

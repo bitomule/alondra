@@ -87,9 +87,11 @@ must be decidable by someone who sees nothing else:
   repeat what is needed.
 - Before sending, ask yourself: could someone who sees only this card decide? If not, add what is
   missing.
-- The user cannot open a file from the app. A card that cites a Markdown file (`docs/plan.md`)
-  carries its content: Alondra adds it from your worktree, or refuses the card when it cannot read
-  it. Never point at a file instead of writing what it says.
+- The user cannot open a file from the app. `content` holds the card's own text (the decision,
+  the report, the answer); a document it goes with (a plan, a design, a spec) is never pasted
+  into it. Cite its Markdown path (`docs/plan.md`): Alondra reads it from your worktree and shows
+  it as a document of the card, which the user opens apart, or refuses the card when it cannot
+  read it. Or send it with `create_document` and, in a result, a `document_revision` target.
 
 Wrong: `need` "Approve the new promotional text for Quill's App Store listing", no `content`.
 Right: the same `need`, `why` saying what the text is for, and `content` (kind `document`) with

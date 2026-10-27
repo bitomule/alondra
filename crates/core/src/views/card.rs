@@ -15,6 +15,7 @@ use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
+    included_files, without_included_files,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -107,6 +108,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
                 sections.push(super::common::section("content", Some(t!(context.lang, "Content", "Contenido").into()), content));
             }
         }
+    }
+    if let Some(documents) = documents_section(item, context) {
+        sections.push(documents);
     }
     let around = context_items(item, context);
     if !around.is_empty() {
@@ -1792,20 +1796,9 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
     let mut out = vec![];
     let shown = interaction.shown_content();
-    let content = shown.as_deref().filter(|content| !content.body.trim().is_empty());
-    if let Some(revision_id) = reviewed_revision(interaction)
-        && let Some(revision) = domain.document_revisions.get(revision_id)
-        && let Some(document) = domain.documents.get(&revision.document_id)
-    {
-        out.push(Item::ContentRef(ContentRef {
-            kind: super::ContentKind::Document,
-            title: document.title.clone(),
-            size: 0,
-            digest: Some(revision.content_digest.clone()),
-            fetch: format!("/document-revisions/{revision_id}/content"),
-            commentable: true,
-        }));
-        out.extend(proposed_plan(interaction, lang));
+    let content = shown.as_deref().filter(|content| !without_included_files(&content.body).trim().is_empty());
+    if reviewed_revision(interaction).is_some() {
+        out.extend(content.map(|content| markdown(without_included_files(&content.body).to_owned())));
         out.extend(kept_at(interaction, lang));
         return out;
     }
@@ -1850,17 +1843,17 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     }
     let plan_held = domain.holds.get(&interaction.id) == Some(&Hold::Plan);
     if let Some(content) = content {
+        let body = without_included_files(&content.body);
         if plan_held {
-            out.push(commentable_markdown(content.body.clone()));
+            out.push(commentable_markdown(body.to_owned()));
             return out;
         }
         out.push(markdown(match content.kind {
-            DomainContent::Command => fenced(&content.body, ""),
-            DomainContent::Diff if summary::diff_stats(&content.body).is_some() => fenced(&content.body, "diff"),
-            _ => content.body.clone(),
+            DomainContent::Command => fenced(body, ""),
+            DomainContent::Diff if summary::diff_stats(body).is_some() => fenced(body, "diff"),
+            _ => body.to_owned(),
         }));
     }
-    out.extend(proposed_plan(interaction, lang));
     out.extend(kept_at(interaction, lang));
     if domain.holds.get(&interaction.id) == Some(&Hold::Permission) {
         if let Some(line) = interaction.card.allow_for_task.as_ref().and_then(|offer| super::allow_for_task::refusal(offer, lang)) {
@@ -1877,18 +1870,75 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     out
 }
 
-/// The plan a final result proposes, under its own heading after the report.
-fn proposed_plan(interaction: &Interaction, lang: Lang) -> Option<Item> {
-    let plan = interaction.card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty())?;
-    let under_heading: Vec<String> = plan.lines().map(|line| {
-        let level = line.bytes().take_while(|b| *b == b'#').count();
-        if (1..=6).contains(&level) && line[level..].starts_with(' ') {
-            format!("{}{}", "#".repeat((level + 2).min(6)), &line[level..])
-        } else {
-            line.to_owned()
-        }
+/// A document a card carries: its own screen, never part of the card's text.
+pub(super) struct CardDocument {
+    pub label: String,
+    pub title: String,
+    pub key: String,
+    /// What the screen shows when the document lives inside the card rather than as a revision.
+    pub markdown: Option<String>,
+}
+
+/// The documents of a card, in order: the revisions it delivers or asks about, the plan it
+/// proposes, and the files its words cite.
+pub(super) fn documents(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Vec<CardDocument> {
+    let mut revisions: Vec<&DocumentRevisionId> = targets_of(interaction).iter().filter_map(|target| match target {
+        DeliveryTarget::DocumentRevision { revision_id, .. } => Some(revision_id),
+        _ => None,
     }).collect();
-    Some(markdown(format!("---\n\n## {}\n\n{}", t!(lang, "Proposed plan", "Plan propuesto"), under_heading.join("\n"))))
+    if let Some(InteractionSubject::DocumentReview { revision_id, .. }) = &interaction.subject
+        && !revisions.contains(&revision_id)
+    {
+        revisions.push(revision_id);
+    }
+    let mut out: Vec<CardDocument> = revisions.into_iter().filter_map(|revision_id| {
+        let revision = domain.document_revisions.get(revision_id)?;
+        let document = domain.documents.get(&revision.document_id)?;
+        Some(CardDocument {
+            label: t!(lang, "Document", "Documento").into(),
+            title: document.title.clone(),
+            key: format!("document:{revision_id}"),
+            markdown: None,
+        })
+    }).collect();
+    let id = &interaction.id.0;
+    let plan = interaction.card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty());
+    if let Some(plan) = plan {
+        out.push(CardDocument {
+            label: t!(lang, "Proposed plan", "Plan propuesto").into(),
+            title: first_heading(without_included_files(plan)).unwrap_or_else(|| t!(lang, "Proposed plan", "Plan propuesto").into()),
+            key: format!("document:{id}.plan"),
+            markdown: Some(without_included_files(plan).to_owned()),
+        });
+    }
+    let content = interaction.shown_content();
+    let cited = content.iter().flat_map(|content| included_files(&content.body)).chain(plan.into_iter().flat_map(included_files));
+    out.extend(cited.enumerate().map(|(n, (path, markdown))| CardDocument {
+        title: first_heading(&markdown).unwrap_or_else(|| path.clone()),
+        label: path,
+        key: format!("document:{id}.file-{}", n + 1),
+        markdown: Some(markdown),
+    }));
+    out
+}
+
+fn first_heading(markdown: &str) -> Option<String> {
+    markdown.lines().find_map(|line| line.strip_prefix("# ")).map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned)
+}
+
+fn documents_section(item: &InboxItem, context: &RenderContext<'_>) -> Option<super::Section> {
+    let interaction = interaction_of(item, context.domain)?;
+    let items: Vec<Fact> = documents(interaction, context.domain, context.lang).into_iter().map(|document| Fact {
+        label: document.label,
+        value: document.title,
+        tone: None,
+        link: Some(Link::View { key: document.key }),
+    }).collect();
+    (!items.is_empty()).then(|| super::common::section(
+        "documents",
+        Some(t!(context.lang, "Documents", "Documentos").into()),
+        vec![Item::Facts(Facts { items })],
+    ))
 }
 
 /// Where Alondra keeps the whole result, which outlives the node's session.

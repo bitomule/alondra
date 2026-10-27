@@ -157,6 +157,8 @@ public struct CardDetailView: View {
             ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
                 if section.id == "description", case .markdown(let markdown) = item {
                     PRDescription(markdown: markdown)
+                } else if section.id == "documents", case .facts(let facts) = item {
+                    DocumentLinks(facts: facts, tint: kind.tint, open: follow)
                 } else {
                     itemView(item)
                 }

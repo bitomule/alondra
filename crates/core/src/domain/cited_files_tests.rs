@@ -90,6 +90,20 @@ fn a_cited_file_is_included_under_its_heading_and_never_adds_points_to_the_plan(
 }
 
 #[test]
+fn each_included_file_comes_back_apart_with_its_own_headings() {
+    let body = "Ver docs/a.md y docs/b.md";
+    let included = include_cited_files(body, files(&[
+        ("docs/a.md", "# Plan A\n\n## Pasos\n\n```\n## no es un fichero.md\n```"),
+        ("docs/b.md", "Solo texto"),
+    ])).unwrap();
+    assert_eq!(included_files(&included), [
+        ("docs/a.md".to_owned(), "# Plan A\n\n## Pasos\n\n```\n## no es un fichero.md\n```".to_owned()),
+        ("docs/b.md".to_owned(), "Solo texto".to_owned()),
+    ]);
+    assert!(included_files(body).is_empty());
+}
+
+#[test]
 fn citations_inside_an_included_file_are_not_followed() {
     let included = include_cited_files("Ver docs/a.md", files(&[("docs/a.md", "Detalle en docs/b.md")])).unwrap();
     assert_eq!(cited_markdown_files(&included), ["docs/a.md"]);

@@ -510,6 +510,24 @@ impl Menu {
     }
 }
 
+/// The section of a card that lists its documents, each a link to its own screen.
+pub const DOCUMENTS: &str = "documents";
+
+/// The documents of the view on screen, to pick one and open it.
+pub fn documents_menu(view: &View) -> Option<Menu> {
+    let section = view.sections.iter().find(|section| section.id == DOCUMENTS)?;
+    let entries: Vec<_> = section.items.iter().flat_map(|item| match item {
+        Item::Facts(facts) => facts.items.as_slice(),
+        _ => &[],
+    }).filter(|fact| matches!(fact.link, Some(alondra_core::views::Link::View { .. }))).map(|fact| (Action {
+        id: String::new(), label: fact.value.clone(), style: alondra_core::views::Style::Plain, role: None, option_id: None,
+        description: Some(fact.label.clone()), presentation: alondra_core::views::Presentation::Button, options: vec![],
+        input: alondra_core::views::Input::None, attachments: false, comments: None, confirm: None, enabled: true,
+        disabled_reason: None, stamp: None, key: None, link: fact.link.clone(), resolves_card: false,
+    }, None)).collect();
+    (!entries.is_empty()).then(|| Menu { title: section.title.clone().unwrap_or_default(), entries, sel: 0 })
+}
+
 pub fn more_menu(card: &Card) -> Menu {
     Menu {
         title: tr!("More", "Más").into(),
@@ -642,6 +660,15 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                     Span::styled("▤ ", Style::new().fg(Color::Cyan)),
                     Span::raw(content_ref_label(view, content)),
                 ])),
+                Item::Facts(facts) if section.id == DOCUMENTS => {
+                    for fact in &facts.items {
+                        lines.push(Line::from(vec![
+                            Span::styled("▤ ", Style::new().fg(Color::Cyan)),
+                            Span::raw(fact.value.clone()),
+                            Span::styled(format!(" · {}", fact.label), Style::new().fg(DIM)),
+                        ]));
+                    }
+                }
                 Item::Facts(facts) => {
                     for fact in &facts.items {
                         let mut line = vec![Span::styled(format!("{}: ", fact.label), Style::new().fg(DIM))];

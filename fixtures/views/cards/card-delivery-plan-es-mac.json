@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "v02fda7ba47471c63",
+  "version": "vb9a7af02e8df2a18",
   "cursor": "cursor-1",
   "title": "Read the report on indexing Redraft's whole library",
   "status": {
@@ -214,15 +214,29 @@
         },
         {
           "type": "markdown",
-          "text": "---\n\n## Plan propuesto\n\n### Index the whole library\n\n- [ ] Store each photo's feature print in Core Data, next to what users have today\n- [ ] Index changes in the background with the library's change history\n- [ ] Show indexing progress on the home screen",
-          "truncated": false,
-          "commentable": false
-        },
-        {
-          "type": "markdown",
           "text": "Guardado en `/Users/me/.alondra/files/results/t-1/result-1.md`",
           "truncated": false,
           "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Documentos",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Plan propuesto",
+              "value": "Index the whole library",
+              "link": {
+                "kind": "view",
+                "key": "document:result-1.plan"
+              }
+            }
+          ]
         }
       ]
     },
