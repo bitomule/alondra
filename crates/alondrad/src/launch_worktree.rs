@@ -93,7 +93,73 @@ async fn choose(cwd: &Path, slug: &str, known: Option<&Path>, pr_head: Option<&s
         return Ok(Workplace::Reused(within(dir, &inside)));
     }
     let dir = make(&top, slug).await?;
+    include_ignored(&top, &dir).await;
     Ok(Workplace::Made(within(dir, &inside)))
+}
+
+/// Copies into a new worktree the files of the main checkout that git ignores and `.worktreeinclude`
+/// lists, in `.gitignore` syntax, as Claude Code does for its own worktrees: `.env` and the like,
+/// which no checkout brings. A file the worktree already has is kept, and a link is never followed
+/// or copied, so nothing is written outside the worktree.
+async fn include_ignored(top: &Path, worktree: &Path) {
+    let list = top.join(".worktreeinclude");
+    if !std::fs::symlink_metadata(&list).is_ok_and(|meta| meta.is_file()) {
+        return;
+    }
+    let Some(list) = list.to_str() else { return };
+    let Some(listed) = git_bytes(top, &["ls-files", "-z", "--others", "--ignored", "--exclude-from", list], None).await else {
+        log!("git could not list the files .worktreeinclude names in {}", top.display());
+        return;
+    };
+    if listed.is_empty() {
+        return;
+    }
+    let ignored = git_bytes(top, &["check-ignore", "-z", "--stdin"], Some(listed)).await.unwrap_or_default();
+    for path in ignored.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
+        let path = Path::new(std::str::from_utf8(path).unwrap_or_default());
+        if let Err(why) = copy_included(top, worktree, path) {
+            log!("could not copy {} into the worktree {}: {why}", path.display(), worktree.display());
+        }
+    }
+}
+
+/// Copies `path`, relative to the checkout `top`, to the same place in `worktree` unless the
+/// worktree has it already or a link stands anywhere on either side of the way.
+fn copy_included(top: &Path, worktree: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let parts: Vec<_> = path.components().collect();
+    if parts.is_empty() || !parts.iter().all(|part| matches!(part, std::path::Component::Normal(_))) {
+        return Ok(());
+    }
+    let mut from = top.to_path_buf();
+    for part in &parts {
+        from.push(part);
+        if std::fs::symlink_metadata(&from)?.file_type().is_symlink() {
+            return Ok(());
+        }
+    }
+    let mut to = worktree.to_path_buf();
+    for part in &parts[..parts.len() - 1] {
+        to.push(part);
+        match std::fs::symlink_metadata(&to) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(()),
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&to)?,
+            Err(why) => return Err(why),
+        }
+    }
+    to.push(parts[parts.len() - 1]);
+    let mut source = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&from)?;
+    let meta = source.metadata()?;
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let mut copy = match std::fs::OpenOptions::new().write(true).create_new(true).mode(meta.permissions().mode() & 0o777).custom_flags(libc::O_NOFOLLOW).open(&to) {
+        Ok(copy) => copy,
+        Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(why) => return Err(why),
+    };
+    std::io::copy(&mut source, &mut copy).map(drop)
 }
 
 /// Makes `.claude/worktrees/<slug>` on branch `worktree-<slug>`: that branch when it exists, which
@@ -166,6 +232,23 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 async fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").arg("-C").arg(dir).args(args).kill_on_drop(true).output().await.ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+async fn git_bytes(dir: &Path, args: &[&str], input: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new("git").arg("-C").arg(dir).args(args)
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+        .kill_on_drop(true).spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let feed = async move {
+        if let Some(input) = input {
+            let _ = stdin.write_all(&input).await;
+        }
+    };
+    let (_, out) = tokio::join!(feed, child.wait_with_output());
+    let out = out.ok()?;
+    // `git check-ignore` exits 1 when none of the paths is ignored.
+    matches!(out.status.code(), Some(0 | 1)).then_some(out.stdout)
 }
 
 async fn run(dir: &Path, args: &[&str]) -> Result<(), String> {
@@ -282,6 +365,91 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         let refused = isolate(&root, "t", None, None).await.unwrap_err();
         assert!(refused.contains("main checkout"), "{refused}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Commits `files` and pushes them to the default branch the new worktrees start from.
+    fn publish(repo: &Path, files: &[(&str, &str)]) {
+        for (path, text) in files {
+            std::fs::write(repo.join(path), text).unwrap();
+            sh(repo, &["add", "-f", path]);
+        }
+        sh(repo, &["commit", "-q", "-m", "files"]);
+        sh(repo, &["push", "-q", "origin", "HEAD:main"]);
+    }
+
+    #[tokio::test]
+    async fn a_new_worktree_brings_the_ignored_files_worktreeinclude_lists_and_no_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, repo) = repository("include");
+        publish(&repo, &[(".gitignore", ".env\n.secret\nconfig/\n"), (".worktreeinclude", ".env\nconfig/*.json\nnotes.txt\n")]);
+        std::fs::write(repo.join(".env"), "TOKEN=abc\n").unwrap();
+        std::fs::set_permissions(repo.join(".env"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(repo.join(".secret"), "not listed").unwrap();
+        std::fs::write(repo.join("notes.txt"), "listed but not ignored").unwrap();
+        std::fs::create_dir_all(repo.join("config")).unwrap();
+        std::fs::write(repo.join("config/keys.json"), "{}").unwrap();
+        isolate(&repo, "t-env", None, None).await.unwrap();
+        let dir = repo.join(".claude/worktrees/t-env");
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "TOKEN=abc\n");
+        assert_eq!(std::fs::metadata(dir.join(".env")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(dir.join("config/keys.json")).unwrap(), "{}");
+        assert!(!dir.join(".secret").exists(), "an ignored file .worktreeinclude does not list stays out");
+        assert!(!dir.join("notes.txt").exists(), "a listed file git does not ignore stays out");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The main checkout is behind its remote, which tracks `.env` now: the worktree keeps the
+    /// repository's file.
+    #[tokio::test]
+    async fn a_file_of_the_repository_is_never_overwritten() {
+        let (root, repo) = repository("overwrite");
+        publish(&repo, &[(".gitignore", ".env\n"), (".worktreeinclude", ".env\n")]);
+        publish(&repo, &[(".env", "FROM=repo\n")]);
+        sh(&repo, &["reset", "-q", "HEAD~1"]);
+        std::fs::write(repo.join(".env"), "FROM=main checkout\n").unwrap();
+        isolate(&repo, "t-keep", None, None).await.unwrap();
+        let dir = repo.join(".claude/worktrees/t-keep");
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "FROM=repo\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pattern_that_points_outside_the_checkout_copies_nothing() {
+        let (root, repo) = repository("outside");
+        publish(&repo, &[(".gitignore", "*.env\n"), (".worktreeinclude", "../outside.env\n/../outside.env\n../*\n")]);
+        std::fs::write(root.join("outside.env"), "SECRET=1\n").unwrap();
+        isolate(&repo, "t-out", None, None).await.unwrap();
+        let dir = repo.join(".claude/worktrees/t-out");
+        assert!(!dir.join("outside.env").exists());
+        assert!(!repo.join(".claude/worktrees/outside.env").exists());
+        assert_eq!(sh(&dir, &["status", "--porcelain", "--ignored"]), "");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The remote tracks `config` as a link out of the repository while the main checkout has an
+    /// ignored `config/` folder: copying `config/.env` would write through the link.
+    #[tokio::test]
+    async fn a_link_in_the_worktree_is_never_written_through_and_a_link_is_never_copied() {
+        let (root, repo) = repository("links");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        publish(&repo, &[(".gitignore", ".env\nconfig/\nlinked.env\n"), (".worktreeinclude", ".env\nconfig/.env\nlinked.env\n")]);
+        std::os::unix::fs::symlink(&elsewhere, repo.join("config")).unwrap();
+        sh(&repo, &["add", "-f", "config"]);
+        sh(&repo, &["commit", "-q", "-m", "link"]);
+        sh(&repo, &["push", "-q", "origin", "HEAD:main"]);
+        sh(&repo, &["reset", "-q", "HEAD~1"]);
+        std::fs::remove_file(repo.join("config")).unwrap();
+        std::fs::create_dir_all(repo.join("config")).unwrap();
+        std::fs::write(repo.join("config/.env"), "SECRET=1\n").unwrap();
+        std::fs::write(elsewhere.join("target.env"), "OUTSIDE=1\n").unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("target.env"), repo.join("linked.env")).unwrap();
+        isolate(&repo, "t-links", None, None).await.unwrap();
+        let dir = repo.join(".claude/worktrees/t-links");
+        assert!(std::fs::symlink_metadata(dir.join("config")).unwrap().file_type().is_symlink());
+        assert!(!elsewhere.join(".env").exists(), "nothing was written outside the worktree");
+        assert!(std::fs::symlink_metadata(dir.join("linked.env")).is_err(), "a link is not copied");
         std::fs::remove_dir_all(root).unwrap();
     }
 
