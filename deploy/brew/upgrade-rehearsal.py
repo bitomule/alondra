@@ -174,6 +174,28 @@ def clone(sources, target):
         raise Failed(f'cloning into {target}: {last_line(result.stderr)}')
 
 
+def backup(source, destination):
+    reader = sqlite3.connect(source, uri=True)
+    writer = sqlite3.connect(destination)
+    try:
+        reader.backup(writer)
+    finally:
+        writer.close()
+        reader.close()
+
+
+def backup_from_clone(database, target):
+    """A read-only reader of a WAL database must still write its -shm, which the sandbox refuses
+    inside the live HOME: the database and its sidecars are cloned into the copy and read there."""
+    staging = target / f'.{database.name}.clone'
+    staging.mkdir()
+    try:
+        clone([path for path in (database, *(database.with_name(database.name + suffix) for suffix in ('-wal', '-shm'))) if path.exists()], staging)
+        backup(str(staging / database.name), target / database.name)
+    finally:
+        shutil.rmtree(staging)
+
+
 def copy_home(source, target):
     """Run inside the sandbox: SQLite through read-only connections, the rest as APFS clones."""
     source, target = source.resolve(), target.resolve()
@@ -185,13 +207,10 @@ def copy_home(source, target):
     if clones:
         clone(clones, target)
     for database in databases:
-        reader = sqlite3.connect(f'{database.as_uri()}?mode=ro', uri=True)
-        writer = sqlite3.connect(target / database.name)
         try:
-            reader.backup(writer)
-        finally:
-            writer.close()
-            reader.close()
+            backup(f'{database.as_uri()}?mode=ro', target / database.name)
+        except sqlite3.OperationalError:
+            backup_from_clone(database, target)
         os.chmod(target / database.name, database.stat().st_mode & 0o777)
     for name in OUTWARD_FILES:
         (target / name).unlink(missing_ok=True)

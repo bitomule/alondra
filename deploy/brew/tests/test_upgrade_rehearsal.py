@@ -73,6 +73,32 @@ def fake_daemon(path, version, mode):
     return path
 
 
+class CopyHomeTests(unittest.TestCase):
+    def test_a_database_that_cannot_be_read_in_place_is_copied_from_a_clone_of_it_and_its_wal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, target = pathlib.Path(directory) / 'home', pathlib.Path(directory) / 'copy'
+            home.mkdir()
+            writer = sqlite3.connect(home / 'action-results.sqlite')
+            try:
+                writer.execute('PRAGMA journal_mode=WAL')
+                writer.execute('PRAGMA wal_autocheckpoint=0')
+                writer.execute('CREATE TABLE results(id INTEGER PRIMARY KEY, body TEXT)')
+                writer.execute("INSERT INTO results(body) VALUES('only in the wal')")
+                writer.commit()
+                original = u.backup
+                def refuse_in_place(source, destination):
+                    if '?mode=ro' in source:
+                        raise sqlite3.OperationalError('unable to open database file')
+                    original(source, destination)
+                with patch.object(u, 'backup', refuse_in_place):
+                    u.copy_home(home, target)
+            finally:
+                writer.close()
+            with closing(sqlite3.connect(target / 'action-results.sqlite')) as copy:
+                self.assertEqual(copy.execute('SELECT body FROM results').fetchall(), [('only in the wal',)])
+            self.assertFalse(any(path.name.endswith('.clone') for path in target.iterdir()), 'the clone is removed')
+
+
 class DaemonFixtureTests(unittest.TestCase):
     def test_replacement_after_readiness_is_not_used_as_the_initial_fingerprint(self):
         from types import SimpleNamespace
